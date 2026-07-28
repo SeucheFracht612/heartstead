@@ -449,6 +449,15 @@ if(HEARTSTEAD_ENABLE_JOLT)
 else()
   target_compile_definitions(heartstead_engine PRIVATE HEARTSTEAD_HAS_JOLT=0)
 endif()
+if(HEARTSTEAD_ENABLE_LUAU)
+  target_link_libraries(
+    heartstead_engine
+    PRIVATE unofficial::luau::Luau.Compiler unofficial::luau::Luau.VM
+  )
+  target_compile_definitions(heartstead_engine PRIVATE HEARTSTEAD_HAS_LUAU=1)
+else()
+  target_compile_definitions(heartstead_engine PRIVATE HEARTSTEAD_HAS_LUAU=0)
+endif()
 if(HEARTSTEAD_ENABLE_VULKAN AND Vulkan_FOUND)
   target_link_libraries(heartstead_engine PRIVATE Vulkan::Vulkan)
   target_compile_definitions(heartstead_engine PRIVATE HEARTSTEAD_HAS_VULKAN=1)

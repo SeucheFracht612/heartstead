@@ -3668,7 +3668,6 @@ void test_scripting_runtime() {
     assert(disabled_info.name == "disabled");
 
     const auto luau_info = script_backend_info(ScriptBackend::luau);
-    assert(luau_info.available);
     assert(luau_info.name == "luau");
 
     assert(!create_script_runtime(ScriptRuntimeDesc{ScriptBackend::disabled, 0}));
@@ -3848,6 +3847,14 @@ void test_scripting_runtime() {
                        {ScriptPermission::read_assets, ScriptPermission::read_assets}});
     assert(!duplicate_permission_call);
     assert(duplicate_permission_call.error().code == "scripting.duplicate_permission");
+
+    if (!luau_info.available) {
+        auto unavailable =
+            create_script_runtime(ScriptRuntimeDesc{ScriptBackend::luau, 512});
+        assert(!unavailable);
+        assert(unavailable.error().code == "scripting.backend_unavailable");
+        return;
+    }
 
     ScriptRuntimeDesc luau_runtime_desc{ScriptBackend::luau, 512};
     luau_runtime_desc.host_apis = {set_voxel_api};
@@ -4055,21 +4062,29 @@ void test_scripting_runtime() {
     unsupported_module.source = "return os.execute('bad')";
     auto unsupported_loaded = luau_runtime.value()->load_module(unsupported_module);
     assert(!unsupported_loaded);
-    assert(unsupported_loaded.error().code == "scripting.luau_parse_error");
+    assert(unsupported_loaded.error().code == "scripting.module_initialization_failed");
 
     ScriptModuleDesc invalid_event_module = module;
     invalid_event_module.module_id = "base:scripts/runtime_server/invalid_event";
     invalid_event_module.source = "return { bad = function() return emit(\".bad\") end }";
-    auto invalid_event_loaded = luau_runtime.value()->load_module(invalid_event_module);
-    assert(!invalid_event_loaded);
-    assert(invalid_event_loaded.error().code == "scripting.luau_invalid_event");
+    assert(luau_runtime.value()->load_module(invalid_event_module));
+    auto invalid_event_call = luau_runtime.value()->call(
+        ScriptCallDesc{invalid_event_module.module_id, "bad",
+                       ScriptStage::runtime_server, {}, 32, {}});
+    assert(!invalid_event_call);
+    assert(invalid_event_call.error().code == "scripting.invalid_host_api_id");
+    assert(luau_runtime.value()->unload_module(invalid_event_module.module_id));
 
     ScriptModuleDesc malformed_emit_module = module;
     malformed_emit_module.module_id = "base:scripts/runtime_server/malformed_emit";
     malformed_emit_module.source = "return { bad = function() return emit() end }";
-    auto malformed_emit_loaded = luau_runtime.value()->load_module(malformed_emit_module);
-    assert(!malformed_emit_loaded);
-    assert(malformed_emit_loaded.error().code == "scripting.luau_parse_error");
+    assert(luau_runtime.value()->load_module(malformed_emit_module));
+    auto malformed_emit_call = luau_runtime.value()->call(
+        ScriptCallDesc{malformed_emit_module.module_id, "bad",
+                       ScriptStage::runtime_server, {}, 32, {}});
+    assert(!malformed_emit_call);
+    assert(malformed_emit_call.error().code == "scripting.invalid_host_api_id");
+    assert(luau_runtime.value()->unload_module(malformed_emit_module.module_id));
 
     ScriptModuleDesc unauthorized_emit_module = module;
     unauthorized_emit_module.module_id = "base:scripts/runtime_server/unauthorized_emit";
@@ -4086,10 +4101,10 @@ void test_scripting_runtime() {
 
     ScriptModuleDesc unknown_parameter_module = module;
     unknown_parameter_module.module_id = "base:scripts/runtime_server/unknown_parameter";
-    unknown_parameter_module.source = "return { bad = function(value) return other end }";
+    unknown_parameter_module.source = "return { bad = function(";
     auto unknown_parameter_loaded = luau_runtime.value()->load_module(unknown_parameter_module);
     assert(!unknown_parameter_loaded);
-    assert(unknown_parameter_loaded.error().code == "scripting.luau_unknown_parameter");
+    assert(unknown_parameter_loaded.error().code == "scripting.luau_compile_error");
 
     assert(luau_runtime.value()->unload_module(luau_module.module_id));
     assert(luau_runtime.value()->module_count() == 0);
@@ -4132,6 +4147,30 @@ void test_script_module_loading_from_mod_lifecycle() {
     assert(loaded.count_stage(heartstead::scripting::ScriptStage::runtime_client) == 1);
     assert(loaded.count_stage(heartstead::scripting::ScriptStage::migration) == 1);
 
+    const auto validation =
+        heartstead::modding::ModValidation::validate(mods_root);
+    assert(!validation.has_errors());
+
+    if (heartstead::scripting::script_backend_info(
+            heartstead::scripting::ScriptBackend::luau)
+            .available) {
+        write_text(mods_root / "base/scripts/runtime_server/tick.luau",
+                   "return { tick = function(\n");
+        const auto malformed_validation =
+            heartstead::modding::ModValidation::validate(mods_root);
+        assert(malformed_validation.has_errors());
+        assert(std::ranges::any_of(
+            malformed_validation.diagnostics, [](const auto& diagnostic) {
+                return diagnostic.code ==
+                       "mod.scripting.module_invalid";
+            }));
+        write_text(
+            mods_root / "base/scripts/runtime_server/tick.luau",
+            "-- heartstead.permissions = \"read_prototypes, emit_commands\"\n"
+            "-- heartstead.api_version = \"2\"\n"
+            "return { tick = function(value) return value end }\n");
+    }
+
     const auto bounded = heartstead::scripting::ScriptModuleLoader::load_from_plan(
         discovery.mods, lifecycle_plan, {.max_source_bytes = 16});
     assert(bounded.has_errors());
@@ -4172,20 +4211,27 @@ void test_script_module_loading_from_mod_lifecycle() {
     assert(tick_module->source.find("heartstead.permissions") == std::string::npos);
     assert(tick_module->source.find("heartstead.api_version") == std::string::npos);
 
-    auto script_runtime = heartstead::scripting::create_script_runtime(
-        heartstead::scripting::ScriptRuntimeDesc{heartstead::scripting::ScriptBackend::luau, 512});
-    assert(script_runtime);
-    assert(script_runtime.value()->load_module(*tick_module));
-    auto tick_call =
-        script_runtime.value()->call({tick_module->module_id,
-                                      "tick",
-                                      heartstead::scripting::ScriptStage::runtime_server,
-                                      {heartstead::scripting::ScriptValue::number(42)},
-                                      32,
-                                      {}});
-    assert(tick_call);
-    assert(tick_call.value().return_value.kind == heartstead::scripting::ScriptValueKind::number);
-    assert(tick_call.value().return_value.number_value == 42);
+    if (heartstead::scripting::script_backend_info(
+            heartstead::scripting::ScriptBackend::luau)
+            .available) {
+        auto script_runtime =
+            heartstead::scripting::create_script_runtime(
+                heartstead::scripting::ScriptRuntimeDesc{
+                    heartstead::scripting::ScriptBackend::luau, 512});
+        assert(script_runtime);
+        assert(script_runtime.value()->load_module(*tick_module));
+        auto tick_call = script_runtime.value()->call(
+            {tick_module->module_id,
+             "tick",
+             heartstead::scripting::ScriptStage::runtime_server,
+             {heartstead::scripting::ScriptValue::number(42)},
+             32,
+             {}});
+        assert(tick_call);
+        assert(tick_call.value().return_value.kind ==
+               heartstead::scripting::ScriptValueKind::number);
+        assert(tick_call.value().return_value.number_value == 42);
+    }
 
     const auto migration_module =
         std::ranges::find(loaded.modules, "base:migrations/0001_schema",
@@ -4871,6 +4917,7 @@ void test_mod_prototype_fingerprints() {
     assert(fingerprints.front().version == "0.0.1");
     assert(fingerprints.front().prototype_count == 2);
     assert(fingerprints.front().patch_count == 0);
+    assert(fingerprints.front().script_count == 0);
     assert(!fingerprints.front().prototype_hash.empty());
     assert(fingerprints.front().prototype_hash == fingerprints_reordered.front().prototype_hash);
 
@@ -4936,6 +4983,56 @@ void test_mod_prototype_fingerprints() {
     assert(staged_tweaks_fingerprint->patch_count == 2);
     assert(staged_tweaks_fingerprint->prototype_hash ==
            reordered_tweaks_fingerprint->prototype_hash);
+
+    heartstead::scripting::ScriptModuleDesc server_script;
+    server_script.module_id = "base:scripts/runtime_server/neutral";
+    server_script.source_mod_id = "base";
+    server_script.source_path = "scripts/runtime_server/neutral.luau";
+    server_script.source = "return { ping = function() return true end }\n";
+    server_script.stage =
+        heartstead::scripting::ScriptStage::runtime_server;
+    server_script.permissions = {
+        heartstead::scripting::ScriptPermission::read_prototypes,
+        heartstead::scripting::ScriptPermission::emit_commands,
+    };
+    auto client_script = server_script;
+    client_script.module_id = "base:scripts/runtime_client/neutral";
+    client_script.source_path = "scripts/runtime_client/neutral.luau";
+    client_script.stage =
+        heartstead::scripting::ScriptStage::runtime_client;
+
+    auto scripted = heartstead::modding::build_mod_prototype_fingerprints(
+        {base}, std::vector<heartstead::modding::GenericPrototype>{clay},
+        {}, {server_script, client_script});
+    auto scripts_reordered =
+        heartstead::modding::build_mod_prototype_fingerprints(
+            {base},
+            std::vector<heartstead::modding::GenericPrototype>{clay}, {},
+            {client_script, server_script});
+    assert(scripted.front().script_count == 2);
+    assert(scripted.front().prototype_hash ==
+           scripts_reordered.front().prototype_hash);
+
+    auto permission_order_changed = server_script;
+    std::ranges::reverse(permission_order_changed.permissions);
+    auto permissions_reordered =
+        heartstead::modding::build_mod_prototype_fingerprints(
+            {base},
+            std::vector<heartstead::modding::GenericPrototype>{clay}, {},
+            {permission_order_changed, client_script});
+    assert(scripted.front().prototype_hash ==
+           permissions_reordered.front().prototype_hash);
+
+    auto changed_script = server_script;
+    changed_script.source =
+        "return { ping = function() return false end }\n";
+    auto script_source_changed =
+        heartstead::modding::build_mod_prototype_fingerprints(
+            {base},
+            std::vector<heartstead::modding::GenericPrototype>{clay}, {},
+            {changed_script, client_script});
+    assert(scripted.front().prototype_hash !=
+           script_source_changed.front().prototype_hash);
 }
 
 void test_mod_validation_applies_prototype_patches() {
@@ -7689,10 +7786,14 @@ void test_debug_inspection() {
     assert(cooked_store_inspection.find_field("manifest_record_count")->value == "2");
     assert(cooked_store_inspection.find_field("manifest_active_count")->value == "2");
 
-    auto script_backend_inspection = heartstead::debug::Inspector::inspect(
-        heartstead::scripting::script_backend_info(heartstead::scripting::ScriptBackend::luau));
+    const auto inspected_script_backend =
+        heartstead::scripting::script_backend_info(
+            heartstead::scripting::ScriptBackend::luau);
+    auto script_backend_inspection =
+        heartstead::debug::Inspector::inspect(inspected_script_backend);
     assert(script_backend_inspection.object_type == "script_backend");
-    assert(script_backend_inspection.state == "available");
+    assert(script_backend_inspection.state ==
+           (inspected_script_backend.available ? "available" : "unavailable"));
     assert(script_backend_inspection.find_field("backend")->value == "luau");
 
     heartstead::scripting::ScriptModuleDesc script_module;

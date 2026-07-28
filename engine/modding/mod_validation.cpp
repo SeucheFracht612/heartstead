@@ -20,6 +20,38 @@ void append_diagnostics(std::vector<ModDiagnostic>& destination,
                        std::make_move_iterator(diagnostics.end()));
 }
 
+void validate_script_modules(ModValidationReport& report, const std::filesystem::path& mods_root) {
+    if (report.script_modules.empty() ||
+        !scripting::script_backend_info(scripting::ScriptBackend::luau).available) {
+        return;
+    }
+
+    scripting::ScriptRuntimeDesc runtime_desc{scripting::ScriptBackend::luau};
+    runtime_desc.max_modules = static_cast<std::uint32_t>(report.script_modules.size());
+    auto runtime = scripting::create_script_runtime(std::move(runtime_desc));
+    if (!runtime) {
+        report.diagnostics.push_back(ModDiagnostic{
+            DiagnosticSeverity::error,
+            mods_root,
+            "mod.scripting.runtime_creation_failed",
+            runtime.error().code + ": " + runtime.error().message,
+        });
+        return;
+    }
+
+    for (const auto& module : report.script_modules) {
+        auto loaded = runtime.value()->load_module(module);
+        if (!loaded) {
+            report.diagnostics.push_back(ModDiagnostic{
+                DiagnosticSeverity::error,
+                module.source_path,
+                "mod.scripting.module_invalid",
+                loaded.error().code + ": " + loaded.error().message,
+            });
+        }
+    }
+}
+
 } // namespace
 
 bool ModValidationReport::has_errors() const noexcept {
@@ -55,6 +87,7 @@ ModValidationReport ModValidation::validate(const std::filesystem::path& mods_ro
         scripting::ScriptModuleLoader::load_from_plan(report.mods, report.lifecycle_plan);
     report.script_modules = std::move(script_modules.modules);
     append_diagnostics(report.diagnostics, std::move(script_modules.diagnostics));
+    validate_script_modules(report, mods_root);
 
     GenericPrototypeLoader loader;
     auto loaded = loader.load_from_mods(report.mods);
@@ -62,8 +95,8 @@ ModValidationReport ModValidation::validate(const std::filesystem::path& mods_ro
     report.prototype_patches = std::move(loaded.prototype_patches);
     report.applied_patch_count = loaded.applied_patch_count;
     append_diagnostics(report.diagnostics, std::move(loaded.diagnostics));
-    report.mod_fingerprints =
-        build_mod_prototype_fingerprints(report.mods, report.prototypes, report.prototype_patches);
+    report.mod_fingerprints = build_mod_prototype_fingerprints(
+        report.mods, report.prototypes, report.prototype_patches, report.script_modules);
 
     auto registry_build = report.registry.build(report.prototypes);
     append_diagnostics(report.diagnostics, std::move(registry_build.diagnostics));

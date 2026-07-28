@@ -1552,6 +1552,27 @@ InspectionData Inspector::inspect(const scripting::ScriptModuleDesc& module) {
     return data;
 }
 
+InspectionData Inspector::inspect(const scripting::ScriptRuntimeStats& stats) {
+    InspectionData data;
+    data.object_type = "script_runtime_stats";
+    data.display_name = "Script runtime";
+    add_field(data, "vm_count", std::to_string(stats.vm_count));
+    add_field(data, "module_count", std::to_string(stats.module_count));
+    add_field(data, "current_memory_bytes", std::to_string(stats.current_memory_bytes));
+    add_field(data, "peak_memory_bytes", std::to_string(stats.peak_memory_bytes));
+    add_field(data, "memory_limit_bytes_per_vm",
+              std::to_string(stats.memory_limit_bytes_per_vm));
+    add_field(data, "compiled_source_bytes", std::to_string(stats.compiled_source_bytes));
+    add_field(data, "compiled_bytecode_bytes", std::to_string(stats.compiled_bytecode_bytes));
+    add_field(data, "call_count", std::to_string(stats.call_count));
+    add_field(data, "failed_call_count", std::to_string(stats.failed_call_count));
+    add_field(data, "interrupt_count", std::to_string(stats.interrupt_count));
+    add_field(data, "emitted_event_count", std::to_string(stats.emitted_event_count));
+    add_field(data, "total_call_microseconds", std::to_string(stats.total_call_microseconds));
+    add_field(data, "last_call_microseconds", std::to_string(stats.last_call_microseconds));
+    return data;
+}
+
 InspectionData Inspector::inspect(const scripting::ScriptHostApiDesc& host_api) {
     InspectionData data;
     data.object_type = "script_host_api";

@@ -1,14 +1,25 @@
 #include "engine/scripting/luau/luau_backend.hpp"
 
+#include "engine/core/hash.hpp"
 #include "engine/core/ids.hpp"
 
-#include <cctype>
+#if HEARTSTEAD_HAS_LUAU
+#include <Luau/Compiler.h>
+#include <lua.h>
+#include <lualib.h>
+#endif
+
+#include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <limits>
+#include <map>
 #include <memory>
-#include <stdexcept>
+#include <new>
+#include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -16,663 +27,362 @@ namespace heartstead::scripting::luau {
 
 namespace {
 
-enum class ReturnExpressionKind {
-    nil_value,
-    boolean_value,
-    number_value,
-    string_value,
-    argument,
-    emit_event,
-};
+#if HEARTSTEAD_HAS_LUAU
 
-struct EmitArgumentExpression {
-    bool from_parameter = false;
-    ScriptValue literal;
-    std::string parameter_name;
-};
-
-struct ReturnExpression {
-    ReturnExpressionKind kind = ReturnExpressionKind::nil_value;
-    ScriptValue literal;
-    std::string argument_name;
-    std::string emitted_event;
-    std::vector<EmitArgumentExpression> emitted_arguments;
-};
-
-struct ExportedFunction {
-    std::string name;
-    std::vector<std::string> parameters;
-    ReturnExpression return_expression;
-    std::uint32_t instruction_estimate = 8;
-};
-
-struct ModuleRecord {
-    ScriptModuleInfo info;
-    std::unordered_map<std::string, ExportedFunction> functions;
-};
-
-[[nodiscard]] bool is_identifier_start(char character) noexcept {
-    return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
-           character == '_';
-}
-
-[[nodiscard]] bool is_identifier_continue(char character) noexcept {
-    return is_identifier_start(character) || (character >= '0' && character <= '9');
-}
-
-[[nodiscard]] bool is_valid_export_name(std::string_view value) noexcept {
-    if (value.empty()) {
-        return false;
-    }
-    bool expect_segment_start = true;
-    for (const auto character : value) {
-        if (character == '.') {
-            if (expect_segment_start) {
-                return false;
-            }
-            expect_segment_start = true;
-            continue;
-        }
-        if (expect_segment_start) {
-            if (!is_identifier_start(character)) {
-                return false;
-            }
-            expect_segment_start = false;
-        } else if (!is_identifier_continue(character)) {
-            return false;
-        }
-    }
-    return !expect_segment_start;
-}
-
-[[nodiscard]] bool is_valid_emitted_event_name(std::string_view value) noexcept {
-    if (value.empty() || value.front() == '.' || value.back() == '.') {
-        return false;
-    }
-
-    for (const auto character : value) {
-        const auto valid = (character >= 'a' && character <= 'z') ||
-                           (character >= '0' && character <= '9') || character == '_' ||
-                           character == '-' || character == '.';
-        if (!valid) {
-            return false;
-        }
-    }
-    return true;
-}
+using SteadyClock = std::chrono::steady_clock;
 
 [[nodiscard]] ScriptModuleInfo make_module_info(const ScriptModuleDesc& desc) {
     return ScriptModuleInfo{desc.module_id,   desc.source_mod_id, desc.source_path, desc.stage,
                             desc.api_version, desc.source.size(), desc.permissions};
 }
 
-class Parser {
-  public:
-    explicit Parser(std::string_view source) : source_(source) {}
+struct VmKey {
+    std::string source_mod_id;
+    ScriptStage stage = ScriptStage::runtime_server;
 
-    [[nodiscard]] core::Result<std::unordered_map<std::string, ExportedFunction>> parse_module() {
-        skip_whitespace();
-        auto status = expect_keyword("return");
-        if (!status) {
-            return failure(status);
+    [[nodiscard]] bool operator<(const VmKey& other) const noexcept {
+        if (source_mod_id != other.source_mod_id) {
+            return source_mod_id < other.source_mod_id;
         }
-        status = expect_char('{');
-        if (!status) {
-            return failure(status);
-        }
-
-        std::unordered_map<std::string, ExportedFunction> functions;
-        skip_whitespace();
-        while (!consume_char('}')) {
-            auto function = parse_function_entry();
-            if (!function) {
-                return failure(function.error().code, function.error().message);
-            }
-            auto parsed_function = std::move(function).value();
-            const auto function_name = parsed_function.name;
-            const auto [_, inserted] = functions.emplace(function_name, std::move(parsed_function));
-            if (!inserted) {
-                return failure("scripting.luau_duplicate_function",
-                               "script module exports the same function more than once");
-            }
-
-            skip_whitespace();
-            if (consume_char(',') || consume_char(';')) {
-                skip_whitespace();
-                continue;
-            }
-            if (!peek_char('}')) {
-                return failure("scripting.luau_parse_error",
-                               "expected comma, semicolon, or closing table brace");
-            }
-        }
-
-        skip_whitespace();
-        if (!is_at_end()) {
-            return failure("scripting.luau_parse_error",
-                           "unexpected source after exported function table");
-        }
-        if (functions.empty()) {
-            return failure("scripting.luau_no_exports",
-                           "script module must export at least one function");
-        }
-        return core::Result<std::unordered_map<std::string, ExportedFunction>>::success(
-            std::move(functions));
+        return stage < other.stage;
     }
-
-  private:
-    [[nodiscard]] core::Result<std::unordered_map<std::string, ExportedFunction>>
-    failure(const core::Status& status) const {
-        return failure(status.error().code, status.error().message);
-    }
-
-    [[nodiscard]] core::Result<std::unordered_map<std::string, ExportedFunction>>
-    failure(std::string code, std::string message) const {
-        return core::Result<std::unordered_map<std::string, ExportedFunction>>::failure(
-            std::move(code), std::move(message));
-    }
-
-    [[nodiscard]] core::Result<ExportedFunction> parse_function_entry() {
-        auto name = parse_export_name();
-        if (!name) {
-            return core::Result<ExportedFunction>::failure(name.error().code, name.error().message);
-        }
-        auto status = expect_char('=');
-        if (!status) {
-            return core::Result<ExportedFunction>::failure(status.error().code,
-                                                           status.error().message);
-        }
-        status = expect_keyword("function");
-        if (!status) {
-            return core::Result<ExportedFunction>::failure(status.error().code,
-                                                           status.error().message);
-        }
-        status = expect_char('(');
-        if (!status) {
-            return core::Result<ExportedFunction>::failure(status.error().code,
-                                                           status.error().message);
-        }
-        auto parameters = parse_parameters();
-        if (!parameters) {
-            return core::Result<ExportedFunction>::failure(parameters.error().code,
-                                                           parameters.error().message);
-        }
-        status = expect_keyword("return");
-        if (!status) {
-            return core::Result<ExportedFunction>::failure(status.error().code,
-                                                           status.error().message);
-        }
-        auto expression = parse_return_expression();
-        if (!expression) {
-            return core::Result<ExportedFunction>::failure(expression.error().code,
-                                                           expression.error().message);
-        }
-        if (expression.value().kind == ReturnExpressionKind::argument) {
-            bool known_parameter = false;
-            for (const auto& parameter : parameters.value()) {
-                if (parameter == expression.value().argument_name) {
-                    known_parameter = true;
-                    break;
-                }
-            }
-            if (!known_parameter) {
-                return core::Result<ExportedFunction>::failure(
-                    "scripting.luau_unknown_parameter",
-                    "script function returns an unknown parameter");
-            }
-        }
-        if (expression.value().kind == ReturnExpressionKind::emit_event) {
-            for (const auto& argument : expression.value().emitted_arguments) {
-                if (!argument.from_parameter) {
-                    continue;
-                }
-                bool known_parameter = false;
-                for (const auto& parameter : parameters.value()) {
-                    if (parameter == argument.parameter_name) {
-                        known_parameter = true;
-                        break;
-                    }
-                }
-                if (!known_parameter) {
-                    return core::Result<ExportedFunction>::failure(
-                        "scripting.luau_unknown_parameter",
-                        "script function emits an unknown parameter");
-                }
-            }
-        }
-        status = expect_keyword("end");
-        if (!status) {
-            return core::Result<ExportedFunction>::failure(status.error().code,
-                                                           status.error().message);
-        }
-
-        ExportedFunction function;
-        function.name = std::move(name).value();
-        function.parameters = std::move(parameters).value();
-        function.return_expression = std::move(expression).value();
-        function.instruction_estimate =
-            static_cast<std::uint32_t>(8 + function.parameters.size() * 2);
-        if (function.return_expression.kind == ReturnExpressionKind::emit_event) {
-            function.instruction_estimate += static_cast<std::uint32_t>(
-                4 + function.return_expression.emitted_arguments.size() * 2);
-        }
-        return core::Result<ExportedFunction>::success(std::move(function));
-    }
-
-    [[nodiscard]] core::Result<std::string> parse_export_name() {
-        auto first = parse_identifier();
-        if (!first) {
-            return first;
-        }
-
-        std::string name = std::move(first).value();
-        while (consume_char('.')) {
-            auto segment = parse_identifier();
-            if (!segment) {
-                return core::Result<std::string>::failure("scripting.luau_parse_error",
-                                                          "expected identifier after dot");
-            }
-            name.push_back('.');
-            name.append(std::move(segment).value());
-        }
-
-        if (!is_valid_export_name(name)) {
-            return core::Result<std::string>::failure("scripting.invalid_function_name",
-                                                      "script export function name is invalid");
-        }
-        return core::Result<std::string>::success(std::move(name));
-    }
-
-    [[nodiscard]] core::Result<std::vector<std::string>> parse_parameters() {
-        std::vector<std::string> parameters;
-        skip_whitespace();
-        if (consume_char(')')) {
-            return core::Result<std::vector<std::string>>::success(std::move(parameters));
-        }
-
-        while (true) {
-            auto parameter = parse_identifier();
-            if (!parameter) {
-                return core::Result<std::vector<std::string>>::failure(parameter.error().code,
-                                                                       parameter.error().message);
-            }
-            for (const auto& existing : parameters) {
-                if (existing == parameter.value()) {
-                    return core::Result<std::vector<std::string>>::failure(
-                        "scripting.luau_duplicate_parameter",
-                        "script function declares a duplicate parameter");
-                }
-            }
-            parameters.push_back(std::move(parameter).value());
-
-            skip_whitespace();
-            if (consume_char(')')) {
-                break;
-            }
-            auto status = expect_char(',');
-            if (!status) {
-                return core::Result<std::vector<std::string>>::failure(status.error().code,
-                                                                       status.error().message);
-            }
-        }
-
-        return core::Result<std::vector<std::string>>::success(std::move(parameters));
-    }
-
-    [[nodiscard]] core::Result<ReturnExpression> parse_return_expression() {
-        skip_whitespace();
-        if (consume_keyword("nil")) {
-            ReturnExpression expression;
-            expression.kind = ReturnExpressionKind::nil_value;
-            expression.literal = ScriptValue::nil();
-            return core::Result<ReturnExpression>::success(std::move(expression));
-        }
-        if (consume_keyword("true")) {
-            ReturnExpression expression;
-            expression.kind = ReturnExpressionKind::boolean_value;
-            expression.literal = ScriptValue::boolean(true);
-            return core::Result<ReturnExpression>::success(std::move(expression));
-        }
-        if (consume_keyword("false")) {
-            ReturnExpression expression;
-            expression.kind = ReturnExpressionKind::boolean_value;
-            expression.literal = ScriptValue::boolean(false);
-            return core::Result<ReturnExpression>::success(std::move(expression));
-        }
-        if (peek_char('"') || peek_char('\'')) {
-            auto value = parse_string_literal();
-            if (!value) {
-                return core::Result<ReturnExpression>::failure(value.error().code,
-                                                               value.error().message);
-            }
-            ReturnExpression expression;
-            expression.kind = ReturnExpressionKind::string_value;
-            expression.literal = ScriptValue::string(std::move(value).value());
-            return core::Result<ReturnExpression>::success(std::move(expression));
-        }
-        if (peek_number_start()) {
-            auto value = parse_number_literal();
-            if (!value) {
-                return core::Result<ReturnExpression>::failure(value.error().code,
-                                                               value.error().message);
-            }
-            ReturnExpression expression;
-            expression.kind = ReturnExpressionKind::number_value;
-            expression.literal = ScriptValue::number(value.value());
-            return core::Result<ReturnExpression>::success(std::move(expression));
-        }
-
-        auto identifier = parse_identifier();
-        if (!identifier) {
-            return core::Result<ReturnExpression>::failure(
-                "scripting.luau_parse_error",
-                "return expression must be nil, boolean, number, string, parameter, or emit");
-        }
-        const auto identifier_name = std::move(identifier).value();
-        if (identifier_name == "emit" && consume_char('(')) {
-            auto event_name = parse_string_literal();
-            if (!event_name) {
-                return core::Result<ReturnExpression>::failure(event_name.error().code,
-                                                               event_name.error().message);
-            }
-            std::vector<EmitArgumentExpression> emitted_arguments;
-            skip_whitespace();
-            while (consume_char(',')) {
-                auto argument = parse_emit_argument();
-                if (!argument) {
-                    return core::Result<ReturnExpression>::failure(argument.error().code,
-                                                                   argument.error().message);
-                }
-                emitted_arguments.push_back(std::move(argument).value());
-                skip_whitespace();
-            }
-            auto status = expect_char(')');
-            if (!status) {
-                return core::Result<ReturnExpression>::failure(status.error().code,
-                                                               status.error().message);
-            }
-            if (!is_valid_emitted_event_name(event_name.value())) {
-                return core::Result<ReturnExpression>::failure(
-                    "scripting.luau_invalid_event",
-                    "emitted event names must contain lowercase letters, digits, underscores, "
-                    "dashes, or dots and cannot start or end with a dot");
-            }
-
-            ReturnExpression expression;
-            expression.kind = ReturnExpressionKind::emit_event;
-            expression.emitted_event = std::move(event_name).value();
-            expression.emitted_arguments = std::move(emitted_arguments);
-            return core::Result<ReturnExpression>::success(std::move(expression));
-        }
-
-        ReturnExpression expression;
-        expression.kind = ReturnExpressionKind::argument;
-        expression.argument_name = identifier_name;
-        return core::Result<ReturnExpression>::success(std::move(expression));
-    }
-
-    [[nodiscard]] core::Result<EmitArgumentExpression> parse_emit_argument() {
-        skip_whitespace();
-        if (consume_keyword("true")) {
-            EmitArgumentExpression argument;
-            argument.literal = ScriptValue::boolean(true);
-            return core::Result<EmitArgumentExpression>::success(std::move(argument));
-        }
-        if (consume_keyword("false")) {
-            EmitArgumentExpression argument;
-            argument.literal = ScriptValue::boolean(false);
-            return core::Result<EmitArgumentExpression>::success(std::move(argument));
-        }
-        if (peek_char('"') || peek_char('\'')) {
-            auto value = parse_string_literal();
-            if (!value) {
-                return core::Result<EmitArgumentExpression>::failure(value.error().code,
-                                                                     value.error().message);
-            }
-            EmitArgumentExpression argument;
-            argument.literal = ScriptValue::string(std::move(value).value());
-            return core::Result<EmitArgumentExpression>::success(std::move(argument));
-        }
-        if (peek_number_start()) {
-            auto value = parse_number_literal();
-            if (!value) {
-                return core::Result<EmitArgumentExpression>::failure(value.error().code,
-                                                                     value.error().message);
-            }
-            EmitArgumentExpression argument;
-            argument.literal = ScriptValue::number(value.value());
-            return core::Result<EmitArgumentExpression>::success(std::move(argument));
-        }
-
-        auto identifier = parse_identifier();
-        if (!identifier) {
-            return core::Result<EmitArgumentExpression>::failure(
-                "scripting.luau_parse_error",
-                "emit arguments must be boolean, number, string, or parameter values");
-        }
-        if (identifier.value() == "nil") {
-            return core::Result<EmitArgumentExpression>::failure("scripting.luau_parse_error",
-                                                                 "emit arguments cannot be nil");
-        }
-
-        EmitArgumentExpression argument;
-        argument.from_parameter = true;
-        argument.parameter_name = std::move(identifier).value();
-        return core::Result<EmitArgumentExpression>::success(std::move(argument));
-    }
-
-    [[nodiscard]] core::Result<std::string> parse_identifier() {
-        skip_whitespace();
-        if (is_at_end() || !is_identifier_start(source_[position_])) {
-            return core::Result<std::string>::failure("scripting.luau_parse_error",
-                                                      "expected identifier");
-        }
-        const auto start = position_;
-        ++position_;
-        while (!is_at_end() && is_identifier_continue(source_[position_])) {
-            ++position_;
-        }
-        return core::Result<std::string>::success(
-            std::string(source_.substr(start, position_ - start)));
-    }
-
-    [[nodiscard]] core::Result<std::string> parse_string_literal() {
-        skip_whitespace();
-        if (is_at_end() || (source_[position_] != '"' && source_[position_] != '\'')) {
-            return core::Result<std::string>::failure("scripting.luau_parse_error",
-                                                      "expected string literal");
-        }
-        const auto quote = source_[position_];
-        ++position_;
-
-        std::string result;
-        while (!is_at_end()) {
-            const auto character = source_[position_++];
-            if (character == quote) {
-                return core::Result<std::string>::success(std::move(result));
-            }
-            if (character == '\\') {
-                if (is_at_end()) {
-                    break;
-                }
-                const auto escaped = source_[position_++];
-                switch (escaped) {
-                case 'n':
-                    result.push_back('\n');
-                    break;
-                case 'r':
-                    result.push_back('\r');
-                    break;
-                case 't':
-                    result.push_back('\t');
-                    break;
-                case '\\':
-                case '"':
-                case '\'':
-                    result.push_back(escaped);
-                    break;
-                default:
-                    return core::Result<std::string>::failure(
-                        "scripting.luau_parse_error", "unsupported string escape in script source");
-                }
-            } else {
-                result.push_back(character);
-            }
-        }
-        return core::Result<std::string>::failure("scripting.luau_parse_error",
-                                                  "unterminated string literal");
-    }
-
-    [[nodiscard]] core::Result<double> parse_number_literal() {
-        skip_whitespace();
-        const auto start = position_;
-        if (!is_at_end() && (source_[position_] == '-' || source_[position_] == '+')) {
-            ++position_;
-        }
-        while (!is_at_end() && (std::isdigit(static_cast<unsigned char>(source_[position_])) ||
-                                source_[position_] == '.')) {
-            ++position_;
-        }
-        if (!is_at_end() && (source_[position_] == 'e' || source_[position_] == 'E')) {
-            ++position_;
-            if (!is_at_end() && (source_[position_] == '-' || source_[position_] == '+')) {
-                ++position_;
-            }
-            while (!is_at_end() && std::isdigit(static_cast<unsigned char>(source_[position_]))) {
-                ++position_;
-            }
-        }
-
-        try {
-            std::size_t consumed = 0;
-            const auto number_text = std::string(source_.substr(start, position_ - start));
-            const auto value = std::stod(number_text, &consumed);
-            if (consumed != number_text.size() || !std::isfinite(value)) {
-                return core::Result<double>::failure("scripting.luau_parse_error",
-                                                     "invalid numeric literal in script source");
-            }
-            return core::Result<double>::success(value);
-        } catch (...) {
-            return core::Result<double>::failure("scripting.luau_parse_error",
-                                                 "invalid numeric literal in script source");
-        }
-    }
-
-    [[nodiscard]] bool peek_number_start() const noexcept {
-        if (is_at_end()) {
-            return false;
-        }
-        const auto current = source_[position_];
-        return std::isdigit(static_cast<unsigned char>(current)) || current == '-' ||
-               current == '+';
-    }
-
-    [[nodiscard]] bool consume_keyword(std::string_view keyword) {
-        skip_whitespace();
-        if (source_.substr(position_, keyword.size()) != keyword) {
-            return false;
-        }
-        const auto after = position_ + keyword.size();
-        if (after < source_.size() && is_identifier_continue(source_[after])) {
-            return false;
-        }
-        position_ = after;
-        return true;
-    }
-
-    [[nodiscard]] core::Status expect_keyword(std::string_view keyword) {
-        if (!consume_keyword(keyword)) {
-            return core::Status::failure("scripting.luau_parse_error",
-                                         "expected keyword: " + std::string(keyword));
-        }
-        return core::Status::ok();
-    }
-
-    [[nodiscard]] bool consume_char(char expected) {
-        skip_whitespace();
-        if (is_at_end() || source_[position_] != expected) {
-            return false;
-        }
-        ++position_;
-        return true;
-    }
-
-    [[nodiscard]] core::Status expect_char(char expected) {
-        if (!consume_char(expected)) {
-            return core::Status::failure("scripting.luau_parse_error",
-                                         std::string("expected character: ") + expected);
-        }
-        return core::Status::ok();
-    }
-
-    [[nodiscard]] bool peek_char(char expected) {
-        skip_whitespace();
-        return !is_at_end() && source_[position_] == expected;
-    }
-
-    void skip_whitespace() noexcept {
-        while (!is_at_end() && std::isspace(static_cast<unsigned char>(source_[position_]))) {
-            ++position_;
-        }
-    }
-
-    [[nodiscard]] bool is_at_end() const noexcept {
-        return position_ >= source_.size();
-    }
-
-    std::string_view source_;
-    std::size_t position_ = 0;
 };
 
-[[nodiscard]] ScriptCallResult
-evaluate_return_expression(const ExportedFunction& function,
-                           const std::vector<ScriptValue>& arguments) {
-    ScriptCallResult result;
+struct VmMemoryContext {
+    std::uint64_t limit_bytes = 0;
+    std::uint64_t current_bytes = 0;
+    std::uint64_t peak_bytes = 0;
+};
 
-    switch (function.return_expression.kind) {
-    case ReturnExpressionKind::nil_value:
-    case ReturnExpressionKind::boolean_value:
-    case ReturnExpressionKind::number_value:
-    case ReturnExpressionKind::string_value:
-        result.return_value = function.return_expression.literal;
-        return result;
-    case ReturnExpressionKind::argument:
-        for (std::size_t index = 0; index < function.parameters.size(); ++index) {
-            if (function.parameters[index] == function.return_expression.argument_name) {
-                result.return_value = arguments[index];
-                return result;
-            }
-        }
-        result.return_value = ScriptValue::nil();
-        return result;
-    case ReturnExpressionKind::emit_event:
-        result.return_value = ScriptValue::nil();
-        ScriptEmittedEvent event;
-        event.api_id = function.return_expression.emitted_event;
-        event.arguments.reserve(function.return_expression.emitted_arguments.size());
-        for (const auto& emitted_argument : function.return_expression.emitted_arguments) {
-            if (!emitted_argument.from_parameter) {
-                event.arguments.push_back(emitted_argument.literal);
-                continue;
-            }
-            for (std::size_t index = 0; index < function.parameters.size(); ++index) {
-                if (function.parameters[index] == emitted_argument.parameter_name) {
-                    event.arguments.push_back(arguments[index]);
-                    break;
-                }
-            }
-        }
-        result.emitted_events.push_back(std::move(event));
-        return result;
+void* limited_allocator(void* userdata, void* pointer, std::size_t old_size,
+                        std::size_t new_size) noexcept {
+    auto& memory = *static_cast<VmMemoryContext*>(userdata);
+    const auto accounted_old = std::min(memory.current_bytes, static_cast<std::uint64_t>(old_size));
+    const auto base = memory.current_bytes - accounted_old;
+
+    if (new_size == 0) {
+        std::free(pointer);
+        memory.current_bytes = base;
+        return nullptr;
     }
 
-    result.return_value = ScriptValue::nil();
+    const auto requested = static_cast<std::uint64_t>(new_size);
+    if (requested > memory.limit_bytes || base > memory.limit_bytes - requested) {
+        return nullptr;
+    }
+
+    void* resized = std::realloc(pointer, new_size);
+    if (resized == nullptr) {
+        return nullptr;
+    }
+    memory.current_bytes = base + requested;
+    memory.peak_bytes = std::max(memory.peak_bytes, memory.current_bytes);
+    return resized;
+}
+
+struct VmRecord {
+    VmKey key;
+    VmMemoryContext memory;
+    lua_State* state = nullptr;
+
+    ~VmRecord() {
+        if (state != nullptr) {
+            lua_close(state);
+        }
+    }
+
+    VmRecord(const VmRecord&) = delete;
+    VmRecord& operator=(const VmRecord&) = delete;
+    VmRecord(VmRecord&&) = delete;
+    VmRecord& operator=(VmRecord&&) = delete;
+
+    explicit VmRecord(VmKey value) : key(std::move(value)) {}
+};
+
+struct ActiveCall {
+    const ScriptRuntimeDesc* runtime_desc = nullptr;
+    std::uint32_t instruction_budget = 0;
+    std::uint64_t interrupt_count = 0;
+    SteadyClock::time_point deadline;
+    const std::atomic_bool* cancellation = nullptr;
+    bool allow_emission = false;
+    std::vector<ScriptEmittedEvent> emitted_events;
+    std::optional<core::Error> failure;
+};
+
+struct ModuleRecord {
+    ScriptModuleInfo info;
+    VmKey vm_key;
+    lua_State* thread = nullptr;
+    int thread_reference = LUA_NOREF;
+    int exports_reference = LUA_NOREF;
+    std::size_t bytecode_bytes = 0;
+    std::string source_fingerprint;
+    ActiveCall* active_call = nullptr;
+};
+
+[[nodiscard]] std::string bounded_text(std::string_view text, std::size_t limit) {
+    if (text.size() <= limit) {
+        return std::string(text);
+    }
+    if (limit <= 3) {
+        return std::string(text.substr(0, limit));
+    }
+    auto result = std::string(text.substr(0, limit - 3));
+    result += "...";
     return result;
 }
 
-class LuauFoundationRuntime final : public IScriptRuntime {
+[[nodiscard]] std::string lua_error_text(lua_State* state, std::size_t limit) {
+    std::size_t size = 0;
+    const auto* text = lua_tolstring(state, -1, &size);
+    if (text == nullptr) {
+        return "Luau raised a non-string error";
+    }
+    return bounded_text(std::string_view(text, size), limit);
+}
+
+[[noreturn]] void interrupt_with_error(lua_State* state, ActiveCall& call, std::string code,
+                                       std::string message) {
+    call.failure = core::Error{std::move(code), std::move(message)};
+    luaL_error(state, "Heartstead terminated the script call");
+}
+
+void execution_interrupt(lua_State* state, int) {
+    auto* module = static_cast<ModuleRecord*>(lua_getthreaddata(state));
+    if (module == nullptr || module->active_call == nullptr) {
+        return;
+    }
+    auto& call = *module->active_call;
+    ++call.interrupt_count;
+
+    if (call.cancellation != nullptr && call.cancellation->load(std::memory_order_relaxed)) {
+        interrupt_with_error(state, call, "scripting.call_cancelled",
+                             "script call was cancelled by the host");
+    }
+    if (call.interrupt_count >= call.instruction_budget) {
+        interrupt_with_error(state, call, "scripting.instruction_budget_exceeded",
+                             "script call exceeded its VM interrupt budget");
+    }
+    if (static_cast<std::uint32_t>(lua_stackdepth(state)) > call.runtime_desc->max_stack_depth) {
+        interrupt_with_error(state, call, "scripting.stack_limit_exceeded",
+                             "script call exceeded its recursion/stack-depth limit");
+    }
+    if (SteadyClock::now() >= call.deadline) {
+        interrupt_with_error(state, call, "scripting.deadline_exceeded",
+                             "script call exceeded its wall-time deadline");
+    }
+}
+
+void propagate_thread_data(lua_State* parent, lua_State* thread) {
+    if (parent != nullptr) {
+        lua_setthreaddata(thread, lua_getthreaddata(parent));
+    }
+}
+
+[[nodiscard]] core::Result<ScriptValue> read_script_value(lua_State* state, int index,
+                                                          std::uint32_t max_string_bytes,
+                                                          std::string_view context) {
+    switch (lua_type(state, index)) {
+    case LUA_TNIL:
+        return core::Result<ScriptValue>::success(ScriptValue::nil());
+    case LUA_TBOOLEAN:
+        return core::Result<ScriptValue>::success(
+            ScriptValue::boolean(lua_toboolean(state, index) != 0));
+    case LUA_TNUMBER: {
+        const auto value = lua_tonumber(state, index);
+        if (!std::isfinite(value)) {
+            return core::Result<ScriptValue>::failure("scripting.invalid_number_" +
+                                                          std::string(context),
+                                                      "script number values must be finite");
+        }
+        return core::Result<ScriptValue>::success(ScriptValue::number(value));
+    }
+    case LUA_TSTRING: {
+        std::size_t size = 0;
+        const auto* value = lua_tolstring(state, index, &size);
+        if (value == nullptr || size > max_string_bytes) {
+            return core::Result<ScriptValue>::failure(
+                "scripting.string_" + std::string(context) + "_too_large",
+                "script string value exceeds the configured boundary limit");
+        }
+        return core::Result<ScriptValue>::success(ScriptValue::string(std::string(value, size)));
+    }
+    default:
+        return core::Result<ScriptValue>::failure(
+            "scripting.unsupported_" + std::string(context) + "_type",
+            "script boundary values must be nil, boolean, number, or string");
+    }
+}
+
+void push_script_value(lua_State* state, const ScriptValue& value) {
+    switch (value.kind) {
+    case ScriptValueKind::nil:
+        lua_pushnil(state);
+        break;
+    case ScriptValueKind::boolean:
+        lua_pushboolean(state, value.boolean_value ? 1 : 0);
+        break;
+    case ScriptValueKind::number:
+        lua_pushnumber(state, value.number_value);
+        break;
+    case ScriptValueKind::string:
+        lua_pushlstring(state, value.string_value.data(), value.string_value.size());
+        break;
+    }
+}
+
+[[noreturn]] void fail_host_call(lua_State* state, ActiveCall& call, const core::Error& error) {
+    call.failure = error;
+    luaL_error(state, "Heartstead rejected the script host call");
+}
+
+int emit_host_event(lua_State* state) {
+    auto* module = static_cast<ModuleRecord*>(lua_getthreaddata(state));
+    if (module == nullptr || module->active_call == nullptr) {
+        luaL_error(state, "Heartstead host API called outside an active script call");
+    }
+    auto& call = *module->active_call;
+    if (!call.allow_emission) {
+        interrupt_with_error(state, call, "scripting.host_api_outside_call",
+                             "host APIs cannot be called during module initialization");
+    }
+
+    const auto argument_count = lua_gettop(state);
+    if (argument_count < 1 || lua_type(state, 1) != LUA_TSTRING) {
+        interrupt_with_error(state, call, "scripting.invalid_host_api_id",
+                             "emit requires a string host API id as its first argument");
+    }
+    if (static_cast<std::uint32_t>(argument_count - 1) > call.runtime_desc->max_call_arguments) {
+        interrupt_with_error(state, call, "scripting.too_many_arguments",
+                             "emitted host call exceeds the argument limit");
+    }
+    if (call.emitted_events.size() >= call.runtime_desc->max_emitted_events_per_call) {
+        interrupt_with_error(state, call, "scripting.emitted_event_limit_exceeded",
+                             "script call exceeded its emitted-event limit");
+    }
+
+    std::size_t api_id_size = 0;
+    const auto* api_id = lua_tolstring(state, 1, &api_id_size);
+    ScriptEmittedEvent event;
+    event.api_id.assign(api_id, api_id_size);
+    event.arguments.reserve(static_cast<std::size_t>(argument_count - 1));
+    for (int index = 2; index <= argument_count; ++index) {
+        auto value =
+            read_script_value(state, index, call.runtime_desc->max_string_value_bytes, "argument");
+        if (!value) {
+            fail_host_call(state, call, value.error());
+        }
+        event.arguments.push_back(std::move(value).value());
+    }
+
+    const std::vector<ScriptEmittedEvent> validation_input{event};
+    auto validation =
+        validate_script_emitted_events(module->info, validation_input, *call.runtime_desc);
+    if (!validation) {
+        fail_host_call(state, call, validation.error());
+    }
+    call.emitted_events.push_back(std::move(event));
+    lua_pushnil(state);
+    return 1;
+}
+
+void clear_global(lua_State* state, const char* name) {
+    lua_pushnil(state);
+    lua_setglobal(state, name);
+}
+
+[[nodiscard]] core::Result<std::unique_ptr<VmRecord>> create_vm(VmKey key,
+                                                                const ScriptRuntimeDesc& desc) {
+    auto vm = std::make_unique<VmRecord>(std::move(key));
+    vm->memory.limit_bytes = desc.max_vm_memory_bytes;
+    try {
+        vm->state = lua_newstate(limited_allocator, &vm->memory);
+        if (vm->state == nullptr) {
+            return core::Result<std::unique_ptr<VmRecord>>::failure(
+                "scripting.vm_creation_failed",
+                "Luau could not allocate a VM within the configured memory limit");
+        }
+        luaL_openlibs(vm->state);
+        clear_global(vm->state, "debug");
+        clear_global(vm->state, "getfenv");
+        clear_global(vm->state, "setfenv");
+        clear_global(vm->state, "loadstring");
+        clear_global(vm->state, "newproxy");
+        clear_global(vm->state, "collectgarbage");
+        clear_global(vm->state, "os");
+        clear_global(vm->state, "require");
+        luaL_sandbox(vm->state);
+        lua_callbacks(vm->state)->interrupt = execution_interrupt;
+        lua_callbacks(vm->state)->userthread = propagate_thread_data;
+    } catch (const std::bad_alloc&) {
+        return core::Result<std::unique_ptr<VmRecord>>::failure(
+            "scripting.memory_limit_exceeded", "Luau VM initialization exceeded its memory limit");
+    } catch (const std::exception& error) {
+        return core::Result<std::unique_ptr<VmRecord>>::failure(
+            "scripting.vm_creation_failed", bounded_text(error.what(), desc.max_error_bytes));
+    } catch (...) {
+        return core::Result<std::unique_ptr<VmRecord>>::failure(
+            "scripting.vm_creation_failed", "Luau VM initialization failed with an unknown error");
+    }
+    return core::Result<std::unique_ptr<VmRecord>>::success(std::move(vm));
+}
+
+class StackReset final {
   public:
-    explicit LuauFoundationRuntime(ScriptRuntimeDesc desc) : desc_(std::move(desc)) {}
+    explicit StackReset(lua_State* state) : state_(state) {}
+    ~StackReset() {
+        lua_settop(state_, 0);
+    }
+
+    StackReset(const StackReset&) = delete;
+    StackReset& operator=(const StackReset&) = delete;
+
+  private:
+    lua_State* state_;
+};
+
+[[nodiscard]] core::Error execution_error(lua_State* state, int status,
+                                          const ScriptRuntimeDesc& desc, const ActiveCall& call,
+                                          std::string fallback_code) {
+    if (call.failure.has_value()) {
+        return *call.failure;
+    }
+    if (status == LUA_ERRMEM) {
+        return core::Error{"scripting.memory_limit_exceeded",
+                           "script execution exceeded the VM memory limit"};
+    }
+    return core::Error{std::move(fallback_code), lua_error_text(state, desc.max_error_bytes)};
+}
+
+[[nodiscard]] bool resolve_export(lua_State* state, int exports_reference,
+                                  std::string_view function_name) {
+    lua_getref(state, exports_reference);
+    std::size_t segment_start = 0;
+    while (segment_start <= function_name.size()) {
+        const auto segment_end = function_name.find('.', segment_start);
+        const auto segment = segment_end == std::string_view::npos
+                                 ? function_name.substr(segment_start)
+                                 : function_name.substr(segment_start, segment_end - segment_start);
+        if (lua_type(state, -1) != LUA_TTABLE) {
+            return false;
+        }
+        const auto segment_text = std::string(segment);
+        lua_getfield(state, -1, segment_text.c_str());
+        lua_remove(state, -2);
+        if (segment_end == std::string_view::npos) {
+            break;
+        }
+        segment_start = segment_end + 1;
+    }
+    return lua_type(state, -1) == LUA_TFUNCTION;
+}
+
+class LuauRuntime final : public IScriptRuntime {
+  public:
+    explicit LuauRuntime(ScriptRuntimeDesc desc) : desc_(std::move(desc)) {
+        stats_.memory_limit_bytes_per_vm = desc_.max_vm_memory_bytes;
+    }
 
     [[nodiscard]] ScriptBackend backend() const noexcept override {
         return ScriptBackend::luau;
@@ -686,10 +396,32 @@ class LuauFoundationRuntime final : public IScriptRuntime {
         return modules_.size();
     }
 
+    [[nodiscard]] std::vector<std::string> module_ids() const override {
+        std::vector<std::string> result;
+        result.reserve(modules_.size());
+        for (const auto& [module_id, _] : modules_) {
+            result.push_back(module_id);
+        }
+        return result;
+    }
+
+    [[nodiscard]] ScriptRuntimeStats stats() const noexcept override {
+        auto result = stats_;
+        result.vm_count = static_cast<std::uint32_t>(vms_.size());
+        result.module_count = static_cast<std::uint32_t>(modules_.size());
+        result.current_memory_bytes = 0;
+        result.peak_memory_bytes = 0;
+        for (const auto& [_, vm] : vms_) {
+            result.current_memory_bytes += vm->memory.current_bytes;
+            result.peak_memory_bytes += vm->memory.peak_bytes;
+        }
+        return result;
+    }
+
     [[nodiscard]] const ScriptModuleInfo*
     find_module(std::string_view module_id) const noexcept override {
         const auto found = modules_.find(std::string(module_id));
-        return found == modules_.end() ? nullptr : &found->second.info;
+        return found == modules_.end() ? nullptr : &found->second->info;
     }
 
     [[nodiscard]] core::Status load_module(ScriptModuleDesc desc) override {
@@ -706,16 +438,118 @@ class LuauFoundationRuntime final : public IScriptRuntime {
                                          "script runtime module limit has been reached");
         }
 
-        Parser parser(desc.source);
-        auto functions = parser.parse_module();
-        if (!functions) {
-            return core::Status::failure(functions.error().code, functions.error().message);
+        std::string bytecode;
+        try {
+            Luau::CompileOptions options;
+            options.optimizationLevel = 1;
+            options.debugLevel = 1;
+            const char* mutable_globals[] = {"emit", nullptr};
+            options.mutableGlobals = mutable_globals;
+            bytecode = Luau::compile(desc.source, options);
+        } catch (const std::bad_alloc&) {
+            return core::Status::failure(
+                "scripting.compiler_memory_exhausted",
+                "Luau compiler exhausted host memory while compiling the module");
+        } catch (const std::exception& error) {
+            return core::Status::failure("scripting.luau_compile_error",
+                                         bounded_text(error.what(), desc_.max_error_bytes));
         }
 
-        ModuleRecord record;
-        record.info = make_module_info(desc);
-        record.functions = std::move(functions).value();
-        modules_.emplace(desc.module_id, std::move(record));
+        const VmKey key{desc.source_mod_id, desc.stage};
+        auto vm_found = vms_.find(key);
+        bool created_vm = false;
+        if (vm_found == vms_.end()) {
+            auto created = create_vm(key, desc_);
+            if (!created) {
+                return core::Status::failure(created.error().code, created.error().message);
+            }
+            vm_found = vms_.emplace(key, std::move(created).value()).first;
+            created_vm = true;
+        }
+        auto& vm = *vm_found->second;
+
+        auto module = std::make_unique<ModuleRecord>();
+        module->info = make_module_info(desc);
+        module->vm_key = key;
+        module->bytecode_bytes = bytecode.size();
+        module->source_fingerprint = core::stable_hash64_hex(desc.source);
+
+        const auto cleanup_failure = [&]() {
+            if (module->exports_reference != LUA_NOREF) {
+                lua_unref(module->thread, module->exports_reference);
+                module->exports_reference = LUA_NOREF;
+            }
+            if (module->thread_reference != LUA_NOREF) {
+                lua_unref(vm.state, module->thread_reference);
+                module->thread_reference = LUA_NOREF;
+            }
+            module->thread = nullptr;
+            (void)lua_gc(vm.state, LUA_GCCOLLECT, 0);
+            if (created_vm) {
+                vms_.erase(key);
+            }
+        };
+
+        try {
+            module->thread = lua_newthread(vm.state);
+            module->thread_reference = lua_ref(vm.state, -1);
+            lua_setthreaddata(module->thread, module.get());
+            luaL_sandboxthread(module->thread);
+            lua_pushcfunction(module->thread, emit_host_event, "emit");
+            lua_setglobal(module->thread, "emit");
+
+            const auto loaded = luau_load(module->thread, desc.module_id.c_str(), bytecode.data(),
+                                          bytecode.size(), 0);
+            if (loaded != LUA_OK) {
+                const auto message = lua_error_text(module->thread, desc_.max_error_bytes);
+                lua_settop(module->thread, 0);
+                cleanup_failure();
+                return core::Status::failure("scripting.luau_compile_error", message);
+            }
+
+            ActiveCall initialization;
+            initialization.runtime_desc = &desc_;
+            initialization.instruction_budget = 100'000;
+            initialization.deadline =
+                SteadyClock::now() + std::chrono::milliseconds(desc_.max_call_wall_time_ms);
+            module->active_call = &initialization;
+            const auto initialized = lua_pcall(module->thread, 0, 1, 0);
+            module->active_call = nullptr;
+            stats_.interrupt_count += initialization.interrupt_count;
+            if (initialized != LUA_OK) {
+                const auto error =
+                    execution_error(module->thread, initialized, desc_, initialization,
+                                    "scripting.module_initialization_failed");
+                lua_settop(module->thread, 0);
+                cleanup_failure();
+                return core::Status::failure(error.code, error.message);
+            }
+            if (lua_type(module->thread, -1) != LUA_TTABLE) {
+                lua_settop(module->thread, 0);
+                cleanup_failure();
+                return core::Status::failure(
+                    "scripting.luau_no_exports",
+                    "script module must return a table of exported functions");
+            }
+            lua_setreadonly(module->thread, -1, 1);
+            module->exports_reference = lua_ref(module->thread, -1);
+        } catch (const std::bad_alloc&) {
+            cleanup_failure();
+            return core::Status::failure("scripting.memory_limit_exceeded",
+                                         "module initialization exceeded its VM memory limit");
+        } catch (const std::exception& error) {
+            cleanup_failure();
+            return core::Status::failure("scripting.module_initialization_failed",
+                                         bounded_text(error.what(), desc_.max_error_bytes));
+        } catch (...) {
+            cleanup_failure();
+            return core::Status::failure("scripting.module_initialization_failed",
+                                         "module initialization failed with an unknown error");
+        }
+
+        stats_.compiled_source_bytes += desc.source.size();
+        stats_.compiled_bytecode_bytes += bytecode.size();
+        modules_.emplace(desc.module_id, std::move(module));
         return core::Status::ok();
     }
 
@@ -724,9 +558,28 @@ class LuauFoundationRuntime final : public IScriptRuntime {
             return core::Status::failure("scripting.invalid_module_id",
                                          "script module id must be namespace:local_id");
         }
-        if (modules_.erase(std::string(module_id)) == 0) {
+        const auto found = modules_.find(std::string(module_id));
+        if (found == modules_.end()) {
             return core::Status::failure("scripting.module_not_loaded",
                                          "script module is not loaded");
+        }
+        const auto vm_key = found->second->vm_key;
+        auto& module = *found->second;
+        const auto vm = vms_.find(vm_key);
+        if (module.exports_reference != LUA_NOREF) {
+            lua_unref(module.thread, module.exports_reference);
+        }
+        if (vm != vms_.end() && module.thread_reference != LUA_NOREF) {
+            lua_unref(vm->second->state, module.thread_reference);
+        }
+        modules_.erase(found);
+
+        const auto vm_still_used = std::ranges::any_of(modules_, [&vm_key](const auto& entry) {
+            return entry.second->vm_key.source_mod_id == vm_key.source_mod_id &&
+                   entry.second->vm_key.stage == vm_key.stage;
+        });
+        if (!vm_still_used) {
+            vms_.erase(vm_key);
         }
         return core::Status::ok();
     }
@@ -738,66 +591,145 @@ class LuauFoundationRuntime final : public IScriptRuntime {
                                                            status.error().message);
         }
 
-        const auto module = modules_.find(desc.module_id);
-        if (module == modules_.end()) {
+        const auto found = modules_.find(desc.module_id);
+        if (found == modules_.end()) {
             return core::Result<ScriptCallResult>::failure("scripting.module_not_loaded",
                                                            "script module is not loaded");
         }
-        if (module->second.info.stage != desc.stage) {
+        auto& module = *found->second;
+        if (module.info.stage != desc.stage) {
             return core::Result<ScriptCallResult>::failure(
                 "scripting.stage_mismatch", "script call stage does not match loaded module stage");
         }
-        auto permissions_status =
-            validate_script_call_permissions(module->second.info, desc.required_permissions);
-        if (!permissions_status) {
-            return core::Result<ScriptCallResult>::failure(permissions_status.error().code,
-                                                           permissions_status.error().message);
+        auto permission_status =
+            validate_script_call_permissions(module.info, desc.required_permissions);
+        if (!permission_status) {
+            return core::Result<ScriptCallResult>::failure(permission_status.error().code,
+                                                           permission_status.error().message);
         }
 
-        const auto function = module->second.functions.find(desc.function_name);
-        if (function == module->second.functions.end()) {
+        StackReset stack(module.thread);
+        if (!resolve_export(module.thread, module.exports_reference, desc.function_name)) {
             return core::Result<ScriptCallResult>::failure(
-                "scripting.function_not_found", "script module does not export requested function");
+                "scripting.function_not_found",
+                "script module does not export the requested function");
         }
-        if (desc.arguments.size() != function->second.parameters.size()) {
+
+        lua_Debug function_info{};
+        if (lua_getinfo(module.thread, -1, "a", &function_info) == 0) {
+            return core::Result<ScriptCallResult>::failure(
+                "scripting.function_introspection_failed",
+                "Luau could not inspect the requested export");
+        }
+        const auto minimum_arguments = static_cast<std::size_t>(function_info.nparams);
+        if ((!function_info.isvararg && desc.arguments.size() != minimum_arguments) ||
+            (function_info.isvararg && desc.arguments.size() < minimum_arguments)) {
             return core::Result<ScriptCallResult>::failure(
                 "scripting.argument_count_mismatch",
                 "script function call does not match exported parameter count");
         }
-        if (desc.instruction_budget < function->second.instruction_estimate) {
-            return core::Result<ScriptCallResult>::failure(
-                "scripting.instruction_budget_exceeded",
-                "script call exceeded its instruction budget");
+        for (const auto& argument : desc.arguments) {
+            push_script_value(module.thread, argument);
         }
-        auto result = evaluate_return_expression(function->second, desc.arguments);
-        status = validate_script_call_result(module->second.info, result, desc_);
+
+        ActiveCall active;
+        active.runtime_desc = &desc_;
+        active.instruction_budget = desc.instruction_budget;
+        active.deadline =
+            SteadyClock::now() + std::chrono::milliseconds(desc_.max_call_wall_time_ms);
+        active.cancellation = desc.cancellation;
+        active.allow_emission = true;
+        module.active_call = &active;
+
+        const auto started = SteadyClock::now();
+        const auto call_status =
+            lua_pcall(module.thread, static_cast<int>(desc.arguments.size()), 1, 0);
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::microseconds>(SteadyClock::now() - started);
+        module.active_call = nullptr;
+
+        ++stats_.call_count;
+        stats_.interrupt_count += active.interrupt_count;
+        stats_.last_call_microseconds =
+            static_cast<std::uint64_t>(std::max<std::int64_t>(0, elapsed.count()));
+        stats_.total_call_microseconds += stats_.last_call_microseconds;
+        if (call_status != LUA_OK) {
+            ++stats_.failed_call_count;
+            const auto error = execution_error(module.thread, call_status, desc_, active,
+                                               "scripting.runtime_error");
+            // Drop the error object and any abandoned call frames before the
+            // full collection. In particular, this lets a VM recover from a
+            // script that reached its allocation limit.
+            lua_resetthread(module.thread);
+            const auto vm = vms_.find(module.vm_key);
+            if (vm != vms_.end()) {
+                (void)lua_gc(vm->second->state, LUA_GCCOLLECT, 0);
+            }
+            return core::Result<ScriptCallResult>::failure(error.code, error.message);
+        }
+
+        auto return_value =
+            read_script_value(module.thread, -1, desc_.max_string_value_bytes, "return");
+        if (!return_value) {
+            ++stats_.failed_call_count;
+            return core::Result<ScriptCallResult>::failure(return_value.error().code,
+                                                           return_value.error().message);
+        }
+        ScriptCallResult result;
+        result.return_value = std::move(return_value).value();
+        result.emitted_events = std::move(active.emitted_events);
+        result.consumed_instruction_estimate = static_cast<std::uint32_t>(
+            std::min<std::uint64_t>(std::max<std::uint64_t>(1, active.interrupt_count),
+                                    std::numeric_limits<std::uint32_t>::max()));
+
+        status = validate_script_call_result(module.info, result, desc_);
         if (!status) {
+            ++stats_.failed_call_count;
             return core::Result<ScriptCallResult>::failure(status.error().code,
                                                            status.error().message);
         }
-        result.consumed_instruction_estimate = function->second.instruction_estimate;
+        stats_.emitted_event_count += result.emitted_events.size();
         return core::Result<ScriptCallResult>::success(std::move(result));
     }
 
   private:
     ScriptRuntimeDesc desc_;
-    std::unordered_map<std::string, ModuleRecord> modules_;
+    std::map<VmKey, std::unique_ptr<VmRecord>> vms_;
+    std::map<std::string, std::unique_ptr<ModuleRecord>> modules_;
+    ScriptRuntimeStats stats_;
 };
+
+#endif
 
 } // namespace
 
 ScriptBackendInfo backend_info() noexcept {
+#if HEARTSTEAD_HAS_LUAU
     return ScriptBackendInfo{
         ScriptBackend::luau,
         script_backend_name(ScriptBackend::luau),
         true,
-        "restricted foundation runtime available; full Luau VM is not linked yet",
+        "Luau 0.729 compiler/VM backend with isolated sandboxed environments",
     };
+#else
+    return ScriptBackendInfo{
+        ScriptBackend::luau,
+        script_backend_name(ScriptBackend::luau),
+        false,
+        "Luau backend was disabled at build time",
+    };
+#endif
 }
 
 core::Result<std::unique_ptr<IScriptRuntime>> create_runtime(ScriptRuntimeDesc desc) {
+#if HEARTSTEAD_HAS_LUAU
     return core::Result<std::unique_ptr<IScriptRuntime>>::success(
-        std::make_unique<LuauFoundationRuntime>(std::move(desc)));
+        std::make_unique<LuauRuntime>(std::move(desc)));
+#else
+    (void)desc;
+    return core::Result<std::unique_ptr<IScriptRuntime>>::failure(
+        "scripting.backend_unavailable", "Luau backend was disabled at build time");
+#endif
 }
 
 } // namespace heartstead::scripting::luau

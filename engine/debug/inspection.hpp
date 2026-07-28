@@ -114,6 +114,7 @@ class Inspector {
     [[nodiscard]] static InspectionData inspect(const modding::ModLifecyclePlan& plan);
     [[nodiscard]] static InspectionData inspect(const scripting::ScriptBackendInfo& backend);
     [[nodiscard]] static InspectionData inspect(const scripting::ScriptModuleDesc& module);
+    [[nodiscard]] static InspectionData inspect(const scripting::ScriptRuntimeStats& stats);
     [[nodiscard]] static InspectionData inspect(const scripting::ScriptHostApiDesc& host_api);
     [[nodiscard]] static InspectionData inspect(const scripting::ScriptHostEvent& event);
     [[nodiscard]] static InspectionData inspect(const scripting::ScriptHostEventBatch& batch);

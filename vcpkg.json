@@ -10,7 +10,11 @@
       "default-features": false
     },
     "fastgltf",
-    "miniaudio"
+    "miniaudio",
+    {
+      "name": "luau",
+      "default-features": false
+    }
   ],
   "overrides": [
     {
@@ -24,6 +28,10 @@
     {
       "name": "miniaudio",
       "version": "0.11.25"
+    },
+    {
+      "name": "luau",
+      "version": "0.729"
     }
   ]
 }

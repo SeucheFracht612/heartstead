@@ -1,158 +1,128 @@
 # Scripting Architecture
 
-Scripting is an engine-owned sandbox boundary for mod runtime behavior.
+Scripting is an engine-owned sandbox boundary for mod behavior. The engine embeds the official
+Luau compiler and VM, but no Luau type, pointer, bytecode, or native closure escapes
+`engine/scripting`.
 
-Implemented foundation:
+M8 deliberately adds no gameplay or Age-0 behavior. Its conformance modules are test-only and use
+neutral values and events. Base-mod gameplay scripting starts after the production boundary is
+accepted.
 
-- `ScriptBackend`
-  - `disabled` backend for deterministic builds, tests, and tools
-  - `luau` restricted foundation backend for early sandbox call flow
+## Backends and ownership
 
-- `IScriptRuntime`
-  - loads and unloads script module metadata
-  - validates module ids, source mod ids, source size, API version, function names, and
-    call budgets
-  - enforces runtime source-size, module-count, argument-count, and string-value byte limits
-  - validates return values before they cross back from the sandbox into native code
-  - exposes loaded module inspection data
-  - provides a single call boundary for sandbox execution
-  - checks call-required permissions against module-declared grants before execution
-  - validates emitted events against registered host API descriptors before returning them to
-    the game/runtime layer
+- `ScriptBackend::luau` is the production backend. Luau 0.729 is pinned through the repository's
+  vcpkg baseline and linked privately into `heartstead_engine`.
+- `ScriptBackend::disabled` validates and stores module metadata but does not execute source. It
+  keeps headless tools and builds with `HEARTSTEAD_ENABLE_LUAU=OFF` functional.
+- An `IScriptRuntime` owns all VMs and module records. Applications and gameplay own the runtime;
+  the engine never keeps process-global script state.
+- The production backend creates one VM for each `(source_mod_id, ScriptStage)` pair. Server,
+  client, and migration state cannot alias, and different mods never share a VM.
+- Modules in one mod/stage VM receive separate sandboxed global environments. They can share the
+  frozen standard-library implementation without seeing another module's mutable globals.
 
-- Host API descriptors
-  - stable lowercase dotted API/event id
-  - owning script stage
-  - minimum script module API version
-  - required permissions
-  - declared argument schema with stable names, value kinds, and trailing optional arguments
-  - validation for malformed ids, duplicate registrations, stage mismatch, version mismatch, and
-    missing grants
-  - default Heartstead API registry is supplied by `game/runtime`, keeping game meaning out of the
-    scripting backend
+The runtime compiles trusted source input to Luau bytecode internally and immediately loads that
+bytecode into the destination sandbox. There is no public bytecode loading API, so mods cannot
+inject bytecode that bypasses compiler validation.
 
-- Script host event queue
-  - converts validated emitted events into ordered native `ScriptHostEvent` records
-  - preserves module id, source mod, source path, stage, function name, arguments, module API
-    version, and consumed instruction estimate
-  - uses the emitted host API payload arguments, not the script function call arguments
-  - rejects mismatched module/stage calls, unregistered host APIs, missing grants, malformed
-    records, and non-contiguous batches without consuming sequence numbers
-  - exposes inspectable event and batch records for tools and future debug overlays
+## Sandbox
 
-- `ScriptModuleLoader`
-  - materializes lifecycle-classified `.lua` and `.luau` files into `ScriptModuleDesc`
-    records during mod validation
-  - derives stable module ids from the owning mod id and mod-relative source path
-  - maps lifecycle task kind to runtime server, runtime client, or migration stage
-  - confines source files to their owning mod root and rejects symlinked or forged lifecycle paths
-  - applies the source byte limit while reading, before allocating the full script payload
-  - bounds module, directive, and permission counts and rejects duplicate module ids/directives
-  - parses small source comments for module grants and API version:
-    - `-- heartstead.permissions = "read_prototypes, emit_commands"`
-    - `-- heartstead.api_version = "1"`
-  - reports diagnostics for unreadable files, unsupported script extensions, invalid module ids,
-    unknown permissions, duplicate permissions/directives, malformed directive quoting, oversized
-    source, and bad API versions
+VM creation follows Luau's embedding guidance:
 
-- Script modules
-  - stable `namespace:local_id` module id
-  - source mod id
-  - source path
-  - runtime stage
-  - declared permissions
-  - API version
+1. create the state with the runtime's accounting allocator;
+2. open the safe standard libraries;
+3. remove `debug`, `getfenv`, `setfenv`, `loadstring`, `newproxy`, `collectgarbage`, `os`, and
+   `require`;
+4. freeze the global library environment with `luaL_sandbox`;
+5. create each module thread and isolate it with `luaL_sandboxthread`;
+6. expose only Heartstead's narrow `emit` closure.
 
-- Script stages
-  - runtime server
-  - runtime client
-  - migration
+No filesystem, process, dynamic-library, raw-network, debugger, or native engine handle is
+available. Host calls revalidate the module stage, API version, declared permission, registered API
+id, argument schema, value bounds, and per-call event budget. A script therefore produces data-only
+`ScriptEmittedEvent` records; it cannot mutate world state directly.
 
-- Script permissions
-  - read prototypes
-  - read assets
-  - emit commands
-  - read save data
-  - write mod state
-  - client UI
+The game-owned host event queue preserves module id, source mod, source path, stage, function,
+arguments, API version, sequence, and consumed-budget estimate. The authoritative command
+dispatcher remains responsible for transactions, validation, persistence, and replication.
 
-- Script calls
-  - identify the module, function, stage, arguments, and instruction budget
-  - may declare required permissions for the engine/game API being invoked
-  - validate argument count and string argument byte size against runtime limits
-  - fail with `scripting.permission_denied` if the loaded module lacks a required grant
-  - return a simple value plus zero or more registered emitted host API events
-  - validate emitted event argument counts and value kinds against the registered host API
-    descriptor before native code receives them
-  - may enqueue those emitted names as ordered host events after runtime validation
+## Module discovery and validation
 
-- Runtime limits
-  - `max_source_bytes` caps individual module source
-  - `max_modules` caps loaded modules per runtime
-  - `max_call_arguments` caps call boundary fan-in
-  - `max_string_value_bytes` caps string arguments crossing into the sandbox and string return
-    values crossing back into native code
-  - apply to both the disabled backend and the restricted Luau foundation backend
+`ScriptModuleLoader` materializes lifecycle-classified `.lua` and `.luau` files into
+`ScriptModuleDesc` records. It:
 
-The current disabled backend intentionally does not execute source code. It validates
-and stores module metadata, checks required call permissions, then reports
-`scripting.runtime_disabled` for executable calls. This lets tools, tests, and mod
-loading code use the future scripting contract without running untrusted code or
-depending on a Lua implementation.
+- derives stable module ids from the owning mod and relative path;
+- confines files to the owning mod root and rejects symlinks/forged paths;
+- bounds source, module, directive, and permission counts before runtime load;
+- maps files to runtime-server, runtime-client, or migration stage;
+- parses `-- heartstead.permissions = "..."` and `-- heartstead.api_version = "..."` metadata,
+  replacing directive bytes with spaces to retain source line offsets.
 
-Mod and aggregate content validation now carry the materialized script module list.
-Tools can inspect loaded module id, source mod, source path, stage, API version, source byte
-count, and declared permissions without constructing a runtime backend. This keeps mod loading,
-validation, and future production VM binding on the same data contract.
+When Luau is enabled, aggregate mod validation compiles and bounded-initializes every discovered
+module. Syntax errors, initialization failures, non-table exports, resource-limit failures, and
+other VM errors become `mod.scripting.module_invalid` diagnostics before content is accepted.
 
-The current Luau backend is a restricted foundation runtime, not the production Luau VM
-binding. It accepts a deliberately small Luau-like export table:
+Mod compatibility fingerprints include each module's stable id, stage, API version, source,
+and sorted permission set. Input/module/permission ordering does not affect the fingerprint, while
+source or capability changes do.
 
-```lua
-return {
-  ping = function(value) return value end,
-  notify = function(chunk, voxel, prototype)
-    return emit("world.set_voxel", chunk, voxel, prototype)
-  end
-}
+## Boundary values and APIs
+
+The public script value ABI is intentionally small: nil, boolean, finite number, and bounded
+string. Modules return a readonly table of exported functions. Dotted export lookup is supported
+for nested readonly tables; argument arity is checked before the call.
+
+`ScriptHostApiDesc` supplies:
+
+- a stable lowercase dotted API/event id;
+- owning stage and minimum module API version;
+- required capabilities;
+- a named, ordered argument schema with trailing optional values.
+
+Loader metadata grants only declared `ScriptPermission` values. Every host API invocation checks
+those grants again. Registering an API does not grant it.
+
+## Resource limits and recovery
+
+The default production limits are:
+
+- 256 KiB source per module and 256 loaded modules;
+- 8 MiB for each mod/stage VM;
+- 100,000 interrupt-budget units per call;
+- 50 ms wall time and 128 stack frames per call;
+- 32 call arguments, 64 emitted events, 64 KiB boundary strings, and 4 KiB errors.
+
+The VM's custom reallocator tracks current and peak memory and refuses growth above the hard
+ceiling. Luau's interrupt callback checks host cancellation, budget, stack depth, and deadline.
+All failures unwind the module stack; allocation failures additionally run a full collection after
+unreachable call state is removed. A hostile call can therefore fail without poisoning the VM for
+the next call.
+
+`ScriptRuntimeStats` exposes VM/module counts, current/peak/limit memory, source/bytecode totals,
+calls/failures, interrupts, emitted events, and call timings through debug inspection.
+
+## Verification and benchmark
+
+`heartstead_scripting_runtime_tests` proves:
+
+- runtime-server, runtime-client, migration, mod-to-mod, and module-global isolation;
+- deterministic enumeration, unload/reload, module-state reset, and script fingerprints;
+- permission/API/schema enforcement and bounded value/event/error output;
+- forbidden globals, malformed source, infinite loops, recursion, cancellation, deadlines, and
+  allocation bombs fail closed;
+- the same VM remains usable after every hostile fixture.
+
+`heartstead_scripting_benchmark` loads neutral modules and measures calls that perform fixed Luau
+arithmetic without gameplay or host mutation. The published Release target is below `0.25 ms` p95
+per call:
+
+```bash
+cmake --build --preset default-release --target heartstead_scripting_benchmark
+./build/default-release/apps/scripting_benchmark/heartstead_scripting_benchmark \
+  --modules 16 --warmup 1000 --calls 10000 \
+  --output build/default-release/scripting-benchmark.json
 ```
 
-Loader directives are module metadata, not executable source. The loader parses recognized
-`-- heartstead.*` directive lines and replaces their source bytes with spaces before the
-restricted parser or a future VM receives the module. This preserves line offsets without making
-the foundation evaluator understand comments or granting directives runtime meaning.
-
-It validates source shape, exported function names, parameter counts, call stage,
-required permissions, and instruction budgets, then returns simple literal or argument
-values. Return values are checked against the same runtime string byte limit as call arguments
-before native code receives them. It also supports `emit("event.name", ...)` as a constrained
-return expression:
-the event name must be a literal lowercase dotted identifier and must match a registered
-host API descriptor for the runtime. Emitted payload values can be literals or function
-parameters. The descriptor controls the allowed stage, minimum module API version, required
-permissions, argument count, and argument value kinds. Missing grants fail with
-`scripting.permission_denied`; unregistered emitted events fail with
-`scripting.host_api_not_registered`; malformed payloads fail before native host events are queued.
-
-Emitted events are data in `ScriptCallResult` and `ScriptHostEvent`, not direct engine
-mutations. The authoritative game/runtime layer still decides whether those events become
-commands, transactions, replication, or diagnostics. This gives engine tests, samples, and
-mod loading code a real scripting execution boundary without direct filesystem access, raw
-engine pointers, or renderer, physics, save, or networking handles.
-
-The game runtime can route selected runtime-server host events into command envelopes through
-game-owned command routes. This bridge only prepares deterministic command payloads. The existing
-server command dispatcher remains responsible for validation, transactions, save dirtiness, and
-replication.
-
-Game-owned command routes must match the registered host API payload schema by argument name and
-required/optional ordering. This keeps script-facing API shape in the engine scripting contract
-while command type selection and command payload keys remain owned by the game runtime.
-
-The same bridge can submit those envelopes to the authoritative dispatcher and return structured
-per-event command reports. A rejected command remains a report, not a direct script-side mutation.
-
-The production Luau integration must keep the same contract while replacing this
-restricted parser/evaluator with a real VM binding, hard sandbox rules, bounded
-execution, and explicit capability grants per module or mod stage. Gameplay scripts
-should call stable engine/game APIs, not private shortcuts.
+The JSON records p50/p95/maximum call latency, module/call counts, current/peak VM memory,
+interrupt count, the target, and whether the run met it. With Luau disabled it emits an explicit
+`available: false` record and exits successfully, keeping the disabled build verifiable.

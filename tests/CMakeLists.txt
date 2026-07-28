@@ -89,6 +89,8 @@ heartstead_add_foundation_test(heartstead_infrastructure_v02_tests infrastructur
 heartstead_add_foundation_test(heartstead_transport_integrity_tests transport_integrity_tests.cpp)
 heartstead_add_foundation_test(heartstead_transport_codec_fuzz_tests
                                transport_codec_fuzz_tests.cpp)
+heartstead_add_foundation_test(heartstead_scripting_runtime_tests
+                               scripting_runtime_tests.cpp)
 heartstead_add_foundation_test(heartstead_filesystem_tests filesystem_tests.cpp)
 heartstead_add_foundation_test(heartstead_render_milestone_tests render_milestone_tests.cpp)
 heartstead_add_foundation_test(heartstead_renderer_frontend_tests renderer_frontend_tests.cpp)
@@ -230,6 +232,9 @@ heartstead_add_smoke_test(
 )
 heartstead_add_smoke_test(smoke.audio_benchmark heartstead_audio_benchmark --voices 16 --warmup 2
                           --blocks 3)
+heartstead_add_smoke_test(smoke.scripting_benchmark heartstead_scripting_benchmark --modules 4
+                          --warmup 10 --calls 50
+                          --output ${CMAKE_CURRENT_BINARY_DIR}/smoke_scripting_benchmark.json)
 heartstead_add_smoke_test(smoke.dev_game heartstead_dev_game --frames 3)
 heartstead_add_smoke_test(smoke.dedicated_server heartstead_dedicated_server
                           --bind 127.0.0.1:0 --ticks 3)

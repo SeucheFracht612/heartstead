@@ -74,13 +74,42 @@ patches_for_mod(const ModManifest& mod,
     return owned;
 }
 
+[[nodiscard]] std::vector<const scripting::ScriptModuleDesc*>
+scripts_for_mod(const ModManifest& mod,
+                const std::vector<scripting::ScriptModuleDesc>& script_modules) {
+    std::vector<const scripting::ScriptModuleDesc*> owned;
+    for (const auto& module : script_modules) {
+        if (module.source_mod_id == mod.id) {
+            owned.push_back(&module);
+        }
+    }
+    std::ranges::sort(owned, [](const scripting::ScriptModuleDesc* left,
+                                const scripting::ScriptModuleDesc* right) {
+        if (left->stage != right->stage) {
+            return left->stage < right->stage;
+        }
+        if (left->module_id != right->module_id) {
+            return left->module_id < right->module_id;
+        }
+        return left->source_path.generic_string() < right->source_path.generic_string();
+    });
+    return owned;
+}
+
 [[nodiscard]] std::string
 fingerprint_mod(const ModManifest& mod, const std::vector<const GenericPrototype*>& prototypes,
-                const std::vector<const GenericPrototypePatch*>& patches) {
+                const std::vector<const GenericPrototypePatch*>& patches,
+                const std::vector<const scripting::ScriptModuleDesc*>& scripts) {
     core::StableHash64 hasher;
     add_field(hasher, "mod", mod.id);
     add_field(hasher, "prototype_count", std::to_string(prototypes.size()));
     add_field(hasher, "patch_count", std::to_string(patches.size()));
+    // Preserve existing save fingerprints for mods that have no scripts.
+    // Script-aware hashes extend the legacy stream only when script content
+    // is actually present.
+    if (!scripts.empty()) {
+        add_field(hasher, "script_count", std::to_string(scripts.size()));
+    }
 
     for (const auto* prototype : prototypes) {
         add_field(hasher, "prototype", prototype->id.value());
@@ -105,6 +134,22 @@ fingerprint_mod(const ModManifest& mod, const std::vector<const GenericPrototype
         }
     }
 
+    for (const auto* script : scripts) {
+        add_field(hasher, "script_module", script->module_id);
+        add_field(hasher, "script_stage", scripting::script_stage_name(script->stage));
+        add_field(hasher, "script_api_version", std::to_string(script->api_version));
+        add_field(hasher, "script_source", script->source);
+        std::vector<std::string_view> permissions;
+        permissions.reserve(script->permissions.size());
+        for (const auto permission : script->permissions) {
+            permissions.push_back(scripting::script_permission_name(permission));
+        }
+        std::ranges::sort(permissions);
+        for (const auto permission : permissions) {
+            add_field(hasher, "script_permission", permission);
+        }
+    }
+
     return hasher.hex();
 }
 
@@ -113,25 +158,35 @@ fingerprint_mod(const ModManifest& mod, const std::vector<const GenericPrototype
 std::vector<ModPrototypeFingerprint>
 build_mod_prototype_fingerprints(const std::vector<ModManifest>& mods,
                                  const std::vector<GenericPrototype>& prototypes) {
-    return build_mod_prototype_fingerprints(mods, prototypes, {});
+    return build_mod_prototype_fingerprints(mods, prototypes, {}, {});
 }
 
 std::vector<ModPrototypeFingerprint>
 build_mod_prototype_fingerprints(const std::vector<ModManifest>& mods,
                                  const std::vector<GenericPrototype>& prototypes,
                                  const std::vector<GenericPrototypePatch>& prototype_patches) {
+    return build_mod_prototype_fingerprints(mods, prototypes, prototype_patches, {});
+}
+
+std::vector<ModPrototypeFingerprint>
+build_mod_prototype_fingerprints(const std::vector<ModManifest>& mods,
+                                 const std::vector<GenericPrototype>& prototypes,
+                                 const std::vector<GenericPrototypePatch>& prototype_patches,
+                                 const std::vector<scripting::ScriptModuleDesc>& script_modules) {
     std::vector<ModPrototypeFingerprint> fingerprints;
     fingerprints.reserve(mods.size());
 
     for (const auto& mod : mods) {
         auto owned_prototypes = prototypes_for_mod(mod, prototypes);
         auto owned_patches = patches_for_mod(mod, prototype_patches);
+        auto owned_scripts = scripts_for_mod(mod, script_modules);
         fingerprints.push_back(ModPrototypeFingerprint{
             mod.id,
             mod.version,
-            fingerprint_mod(mod, owned_prototypes, owned_patches),
+            fingerprint_mod(mod, owned_prototypes, owned_patches, owned_scripts),
             owned_prototypes.size(),
             owned_patches.size(),
+            owned_scripts.size(),
         });
     }
 

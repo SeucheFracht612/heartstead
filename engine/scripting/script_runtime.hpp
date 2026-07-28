@@ -2,6 +2,7 @@
 
 #include "engine/core/result.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -85,8 +86,9 @@ struct ScriptCallDesc {
     std::string function_name;
     ScriptStage stage = ScriptStage::runtime_server;
     std::vector<ScriptValue> arguments;
-    std::uint32_t instruction_budget = 10'000;
+    std::uint32_t instruction_budget = 100'000;
     std::vector<ScriptPermission> required_permissions;
+    const std::atomic_bool* cancellation = nullptr;
 };
 
 struct ScriptHostApiArgument {
@@ -120,6 +122,11 @@ struct ScriptRuntimeDesc {
     std::uint32_t max_modules = 256;
     std::uint32_t max_call_arguments = 32;
     std::uint32_t max_string_value_bytes = 64u * 1024u;
+    std::uint64_t max_vm_memory_bytes = 8u * 1024u * 1024u;
+    std::uint32_t max_call_wall_time_ms = 50;
+    std::uint32_t max_stack_depth = 128;
+    std::uint32_t max_emitted_events_per_call = 64;
+    std::uint32_t max_error_bytes = 4u * 1024u;
     std::vector<ScriptHostApiDesc> host_apis;
 
     ScriptRuntimeDesc() = default;
@@ -136,6 +143,22 @@ struct ScriptRuntimeDesc {
           host_apis(std::move(host_apis_value)) {}
 };
 
+struct ScriptRuntimeStats {
+    std::uint32_t vm_count = 0;
+    std::uint32_t module_count = 0;
+    std::uint64_t current_memory_bytes = 0;
+    std::uint64_t peak_memory_bytes = 0;
+    std::uint64_t memory_limit_bytes_per_vm = 0;
+    std::uint64_t compiled_source_bytes = 0;
+    std::uint64_t compiled_bytecode_bytes = 0;
+    std::uint64_t call_count = 0;
+    std::uint64_t failed_call_count = 0;
+    std::uint64_t interrupt_count = 0;
+    std::uint64_t emitted_event_count = 0;
+    std::uint64_t total_call_microseconds = 0;
+    std::uint64_t last_call_microseconds = 0;
+};
+
 class IScriptRuntime {
   public:
     virtual ~IScriptRuntime() = default;
@@ -143,6 +166,8 @@ class IScriptRuntime {
     [[nodiscard]] virtual ScriptBackend backend() const noexcept = 0;
     [[nodiscard]] virtual std::string_view backend_name() const noexcept = 0;
     [[nodiscard]] virtual std::size_t module_count() const noexcept = 0;
+    [[nodiscard]] virtual std::vector<std::string> module_ids() const = 0;
+    [[nodiscard]] virtual ScriptRuntimeStats stats() const noexcept = 0;
     [[nodiscard]] virtual const ScriptModuleInfo*
     find_module(std::string_view module_id) const noexcept = 0;
 

@@ -86,10 +86,9 @@ The repository currently implements the initial engine-owned foundation:
   integrated deterministic reliable acknowledgement/retry/drop maintenance, and capability
   reporting
 - host-session lifecycle for local authoritative command processing
-- scripting runtime boundary with capability-gated calls, sandbox resource limits, disabled
-  backend, restricted Luau foundation backend, and registered host API/event validation for
-  emitted events and bounded return values, plus ordered script host event intake records for the
-  authoritative runtime
+- scripting runtime boundary with capability-gated calls, hard allocator/interrupt/deadline
+  limits, a build-disabled backend, the pinned production Luau compiler/VM, isolated
+  mod/stage/module environments, and registered data-only host API/event validation
 - script module materialization from lifecycle-classified mod script files into validated module
   descriptors with declared permissions and API versions
 - mod manifest discovery
@@ -205,8 +204,7 @@ The active implementation sequence and acceptance budgets are tracked in
 [`docs/roadmap/gameplay_foundations_m1_m8.md`](../roadmap/gameplay_foundations_m1_m8.md).
 The broader next engine slices remain:
 
-1. production Luau VM binding behind the registered scripting host API contract
-2. proven-library external networking backend beyond the current POSIX UDP reliability foundation
-3. production binary media converter implementations behind the asset cooker backend slot
-4. Vulkan production render-pass/subpass execution over planned frame resources
-5. broader native platform coverage beyond the current X11 window/input/display/clipboard backend
+1. proven-library Internet transport/identity beyond direct POSIX UDP sessions
+2. production binary media converter implementations behind the asset cooker backend slot
+3. Vulkan production render-pass/subpass execution over planned frame resources
+4. broader native platform coverage beyond the current X11 window/input/display/clipboard backend

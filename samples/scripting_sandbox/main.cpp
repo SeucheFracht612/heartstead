@@ -13,6 +13,11 @@ int main(int argc, char** argv) {
 
         const auto luau_info = scripting::script_backend_info(scripting::ScriptBackend::luau);
         core::log(core::LogLevel::info, "Luau backend status: " + std::string(luau_info.status));
+        if (!luau_info.available) {
+            core::log(core::LogLevel::info,
+                      "Luau backend is disabled; scripting boundary smoke test skipped");
+            return 0;
+        }
 
         scripting::ScriptHostApiDesc sandbox_ready_api;
         sandbox_ready_api.api_id = "sandbox.ready";

@@ -3,6 +3,7 @@
 #include "engine/core/ids.hpp"
 #include "engine/scripting/luau/luau_backend.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <unordered_map>
 #include <utility>
@@ -82,6 +83,22 @@ class DisabledScriptRuntime final : public IScriptRuntime {
 
     [[nodiscard]] std::size_t module_count() const noexcept override {
         return modules_.size();
+    }
+
+    [[nodiscard]] std::vector<std::string> module_ids() const override {
+        std::vector<std::string> result;
+        result.reserve(modules_.size());
+        for (const auto& [module_id, _] : modules_) {
+            result.push_back(module_id);
+        }
+        std::ranges::sort(result);
+        return result;
+    }
+
+    [[nodiscard]] ScriptRuntimeStats stats() const noexcept override {
+        ScriptRuntimeStats result;
+        result.module_count = static_cast<std::uint32_t>(modules_.size());
+        return result;
     }
 
     [[nodiscard]] const ScriptModuleInfo*
@@ -209,6 +226,23 @@ core::Status validate_script_runtime_desc(const ScriptRuntimeDesc& desc) {
         return core::Status::failure("scripting.invalid_string_limit",
                                      "script max string value bytes must be non-zero");
     }
+    if (desc.max_vm_memory_bytes < 64u * 1024u) {
+        return core::Status::failure("scripting.invalid_memory_limit",
+                                     "script VM memory limit must be at least 64 KiB");
+    }
+    if (desc.max_call_wall_time_ms == 0 || desc.max_call_wall_time_ms > 60'000) {
+        return core::Status::failure(
+            "scripting.invalid_deadline_limit",
+            "script call wall-time limit must be between 1 ms and 60 seconds");
+    }
+    if (desc.max_stack_depth == 0 || desc.max_stack_depth > 8'000) {
+        return core::Status::failure("scripting.invalid_stack_limit",
+                                     "script stack-depth limit must be between 1 and 8,000");
+    }
+    if (desc.max_emitted_events_per_call == 0 || desc.max_error_bytes == 0) {
+        return core::Status::failure("scripting.invalid_output_limit",
+                                     "script event and error-output limits must be non-zero");
+    }
     return validate_script_host_api_registry(desc.host_apis);
 }
 
@@ -327,6 +361,10 @@ core::Status validate_script_call_result(const ScriptModuleInfo& module,
     status = validate_script_return_value(result.return_value, runtime_desc.max_string_value_bytes);
     if (!status) {
         return status;
+    }
+    if (result.emitted_events.size() > runtime_desc.max_emitted_events_per_call) {
+        return core::Status::failure("scripting.emitted_event_limit_exceeded",
+                                     "script call emitted more events than the runtime permits");
     }
     return validate_script_emitted_events(module, result.emitted_events, runtime_desc);
 }

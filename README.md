@@ -50,10 +50,10 @@ Implemented in this repository:
   fragmentation/reassembly, deterministic reliable acknowledgement/retry/drop maintenance, and
   capability reporting, plus a deterministic latency/jitter/loss acceptance backend
 - host-session lifecycle for local authoritative command processing
-- scripting runtime boundary with capability-gated calls, sandbox resource limits, disabled
-  backend, restricted Luau foundation backend, and registered host API/event validation for
-  emitted events and bounded return values, plus ordered script host event intake records for the
-  authoritative runtime
+- scripting runtime boundary with a pinned production Luau compiler/VM backend, per-mod/stage VMs,
+  isolated module environments, allocator/interrupt/deadline/cancellation limits, a
+  build-disabled backend, and registered host API/event validation for emitted events and
+  bounded return values
 - script module materialization from staged mod script files into validated descriptors with
   declared permissions and API versions
 - base mod discovery from `mods/base`
@@ -62,7 +62,8 @@ Implemented in this repository:
   final fix, asset/resource, migration, runtime server, and runtime client stages
 - generic prototype loading for engine-level validation
 - generic prototype patch data-update and final-fix stages
-- deterministic mod prototype fingerprints for save compatibility metadata, including patches
+- deterministic mod content fingerprints for save compatibility metadata, including prototype
+  patches and script source/capabilities
 - material prototype loading into renderer material definitions
 - typed particle prototypes, deterministic bounded CPU emitters, and instanced billboard
   presentation
@@ -207,8 +208,8 @@ Implemented in this repository:
   execution, and complete JSON/CSV frame export
 - CTest coverage for unit tests plus headless-safe sample and tool smoke tests
 
-Full game feature rules, production Luau integration, encrypted/authenticated Internet identity,
-NAT traversal/matchmaking, and wider native platform coverage remain future work. Renderer V1, the
+Full game feature rules, encrypted/authenticated Internet identity, NAT traversal/matchmaking, and
+wider native platform coverage remain future work. Renderer V1, the
 local gameplay vertical slice, and direct numeric-IPv4 remote client/server composition are
 implemented; new renderer work is driven by measured gameplay needs.
 
