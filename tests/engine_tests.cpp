@@ -3326,7 +3326,6 @@ void test_physics_world() {
     assert(headless_info.name == "headless");
 
     const auto jolt_info = physics_backend_info(PhysicsBackend::jolt);
-    assert(!jolt_info.available);
     assert(jolt_info.name == "jolt");
     const auto headless_capabilities = physics_backend_capabilities(PhysicsBackend::headless);
     assert(headless_capabilities.available);
@@ -3342,8 +3341,8 @@ void test_physics_world() {
     assert(headless_capabilities.supports_collision_response);
     assert(headless_capabilities.library == "headless");
     const auto jolt_capabilities = physics_backend_capabilities(PhysicsBackend::jolt);
-    assert(!jolt_capabilities.available);
-    assert(!jolt_capabilities.deterministic);
+    assert(jolt_capabilities.available == jolt_info.available);
+    assert(jolt_capabilities.deterministic);
     assert(jolt_capabilities.supports_dynamic_bodies);
     assert(jolt_capabilities.supports_kinematic_bodies);
     assert(jolt_capabilities.supports_static_bodies);
@@ -3501,8 +3500,34 @@ void test_physics_world() {
     PhysicsWorldDesc jolt_desc;
     jolt_desc.backend = PhysicsBackend::jolt;
     auto jolt_world = create_physics_world(jolt_desc);
-    assert(!jolt_world);
-    assert(jolt_world.error().code == "physics.jolt_unavailable");
+    if (jolt_info.available) {
+        assert(jolt_world);
+        assert(jolt_world.value()->backend() == PhysicsBackend::jolt);
+        assert(jolt_world.value()->backend_name() == "jolt");
+
+        auto jolt_ground = jolt_world.value()->create_body(static_body);
+        assert(jolt_ground);
+        PhysicsBodyDesc jolt_falling_body = falling_body;
+        jolt_falling_body.position = Vec3{0.0F, 2.0F, 0.0F};
+        auto jolt_falling = jolt_world.value()->create_body(jolt_falling_body);
+        assert(jolt_falling);
+        bool observed_contact = false;
+        for (std::uint32_t step_index = 0; step_index < 180; ++step_index) {
+            auto jolt_step = jolt_world.value()->step(PhysicsStepDesc{1.0F / 60.0F});
+            assert(jolt_step);
+            observed_contact = observed_contact || jolt_step.value().contact_count > 0;
+            static_cast<void>(jolt_world.value()->drain_contacts());
+        }
+        const auto jolt_settled = jolt_world.value()->body_state(jolt_falling.value());
+        assert(jolt_settled);
+        assert(observed_contact);
+        assert(jolt_settled->sleeping);
+        assert(std::abs(jolt_settled->position.y - 1.0F) <= 0.02F);
+        assert(std::abs(jolt_settled->linear_velocity.y) <= 0.05F);
+    } else {
+        assert(!jolt_world);
+        assert(jolt_world.error().code == "physics.jolt_unavailable");
+    }
 
     assert(body_motion_type_name(BodyMotionType::dynamic) == "dynamic");
     assert(shape_kind_name(ShapeKind::compound) == "compound");
@@ -7412,7 +7437,10 @@ void test_debug_inspection() {
         heartstead::debug::Inspector::inspect(heartstead::physics::physics_backend_capabilities(
             heartstead::physics::PhysicsBackend::jolt));
     assert(physics_inspection.object_type == "physics_backend_capabilities");
-    assert(physics_inspection.state == "unavailable");
+    const auto jolt_available =
+        heartstead::physics::physics_backend_info(heartstead::physics::PhysicsBackend::jolt)
+            .available;
+    assert(physics_inspection.state == (jolt_available ? "available" : "unavailable"));
     const auto* collision_response = physics_inspection.find_field("supports_collision_response");
     assert(collision_response != nullptr);
     assert(collision_response->value == "true");
@@ -10826,6 +10854,8 @@ void test_world_command_registry() {
     assert(inventory_self_result.value().events.size() == 1);
     assert(inventory_self_result.value().events.front().subject ==
            heartstead::core::SaveId::from_value(4000));
+    source_inventory = state.inventories().find(heartstead::core::SaveId::from_value(4000));
+    assert(source_inventory != nullptr);
     assert(source_inventory->stacks.front().count == 7);
 
     heartstead::net::CommandEnvelope process_command;

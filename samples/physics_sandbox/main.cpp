@@ -3,8 +3,125 @@
 #include "engine/entities/physical_resource.hpp"
 #include "engine/physics/physics_world.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <string>
+#include <vector>
+
+namespace {
+
+struct PhysicsTraceSample {
+    heartstead::physics::Vec3 position{};
+    heartstead::physics::Vec3 velocity{};
+    bool sleeping = false;
+    std::uint32_t contact_count = 0;
+
+    friend bool operator==(const PhysicsTraceSample&, const PhysicsTraceSample&) = default;
+};
+
+struct PhysicsTrace {
+    std::vector<PhysicsTraceSample> samples;
+    bool observed_contact = false;
+};
+
+[[nodiscard]] heartstead::core::Result<PhysicsTrace>
+run_trace(heartstead::physics::PhysicsBackend backend) {
+    using namespace heartstead;
+
+    physics::PhysicsWorldDesc world_desc;
+    world_desc.backend = backend;
+    world_desc.gravity = physics::Vec3{0.0F, -9.81F, 0.0F};
+    auto world = physics::create_physics_world(world_desc);
+    if (!world) {
+        return core::Result<PhysicsTrace>::failure(world.error().code, world.error().message);
+    }
+
+    physics::PhysicsBodyDesc ground;
+    ground.motion_type = physics::BodyMotionType::static_body;
+    ground.shape.kind = physics::ShapeKind::box;
+    ground.shape.half_extents = physics::Vec3{20.0F, 0.5F, 20.0F};
+    ground.position = physics::Vec3{0.0F, -0.5F, 0.0F};
+    auto ground_body = world.value()->create_body(ground);
+    if (!ground_body) {
+        return core::Result<PhysicsTrace>::failure(ground_body.error().code,
+                                                   ground_body.error().message);
+    }
+
+    physics::PhysicsBodyDesc falling;
+    falling.motion_type = physics::BodyMotionType::dynamic;
+    falling.shape.kind = physics::ShapeKind::box;
+    falling.shape.half_extents = physics::Vec3{0.5F, 0.5F, 0.5F};
+    falling.position = physics::Vec3{0.0F, 3.0F, 0.0F};
+    falling.mass = 2.0F;
+    auto falling_body = world.value()->create_body(falling);
+    if (!falling_body) {
+        return core::Result<PhysicsTrace>::failure(falling_body.error().code,
+                                                   falling_body.error().message);
+    }
+
+    PhysicsTrace trace;
+    trace.samples.reserve(180);
+    for (std::uint32_t step_index = 0; step_index < 180; ++step_index) {
+        auto stats = world.value()->step({1.0F / 60.0F});
+        if (!stats) {
+            return core::Result<PhysicsTrace>::failure(stats.error().code, stats.error().message);
+        }
+        const auto contacts = world.value()->drain_contacts();
+        const auto state = world.value()->body_state(falling_body.value());
+        if (!state) {
+            return core::Result<PhysicsTrace>::failure("physics_sandbox.body_disappeared",
+                                                       "trace body disappeared");
+        }
+        trace.observed_contact =
+            trace.observed_contact || stats.value().contact_count > 0 || !contacts.empty();
+        trace.samples.push_back({state->position, state->linear_velocity, state->sleeping,
+                                 stats.value().contact_count});
+    }
+    return core::Result<PhysicsTrace>::success(std::move(trace));
+}
+
+[[nodiscard]] heartstead::core::Status verify_backend_traces() {
+    using namespace heartstead;
+
+    auto headless_first = run_trace(physics::PhysicsBackend::headless);
+    auto headless_second = run_trace(physics::PhysicsBackend::headless);
+    auto jolt_first = run_trace(physics::PhysicsBackend::jolt);
+    auto jolt_second = run_trace(physics::PhysicsBackend::jolt);
+    if (!headless_first || !headless_second || !jolt_first || !jolt_second) {
+        const auto* error = !headless_first    ? &headless_first.error()
+                            : !headless_second ? &headless_second.error()
+                            : !jolt_first      ? &jolt_first.error()
+                                               : &jolt_second.error();
+        return core::Status::failure(error->code, error->message);
+    }
+    if (headless_first.value().samples != headless_second.value().samples ||
+        jolt_first.value().samples != jolt_second.value().samples) {
+        return core::Status::failure(
+            "physics_sandbox.nondeterministic_trace",
+            "a physics backend produced different results for two identical runs");
+    }
+
+    const auto& headless_final = headless_first.value().samples.back();
+    const auto& jolt_final = jolt_first.value().samples.back();
+    const auto position_error = jolt_final.position - headless_final.position;
+    const auto velocity_error = jolt_final.velocity - headless_final.velocity;
+    constexpr float position_tolerance = 0.02F;
+    constexpr float velocity_tolerance = 0.05F;
+    if (std::abs(position_error.x) > position_tolerance ||
+        std::abs(position_error.y) > position_tolerance ||
+        std::abs(position_error.z) > position_tolerance ||
+        std::abs(velocity_error.x) > velocity_tolerance ||
+        std::abs(velocity_error.y) > velocity_tolerance ||
+        std::abs(velocity_error.z) > velocity_tolerance ||
+        headless_final.sleeping != jolt_final.sleeping ||
+        !headless_first.value().observed_contact || !jolt_first.value().observed_contact) {
+        return core::Status::failure("physics_sandbox.backend_trace_mismatch",
+                                     "headless and Jolt traces exceeded the final-state tolerance");
+    }
+    return core::Status::ok();
+}
+
+} // namespace
 
 int main(int argc, char** argv) {
     return heartstead::core::run_no_argument_process_entry(argc, argv, [] {
@@ -24,8 +141,19 @@ int main(int argc, char** argv) {
                       ", constraints=" +
                       std::string(jolt_capabilities.supports_constraints ? "yes" : "no"));
 
+        if (jolt_info.available) {
+            auto trace_status = verify_backend_traces();
+            if (!trace_status) {
+                core::log(core::LogLevel::error, trace_status.error().message);
+                return 1;
+            }
+            core::log(core::LogLevel::info,
+                      "Headless and Jolt repeated traces are deterministic and within tolerance");
+        }
+
         physics::PhysicsWorldDesc world_desc;
-        world_desc.backend = physics::PhysicsBackend::headless;
+        world_desc.backend =
+            jolt_info.available ? physics::PhysicsBackend::jolt : physics::PhysicsBackend::headless;
         world_desc.gravity = physics::Vec3{0.0F, -9.81F, 0.0F};
 
         auto world = physics::create_physics_world(world_desc);

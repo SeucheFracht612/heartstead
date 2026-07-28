@@ -76,8 +76,8 @@ The repository currently implements the initial engine-owned foundation:
   creation, RGBA8 sampled image upload, uniform and sampled texture descriptor writes, mesh draw
   binding with minimal offscreen Vulkan draw-command submission, and optional X11 surface ownership
   boundary
-- physics world boundary with backend capabilities, headless integration, AABB query/contact
-  plumbing, deterministic dynamic-body response and sleeping, and Jolt backend placeholder
+- physics world boundary with backend capabilities, deterministic headless integration, and a
+  pinned Jolt rigid-body backend with compounds, response, sleeping, AABB queries, and contacts
 - backend-selectable network transport boundary with in-memory host implementation and a POSIX UDP
   foundation host for host-owned loopback client endpoints when sockets are available, plus
   endpoint config, reliable command sequence enforcement, packet fragmentation/reassembly,

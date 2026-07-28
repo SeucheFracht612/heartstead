@@ -3,5 +3,17 @@
   "name": "heartstead",
   "version-string": "0.1.0",
   "description": "Heartstead custom engine foundation",
-  "dependencies": []
+  "builtin-baseline": "b81cab76a175645e047601da8f982ad86bff1cc3",
+  "dependencies": [
+    {
+      "name": "joltphysics",
+      "default-features": false
+    }
+  ],
+  "overrides": [
+    {
+      "name": "joltphysics",
+      "version": "5.6.0"
+    }
+  ]
 }

@@ -40,8 +40,9 @@ Implemented in this repository:
   plans plus pass-associated unified draw submissions, headless validation, explicit GPU terrain
   vertices, checked-in SPIR-V loading, push constants, configurable graphics state, and optional
   Vulkan rendering through offscreen color/depth targets into an X11 swapchain
-- physics world boundary with backend capabilities, headless integration, AABB query/contact
-  plumbing, deterministic dynamic-body response and sleeping, and Jolt backend placeholder
+- physics world boundary with backend capabilities, deterministic headless reference, and a pinned
+  Jolt 5.6 backend for rigid bodies, compounds, collision response, sleeping, AABB queries, and
+  contact snapshots
 - backend-selectable network transport boundary with in-memory host implementation and a POSIX UDP
   foundation host for host-owned loopback client endpoints when sockets are available, plus
   endpoint config, reliable command sequence enforcement, packet fragmentation/reassembly,

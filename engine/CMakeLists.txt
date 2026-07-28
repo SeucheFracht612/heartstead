@@ -352,6 +352,34 @@ target_sources(
 
 target_include_directories(heartstead_engine PUBLIC ${PROJECT_SOURCE_DIR})
 target_link_libraries(heartstead_engine PUBLIC Threads::Threads)
+if(HEARTSTEAD_ENABLE_JOLT)
+  target_link_libraries(heartstead_engine PRIVATE Jolt::Jolt)
+  target_compile_definitions(heartstead_engine PRIVATE HEARTSTEAD_HAS_JOLT=1)
+  if(HEARTSTEAD_SANITIZERS MATCHES "(^|,)thread(,|$)")
+    set_property(
+      SOURCE physics/jolt/jolt_backend.cpp
+      APPEND
+      PROPERTY COMPILE_DEFINITIONS HEARTSTEAD_JOLT_SINGLE_THREADED=1
+    )
+  else()
+    set_property(
+      SOURCE physics/jolt/jolt_backend.cpp
+      APPEND
+      PROPERTY COMPILE_DEFINITIONS HEARTSTEAD_JOLT_SINGLE_THREADED=0
+    )
+  endif()
+  if(HEARTSTEAD_SANITIZERS MATCHES "(^|,)undefined(,|$)")
+    # The vcpkg Jolt binary is built without C++ RTTI. Clang's vptr sanitizer otherwise emits
+    # typeinfo references for Jolt classes that cannot be resolved at link time.
+    set_property(
+      SOURCE physics/jolt/jolt_backend.cpp
+      APPEND
+      PROPERTY COMPILE_OPTIONS -fno-sanitize=vptr
+    )
+  endif()
+else()
+  target_compile_definitions(heartstead_engine PRIVATE HEARTSTEAD_HAS_JOLT=0)
+endif()
 if(HEARTSTEAD_ENABLE_VULKAN AND Vulkan_FOUND)
   target_link_libraries(heartstead_engine PRIVATE Vulkan::Vulkan)
   target_compile_definitions(heartstead_engine PRIVATE HEARTSTEAD_HAS_VULKAN=1)

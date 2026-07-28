@@ -21,12 +21,16 @@ set_property(CACHE HEARTSTEAD_SANITIZERS PROPERTY STRINGS "" "address" "undefine
 option(HEARTSTEAD_ENABLE_VULKAN "Build the Vulkan renderer backend when the SDK is available" ON)
 option(HEARTSTEAD_ENABLE_X11_NATIVE "Build the X11 native platform backend when available" ON)
 option(HEARTSTEAD_ENABLE_XRANDR "Use XRandR for richer native display metadata when available" ON)
+option(HEARTSTEAD_ENABLE_JOLT "Build the Jolt physics backend" ON)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Threads REQUIRED)
+if(HEARTSTEAD_ENABLE_JOLT)
+  find_package(Jolt CONFIG REQUIRED)
+endif()
 if(HEARTSTEAD_ENABLE_VULKAN)
   find_package(Vulkan QUIET)
 endif()

@@ -593,7 +593,7 @@ PhysicsBackendCapabilities physics_backend_capabilities(PhysicsBackend backend) 
         return PhysicsBackendCapabilities{
             PhysicsBackend::jolt,
             info.available,
-            false,
+            true,
             true,
             true,
             true,

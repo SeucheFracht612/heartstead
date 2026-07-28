@@ -1,5 +1,15 @@
 # Build Instructions
 
+Heartstead uses vcpkg manifest mode for native dependencies. Install and bootstrap vcpkg, then
+export its root before configuring:
+
+```bash
+export VCPKG_ROOT=/absolute/path/to/vcpkg
+```
+
+The checked-in manifest pins the registry baseline and dependency versions. CMake restores the
+manifest into the selected build tree through the vcpkg toolchain.
+
 Configure:
 
 ```bash
