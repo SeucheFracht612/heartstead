@@ -106,6 +106,28 @@ core::Status VoxelChunk::apply_saved_cell(VoxelCoord coord, VoxelCell cell) {
     return core::Status::ok();
 }
 
+core::Result<std::size_t> VoxelChunk::apply_derived_light(std::span<const std::uint8_t> light) {
+    if (light.size() != total_cells) {
+        return core::Result<std::size_t>::failure(
+            "chunk.invalid_derived_light_count",
+            "derived voxel light field cell count does not match chunk size");
+    }
+    std::size_t changed = 0;
+    for (std::size_t index = 0; index < cells_.size(); ++index) {
+        if (cells_[index].light == light[index]) {
+            continue;
+        }
+        cells_[index].light = light[index];
+        ++changed;
+    }
+    if (changed > 0) {
+        advance_content_revision();
+        dirty_.mark(ChunkDirtyFlag::mesh);
+        dirty_.mark(ChunkDirtyFlag::replication);
+    }
+    return core::Result<std::size_t>::success(changed);
+}
+
 core::Status VoxelChunk::load_generated_cells(std::vector<VoxelCell> cells) {
     if (cells.size() != total_cells) {
         return core::Status::failure("chunk.invalid_generated_cell_count",

@@ -159,16 +159,19 @@ void emit_quad(ChunkMesh& mesh, ChunkMeshFaceDirection direction, std::uint16_t 
     return block != nullptr && (block->occlusion_mask & face_bit(face)) != 0;
 }
 
-void write_mask_cell(MaskCell& item, VoxelCell cell,
+void write_mask_cell(MaskCell& item, VoxelCell cell, std::uint8_t face_light,
                      const BlockRenderTableSnapshot& render_table) noexcept {
     const auto* block = find_block(render_table, cell.type);
     item.present = block != nullptr;
     if (!item.present) {
         return;
     }
-    item.key = {cell.type,       block->material_index == 0 ? cell.type : block->material_index,
-                cell.state_bits, block->flags,
-                cell.light,      block->render_phase};
+    item.key = {cell.type,
+                block->material_index == 0 ? cell.type : block->material_index,
+                cell.state_bits,
+                block->flags,
+                std::max(cell.light, face_light),
+                block->render_phase};
 }
 
 void consume_mask(ChunkMesh& mesh, std::array<MaskCell, mask_cell_count>& mask,
@@ -339,11 +342,13 @@ GreedyChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborh
                     const auto mask_index = static_cast<std::size_t>(v) * edge + u;
                     if (boundary < edge && !negative_cell.is_air() &&
                         !cell_occludes(positive_cell, directions.positive, render_table)) {
-                        write_mask_cell(negative_mask[mask_index], negative_cell, render_table);
+                        write_mask_cell(negative_mask[mask_index], negative_cell,
+                                        positive_cell.light, render_table);
                     }
                     if (boundary > 0 && !positive_cell.is_air() &&
                         !cell_occludes(negative_cell, directions.negative, render_table)) {
-                        write_mask_cell(positive_mask[mask_index], positive_cell, render_table);
+                        write_mask_cell(positive_mask[mask_index], positive_cell,
+                                        negative_cell.light, render_table);
                     }
                 }
             }

@@ -277,6 +277,7 @@ void add_box(ChunkMesh& mesh, const ChunkMeshingContext& context, VoxelCoord coo
     const math::Vec3f origin{static_cast<float>(coord.x), static_cast<float>(coord.y),
                              static_cast<float>(coord.z)};
     for (const auto& face : face_templates()) {
+        auto face_cell = cell;
         if (box_face_is_on_cell_boundary(box, face.direction)) {
             const auto neighbor =
                 query_cell(context, static_cast<std::int32_t>(coord.x) + face.offset_x,
@@ -285,12 +286,13 @@ void add_box(ChunkMesh& mesh, const ChunkMeshingContext& context, VoxelCoord coo
             if (is_full_occluder(neighbor)) {
                 continue;
             }
+            face_cell.light = std::max(face_cell.light, neighbor.cell.light);
         }
         std::array<math::Vec3f, 4> positions{};
         for (std::size_t index = 0; index < positions.size(); ++index) {
             positions[index] = box_corner(box, face.corners[index], origin);
         }
-        add_quad(mesh, positions, chunk_mesh_face_normal(face.direction), cell, material_index,
+        add_quad(mesh, positions, chunk_mesh_face_normal(face.direction), face_cell, material_index,
                  render_phase);
     }
 }
@@ -302,6 +304,7 @@ void add_box(ChunkMesh& mesh, const ChunkNeighborhoodSnapshot& neighborhood,
     const math::Vec3f origin{static_cast<float>(coord.x), static_cast<float>(coord.y),
                              static_cast<float>(coord.z)};
     for (const auto& face : face_templates()) {
+        auto face_cell = cell;
         if (box_face_is_on_cell_boundary(box, face.direction)) {
             const auto neighbor = query_cell(neighborhood, render_table,
                                              static_cast<std::int32_t>(coord.x) + face.offset_x,
@@ -310,12 +313,13 @@ void add_box(ChunkMesh& mesh, const ChunkNeighborhoodSnapshot& neighborhood,
             if (is_full_occluder(neighbor)) {
                 continue;
             }
+            face_cell.light = std::max(face_cell.light, neighbor.cell.light);
         }
         std::array<math::Vec3f, 4> positions{};
         for (std::size_t index = 0; index < positions.size(); ++index) {
             positions[index] = box_corner(box, face.corners[index], origin);
         }
-        add_quad(mesh, positions, chunk_mesh_face_normal(face.direction), cell, material_index,
+        add_quad(mesh, positions, chunk_mesh_face_normal(face.direction), face_cell, material_index,
                  render_phase);
     }
 }

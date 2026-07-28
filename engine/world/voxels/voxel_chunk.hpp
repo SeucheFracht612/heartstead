@@ -68,6 +68,8 @@ class VoxelChunk {
 
     [[nodiscard]] core::Status set(VoxelCoord coord, VoxelCell cell);
     [[nodiscard]] core::Status apply_saved_cell(VoxelCoord coord, VoxelCell cell);
+    [[nodiscard]] core::Result<std::size_t>
+    apply_derived_light(std::span<const std::uint8_t> light);
     [[nodiscard]] core::Status load_generated_cells(std::vector<VoxelCell> cells);
     void fill(VoxelCell cell);
     void mark_dirty(ChunkDirtyFlag flag) noexcept;
