@@ -1,7 +1,9 @@
 #include "engine/net/host_session.hpp"
 
+#include "engine/net/binary_message.hpp"
 #include "engine/net/command_payload.hpp"
 #include "engine/net/transport_control.hpp"
+#include "engine/net/transport_packet.hpp"
 
 #include <charconv>
 #include <limits>
@@ -13,6 +15,13 @@
 namespace heartstead::net {
 
 namespace {
+
+constexpr std::uint32_t command_result_binary_magic =
+    0x31524348U; // "HCR1" in little-endian byte order.
+constexpr std::size_t max_command_result_type_bytes = 128;
+constexpr std::size_t max_command_result_error_code_bytes = 128;
+constexpr std::size_t max_command_result_error_message_bytes = 32U * 1024U;
+constexpr std::size_t max_command_result_bytes = 64U * 1024U;
 
 [[nodiscard]] HostSessionCommandReport
 make_transport_error_report(const TransportEnvelope& envelope, std::string code,
@@ -142,6 +151,10 @@ core::Status HostSession::start() {
         return core::Status::failure("host_session.missing_transport_factory",
                                      "host session transport factory is not configured");
     }
+    if (config_.max_outbound_bytes_per_client_per_second == 0) {
+        return core::Status::failure("host_session.invalid_outbound_budget",
+                                     "per-client outbound byte budget must be non-zero");
+    }
     auto transport = transport_factory_(config_.transport);
     if (!transport) {
         return core::Status::failure(transport.error().code, transport.error().message);
@@ -153,7 +166,10 @@ core::Status HostSession::start() {
 
     transport_ = std::move(transport).value();
     pending_outbound_.clear();
+    outbound_budget_windows_.clear();
     next_replication_sequence_ = 1;
+    current_server_time_ms_ = 0;
+    pending_budget_dropped_unreliable_message_count_ = 0;
     state_ = HostSessionState::running;
     return core::Status::ok();
 }
@@ -166,6 +182,7 @@ core::Status HostSession::stop() {
     state_ = HostSessionState::stopped;
     transport_.reset();
     pending_outbound_.clear();
+    outbound_budget_windows_.clear();
     return core::Status::ok();
 }
 
@@ -268,7 +285,19 @@ core::Status HostSession::send_replication_message(core::NetId client_id,
 
     auto pending = pending_outbound_.find(client_id);
     if (pending != pending_outbound_.end() && !pending->second.empty()) {
-        pending->second.push_back(PendingOutboundMessage{std::move(message), 0});
+        if (message.channel == TransportChannel::reliable) {
+            pending->second.push_back(PendingOutboundMessage{std::move(message), 0});
+        } else {
+            ++pending_budget_dropped_unreliable_message_count_;
+        }
+        return core::Status::ok();
+    }
+    if (!admit_outbound(client_id, message)) {
+        if (message.channel == TransportChannel::reliable) {
+            pending_outbound_[client_id].push_back(PendingOutboundMessage{std::move(message), 0});
+        } else {
+            ++pending_budget_dropped_unreliable_message_count_;
+        }
         return core::Status::ok();
     }
 
@@ -303,8 +332,12 @@ core::Result<HostSessionTickResult> HostSession::tick(const ServerCommandDispatc
     }
 
     context.executor_role = CommandExecutorRole::authoritative_server;
+    current_server_time_ms_ = context.server_time_ms;
 
     HostSessionTickResult tick_result;
+    tick_result.outbound_budget_dropped_unreliable_message_count =
+        pending_budget_dropped_unreliable_message_count_;
+    pending_budget_dropped_unreliable_message_count_ = 0;
     auto maintenance = transport_->poll_maintenance(context.server_time_ms);
     if (!maintenance) {
         return core::Result<HostSessionTickResult>::failure(maintenance.error().code,
@@ -313,12 +346,20 @@ core::Result<HostSessionTickResult> HostSession::tick(const ServerCommandDispatc
     tick_result.transport_retransmission_count = maintenance.value().retransmission_count;
     tick_result.transport_dropped_reliable_message_count =
         maintenance.value().dropped_reliable_message_count;
-    tick_result.transport_malformed_datagram_count =
-        maintenance.value().malformed_datagram_count;
-    tick_result.transport_rejected_datagram_count =
-        maintenance.value().rejected_datagram_count;
+    tick_result.transport_malformed_datagram_count = maintenance.value().malformed_datagram_count;
+    tick_result.transport_rejected_datagram_count = maintenance.value().rejected_datagram_count;
     tick_result.transport_rate_limited_datagram_count =
         maintenance.value().rate_limited_datagram_count;
+    tick_result.transport_client_to_server_bytes = maintenance.value().client_to_server_bytes;
+    tick_result.transport_server_to_client_bytes = maintenance.value().server_to_client_bytes;
+    tick_result.transport_client_to_server_message_count =
+        maintenance.value().client_to_server_message_count;
+    tick_result.transport_server_to_client_message_count =
+        maintenance.value().server_to_client_message_count;
+    tick_result.transport_simulated_dropped_unreliable_message_count =
+        maintenance.value().simulated_dropped_unreliable_message_count;
+    tick_result.transport_pending_impaired_message_count =
+        maintenance.value().pending_impaired_message_count;
     for (const auto client_id : maintenance.value().connected_clients) {
         auto status = send_welcome(client_id, context.server_time_ms);
         if (!status) {
@@ -331,6 +372,7 @@ core::Result<HostSessionTickResult> HostSession::tick(const ServerCommandDispatc
     tick_result.disconnected_clients = maintenance.value().disconnected_clients;
     for (const auto client_id : tick_result.disconnected_clients) {
         pending_outbound_.erase(client_id);
+        outbound_budget_windows_.erase(client_id);
     }
 
     // A committed command must never be dispatched again, and a later command must not make an
@@ -404,8 +446,7 @@ core::Status HostSession::require_running() const {
     return core::Status::ok();
 }
 
-core::Status HostSession::send_welcome(core::NetId client_id,
-                                       std::int64_t server_time_ms) {
+core::Status HostSession::send_welcome(core::NetId client_id, std::int64_t server_time_ms) {
     const auto capabilities = transport_->capabilities();
     const TransportServerWelcome welcome{
         transport_control_protocol_version,
@@ -483,6 +524,11 @@ void HostSession::flush_pending_outbound(HostSessionOutboundDeliveryReport& repo
         bool blocked = false;
         while (!messages.empty()) {
             auto& outbound = messages.front();
+            if (!admit_outbound(pending->first, outbound.message)) {
+                ++report.budget_deferred_message_count;
+                blocked = true;
+                break;
+            }
             ++report.attempted_message_count;
             if (outbound.attempt_count > 0) {
                 ++report.retry_attempt_count;
@@ -518,6 +564,28 @@ void HostSession::flush_pending_outbound(HostSessionOutboundDeliveryReport& repo
         }
     }
     report.pending_message_count = pending_outbound_message_count();
+}
+
+bool HostSession::admit_outbound(core::NetId client_id, const TransportMessage& message) {
+    auto& window = outbound_budget_windows_[client_id];
+    if (!window.initialized || current_server_time_ms_ < window.started_ms ||
+        current_server_time_ms_ - window.started_ms >= 1'000) {
+        window.started_ms = current_server_time_ms_;
+        window.used_bytes = 0;
+        window.initialized = true;
+    }
+    const auto bytes = static_cast<std::uint64_t>(outbound_wire_bytes(client_id, message));
+    const auto limit = static_cast<std::uint64_t>(config_.max_outbound_bytes_per_client_per_second);
+    if (bytes > limit || window.used_bytes > limit - bytes) {
+        return false;
+    }
+    window.used_bytes += bytes;
+    return true;
+}
+
+std::size_t HostSession::outbound_wire_bytes(core::NetId client_id,
+                                             const TransportMessage& message) const {
+    return TransportPacketCodec::encode({server_id(), client_id, message}).size();
 }
 
 std::string_view host_session_state_name(HostSessionState state) noexcept {
@@ -620,6 +688,74 @@ HostSessionCommandResultTextCodec::decode(std::string_view text) {
     return core::Result<HostSessionCommandResult>::success(std::move(result));
 }
 
+std::string HostSessionCommandResultBinaryCodec::encode(const HostSessionCommandResult& result) {
+    BinaryMessageWriter writer;
+    writer.u32(command_result_binary_magic);
+    writer.var_u64(result.sequence);
+    std::uint8_t flags = result.success ? 1U : 0U;
+    flags |= result.committed_world_mutation ? 2U : 0U;
+    writer.u8(flags);
+    writer.var_u64(result.event_count);
+    writer.var_u64(result.reserved_id_count);
+    writer.text_var(result.command_type);
+    if (!result.success) {
+        writer.text_var(result.error_code);
+        writer.text_var(result.error_message);
+    }
+    return writer.take();
+}
+
+core::Result<HostSessionCommandResult>
+HostSessionCommandResultBinaryCodec::decode(std::string_view bytes) {
+    if (bytes.size() > max_command_result_bytes) {
+        return core::Result<HostSessionCommandResult>::failure(
+            "host_session_result.too_large", "binary command result exceeds its payload limit");
+    }
+    BinaryMessageReader reader(bytes);
+    std::uint32_t decoded_magic = 0;
+    std::uint64_t event_count = 0;
+    std::uint64_t reserved_id_count = 0;
+    std::uint8_t flags = 0;
+    HostSessionCommandResult result;
+    if (!reader.u32(decoded_magic) || decoded_magic != command_result_binary_magic ||
+        !reader.var_u64(result.sequence) || !reader.u8(flags) || flags > 3U ||
+        !reader.var_u64(event_count) || !reader.var_u64(reserved_id_count) ||
+        event_count > std::numeric_limits<std::uint32_t>::max() ||
+        reserved_id_count > std::numeric_limits<std::uint32_t>::max() ||
+        !reader.text_var(result.command_type, max_command_result_type_bytes)) {
+        return core::Result<HostSessionCommandResult>::failure(
+            "host_session_result.invalid_binary",
+            "binary command result is malformed, truncated, or outside its bounds");
+    }
+    result.success = (flags & 1U) != 0;
+    result.committed_world_mutation = (flags & 2U) != 0;
+    result.event_count = static_cast<std::uint32_t>(event_count);
+    result.reserved_id_count = static_cast<std::uint32_t>(reserved_id_count);
+    if (!result.success &&
+        (!reader.text_var(result.error_code, max_command_result_error_code_bytes) ||
+         !reader.text_var(result.error_message, max_command_result_error_message_bytes))) {
+        return core::Result<HostSessionCommandResult>::failure(
+            "host_session_result.invalid_binary",
+            "failed binary command result is missing bounded error fields");
+    }
+    if (!reader.finished()) {
+        return core::Result<HostSessionCommandResult>::failure(
+            "host_session_result.trailing_data", "binary command result contains trailing bytes");
+    }
+    auto validation = validate_host_session_command_result(result);
+    if (!validation) {
+        return core::Result<HostSessionCommandResult>::failure(validation.error().code,
+                                                               validation.error().message);
+    }
+    return core::Result<HostSessionCommandResult>::success(std::move(result));
+}
+
+bool HostSessionCommandResultBinaryCodec::is_encoded(std::string_view bytes) noexcept {
+    BinaryMessageReader reader(bytes);
+    std::uint32_t decoded_magic = 0;
+    return reader.u32(decoded_magic) && decoded_magic == command_result_binary_magic;
+}
+
 core::Status validate_host_session_command_result(const HostSessionCommandResult& result) noexcept {
     if (!result.command_type.empty() && !is_valid_command_payload_key(result.command_type)) {
         return core::Status::failure(
@@ -659,7 +795,7 @@ host_session_command_result_from_report(const HostSessionCommandReport& report) 
 }
 
 std::string host_session_result_payload(const HostSessionCommandReport& report) {
-    return HostSessionCommandResultTextCodec::encode(
+    return HostSessionCommandResultBinaryCodec::encode(
         host_session_command_result_from_report(report));
 }
 
@@ -675,7 +811,9 @@ host_session_command_result_from_transport(const TransportEnvelope& envelope) {
             "command result must arrive on the reliable transport channel");
     }
 
-    auto result = HostSessionCommandResultTextCodec::decode(envelope.message.payload);
+    auto result = HostSessionCommandResultBinaryCodec::is_encoded(envelope.message.payload)
+                      ? HostSessionCommandResultBinaryCodec::decode(envelope.message.payload)
+                      : HostSessionCommandResultTextCodec::decode(envelope.message.payload);
     if (!result) {
         return result;
     }

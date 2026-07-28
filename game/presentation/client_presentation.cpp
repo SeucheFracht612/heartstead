@@ -7,6 +7,25 @@
 
 namespace heartstead::game {
 
+namespace {
+
+void preserve_monotonic_revision(PresentationObjectUpdate& update,
+                                 const RenderObjectSnapshot* previous) {
+    if (previous == nullptr || update.source_revision > previous->source_revision) {
+        return;
+    }
+    if (update.transform == previous->current_transform &&
+        update.locomotion == previous->current_locomotion) {
+        update.source_revision = previous->source_revision;
+        return;
+    }
+    update.source_revision = previous->source_revision == std::numeric_limits<std::uint64_t>::max()
+                                 ? previous->source_revision
+                                 : previous->source_revision + 1;
+}
+
+} // namespace
+
 core::Result<PresentationSynchronizationStats>
 ClientPresentationSynchronizer::synchronize(const ClientRuntime& client,
                                             PresentationWorld& presentation) {
@@ -35,6 +54,7 @@ ClientPresentationSynchronizer::synchronize(const ClientRuntime& client,
                 ? snapshot->state.simulation_tick
                 : snapshot->state.simulation_tick + 1;
         const auto* previous = presentation.find_object(snapshot->player_net_id);
+        preserve_monotonic_revision(update, previous);
         const auto previous_revision = previous == nullptr ? 0 : previous->source_revision;
         auto synchronized = presentation.upsert_object(update);
         if (!synchronized) {
@@ -62,6 +82,7 @@ ClientPresentationSynchronizer::synchronize(const ClientRuntime& client,
                 ? snapshot->simulation_tick
                 : snapshot->simulation_tick + 1;
         const auto* previous = presentation.find_object(snapshot->entity_net_id);
+        preserve_monotonic_revision(update, previous);
         const auto previous_revision = previous == nullptr ? 0 : previous->source_revision;
         auto synchronized = presentation.upsert_object(update);
         if (!synchronized) {

@@ -48,7 +48,7 @@ Implemented in this repository:
   POSIX UDP server/client endpoints, challenge-cookie remote session negotiation, endpoint-bound
   random session tokens, keepalive/timeout/disconnect handling, rate limits, packet
   fragmentation/reassembly, deterministic reliable acknowledgement/retry/drop maintenance, and
-  capability reporting
+  capability reporting, plus a deterministic latency/jitter/loss acceptance backend
 - host-session lifecycle for local authoritative command processing
 - scripting runtime boundary with capability-gated calls, sandbox resource limits, disabled
   backend, restricted Luau foundation backend, and registered host API/event validation for
@@ -148,7 +148,8 @@ Implemented in this repository:
 - deterministic transport control payload codec with server welcome messages for session
   handshakes and server disconnect messages for graceful session close
 - client-side transport handshake acceptance into validated session records
-- deterministic host-session command-result payload codec and client-side response validation
+- bounded binary command and host-session result payload codecs with client-side response
+  validation
 - client-side protocol session state for command sequencing, pending command tracking, command
   result intake, inspectable replication intake reports, duplicate/out-of-order replication
   rejection, and server-disconnect cleanup
@@ -159,7 +160,8 @@ Implemented in this repository:
   persistent entities, cargo, assemblies, owner inventories, workpieces, and owner processes without
   collapsing those stores into one replicated object model
 - typed replication delta materialization that reuses existing save-section record shapes, plus
-  bounded binary hot-path codecs for player inputs, movement snapshots, and chunk snapshot slices
+  bounded binary live codecs for commands, results, events, authoritative world deltas, player
+  inputs, movement snapshots, and chunk snapshot slices
 - world-layer host-tick delta materialization that converts successful authoritative mutating
   command reports into typed replication snapshots while reporting skipped commands explicitly
 - world-layer typed replication delta apply that upserts separate world stores while preserving
@@ -171,12 +173,16 @@ Implemented in this repository:
   payload-agnostic host replication send hook, skipping partial deltas that need resync
 - client protocol intake for non-event replication payloads as raw envelopes so typed world deltas
   can be decoded and drained by the world layer without teaching networking about world stores
-- deterministic text codec for typed replication delta snapshots, reusing save snapshot text for
-  materialized sections while validating delta-plan counts
+- deterministic binary codec for live typed replication delta snapshots, reusing the sectioned
+  save snapshot binary format while validating delta-plan counts; text codecs remain for tools and
+  compatibility fixtures
 - shared client/server movement prediction with input redundancy, authoritative acknowledgement,
   reconciliation/replay, correction diagnostics, and buffered interpolation of remote players
 - unreliable latest-wins movement/entity snapshots with deterministic per-tick message/byte
-  budgets, round-robin recipient fairness, and inspectable deferral/byte counters
+  budgets, round-robin recipient fairness, a hard per-client 256 KiB/s encoded-byte ceiling, and
+  inspectable deferral/drop/byte counters
+- deterministic 100 ms RTT, ±20 ms round-trip jitter, and 2% loss runtime acceptance at 21.0 KiB/s
+  average and 26.6 KiB one-second peak server-to-client traffic
 - deterministic transport/handshake/replication codec mutation and random-input fuzz coverage
 - server-side player profile persistence with stable UUIDs, display-name history, roles,
   spawn/bed state, markers, portable flags/settings, and layered map-discovery region bitsets

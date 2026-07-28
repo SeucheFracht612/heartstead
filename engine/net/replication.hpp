@@ -14,6 +14,8 @@
 namespace heartstead::net {
 
 inline constexpr std::string_view replication_world_events_payload_type =
+    "replication.world_events.bin.v1";
+inline constexpr std::string_view replication_world_events_legacy_payload_type =
     "replication.world_events";
 
 struct ReplicationBatch {
@@ -93,6 +95,12 @@ class ReplicationTextCodec {
   public:
     [[nodiscard]] static std::string encode(const ReplicationBatch& batch);
     [[nodiscard]] static core::Result<ReplicationBatch> decode(std::string_view text);
+};
+
+class ReplicationBinaryCodec {
+  public:
+    [[nodiscard]] static std::string encode(const ReplicationBatch& batch);
+    [[nodiscard]] static core::Result<ReplicationBatch> decode(std::string_view bytes);
 };
 
 class ReplicationRelevance {

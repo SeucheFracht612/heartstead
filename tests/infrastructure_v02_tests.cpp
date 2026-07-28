@@ -335,6 +335,17 @@ void test_replication_codec_rejects_trailing_data() {
         world::OperationEvent{"world.voxel_changed", core::SaveId::from_value(4), "changed"});
     const auto encoded = net::ReplicationTextCodec::encode(batch);
     assert(net::ReplicationTextCodec::decode(encoded));
+    const auto binary = net::ReplicationBinaryCodec::encode(batch);
+    assert(binary.size() < encoded.size());
+    auto decoded_binary = net::ReplicationBinaryCodec::decode(binary);
+    assert(decoded_binary);
+    assert(decoded_binary.value().replication_sequence == 9);
+    assert(decoded_binary.value().command_sequence == 7);
+    assert(decoded_binary.value().events.size() == 1);
+    assert(decoded_binary.value().events.front().type == "world.voxel_changed");
+    assert(decoded_binary.value().events.front().subject == core::SaveId::from_value(4));
+    assert(decoded_binary.value().events.front().message == "changed");
+    assert(!net::ReplicationBinaryCodec::decode(binary.substr(0, binary.size() - 1)));
     auto trailing = net::ReplicationTextCodec::decode(encoded + "sequence=10\n");
     assert(!trailing && trailing.error().code == "replication.trailing_data");
 }

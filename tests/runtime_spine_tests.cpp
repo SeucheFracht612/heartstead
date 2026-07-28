@@ -459,8 +459,7 @@ void test_external_listen_runtime_uses_true_remote_endpoint() {
         now_ms += 17;
         assert(runtime.run_frame({16'667, now_ms}));
     }
-    const auto* replicated =
-        runtime.session()->client()->world().chunks().find({0, 0, 0});
+    const auto* replicated = runtime.session()->client()->world().chunks().find({0, 0, 0});
     assert(replicated != nullptr);
     const auto cell = replicated->get({1, 2, 3});
     assert(cell && cell.value().type != 0);
@@ -510,15 +509,13 @@ void test_two_remote_clients_predict_and_interpolate() {
     const auto first_player = first.session()->client()->local_player_net_id();
     assert(first_player.is_valid() &&
            first_player != second.session()->client()->local_player_net_id());
-    const auto start =
-        first.session()->client()->local_player_snapshot()->state.position;
+    const auto start = first.session()->client()->local_player_snapshot()->state.position;
     movement::PlayerInputFrame input;
     input.tick = 1;
     input.sequence = 1;
     input.move_z = 32'767;
     assert(first.session()->submit_player_input(input, now_ms));
-    const auto immediate =
-        first.session()->client()->local_player_snapshot()->state.position;
+    const auto immediate = first.session()->client()->local_player_snapshot()->state.position;
     assert(immediate.relative_to(start.anchor).z > start.local_offset.z);
 
     game::RuntimeFrameStats second_frame;
@@ -532,14 +529,12 @@ void test_two_remote_clients_predict_and_interpolate() {
     }
     const auto* interpolated = second.session()->client()->player_snapshot(first_player);
     assert(interpolated != nullptr);
-    assert(interpolated->state.position.relative_to(start.anchor).z >
-           start.local_offset.z);
+    assert(interpolated->state.position.relative_to(start.anchor).z > start.local_offset.z);
     assert(second_frame.client.interpolated_player_count >= 1);
     assert(server.shutdown());
     now_ms += 16'000;
     auto timed_out = first.run_frame({16'667, now_ms});
-    assert(!timed_out &&
-           timed_out.error().code == "transport_client.idle_timeout");
+    assert(!timed_out && timed_out.error().code == "transport_client.idle_timeout");
     assert(first.shutdown());
     assert(second.shutdown());
 }
@@ -745,6 +740,95 @@ void test_transient_replication_budget_defers_latest_state() {
     assert(runtime.shutdown());
 }
 
+void test_prediction_under_deterministic_100ms_rtt_and_two_percent_loss() {
+    const auto report = content::ContentValidation::validate(source_root());
+    assert(!report.has_errors());
+    auto runtime = make_runtime(report);
+    game::RuntimeConfiguration config;
+    config.fixed_step = {60, 4, 250'000};
+    config.simulated_network_one_way_latency_ms = 50;
+    config.simulated_network_jitter_ms = 10;
+    config.simulated_network_unreliable_loss_basis_points = 200;
+    config.simulated_network_seed = 0x123456789abcdef0ULL;
+    assert(runtime.start_session(config, make_session_request(report)));
+    auto* session = runtime.session();
+    assert(session != nullptr && session->server() != nullptr && session->client() != nullptr);
+
+    std::int64_t now_ms = 0;
+    for (std::uint32_t frame_index = 0; frame_index < 60; ++frame_index) {
+        now_ms += 17;
+        auto frame = runtime.run_frame({16'667, now_ms});
+        assert(frame);
+        if (session->client()->is_connected() &&
+            session->client()->local_player_snapshot() != nullptr) {
+            break;
+        }
+    }
+    assert(session->client()->is_connected());
+    const auto* initial_snapshot = session->client()->local_player_snapshot();
+    assert(initial_snapshot != nullptr);
+    const auto initial_position = initial_snapshot->state.position;
+
+    std::uint64_t server_to_client_bytes = 0;
+    std::uint64_t one_second_window_bytes = 0;
+    std::uint64_t peak_one_second_bytes = 0;
+    std::uint32_t simulated_drops = 0;
+    std::uint32_t accepted_inputs = 0;
+    std::uint32_t hard_corrections = 0;
+    double maximum_correction_distance = 0.0;
+    constexpr std::uint32_t measured_ticks = 600;
+    for (std::uint32_t tick = 1; tick <= measured_ticks; ++tick) {
+        movement::PlayerInputFrame input;
+        input.tick = tick;
+        input.sequence = tick;
+        input.move_z = 32'767;
+        assert(session->submit_player_input(input, now_ms));
+        if (tick == 1) {
+            const auto* immediate = session->client()->local_player_snapshot();
+            assert(immediate != nullptr);
+            assert(immediate->state.position.relative_to(initial_position.anchor).z >
+                   initial_position.local_offset.z);
+        }
+
+        now_ms += 17;
+        auto frame = runtime.run_frame({16'667, now_ms});
+        assert(frame && !frame.value().server_ticks.empty());
+        for (const auto& server_tick : frame.value().server_ticks) {
+            server_to_client_bytes += server_tick.commands.transport_server_to_client_bytes;
+            one_second_window_bytes += server_tick.commands.transport_server_to_client_bytes;
+            simulated_drops +=
+                server_tick.commands.transport_simulated_dropped_unreliable_message_count;
+            accepted_inputs += server_tick.accepted_movement_input_count;
+        }
+        hard_corrections += frame.value().client.hard_correction_count;
+        maximum_correction_distance =
+            std::max(maximum_correction_distance, frame.value().client.maximum_correction_distance);
+        if (tick % 60U == 0) {
+            peak_one_second_bytes = std::max(peak_one_second_bytes, one_second_window_bytes);
+            one_second_window_bytes = 0;
+        }
+    }
+
+    const auto measured_seconds =
+        static_cast<double>(measured_ticks) / config.fixed_step.ticks_per_second;
+    const auto average_bytes_per_second =
+        static_cast<double>(server_to_client_bytes) / measured_seconds;
+    assert(simulated_drops > 0);
+    assert(accepted_inputs > measured_ticks * 9U / 10U);
+    // A collision-world revision change may intentionally flush prediction history once during
+    // bootstrap; its correction must still remain below the published 1 m comfort threshold.
+    assert(hard_corrections <= 1);
+    assert(maximum_correction_distance < 1.0);
+    assert(average_bytes_per_second < 64.0 * 1024.0);
+    assert(peak_one_second_bytes < 256U * 1024U);
+    const auto client_id = session->client()->client_id();
+    const auto* authoritative = session->server()->player_for_client(client_id);
+    assert(authoritative != nullptr);
+    assert(authoritative->state.position.relative_to(initial_position.anchor).z >
+           initial_position.local_offset.z + 5.0);
+    assert(runtime.shutdown());
+}
+
 void test_typed_voxel_commands_validate_and_replicate() {
     const auto report = content::ContentValidation::validate(source_root());
     assert(!report.has_errors());
@@ -880,13 +964,11 @@ void test_runtime_simulates_and_replicates_voxel_fluid() {
     constexpr world::BlockCoord flow_position{13, 1, 12};
     const auto source = world::block_to_chunk_local(source_position);
     const auto flow = world::block_to_chunk_local(flow_position);
-    const world::VoxelCell water_source{
-        *water_type, 0, world::full_fluid_source_state_bits()};
+    const world::VoxelCell water_source{*water_type, 0, world::full_fluid_source_state_bits()};
     assert(server_world.chunks().set(source.chunk, source.local, water_source,
                                      server_world.dirty_regions(), report.voxel_palette));
     for (std::size_t frame_index = 0; frame_index < 12; ++frame_index) {
-        auto frame =
-            runtime.run_frame({16'667, static_cast<std::int64_t>((frame_index + 1) * 17)});
+        auto frame = runtime.run_frame({16'667, static_cast<std::int64_t>((frame_index + 1) * 17)});
         assert(frame);
     }
 
@@ -1261,6 +1343,7 @@ int main() {
     test_jolt_runtime_drops_settles_and_restores_physical_resource();
     test_authoritative_player_input_moves_and_replicates();
     test_transient_replication_budget_defers_latest_state();
+    test_prediction_under_deterministic_100ms_rtt_and_two_percent_loss();
     test_typed_voxel_commands_validate_and_replicate();
     test_runtime_relights_and_replicates_chunk_light();
     test_runtime_simulates_and_replicates_voxel_fluid();

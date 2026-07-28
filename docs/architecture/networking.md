@@ -114,10 +114,15 @@ Implemented foundation:
   - rejects replayed or out-of-order reliable command messages before the server dispatcher can
     execute them
   - drains deterministic inboxes for tests and local host sessions
+  - can apply seeded one-way latency, bounded jitter, and unreliable-message loss without making
+    acceptance tests depend on wall-clock scheduling
+  - reports encoded bytes, messages, simulated loss, and delayed-delivery backlog in each direction
 
 - Command bridging
   - converts `CommandEnvelope` into a transport command message
   - reconstructs `CommandEnvelope` from a received transport envelope
+  - uses the bounded `CommandPayloadBinaryCodec` on the live wire while retaining canonical text
+    decode/encode at the existing command-handler boundary
   - keeps authoritative mutation logic in `ServerCommandDispatcher`
   - exposes full dispatch reports for tooling when rejected commands need error details and
     rollback traces
@@ -127,10 +132,11 @@ Implemented foundation:
   - `CommandPayloadTextCodec` provides deterministic key/value payloads for structured
     engine commands
   - payload fields validate keys and escape delimiters before handlers parse typed values
+  - `CommandPayloadBinaryCodec` provides the versioned, bounded live representation
 
 - Command result foundation
-  - `HostSessionCommandResultTextCodec` provides deterministic key/value payloads for
-    server command responses
+  - `HostSessionCommandResultBinaryCodec` provides the versioned, bounded live representation;
+    the deterministic text codec remains available for compatibility fixtures and tools
   - command results report sequence, command type, success/error status, committed-world-mutation
     state, event count, reserved-id count, and escaped error details
   - `host_session_command_result_from_transport` validates command-result message kind,
@@ -176,8 +182,10 @@ Implemented foundation:
     client's local command sequence
   - sends per-recipient-filtered events and reserved ids only to relevant connected clients and
     reports filtered clients
+  - enforces a fixed one-second encoded-byte ceiling per client, deferring reliable FIFO traffic
+    and dropping replaceable unreliable state under backpressure
   - returns an inspectable tick result that cross-checks transport, response, command-report,
-    replication, and relevance-report counts
+    replication, relevance-report, byte, message, drop, backlog, and budget counts
 
 - World command path
   - engine command handlers can receive an authoritative `WorldState`
@@ -203,18 +211,21 @@ Implemented foundation:
     runtime-only entity identity on the receiving side
   - world code can drain `ClientSession` event intake and apply matching typed deltas without
     teaching client protocol code about world stores
-  - typed state-delta transport envelopes use a world-owned `replication.world_delta_snapshot`
-    payload type over reliable replication messages, decoded by world code rather than net code
+  - typed state-delta transport envelopes use a world-owned
+    `replication.world_delta_snapshot.bin.v1` payload type over reliable replication messages,
+    decoded by world code rather than net code
   - world code can send complete typed delta snapshots to the same relevant clients reported by a
     host tick, using a host-session replication send hook that only understands transport messages
   - client protocol code can queue typed delta envelopes opaquely, and world code can drain,
     decode, and apply those queued snapshots against matching event batches
-  - `WorldReplicationDeltaSnapshotTextCodec` provides a deterministic early state-delta payload for
-    tests and tools before production binary delta transport exists
+  - `WorldReplicationDeltaSnapshotBinaryCodec` is the bounded live representation and embeds the
+    existing sectioned save binary snapshot; its deterministic text codec remains for tools and
+    compatibility fixtures
   - `BinaryMessageWriter`/`BinaryMessageReader` provide explicit little-endian fixed-width fields
     and bounded varints for live codecs without exposing host ABI/layout
-  - player input bundles, movement snapshots, and chunk snapshot slices use binary live codecs;
-    input redundancy sends the current and recent frames over unreliable transport
+  - commands, command results, world events, authoritative world deltas, player input bundles,
+    movement snapshots, and chunk snapshot slices use versioned binary live codecs; input
+    redundancy sends the current and recent frames over unreliable transport
   - movement and entity-motion snapshots use unreliable latest-wins delivery; world events and
     store deltas remain reliable
   - server transient snapshot message/byte budgets defer excess work and rotate recipient priority
@@ -223,7 +234,8 @@ Implemented foundation:
     teaching transport or host sessions about world representation storage
   - the world layer can refresh a host session with a newly derived filter between ticks as
     viewers move or subjects change LOD
-  - host sessions send `replication.world_events` transport messages to relevant connected clients
+  - host sessions send `replication.world_events.bin.v1` transport messages to relevant connected
+    clients, while readers retain the legacy text payload type for compatibility
 
 - External packet backend
   - has an explicit `ExternalTransportHostConfig` with server `NetId`, bind endpoint,
@@ -267,6 +279,13 @@ compositions using numeric IPv4 endpoints. Client prediction/reconciliation and 
 interpolation keep presentation responsive independently of the authoritative round trip. The
 same controller is used for authoritative and predicted movement, with a bounded input history and
 hard-correction diagnostics when replay cannot converge.
+
+The deterministic impaired-runtime acceptance profile is 100 ms RTT with ±20 ms round-trip jitter
+and 2% unreliable-message loss. Its fixed 600-tick run accepts 594 of 600 movement inputs, records
+one collision-revision correction with a 0.825 m maximum, averages 21.0 KiB/s of encoded
+server-to-client traffic, and peaks at 26.6 KiB over one second. The permanent gates are 90% input
+acceptance, no more than the documented bootstrap correction, a correction below 1.0 m, an average
+below 64 KiB/s, and a hard per-client ceiling of 256 KiB/s.
 
 This remains a controlled-LAN/testing transport rather than a complete public-Internet service.
 The current reliability layer is a bounded ACK/resend/drop primitive; it does not provide

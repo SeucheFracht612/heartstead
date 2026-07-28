@@ -547,10 +547,8 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     stats.entity_motion_snapshot_count = current_entity_motion_snapshot_count_;
     stats.entity_motion_tombstone_count = current_entity_motion_tombstone_count_;
     stats.player_tombstone_count = current_player_tombstone_count_;
-    stats.deferred_transient_snapshot_count =
-        current_deferred_transient_snapshot_count_;
-    stats.transient_snapshot_payload_bytes =
-        current_transient_snapshot_payload_bytes_;
+    stats.deferred_transient_snapshot_count = current_deferred_transient_snapshot_count_;
+    stats.transient_snapshot_payload_bytes = current_transient_snapshot_payload_bytes_;
     return core::Result<ServerRuntimeTickStats>::success(std::move(stats));
 }
 
@@ -622,8 +620,8 @@ core::Status ServerRuntime::submit_movement_input(core::NetId client_id,
     if (!status) {
         return status;
     }
-    return host_.send_client_control(
-        client_id, movement::make_movement_input_bundle_message(bundle, now_ms));
+    return host_.send_client_control(client_id,
+                                     movement::make_movement_input_bundle_message(bundle, now_ms));
 }
 
 core::Result<std::vector<net::TransportEnvelope>>
@@ -782,8 +780,7 @@ void ServerRuntime::process_movement_control_messages(
             continue;
         }
         if (message.message.payload_type == movement::movement_input_bundle_payload_type ||
-            message.message.payload_type ==
-                movement::legacy_movement_input_bundle_payload_type) {
+            message.message.payload_type == movement::legacy_movement_input_bundle_payload_type) {
             auto bundle = movement::movement_input_bundle_from_transport(message);
             if (!bundle) {
                 ++current_rejected_movement_input_count_;
@@ -794,8 +791,7 @@ void ServerRuntime::process_movement_control_messages(
                 ++current_rejected_movement_input_count_;
                 continue;
             }
-            current_accepted_movement_input_count_ +=
-                static_cast<std::uint32_t>(accepted.value());
+            current_accepted_movement_input_count_ += static_cast<std::uint32_t>(accepted.value());
         } else if (message.message.payload_type == movement::movement_input_payload_type) {
             auto input = movement::movement_input_from_transport(message);
             if (!input || !found->second.pending_inputs.push(std::move(input).value())) {
@@ -1160,8 +1156,8 @@ core::Status ServerRuntime::replicate_players() {
     }
     std::ranges::sort(client_ids);
     if (!client_ids.empty()) {
-        const auto offset = static_cast<std::size_t>(
-            transient_replication_cursor_ % client_ids.size());
+        const auto offset =
+            static_cast<std::size_t>(transient_replication_cursor_ % client_ids.size());
         const auto iterator_offset =
             static_cast<std::vector<std::uint64_t>::difference_type>(offset);
         std::rotate(client_ids.begin(), client_ids.begin() + iterator_offset, client_ids.end());
@@ -1259,8 +1255,8 @@ core::Status ServerRuntime::replicate_entity_motion(std::uint64_t simulation_tic
     }
     std::ranges::sort(recipients);
     if (!recipients.empty()) {
-        const auto offset = static_cast<std::size_t>(
-            transient_replication_cursor_ % recipients.size());
+        const auto offset =
+            static_cast<std::size_t>(transient_replication_cursor_ % recipients.size());
         const auto iterator_offset =
             static_cast<std::vector<std::uint64_t>::difference_type>(offset);
         std::rotate(recipients.begin(), recipients.begin() + iterator_offset, recipients.end());
@@ -1400,9 +1396,13 @@ core::Status ServerRuntime::send_initial_chunks(core::NetId client_id) {
         if (!sequence) {
             return core::Status::failure(sequence.error().code, sequence.error().message);
         }
-        auto status = host_.send_replication_message(
-            client_id,
-            movement::make_movement_snapshot_message(snapshot, current_time_ms_, sequence.value()));
+        auto initial_snapshot =
+            movement::make_movement_snapshot_message(snapshot, current_time_ms_, sequence.value());
+        // The continuously replicated snapshot stream is latest-wins/unreliable. The bootstrap
+        // snapshot is different: losing it leaves the client without a prediction seed, so carry
+        // this one instance on the reliable session FIFO.
+        initial_snapshot.channel = net::TransportChannel::reliable;
+        auto status = host_.send_replication_message(client_id, std::move(initial_snapshot));
         if (!status) {
             return status;
         }
@@ -1419,9 +1419,13 @@ core::Status ServerRuntime::send_initial_chunks(core::NetId client_id) {
     inventory_batch.events.push_back(
         {"inventory.snapshot", local_player->save_id, "initial_private_inventory"});
     auto inventory_snapshot = world::materialize_replication_delta(world_, inventory_batch);
-    auto status = host_.send_replication_message(
-        client_id,
-        world::make_replication_delta_transport_message(inventory_snapshot, current_time_ms_));
+    auto inventory_message =
+        world::make_replication_delta_transport_message(inventory_snapshot, current_time_ms_);
+    if (!inventory_message) {
+        return core::Status::failure(inventory_message.error().code,
+                                     inventory_message.error().message);
+    }
+    auto status = host_.send_replication_message(client_id, std::move(inventory_message).value());
     if (!status) {
         return status;
     }
@@ -1441,10 +1445,9 @@ core::Result<std::uint64_t> ServerRuntime::reserve_custom_replication_sequence()
 }
 
 bool ServerRuntime::admit_transient_snapshot(std::size_t payload_bytes) noexcept {
-    const auto remaining_bytes =
-        desc_.max_transient_snapshot_payload_bytes_per_tick -
-        std::min(desc_.max_transient_snapshot_payload_bytes_per_tick,
-                 current_transient_snapshot_payload_bytes_);
+    const auto remaining_bytes = desc_.max_transient_snapshot_payload_bytes_per_tick -
+                                 std::min(desc_.max_transient_snapshot_payload_bytes_per_tick,
+                                          current_transient_snapshot_payload_bytes_);
     if (current_transient_snapshot_message_count_ >=
             desc_.max_transient_snapshot_messages_per_tick ||
         payload_bytes > remaining_bytes) {
@@ -1452,8 +1455,7 @@ bool ServerRuntime::admit_transient_snapshot(std::size_t payload_bytes) noexcept
         return false;
     }
     ++current_transient_snapshot_message_count_;
-    current_transient_snapshot_payload_bytes_ +=
-        static_cast<std::uint32_t>(payload_bytes);
+    current_transient_snapshot_payload_bytes_ += static_cast<std::uint32_t>(payload_bytes);
     return true;
 }
 

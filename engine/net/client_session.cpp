@@ -98,8 +98,7 @@ core::Status ClientSession::accept_welcome(const TransportEnvelope& envelope) {
     return core::Status::ok();
 }
 
-void ClientSession::mark_transport_disconnected(std::string reason_code,
-                                                std::string reason_message,
+void ClientSession::mark_transport_disconnected(std::string reason_code, std::string reason_message,
                                                 std::int64_t disconnected_at_ms) {
     disconnect_reason_code_ = std::move(reason_code);
     disconnect_reason_message_ = std::move(reason_message);
@@ -249,7 +248,8 @@ core::Status ClientSession::receive_command_result(const TransportEnvelope& enve
 }
 
 core::Status ClientSession::receive_replication(const TransportEnvelope& envelope) {
-    if (envelope.message.payload_type != replication_world_events_payload_type) {
+    if (envelope.message.payload_type != replication_world_events_payload_type &&
+        envelope.message.payload_type != replication_world_events_legacy_payload_type) {
         replication_messages_.push_back(envelope);
         return core::Status::ok();
     }

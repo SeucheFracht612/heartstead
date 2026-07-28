@@ -1,7 +1,9 @@
 #include "engine/world/replication_delta.hpp"
 
+#include "engine/net/binary_message.hpp"
 #include "engine/net/client_session.hpp"
 #include "engine/net/host_session.hpp"
+#include "engine/save/save_binary_codec.hpp"
 #include "engine/save/save_text_codec.hpp"
 #include "engine/workpieces/workpiece_codec.hpp"
 #include "engine/workpieces/workpiece_state.hpp"
@@ -13,6 +15,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <set>
@@ -30,6 +33,12 @@ namespace {
 constexpr std::string_view delta_magic = "heartstead.replication_delta_snapshot.v1";
 constexpr std::string_view snapshot_begin_marker = "snapshot_begin";
 constexpr std::string_view snapshot_end_marker = "snapshot_end";
+constexpr std::uint32_t delta_binary_magic = 0x31445248U; // "HRD1" in little-endian byte order.
+constexpr std::size_t max_delta_binary_bytes = 4U * 1024U * 1024U;
+constexpr std::size_t max_delta_command_type_bytes = 128;
+constexpr std::size_t max_delta_event_type_bytes = 256;
+constexpr std::size_t max_delta_event_message_bytes = 1024U * 1024U;
+constexpr std::size_t max_delta_records = 100'000;
 
 [[nodiscard]] std::uint64_t key(core::SaveId id) noexcept {
     return id.value();
@@ -371,9 +380,9 @@ save_snapshot_from_delta(const WorldReplicationDeltaSnapshot& snapshot) {
 
 [[nodiscard]] core::Status
 validate_delta_snapshot_payload(const WorldReplicationDeltaSnapshot& snapshot) {
-    std::uint32_t subject_event_count = 0;
-    std::uint32_t materialized_record_count = 0;
-    std::uint32_t missing_subject_count = 0;
+    std::uint64_t subject_event_count = 0;
+    std::uint64_t materialized_record_count = 0;
+    std::uint64_t missing_subject_count = 0;
     for (const auto& subject : snapshot.plan.subjects) {
         if (subject.private_event_count > subject.event_count) {
             return core::Status::failure(
@@ -382,7 +391,7 @@ validate_delta_snapshot_payload(const WorldReplicationDeltaSnapshot& snapshot) {
         }
         subject_event_count += subject.event_count;
         materialized_record_count += subject.materialized_record_count;
-        missing_subject_count += subject.missing_subject ? 1U : 0U;
+        missing_subject_count += subject.missing_subject ? 1ULL : 0ULL;
     }
     if (snapshot.plan.global_events.size() != snapshot.plan.global_event_count ||
         snapshot.plan.subjects.size() != snapshot.plan.unique_subject_count ||
@@ -1236,9 +1245,14 @@ core::Result<WorldReplicationDeltaDeliveryReport> send_replication_delta_snapsho
                         continue;
                     }
 
-                    auto status = host.send_replication_message(
-                        decision.client_id,
-                        make_replication_delta_transport_message(filtered.value(), server_time_ms));
+                    auto message =
+                        make_replication_delta_transport_message(filtered.value(), server_time_ms);
+                    if (!message) {
+                        return core::Result<WorldReplicationDeltaDeliveryReport>::failure(
+                            message.error().code, message.error().message);
+                    }
+                    auto status = host.send_replication_message(decision.client_id,
+                                                                std::move(message).value());
                     if (!status) {
                         return core::Result<WorldReplicationDeltaDeliveryReport>::failure(
                             status.error().code, status.error().message);
@@ -1481,8 +1495,7 @@ core::Result<WorldClientReplicationApplyReport> apply_client_replication_deltas(
         batch_report.state = "applied_standalone_snapshot";
         batch_report.delta_apply_report = std::move(applied).value();
         report.total_event_count += batch_report.event_count;
-        report.total_applied_record_count +=
-            batch_report.delta_apply_report.applied_record_count;
+        report.total_applied_record_count += batch_report.delta_apply_report.applied_record_count;
         ++report.applied_delta_count;
         used_delta_indices.insert(index);
         report.batches.push_back(std::move(batch_report));
@@ -1496,6 +1509,13 @@ core::Result<std::vector<WorldReplicationDeltaSnapshot>>
 drain_client_replication_delta_snapshots(net::ClientSession& client_session) {
     auto messages =
         client_session.drain_replication_messages(replication_delta_snapshot_payload_type);
+    auto legacy_messages =
+        client_session.drain_replication_messages(replication_delta_snapshot_legacy_payload_type);
+    messages.insert(messages.end(), std::make_move_iterator(legacy_messages.begin()),
+                    std::make_move_iterator(legacy_messages.end()));
+    std::ranges::sort(messages, {}, [](const net::TransportEnvelope& envelope) {
+        return envelope.message.sequence;
+    });
 
     std::vector<WorldReplicationDeltaSnapshot> snapshots;
     snapshots.reserve(messages.size());
@@ -1781,18 +1801,199 @@ WorldReplicationDeltaSnapshotTextCodec::decode(std::string_view text) {
     return core::Result<WorldReplicationDeltaSnapshot>::success(std::move(snapshot));
 }
 
-net::TransportMessage
+core::Result<std::string>
+WorldReplicationDeltaSnapshotBinaryCodec::encode(const WorldReplicationDeltaSnapshot& snapshot) {
+    auto validation = validate_delta_snapshot_payload(snapshot);
+    if (!validation) {
+        return core::Result<std::string>::failure(validation.error().code,
+                                                  validation.error().message);
+    }
+    auto saved = save::SaveBinaryCodec::encode_snapshot(save_snapshot_from_delta(snapshot));
+    if (!saved) {
+        return core::Result<std::string>::failure(saved.error().code, saved.error().message);
+    }
+
+    net::BinaryMessageWriter writer;
+    writer.u32(delta_binary_magic);
+    writer.var_u64(snapshot.plan.replication_sequence != 0 ? snapshot.plan.replication_sequence
+                                                           : snapshot.plan.command_sequence);
+    writer.var_u64(snapshot.plan.command_sequence);
+    writer.var_u64(snapshot.plan.source_client_id.value());
+    writer.text_var(snapshot.plan.command_type);
+    writer.var_u64(snapshot.plan.event_count);
+    writer.var_u64(snapshot.plan.global_event_count);
+    writer.var_u64(snapshot.plan.subject_event_count);
+    writer.var_u64(snapshot.plan.unique_subject_count);
+    writer.var_u64(snapshot.plan.missing_subject_count);
+    writer.var_u64(snapshot.plan.materialized_record_count);
+    std::uint8_t plan_flags = snapshot.plan.has_global_events ? 1U : 0U;
+    plan_flags |= snapshot.plan.requires_snapshot_resync ? 2U : 0U;
+    writer.u8(plan_flags);
+    for (const auto& event : snapshot.plan.global_events) {
+        writer.text_var(event.type);
+        writer.var_u64(event.subject.value());
+        writer.text_var(event.message);
+    }
+    for (const auto& subject : snapshot.plan.subjects) {
+        writer.var_u64(subject.subject_id.value());
+        writer.var_u64(subject.event_count);
+        writer.text_var(subject.first_event_type);
+        std::uint8_t subject_flags = subject.has_build_piece ? 1U : 0U;
+        subject_flags |= subject.has_entity ? 2U : 0U;
+        subject_flags |= subject.has_cargo ? 4U : 0U;
+        subject_flags |= subject.has_assembly ? 8U : 0U;
+        subject_flags |= subject.has_inventory ? 16U : 0U;
+        subject_flags |= subject.missing_subject ? 32U : 0U;
+        subject_flags |= subject.has_workpiece ? 64U : 0U;
+        writer.u8(subject_flags);
+        writer.var_u64(subject.process_count);
+        writer.var_u64(subject.materialized_record_count);
+        writer.var_u64(subject.private_event_count);
+    }
+    const auto* save_bytes = reinterpret_cast<const char*>(saved.value().data());
+    writer.text_var(std::string_view(save_bytes, saved.value().size()));
+    auto encoded = writer.take();
+    if (encoded.size() > max_delta_binary_bytes) {
+        return core::Result<std::string>::failure(
+            "replication_delta.too_large", "binary replication delta exceeds its payload limit");
+    }
+    return core::Result<std::string>::success(std::move(encoded));
+}
+
+core::Result<WorldReplicationDeltaSnapshot>
+WorldReplicationDeltaSnapshotBinaryCodec::decode(std::string_view bytes) {
+    if (bytes.size() > max_delta_binary_bytes) {
+        return core::Result<WorldReplicationDeltaSnapshot>::failure(
+            "replication_delta.too_large", "binary replication delta exceeds its payload limit");
+    }
+
+    net::BinaryMessageReader reader(bytes);
+    std::uint32_t decoded_magic = 0;
+    std::uint64_t source_client = 0;
+    std::uint64_t event_count = 0;
+    std::uint64_t global_event_count = 0;
+    std::uint64_t subject_event_count = 0;
+    std::uint64_t unique_subject_count = 0;
+    std::uint64_t missing_subject_count = 0;
+    std::uint64_t materialized_record_count = 0;
+    std::uint8_t plan_flags = 0;
+    WorldReplicationDeltaSnapshot snapshot;
+    if (!reader.u32(decoded_magic) || decoded_magic != delta_binary_magic ||
+        !reader.var_u64(snapshot.plan.replication_sequence) ||
+        !reader.var_u64(snapshot.plan.command_sequence) || !reader.var_u64(source_client) ||
+        !reader.text_var(snapshot.plan.command_type, max_delta_command_type_bytes) ||
+        !reader.var_u64(event_count) || !reader.var_u64(global_event_count) ||
+        !reader.var_u64(subject_event_count) || !reader.var_u64(unique_subject_count) ||
+        !reader.var_u64(missing_subject_count) || !reader.var_u64(materialized_record_count) ||
+        !reader.u8(plan_flags) || plan_flags > 3U || event_count > max_delta_records ||
+        global_event_count > max_delta_records || subject_event_count > max_delta_records ||
+        unique_subject_count > max_delta_records || missing_subject_count > max_delta_records ||
+        materialized_record_count > max_delta_records) {
+        return core::Result<WorldReplicationDeltaSnapshot>::failure(
+            "replication_delta.invalid_binary",
+            "binary replication delta header is malformed, truncated, or outside its bounds");
+    }
+    snapshot.plan.source_client_id = core::NetId::from_value(source_client);
+    snapshot.plan.event_count = static_cast<std::uint32_t>(event_count);
+    snapshot.plan.global_event_count = static_cast<std::uint32_t>(global_event_count);
+    snapshot.plan.subject_event_count = static_cast<std::uint32_t>(subject_event_count);
+    snapshot.plan.unique_subject_count = static_cast<std::uint32_t>(unique_subject_count);
+    snapshot.plan.missing_subject_count = static_cast<std::uint32_t>(missing_subject_count);
+    snapshot.plan.materialized_record_count = static_cast<std::uint32_t>(materialized_record_count);
+    snapshot.plan.has_global_events = (plan_flags & 1U) != 0;
+    snapshot.plan.requires_snapshot_resync = (plan_flags & 2U) != 0;
+
+    snapshot.plan.global_events.reserve(static_cast<std::size_t>(global_event_count));
+    for (std::uint64_t index = 0; index < global_event_count; ++index) {
+        OperationEvent event;
+        std::uint64_t subject = 0;
+        if (!reader.text_var(event.type, max_delta_event_type_bytes) || !reader.var_u64(subject) ||
+            !reader.text_var(event.message, max_delta_event_message_bytes)) {
+            return core::Result<WorldReplicationDeltaSnapshot>::failure(
+                "replication_delta.invalid_binary",
+                "binary replication delta global event is malformed or oversized");
+        }
+        event.subject = core::SaveId::from_value(subject);
+        snapshot.plan.global_events.push_back(std::move(event));
+    }
+
+    snapshot.plan.subjects.reserve(static_cast<std::size_t>(unique_subject_count));
+    for (std::uint64_t index = 0; index < unique_subject_count; ++index) {
+        std::uint64_t subject_id = 0;
+        std::uint64_t subject_events = 0;
+        std::uint64_t process_count = 0;
+        std::uint64_t subject_record_count = 0;
+        std::uint64_t private_event_count = 0;
+        std::uint8_t subject_flags = 0;
+        WorldReplicationDeltaSubjectPlan subject;
+        if (!reader.var_u64(subject_id) || !reader.var_u64(subject_events) ||
+            !reader.text_var(subject.first_event_type, max_delta_event_type_bytes) ||
+            !reader.u8(subject_flags) || subject_flags > 127U || !reader.var_u64(process_count) ||
+            !reader.var_u64(subject_record_count) || !reader.var_u64(private_event_count) ||
+            subject_events > max_delta_records || process_count > max_delta_records ||
+            subject_record_count > max_delta_records || private_event_count > subject_events) {
+            return core::Result<WorldReplicationDeltaSnapshot>::failure(
+                "replication_delta.invalid_binary",
+                "binary replication delta subject plan is malformed or outside its bounds");
+        }
+        subject.subject_id = core::SaveId::from_value(subject_id);
+        subject.event_count = static_cast<std::uint32_t>(subject_events);
+        subject.has_build_piece = (subject_flags & 1U) != 0;
+        subject.has_entity = (subject_flags & 2U) != 0;
+        subject.has_cargo = (subject_flags & 4U) != 0;
+        subject.has_assembly = (subject_flags & 8U) != 0;
+        subject.has_inventory = (subject_flags & 16U) != 0;
+        subject.missing_subject = (subject_flags & 32U) != 0;
+        subject.has_workpiece = (subject_flags & 64U) != 0;
+        subject.process_count = static_cast<std::uint32_t>(process_count);
+        subject.materialized_record_count = static_cast<std::uint32_t>(subject_record_count);
+        subject.private_event_count = static_cast<std::uint32_t>(private_event_count);
+        snapshot.plan.subjects.push_back(std::move(subject));
+    }
+
+    std::string embedded_save;
+    if (!reader.text_var(embedded_save, max_delta_binary_bytes) || !reader.finished()) {
+        return core::Result<WorldReplicationDeltaSnapshot>::failure(
+            "replication_delta.invalid_binary",
+            "binary replication delta embedded snapshot is truncated or has trailing bytes");
+    }
+    const auto* save_bytes = reinterpret_cast<const std::uint8_t*>(embedded_save.data());
+    auto decoded_save = save::SaveBinaryCodec::decode_snapshot(
+        std::span<const std::uint8_t>(save_bytes, embedded_save.size()));
+    if (!decoded_save) {
+        return core::Result<WorldReplicationDeltaSnapshot>::failure(decoded_save.error().code,
+                                                                    decoded_save.error().message);
+    }
+    auto applied = apply_save_snapshot_to_delta(snapshot, std::move(decoded_save).value());
+    if (!applied) {
+        return core::Result<WorldReplicationDeltaSnapshot>::failure(applied.error().code,
+                                                                    applied.error().message);
+    }
+    auto validation = validate_delta_snapshot_payload(snapshot);
+    if (!validation) {
+        return core::Result<WorldReplicationDeltaSnapshot>::failure(validation.error().code,
+                                                                    validation.error().message);
+    }
+    return core::Result<WorldReplicationDeltaSnapshot>::success(std::move(snapshot));
+}
+
+core::Result<net::TransportMessage>
 make_replication_delta_transport_message(const WorldReplicationDeltaSnapshot& snapshot,
                                          std::int64_t server_time_ms) {
-    return net::TransportMessage{
+    auto payload = WorldReplicationDeltaSnapshotBinaryCodec::encode(snapshot);
+    if (!payload) {
+        return core::Result<net::TransportMessage>::failure(payload.error().code,
+                                                            payload.error().message);
+    }
+    return core::Result<net::TransportMessage>::success(net::TransportMessage{
         net::TransportMessageKind::replication,
         net::TransportChannel::reliable,
         snapshot.plan.replication_sequence != 0 ? snapshot.plan.replication_sequence
                                                 : snapshot.plan.command_sequence,
         std::string(replication_delta_snapshot_payload_type),
-        WorldReplicationDeltaSnapshotTextCodec::encode(snapshot),
+        std::move(payload).value(),
         server_time_ms,
-    };
+    });
 }
 
 core::Result<WorldReplicationDeltaSnapshot>
@@ -1807,13 +2008,16 @@ replication_delta_snapshot_from_transport(const net::TransportEnvelope& envelope
             "replication_delta.unreliable_replication",
             "replication delta snapshots must arrive on the reliable transport channel");
     }
-    if (envelope.message.payload_type != replication_delta_snapshot_payload_type) {
+    if (envelope.message.payload_type != replication_delta_snapshot_payload_type &&
+        envelope.message.payload_type != replication_delta_snapshot_legacy_payload_type) {
         return core::Result<WorldReplicationDeltaSnapshot>::failure(
             "replication_delta.unexpected_payload_type",
             "replication delta transport message has an unexpected payload type");
     }
 
-    auto snapshot = WorldReplicationDeltaSnapshotTextCodec::decode(envelope.message.payload);
+    auto snapshot = envelope.message.payload_type == replication_delta_snapshot_payload_type
+                        ? WorldReplicationDeltaSnapshotBinaryCodec::decode(envelope.message.payload)
+                        : WorldReplicationDeltaSnapshotTextCodec::decode(envelope.message.payload);
     if (!snapshot) {
         return snapshot;
     }

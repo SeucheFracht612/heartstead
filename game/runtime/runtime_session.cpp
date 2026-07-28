@@ -1,8 +1,8 @@
 #include "game/runtime/runtime_session.hpp"
 
 #include "engine/core/hash.hpp"
-#include "engine/scenarios/scenario_prototype.hpp"
 #include "engine/net/command_payload.hpp"
+#include "engine/scenarios/scenario_prototype.hpp"
 #include "engine/world/world_snapshot.hpp"
 
 #include <algorithm>
@@ -15,8 +15,7 @@ namespace heartstead::game {
 
 namespace {
 
-[[nodiscard]] std::string
-content_session_fingerprint(const save::SaveMetadata& metadata) {
+[[nodiscard]] std::string content_session_fingerprint(const save::SaveMetadata& metadata) {
     core::StableHash64 hash;
     hash.add_string(metadata.game_version);
     hash.add_u64_le(metadata.schema_version);
@@ -51,10 +50,25 @@ core::Status RuntimeConfiguration::validate() const {
         return status;
     }
     if (max_transient_snapshot_messages_per_tick == 0 ||
-        max_transient_snapshot_payload_bytes_per_tick == 0) {
+        max_transient_snapshot_payload_bytes_per_tick == 0 ||
+        max_outbound_bytes_per_client_per_second == 0) {
         return core::Status::failure(
             "runtime_configuration.invalid_replication_budget",
-            "transient replication message and byte budgets must be non-zero");
+            "transient replication and per-client outbound budgets must be non-zero");
+    }
+    if (simulated_network_one_way_latency_ms > 60'000 || simulated_network_jitter_ms > 60'000 ||
+        simulated_network_unreliable_loss_basis_points > 10'000) {
+        return core::Status::failure(
+            "runtime_configuration.invalid_network_impairment",
+            "simulated latency/jitter must be at most 60 seconds and loss at most 100 percent");
+    }
+    if (!use_in_memory_transport &&
+        (simulated_network_one_way_latency_ms != 0 || simulated_network_jitter_ms != 0 ||
+         simulated_network_unreliable_loss_basis_points != 0)) {
+        return core::Status::failure(
+            "runtime_configuration.external_impairment_unsupported",
+            "deterministic in-process impairment is available only on the in-memory transport; "
+            "use tc netem for POSIX UDP");
     }
     if (!create_server && !create_client) {
         return core::Status::failure("runtime_configuration.empty",
@@ -73,18 +87,16 @@ core::Status RuntimeConfiguration::validate() const {
             }
         }
         if (create_client && !create_server && !remote_server_endpoint.has_value()) {
-            return core::Status::failure(
-                "runtime_configuration.remote_endpoint_missing",
-                "remote-client-only runtime requires a server endpoint");
+            return core::Status::failure("runtime_configuration.remote_endpoint_missing",
+                                         "remote-client-only runtime requires a server endpoint");
         }
         if (remote_server_endpoint.has_value()) {
             status = net::validate_transport_endpoint(*remote_server_endpoint);
             if (!status || remote_server_endpoint->port == 0) {
                 return !status
                            ? status
-                           : core::Status::failure(
-                                 "runtime_configuration.remote_endpoint_port",
-                                 "remote server endpoint port must be non-zero");
+                           : core::Status::failure("runtime_configuration.remote_endpoint_port",
+                                                   "remote server endpoint port must be non-zero");
             }
         }
     }
@@ -179,6 +191,15 @@ core::Status RuntimeSession::initialize() {
         server_desc.host.transport.external.bind_endpoint = config_.server_bind_endpoint;
         server_desc.host.transport.external.content_fingerprint =
             content_session_fingerprint(request_.metadata);
+        server_desc.host.transport.in_memory.simulated_one_way_latency_ms =
+            config_.simulated_network_one_way_latency_ms;
+        server_desc.host.transport.in_memory.simulated_jitter_ms =
+            config_.simulated_network_jitter_ms;
+        server_desc.host.transport.in_memory.simulated_unreliable_loss_basis_points =
+            config_.simulated_network_unreliable_loss_basis_points;
+        server_desc.host.transport.in_memory.impairment_seed = config_.simulated_network_seed;
+        server_desc.host.max_outbound_bytes_per_client_per_second =
+            config_.max_outbound_bytes_per_client_per_second;
         server_desc.physics.backend = config_.physics_backend;
         server_desc.chunk_fluids = config_.chunk_fluids;
         server_desc.chunk_lighting = config_.chunk_lighting;
@@ -216,12 +237,11 @@ core::Status RuntimeSession::initialize() {
             }
             auto connected = server_->connect_client();
             if (!connected) {
-                return core::Status::failure(connected.error().code,
-                                             connected.error().message);
+                return core::Status::failure(connected.error().code, connected.error().message);
             }
-            client_ = std::make_unique<ClientRuntime>(
-                connected.value(), std::move(client_world),
-                &server_->replication_registry(), voxel_palette_);
+            client_ =
+                std::make_unique<ClientRuntime>(connected.value(), std::move(client_world),
+                                                &server_->replication_registry(), voxel_palette_);
         } else {
             auto endpoint = config_.remote_server_endpoint;
             if (!endpoint.has_value() && server_ != nullptr) {
@@ -238,10 +258,8 @@ core::Status RuntimeSession::initialize() {
             }
             net::ExternalTransportClientConfig transport_config;
             transport_config.server_endpoint = *endpoint;
-            transport_config.content_fingerprint =
-                content_session_fingerprint(request_.metadata);
-            auto remote =
-                net::create_external_transport_client(std::move(transport_config));
+            transport_config.content_fingerprint = content_session_fingerprint(request_.metadata);
+            auto remote = net::create_external_transport_client(std::move(transport_config));
             if (!remote) {
                 return core::Status::failure(remote.error().code, remote.error().message);
             }
@@ -252,17 +270,18 @@ core::Status RuntimeSession::initialize() {
             }
             client_ = std::make_unique<ClientRuntime>(
                 core::NetId{}, std::move(client_world),
-                server_ == nullptr ? nullptr : &server_->replication_registry(),
-                voxel_palette_);
+                server_ == nullptr ? nullptr : &server_->replication_registry(), voxel_palette_);
         }
         auto status = pump_client_messages(0);
         if (!status) {
             return status;
         }
-        if (config_.use_in_memory_transport && !client_->is_connected()) {
-            return core::Status::failure(
-                "runtime_session.client_handshake_failed",
-                "local client did not accept the server welcome");
+        const auto impaired_in_memory = config_.simulated_network_one_way_latency_ms != 0 ||
+                                        config_.simulated_network_jitter_ms != 0 ||
+                                        config_.simulated_network_unreliable_loss_basis_points != 0;
+        if (config_.use_in_memory_transport && !impaired_in_memory && !client_->is_connected()) {
+            return core::Status::failure("runtime_session.client_handshake_failed",
+                                         "local client did not accept the server welcome");
         }
         auto synchronized = client_->synchronize();
         if (!synchronized) {
@@ -314,6 +333,9 @@ core::Result<RuntimeFrameStats> RuntimeSession::run_frame(RuntimeFrameInput inpu
             return fault_frame(status.error());
         }
         if (client_ != nullptr) {
+            if (!client_->is_connected()) {
+                continue;
+            }
             auto synchronized = client_->synchronize(frame.value().first_tick + step);
             if (!synchronized) {
                 return fault_frame(synchronized.error());
@@ -351,28 +373,23 @@ core::Status RuntimeSession::submit_command(std::string type, std::string payloa
 }
 
 core::Result<std::uint64_t>
-RuntimeSession::submit_tracked_command(std::string type, std::string payload,
-                                       std::int64_t now_ms) {
-    if (!running_ || client_ == nullptr ||
-        (server_ == nullptr && remote_transport_ == nullptr)) {
+RuntimeSession::submit_tracked_command(std::string type, std::string payload, std::int64_t now_ms) {
+    if (!running_ || client_ == nullptr || (server_ == nullptr && remote_transport_ == nullptr)) {
         return core::Result<std::uint64_t>::failure(
             "runtime_session.command_path_unavailable",
             "commands require an active client and authoritative server connection");
     }
     auto command = client_->create_command(std::move(type), std::move(payload), now_ms);
     if (!command) {
-        return core::Result<std::uint64_t>::failure(command.error().code,
-                                                    command.error().message);
+        return core::Result<std::uint64_t>::failure(command.error().code, command.error().message);
     }
     const auto sequence = command.value().sequence;
     auto status = remote_transport_ != nullptr
-                      ? remote_transport_->send_to_server(net::make_command_transport_message(
-                            command.value()))
-                      : server_->submit_command(client_->client_id(),
-                                                std::move(command).value());
+                      ? remote_transport_->send_to_server(
+                            net::make_command_transport_message(command.value()))
+                      : server_->submit_command(client_->client_id(), std::move(command).value());
     if (!status) {
-        return core::Result<std::uint64_t>::failure(status.error().code,
-                                                    status.error().message);
+        return core::Result<std::uint64_t>::failure(status.error().code, status.error().message);
     }
     return core::Result<std::uint64_t>::success(sequence);
 }
@@ -410,10 +427,8 @@ core::Status RuntimeSession::submit_player_input(const movement::PlayerInputFram
     auto network_input = input;
     if (client_ != nullptr) {
         const auto* predicted = client_->local_player_snapshot();
-        if (predicted != nullptr &&
-            network_input.tick <= predicted->state.simulation_tick) {
-            if (predicted->state.simulation_tick ==
-                std::numeric_limits<std::uint64_t>::max()) {
+        if (predicted != nullptr && network_input.tick <= predicted->state.simulation_tick) {
+            if (predicted->state.simulation_tick == std::numeric_limits<std::uint64_t>::max()) {
                 return core::Status::failure(
                     "runtime_session.movement_tick_exhausted",
                     "local movement prediction exhausted its 64-bit tick space");
@@ -425,12 +440,10 @@ core::Status RuntimeSession::submit_player_input(const movement::PlayerInputFram
     if (!status) {
         return status;
     }
-    if (!running_ || client_ == nullptr ||
-        (server_ == nullptr && remote_transport_ == nullptr) ||
+    if (!running_ || client_ == nullptr || (server_ == nullptr && remote_transport_ == nullptr) ||
         !client_->is_connected()) {
-        return core::Status::failure(
-            "runtime_session.movement_path_unavailable",
-            "movement input requires an active connected client");
+        return core::Status::failure("runtime_session.movement_path_unavailable",
+                                     "movement input requires an active connected client");
     }
     auto bundle = client_->movement_input_bundle(network_input);
     if (!bundle) {
@@ -443,7 +456,7 @@ core::Status RuntimeSession::submit_player_input(const movement::PlayerInputFram
     if (!status) {
         return status;
     }
-    return client_->predict_local_input(network_input);
+    return client_->predict_local_input(bundle.value().frames.back());
 }
 
 core::Status RuntimeSession::submit_place_voxel(const interaction::PlaceVoxelCommand& command,
@@ -502,16 +515,14 @@ core::Status RuntimeSession::pump_client_messages(std::int64_t now_ms) {
     if (remote_transport_ != nullptr) {
         auto maintenance = remote_transport_->poll_maintenance(now_ms);
         if (!maintenance) {
-            return core::Status::failure(maintenance.error().code,
-                                         maintenance.error().message);
+            return core::Status::failure(maintenance.error().code, maintenance.error().message);
         }
         if (maintenance.value().disconnected) {
-            const auto reason =
-                maintenance.value().disconnect_reason_code.empty()
-                    ? std::string("transport_client.disconnected")
-                    : maintenance.value().disconnect_reason_code;
-            client_->session().mark_transport_disconnected(
-                reason, "remote transport disconnected", now_ms);
+            const auto reason = maintenance.value().disconnect_reason_code.empty()
+                                    ? std::string("transport_client.disconnected")
+                                    : maintenance.value().disconnect_reason_code;
+            client_->session().mark_transport_disconnected(reason, "remote transport disconnected",
+                                                           now_ms);
             return core::Status::failure(reason, "remote transport disconnected");
         }
         const auto messages = remote_transport_->drain_server_messages();
@@ -521,21 +532,19 @@ core::Status RuntimeSession::pump_client_messages(std::int64_t now_ms) {
             return status;
         }
         const auto session_stats = client_->session().stats();
-        return core::Status::failure(
-            session_stats.disconnect_reason_code.empty()
-                ? "transport_client.disconnected"
-                : session_stats.disconnect_reason_code,
-            session_stats.disconnect_reason_message.empty()
-                ? "remote server disconnected the client"
-                : session_stats.disconnect_reason_message);
+        return core::Status::failure(session_stats.disconnect_reason_code.empty()
+                                         ? "transport_client.disconnected"
+                                         : session_stats.disconnect_reason_code,
+                                     session_stats.disconnect_reason_message.empty()
+                                         ? "remote server disconnected the client"
+                                         : session_stats.disconnect_reason_message);
     }
     if (server_ == nullptr) {
         return core::Status::ok();
     }
     auto messages = server_->drain_client_messages(client_->client_id());
-    return !messages
-               ? core::Status::failure(messages.error().code, messages.error().message)
-               : client_->receive(messages.value());
+    return !messages ? core::Status::failure(messages.error().code, messages.error().message)
+                     : client_->receive(messages.value());
 }
 
 core::Result<PresentationSynchronizationStats> RuntimeSession::synchronize_presentation() {

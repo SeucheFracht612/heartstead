@@ -85,10 +85,9 @@ struct TransportMessage {
 struct TransportEnvelope {
     TransportEnvelope() = default;
     TransportEnvelope(core::NetId sender_value, core::NetId recipient_value,
-                      TransportMessage message_value,
-                      TransportSessionToken token_value = {})
-        : sender(sender_value), recipient(recipient_value),
-          message(std::move(message_value)), session_token(token_value) {}
+                      TransportMessage message_value, TransportSessionToken token_value = {})
+        : sender(sender_value), recipient(recipient_value), message(std::move(message_value)),
+          session_token(token_value) {}
 
     core::NetId sender;
     core::NetId recipient;
@@ -102,6 +101,12 @@ struct TransportMaintenanceResult {
     std::uint32_t malformed_datagram_count = 0;
     std::uint32_t rejected_datagram_count = 0;
     std::uint32_t rate_limited_datagram_count = 0;
+    std::uint64_t client_to_server_bytes = 0;
+    std::uint64_t server_to_client_bytes = 0;
+    std::uint32_t client_to_server_message_count = 0;
+    std::uint32_t server_to_client_message_count = 0;
+    std::uint32_t simulated_dropped_unreliable_message_count = 0;
+    std::uint32_t pending_impaired_message_count = 0;
     std::vector<TransportEnvelope> dropped_reliable_messages;
     std::vector<core::NetId> connected_clients;
     std::vector<core::NetId> disconnected_clients;
@@ -111,12 +116,15 @@ struct InMemoryTransportHostConfig {
     core::NetId server_id = core::NetId::from_value(1);
     std::uint32_t max_payload_bytes = 64u * 1024u;
     std::uint32_t max_clients = 64;
+    std::uint32_t simulated_one_way_latency_ms = 0;
+    std::uint32_t simulated_jitter_ms = 0;
+    std::uint32_t simulated_unreliable_loss_basis_points = 0;
+    std::uint64_t impairment_seed = 0x6a09e667f3bcc909ULL;
 };
 
 struct ExternalTransportHostConfig {
     ExternalTransportHostConfig() = default;
-    ExternalTransportHostConfig(core::NetId server_id_value,
-                                TransportEndpoint bind_endpoint_value,
+    ExternalTransportHostConfig(core::NetId server_id_value, TransportEndpoint bind_endpoint_value,
                                 std::uint32_t max_payload_bytes_value,
                                 std::uint32_t max_clients_value,
                                 bool enable_unreliable_channel_value)
@@ -209,6 +217,14 @@ class InMemoryTransportHost final : public ITransportHost {
         bool connected = true;
     };
 
+    struct PendingDelivery {
+        std::int64_t deliver_at_ms = 0;
+        std::uint64_t order = 0;
+        bool to_server = false;
+        core::NetId client_id;
+        TransportEnvelope envelope;
+    };
+
     [[nodiscard]] core::Status validate_message(const TransportMessage& message) const;
     [[nodiscard]] core::Status
     validate_client_to_server_sequence(const ClientQueues& client,
@@ -217,11 +233,27 @@ class InMemoryTransportHost final : public ITransportHost {
     [[nodiscard]] core::Result<ClientQueues*> find_client(core::NetId client_id);
     [[nodiscard]] core::Result<ClientQueues*> find_connected_client(core::NetId client_id);
     [[nodiscard]] core::NetId next_client_id();
+    void queue_or_deliver(TransportEnvelope envelope, bool to_server);
+    void deliver_pending(std::int64_t now_ms);
+    [[nodiscard]] bool impairment_enabled() const noexcept;
+    [[nodiscard]] std::uint64_t next_impairment_value() noexcept;
+    [[nodiscard]] std::size_t encoded_envelope_bytes(const TransportEnvelope& envelope) const;
 
     InMemoryTransportHostConfig config_;
     std::uint64_t next_client_id_ = 2;
     std::unordered_map<std::uint64_t, ClientQueues> clients_;
     std::queue<TransportEnvelope> server_inbox_;
+    std::vector<PendingDelivery> pending_deliveries_;
+    std::unordered_map<std::uint64_t, std::int64_t> last_reliable_client_delivery_ms_;
+    std::int64_t last_reliable_server_delivery_ms_ = 0;
+    std::int64_t current_time_ms_ = 0;
+    std::uint64_t impairment_counter_ = 0;
+    std::uint64_t delivery_order_ = 0;
+    std::uint64_t pending_client_to_server_bytes_ = 0;
+    std::uint64_t pending_server_to_client_bytes_ = 0;
+    std::uint32_t pending_client_to_server_message_count_ = 0;
+    std::uint32_t pending_server_to_client_message_count_ = 0;
+    std::uint32_t pending_simulated_drop_count_ = 0;
 };
 
 [[nodiscard]] core::Result<std::unique_ptr<ITransportHost>>

@@ -28,6 +28,13 @@ class CommandPayloadTextCodec {
     [[nodiscard]] static core::Result<CommandPayload> decode(std::string_view text);
 };
 
+class CommandPayloadBinaryCodec {
+  public:
+    [[nodiscard]] static std::string encode(const CommandPayload& payload);
+    [[nodiscard]] static core::Result<CommandPayload> decode(std::string_view bytes);
+    [[nodiscard]] static bool is_encoded(std::string_view bytes) noexcept;
+};
+
 [[nodiscard]] bool is_valid_command_payload_key(std::string_view key) noexcept;
 
 } // namespace heartstead::net

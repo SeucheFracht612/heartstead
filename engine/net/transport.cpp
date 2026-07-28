@@ -1,5 +1,6 @@
 #include "engine/net/transport.hpp"
 
+#include "engine/net/command_payload.hpp"
 #include "engine/net/transport_handshake.hpp"
 #include "engine/net/transport_packet.hpp"
 #include "engine/net/transport_reliability.hpp"
@@ -272,9 +273,9 @@ class PosixDatagramTransportHost final : public ITransportHost {
             return core::Result<std::unique_ptr<ITransportHost>>::failure(
                 security_secret.error().code, security_secret.error().message);
         }
-        auto host = std::unique_ptr<ITransportHost>(new PosixDatagramTransportHost(
-            std::move(config), std::move(server_socket).value(), actual_address.value(),
-            security_secret.value()));
+        auto host = std::unique_ptr<ITransportHost>(
+            new PosixDatagramTransportHost(std::move(config), std::move(server_socket).value(),
+                                           actual_address.value(), security_secret.value()));
         return core::Result<std::unique_ptr<ITransportHost>>::success(std::move(host));
     }
 
@@ -412,9 +413,8 @@ class PosixDatagramTransportHost final : public ITransportHost {
                 return status;
             }
         }
-        auto sent =
-            send_envelope(client.value()->socket->fd(), server_address_for_local_clients_,
-                          envelope, client.value()->token);
+        auto sent = send_envelope(client.value()->socket->fd(), server_address_for_local_clients_,
+                                  envelope, client.value()->token);
         if (!sent) {
             if (envelope.message.channel == TransportChannel::reliable) {
                 const auto rollback =
@@ -508,9 +508,8 @@ class PosixDatagramTransportHost final : public ITransportHost {
                 if (!client.socket.has_value()) {
                     continue;
                 }
-                auto sent = send_envelope(client.socket->fd(),
-                                          server_address_for_local_clients_, envelope,
-                                          client.token);
+                auto sent = send_envelope(client.socket->fd(), server_address_for_local_clients_,
+                                          envelope, client.token);
                 if (!sent) {
                     return core::Result<TransportMaintenanceResult>::failure(sent.error().code,
                                                                              sent.error().message);
@@ -521,15 +520,22 @@ class PosixDatagramTransportHost final : public ITransportHost {
                 result.dropped_reliable_messages.push_back(std::move(dropped.envelope));
                 ++result.dropped_reliable_message_count;
             }
-            if (client.remote &&
-                now_ms - client.last_received_ms >=
-                    static_cast<std::int64_t>(config_.idle_timeout_ms)) {
+            if (client.remote && now_ms - client.last_received_ms >=
+                                     static_cast<std::int64_t>(config_.idle_timeout_ms)) {
                 client.connected = false;
                 server_reassembler_.discard_source(fragment_source_scope(client.address));
                 result.disconnected_clients.push_back(
                     core::NetId::from_value(client.server_reliability.remote_id().value()));
             }
         }
+        result.client_to_server_bytes = pending_client_to_server_bytes_;
+        result.server_to_client_bytes = pending_server_to_client_bytes_;
+        result.client_to_server_message_count = pending_client_to_server_message_count_;
+        result.server_to_client_message_count = pending_server_to_client_message_count_;
+        pending_client_to_server_bytes_ = 0;
+        pending_server_to_client_bytes_ = 0;
+        pending_client_to_server_message_count_ = 0;
+        pending_server_to_client_message_count_ = 0;
         return core::Result<TransportMaintenanceResult>::success(std::move(result));
     }
 
@@ -580,8 +586,7 @@ class PosixDatagramTransportHost final : public ITransportHost {
                                  return;
                              }
                              (void)send_envelope(endpoint->socket->fd(), remote,
-                                                 reliable.value().acknowledgement,
-                                                 endpoint->token);
+                                                 reliable.value().acknowledgement, endpoint->token);
                              if (reliable.value().duplicate) {
                                  return;
                              }
@@ -593,8 +598,7 @@ class PosixDatagramTransportHost final : public ITransportHost {
 
   private:
     PosixDatagramTransportHost(ExternalTransportHostConfig config,
-                               PosixDatagramSocket server_socket,
-                               sockaddr_in server_bound_address,
+                               PosixDatagramSocket server_socket, sockaddr_in server_bound_address,
                                TransportSessionToken security_secret)
         : config_(std::move(config)), server_socket_(std::move(server_socket)),
           server_bound_address_(server_bound_address),
@@ -694,12 +698,10 @@ class PosixDatagramTransportHost final : public ITransportHost {
             client.inbound_message_count = 0;
             client.inbound_byte_count = 0;
         }
-        if (client.inbound_message_count >=
-                config_.max_inbound_messages_per_second ||
+        if (client.inbound_message_count >= config_.max_inbound_messages_per_second ||
             approximate_bytes >
                 config_.max_inbound_bytes_per_second -
-                    std::min(config_.max_inbound_bytes_per_second,
-                             client.inbound_byte_count)) {
+                    std::min(config_.max_inbound_bytes_per_second, client.inbound_byte_count)) {
             return false;
         }
         ++client.inbound_message_count;
@@ -717,8 +719,8 @@ class PosixDatagramTransportHost final : public ITransportHost {
         return nullptr;
     }
 
-    [[nodiscard]] core::Status
-    send_handshake(const sockaddr_in& recipient, const TransportHandshakePacket& packet) {
+    [[nodiscard]] core::Status send_handshake(const sockaddr_in& recipient,
+                                              const TransportHandshakePacket& packet) {
         auto encoded = TransportHandshakeCodec::encode(packet);
         if (!encoded) {
             return core::Status::failure(encoded.error().code, encoded.error().message);
@@ -728,20 +730,18 @@ class PosixDatagramTransportHost final : public ITransportHost {
 
     void reject_handshake(const sockaddr_in& remote, TransportSessionToken nonce,
                           std::string reason_code) {
-        (void)send_handshake(
-            remote,
-            TransportHandshakePacket{
-                TransportHandshakeKind::server_reject,
-                transport_handshake_protocol_version,
-                nonce,
-                {},
-                0,
-                config_.server_id,
-                {},
-                {},
-                {},
-                std::move(reason_code),
-            });
+        (void)send_handshake(remote, TransportHandshakePacket{
+                                         TransportHandshakeKind::server_reject,
+                                         transport_handshake_protocol_version,
+                                         nonce,
+                                         {},
+                                         0,
+                                         config_.server_id,
+                                         {},
+                                         {},
+                                         {},
+                                         std::move(reason_code),
+                                     });
     }
 
     void accept_handshake(const TransportHandshakePacket& packet, const sockaddr_in& remote,
@@ -777,78 +777,62 @@ class PosixDatagramTransportHost final : public ITransportHost {
         const auto current_bucket = handshake_time_bucket();
         if (packet.cookie_time_bucket > current_bucket ||
             current_bucket - packet.cookie_time_bucket > 1) {
-            reject_handshake(remote, packet.client_nonce,
-                             "transport_handshake.challenge_expired");
+            reject_handshake(remote, packet.client_nonce, "transport_handshake.challenge_expired");
             return;
         }
-        const auto expected = make_transport_address_cookie(
-            security_secret_, scope, packet.client_nonce, packet.content_fingerprint,
-            packet.cookie_time_bucket);
+        const auto expected =
+            make_transport_address_cookie(security_secret_, scope, packet.client_nonce,
+                                          packet.content_fingerprint, packet.cookie_time_bucket);
         if (!constant_time_token_equal(expected, packet.cookie)) {
-            reject_handshake(remote, packet.client_nonce,
-                             "transport_handshake.invalid_cookie");
+            reject_handshake(remote, packet.client_nonce, "transport_handshake.invalid_cookie");
             return;
         }
         if (packet.content_fingerprint != config_.content_fingerprint) {
-            reject_handshake(remote, packet.client_nonce,
-                             "transport_handshake.content_mismatch");
+            reject_handshake(remote, packet.client_nonce, "transport_handshake.content_mismatch");
             return;
         }
         if (auto* existing = remote_client_at(remote); existing != nullptr) {
-            (void)send_handshake(
-                remote,
-                TransportHandshakePacket{
-                    TransportHandshakeKind::server_accept,
-                    transport_handshake_protocol_version,
-                    packet.client_nonce,
-                    {},
-                    0,
-                    config_.server_id,
-                    existing->server_reliability.remote_id(),
-                    existing->token,
-                    config_.content_fingerprint,
-                    {},
-                });
+            (void)send_handshake(remote, TransportHandshakePacket{
+                                             TransportHandshakeKind::server_accept,
+                                             transport_handshake_protocol_version,
+                                             packet.client_nonce,
+                                             {},
+                                             0,
+                                             config_.server_id,
+                                             existing->server_reliability.remote_id(),
+                                             existing->token,
+                                             config_.content_fingerprint,
+                                             {},
+                                         });
             return;
         }
         if (connected_client_count() >= config_.max_clients) {
-            reject_handshake(remote, packet.client_nonce,
-                             "transport.client_limit_reached");
+            reject_handshake(remote, packet.client_nonce, "transport.client_limit_reached");
             return;
         }
         auto token = secure_random_transport_token();
         if (!token) {
-            reject_handshake(remote, packet.client_nonce,
-                             "transport_security.random_failed");
+            reject_handshake(remote, packet.client_nonce, "transport_security.random_failed");
             return;
         }
         const auto id = next_client_id();
         ClientEndpoint endpoint{
-            std::nullopt,
-            remote,
-            fragment_config_,
-            config_.server_id,
-            id,
-            config_.reliability,
-            token.value(),
-            true,
-            current_time_ms_,
+            std::nullopt,  remote, fragment_config_, config_.server_id, id, config_.reliability,
+            token.value(), true,   current_time_ms_,
         };
         clients_.emplace(id.value(), std::move(endpoint));
-        auto accepted = send_handshake(
-            remote,
-            TransportHandshakePacket{
-                TransportHandshakeKind::server_accept,
-                transport_handshake_protocol_version,
-                packet.client_nonce,
-                {},
-                0,
-                config_.server_id,
-                id,
-                token.value(),
-                config_.content_fingerprint,
-                {},
-            });
+        auto accepted = send_handshake(remote, TransportHandshakePacket{
+                                                   TransportHandshakeKind::server_accept,
+                                                   transport_handshake_protocol_version,
+                                                   packet.client_nonce,
+                                                   {},
+                                                   0,
+                                                   config_.server_id,
+                                                   id,
+                                                   token.value(),
+                                                   config_.content_fingerprint,
+                                                   {},
+                                               });
         if (!accepted) {
             clients_.erase(id.value());
             return;
@@ -895,30 +879,29 @@ class PosixDatagramTransportHost final : public ITransportHost {
             if (!reliable) {
                 return;
             }
-            (void)send_envelope(server_socket_.fd(), remote,
-                                reliable.value().acknowledgement, client.value()->token);
+            (void)send_envelope(server_socket_.fd(), remote, reliable.value().acknowledgement,
+                                client.value()->token);
             if (reliable.value().duplicate) {
                 return;
             }
         }
         if (envelope.message.kind == TransportMessageKind::control &&
             envelope.message.payload_type == "control.keepalive") {
-            (void)send_envelope(
-                server_socket_.fd(), remote,
-                TransportEnvelope{
-                    config_.server_id,
-                    envelope.sender,
-                    TransportMessage{
-                        TransportMessageKind::control,
-                        TransportChannel::unreliable,
-                        0,
-                        "control.keepalive_ack",
-                        {},
-                        current_time_ms_,
-                    },
-                    client.value()->token,
-                },
-                client.value()->token);
+            (void)send_envelope(server_socket_.fd(), remote,
+                                TransportEnvelope{
+                                    config_.server_id,
+                                    envelope.sender,
+                                    TransportMessage{
+                                        TransportMessageKind::control,
+                                        TransportChannel::unreliable,
+                                        0,
+                                        "control.keepalive_ack",
+                                        {},
+                                        current_time_ms_,
+                                    },
+                                    client.value()->token,
+                                },
+                                client.value()->token);
             return;
         }
         if (envelope.message.kind == TransportMessageKind::control &&
@@ -930,8 +913,7 @@ class PosixDatagramTransportHost final : public ITransportHost {
         }
         if (envelope.message.kind == TransportMessageKind::command &&
             envelope.message.channel == TransportChannel::reliable) {
-            auto ordered =
-                client.value()->server_command_sequencer.accept(std::move(envelope));
+            auto ordered = client.value()->server_command_sequencer.accept(std::move(envelope));
             if (!ordered) {
                 return;
             }
@@ -948,9 +930,8 @@ class PosixDatagramTransportHost final : public ITransportHost {
         for (;;) {
             sockaddr_in remote{};
             socklen_t remote_size = sizeof(remote);
-            const auto received =
-                ::recvfrom(server_socket_.fd(), buffer.data(), buffer.size(), 0,
-                           reinterpret_cast<sockaddr*>(&remote), &remote_size);
+            const auto received = ::recvfrom(server_socket_.fd(), buffer.data(), buffer.size(), 0,
+                                             reinterpret_cast<sockaddr*>(&remote), &remote_size);
             if (received < 0) {
                 if (would_block()) {
                     return;
@@ -960,6 +941,8 @@ class PosixDatagramTransportHost final : public ITransportHost {
             if (received == 0) {
                 continue;
             }
+            pending_client_to_server_bytes_ += static_cast<std::uint64_t>(received);
+            ++pending_client_to_server_message_count_;
             const auto datagram =
                 std::string_view(buffer.data(), static_cast<std::size_t>(received));
             auto handshake = TransportHandshakeCodec::decode(datagram);
@@ -1007,7 +990,7 @@ class PosixDatagramTransportHost final : public ITransportHost {
     }
 
     [[nodiscard]] core::Status send_datagram(int fd, const sockaddr_in& recipient,
-                                             std::string_view datagram) const {
+                                             std::string_view datagram) {
         const auto sent =
             ::sendto(fd, datagram.data(), datagram.size(), 0,
                      reinterpret_cast<const sockaddr*>(&recipient), sizeof(recipient));
@@ -1015,6 +998,10 @@ class PosixDatagramTransportHost final : public ITransportHost {
             return core::Status::failure(
                 "transport.send_failed",
                 socket_error_message("failed to send external transport datagram"));
+        }
+        if (fd == server_socket_.fd()) {
+            pending_server_to_client_bytes_ += static_cast<std::uint64_t>(sent);
+            ++pending_server_to_client_message_count_;
         }
         return core::Status::ok();
     }
@@ -1094,6 +1081,10 @@ class PosixDatagramTransportHost final : public ITransportHost {
     std::uint32_t pending_malformed_datagram_count_ = 0;
     std::uint32_t pending_rejected_datagram_count_ = 0;
     std::uint32_t pending_rate_limited_datagram_count_ = 0;
+    std::uint64_t pending_client_to_server_bytes_ = 0;
+    std::uint64_t pending_server_to_client_bytes_ = 0;
+    std::uint32_t pending_client_to_server_message_count_ = 0;
+    std::uint32_t pending_server_to_client_message_count_ = 0;
 };
 
 #endif
@@ -1186,7 +1177,7 @@ core::Status InMemoryTransportHost::send_client_to_server(core::NetId client_id,
     }
 
     record_client_to_server_sequence(*client.value(), message);
-    server_inbox_.push(TransportEnvelope{client_id, config_.server_id, std::move(message)});
+    queue_or_deliver(TransportEnvelope{client_id, config_.server_id, std::move(message)}, true);
     return core::Status::ok();
 }
 
@@ -1201,12 +1192,27 @@ core::Status InMemoryTransportHost::send_server_to_client(core::NetId client_id,
         return status;
     }
 
-    client.value()->inbox.push(TransportEnvelope{config_.server_id, client_id, std::move(message)});
+    queue_or_deliver(TransportEnvelope{config_.server_id, client_id, std::move(message)}, false);
     return core::Status::ok();
 }
 
-core::Result<TransportMaintenanceResult> InMemoryTransportHost::poll_maintenance(std::int64_t) {
-    return core::Result<TransportMaintenanceResult>::success({});
+core::Result<TransportMaintenanceResult>
+InMemoryTransportHost::poll_maintenance(std::int64_t now_ms) {
+    current_time_ms_ = now_ms;
+    deliver_pending(now_ms);
+    TransportMaintenanceResult result;
+    result.client_to_server_bytes = pending_client_to_server_bytes_;
+    result.server_to_client_bytes = pending_server_to_client_bytes_;
+    result.client_to_server_message_count = pending_client_to_server_message_count_;
+    result.server_to_client_message_count = pending_server_to_client_message_count_;
+    result.simulated_dropped_unreliable_message_count = pending_simulated_drop_count_;
+    result.pending_impaired_message_count = static_cast<std::uint32_t>(pending_deliveries_.size());
+    pending_client_to_server_bytes_ = 0;
+    pending_server_to_client_bytes_ = 0;
+    pending_client_to_server_message_count_ = 0;
+    pending_server_to_client_message_count_ = 0;
+    pending_simulated_drop_count_ = 0;
+    return core::Result<TransportMaintenanceResult>::success(std::move(result));
 }
 
 std::vector<TransportEnvelope> InMemoryTransportHost::drain_server_messages() {
@@ -1251,6 +1257,101 @@ void InMemoryTransportHost::record_client_to_server_sequence(ClientQueues& clien
         client.last_reliable_command_sequence = message.sequence;
         client.has_reliable_command_sequence = true;
     }
+}
+
+void InMemoryTransportHost::queue_or_deliver(TransportEnvelope envelope, bool to_server) {
+    const auto encoded_bytes = encoded_envelope_bytes(envelope);
+    if (to_server) {
+        pending_client_to_server_bytes_ += encoded_bytes;
+        ++pending_client_to_server_message_count_;
+    } else {
+        pending_server_to_client_bytes_ += encoded_bytes;
+        ++pending_server_to_client_message_count_;
+    }
+
+    if (!impairment_enabled()) {
+        if (to_server) {
+            server_inbox_.push(std::move(envelope));
+        } else {
+            auto client = find_client(envelope.recipient);
+            if (client && client.value()->connected) {
+                client.value()->inbox.push(std::move(envelope));
+            }
+        }
+        return;
+    }
+
+    const auto impairment = next_impairment_value();
+    if (envelope.message.channel == TransportChannel::unreliable &&
+        impairment % 10'000U < config_.simulated_unreliable_loss_basis_points) {
+        ++pending_simulated_drop_count_;
+        return;
+    }
+
+    const auto jitter_span = static_cast<std::uint64_t>(config_.simulated_jitter_ms) * 2U + 1U;
+    const auto jitter_sample = static_cast<std::int64_t>((impairment >> 16U) % jitter_span) -
+                               static_cast<std::int64_t>(config_.simulated_jitter_ms);
+    auto deliver_at = current_time_ms_ +
+                      static_cast<std::int64_t>(config_.simulated_one_way_latency_ms) +
+                      jitter_sample;
+    deliver_at = std::max(deliver_at, current_time_ms_);
+    if (envelope.message.channel == TransportChannel::reliable) {
+        auto& last_delivery = to_server
+                                  ? last_reliable_server_delivery_ms_
+                                  : last_reliable_client_delivery_ms_[envelope.recipient.value()];
+        deliver_at = std::max(deliver_at, last_delivery + 1);
+        last_delivery = deliver_at;
+    }
+    pending_deliveries_.push_back(PendingDelivery{deliver_at, delivery_order_++, to_server,
+                                                  to_server ? envelope.sender : envelope.recipient,
+                                                  std::move(envelope)});
+}
+
+void InMemoryTransportHost::deliver_pending(std::int64_t now_ms) {
+    std::ranges::sort(pending_deliveries_,
+                      [](const PendingDelivery& left, const PendingDelivery& right) {
+                          if (left.deliver_at_ms != right.deliver_at_ms) {
+                              return left.deliver_at_ms < right.deliver_at_ms;
+                          }
+                          return left.order < right.order;
+                      });
+    std::size_t retained = 0;
+    for (std::size_t index = 0; index < pending_deliveries_.size(); ++index) {
+        auto& pending = pending_deliveries_[index];
+        if (pending.deliver_at_ms > now_ms) {
+            if (retained != index) {
+                pending_deliveries_[retained] = std::move(pending);
+            }
+            ++retained;
+            continue;
+        }
+        auto client = find_client(pending.client_id);
+        if (!client || !client.value()->connected) {
+            continue;
+        }
+        if (pending.to_server) {
+            server_inbox_.push(std::move(pending.envelope));
+        } else {
+            client.value()->inbox.push(std::move(pending.envelope));
+        }
+    }
+    pending_deliveries_.resize(retained);
+}
+
+bool InMemoryTransportHost::impairment_enabled() const noexcept {
+    return config_.simulated_one_way_latency_ms != 0 || config_.simulated_jitter_ms != 0 ||
+           config_.simulated_unreliable_loss_basis_points != 0;
+}
+
+std::uint64_t InMemoryTransportHost::next_impairment_value() noexcept {
+    auto value = config_.impairment_seed + (++impairment_counter_ * 0x9e3779b97f4a7c15ULL);
+    value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+    return value ^ (value >> 31U);
+}
+
+std::size_t InMemoryTransportHost::encoded_envelope_bytes(const TransportEnvelope& envelope) const {
+    return TransportPacketCodec::encode(envelope).size();
 }
 
 core::Result<InMemoryTransportHost::ClientQueues*>
@@ -1343,6 +1444,12 @@ core::Status validate_transport_host_config(const InMemoryTransportHostConfig& c
         return core::Status::failure("transport.invalid_max_clients",
                                      "max client count must be non-zero");
     }
+    if (config.simulated_one_way_latency_ms > 60'000 || config.simulated_jitter_ms > 60'000 ||
+        config.simulated_unreliable_loss_basis_points > 10'000) {
+        return core::Status::failure(
+            "transport.invalid_impairment",
+            "simulated latency/jitter must be at most 60 seconds and loss at most 100 percent");
+    }
     return core::Status::ok();
 }
 
@@ -1399,11 +1506,11 @@ core::Status validate_transport_endpoint(const TransportEndpoint& endpoint) {
     return core::Status::ok();
 }
 
-core::Result<TransportEndpoint>
-parse_transport_endpoint(std::string_view endpoint, std::uint16_t default_port) {
+core::Result<TransportEndpoint> parse_transport_endpoint(std::string_view endpoint,
+                                                         std::uint16_t default_port) {
     if (endpoint.empty()) {
-        return core::Result<TransportEndpoint>::failure(
-            "transport.invalid_endpoint_address", "transport endpoint must not be empty");
+        return core::Result<TransportEndpoint>::failure("transport.invalid_endpoint_address",
+                                                        "transport endpoint must not be empty");
     }
     std::string_view address = endpoint;
     std::string_view port_text;
@@ -1411,8 +1518,7 @@ parse_transport_endpoint(std::string_view endpoint, std::uint16_t default_port) 
         const auto closing = endpoint.find(']');
         if (closing == std::string_view::npos || closing == 1) {
             return core::Result<TransportEndpoint>::failure(
-                "transport.invalid_endpoint_address",
-                "bracketed transport endpoint is invalid");
+                "transport.invalid_endpoint_address", "bracketed transport endpoint is invalid");
         }
         address = endpoint.substr(1, closing - 1);
         if (closing + 1 < endpoint.size()) {
@@ -1512,9 +1618,17 @@ core::NetId transport_host_server_id(const TransportHostDesc& desc) noexcept {
 
 TransportMessage make_command_transport_message(const CommandEnvelope& envelope,
                                                 TransportChannel channel) {
-    return TransportMessage{
-        TransportMessageKind::command, channel, envelope.sequence, envelope.type, envelope.payload,
-        envelope.client_time_ms};
+    auto payload = envelope.payload;
+    auto structured = CommandPayloadTextCodec::decode(payload);
+    if (structured) {
+        payload = CommandPayloadBinaryCodec::encode(structured.value());
+    }
+    return TransportMessage{TransportMessageKind::command,
+                            channel,
+                            envelope.sequence,
+                            envelope.type,
+                            std::move(payload),
+                            envelope.client_time_ms};
 }
 
 core::Result<CommandEnvelope> command_envelope_from_transport(const TransportEnvelope& envelope) {
@@ -1531,7 +1645,16 @@ core::Result<CommandEnvelope> command_envelope_from_transport(const TransportEnv
     command.sequence = envelope.message.sequence;
     command.sender = envelope.sender;
     command.type = envelope.message.payload_type;
-    command.payload = envelope.message.payload;
+    if (CommandPayloadBinaryCodec::is_encoded(envelope.message.payload)) {
+        auto payload = CommandPayloadBinaryCodec::decode(envelope.message.payload);
+        if (!payload) {
+            return core::Result<CommandEnvelope>::failure(payload.error().code,
+                                                          payload.error().message);
+        }
+        command.payload = CommandPayloadTextCodec::encode(payload.value());
+    } else {
+        command.payload = envelope.message.payload;
+    }
     command.client_time_ms = envelope.message.timestamp_ms;
     return core::Result<CommandEnvelope>::success(std::move(command));
 }

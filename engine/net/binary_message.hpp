@@ -59,6 +59,10 @@ class BinaryMessageWriter final {
         bytes_.append(value);
         return true;
     }
+    void text_var(std::string_view value) {
+        var_u64(static_cast<std::uint64_t>(value.size()));
+        bytes_.append(value);
+    }
     [[nodiscard]] std::string take() {
         return std::move(bytes_);
     }
@@ -163,6 +167,17 @@ class BinaryMessageReader final {
         offset_ += size;
         return true;
     }
+    [[nodiscard]] bool text_var(std::string& value, std::size_t max_bytes) {
+        std::uint64_t size = 0;
+        if (!var_u64(size) || size > static_cast<std::uint64_t>(max_bytes) ||
+            size > static_cast<std::uint64_t>(remaining())) {
+            return false;
+        }
+        const auto count = static_cast<std::size_t>(size);
+        value.assign(bytes_.substr(offset_, count));
+        offset_ += count;
+        return true;
+    }
     [[nodiscard]] std::size_t remaining() const noexcept {
         return bytes_.size() - offset_;
     }
@@ -179,9 +194,9 @@ class BinaryMessageReader final {
         }
         std::uint64_t decoded = 0;
         for (std::size_t index = 0; index < sizeof(T); ++index) {
-            decoded |= static_cast<std::uint64_t>(
-                           static_cast<unsigned char>(bytes_[offset_ + index]))
-                       << (index * 8U);
+            decoded |=
+                static_cast<std::uint64_t>(static_cast<unsigned char>(bytes_[offset_ + index]))
+                << (index * 8U);
         }
         value = static_cast<T>(decoded);
         offset_ += sizeof(T);

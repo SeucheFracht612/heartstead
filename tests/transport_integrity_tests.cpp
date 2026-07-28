@@ -277,8 +277,7 @@ void test_remote_endpoint_challenge_token_and_timeout() {
     assert(client.value()->poll_maintenance(2));
 
     assert(host.value()->send_server_to_client(
-        client_id,
-        reliable_message(net::TransportMessageKind::command_result, 1, "accepted")));
+        client_id, reliable_message(net::TransportMessageKind::command_result, 1, "accepted")));
     assert(client.value()->poll_maintenance(3));
     auto delivered = client.value()->drain_server_messages();
     assert(delivered.size() == 1);
@@ -312,8 +311,7 @@ void test_remote_endpoint_rejects_content_mismatch() {
     assert(response && response.value().connected_clients.empty());
     auto rejected = client.value()->poll_maintenance(1);
     assert(rejected && rejected.value().disconnected);
-    assert(rejected.value().disconnect_reason_code ==
-           "transport_handshake.content_mismatch");
+    assert(rejected.value().disconnect_reason_code == "transport_handshake.content_mismatch");
     assert(client.value()->state() == net::TransportClientState::disconnected);
 }
 
@@ -343,9 +341,9 @@ void test_remote_endpoint_rate_limits_unreliable_input() {
     assert(client.value()->poll_maintenance(1));
 
     for (std::uint64_t sequence = 1; sequence <= 3; ++sequence) {
-        assert(client.value()->send_to_server(
-            {net::TransportMessageKind::control, net::TransportChannel::unreliable,
-             sequence, "test.input", "payload", 2}));
+        assert(client.value()->send_to_server({net::TransportMessageKind::control,
+                                               net::TransportChannel::unreliable, sequence,
+                                               "test.input", "payload", 2}));
     }
     auto maintenance = host.value()->poll_maintenance(2);
     assert(maintenance && maintenance.value().rate_limited_datagram_count == 1);
@@ -638,6 +636,32 @@ void test_host_disconnects_when_the_final_notice_cannot_be_delivered() {
     assert(!transport->is_client_connected(client.value()));
 }
 
+void test_host_hard_caps_unreliable_outbound_bandwidth() {
+    net::HostSessionConfig config;
+    config.max_outbound_bytes_per_client_per_second = 1;
+    net::HostSession session(config);
+    assert(session.start());
+    auto client = session.connect_client();
+    assert(client);
+    auto welcome = session.drain_client_messages(client.value());
+    assert(welcome && welcome.value().size() == 1);
+
+    assert(session.send_replication_message(client.value(), {net::TransportMessageKind::replication,
+                                                             net::TransportChannel::unreliable, 1,
+                                                             "test.snapshot", "latest", 0}));
+    auto delivered = session.drain_client_messages(client.value());
+    assert(delivered && delivered.value().empty());
+
+    net::ServerCommandDispatcher dispatcher;
+    net::CommandExecutionContext context;
+    context.server_time_ms = 10;
+    auto tick = session.tick(dispatcher, context);
+    assert(tick);
+    assert(tick.value().outbound_budget_dropped_unreliable_message_count == 1);
+    const auto inspection = debug::Inspector::inspect(tick.value());
+    assert(inspection.find_field("outbound_budget_dropped_unreliable_message_count")->value == "1");
+}
+
 } // namespace
 
 int main() {
@@ -653,5 +677,6 @@ int main() {
     test_host_backpressures_commands_while_committed_delivery_is_blocked();
     test_host_defers_reliable_application_replication_without_overtaking();
     test_host_disconnects_when_the_final_notice_cannot_be_delivered();
+    test_host_hard_caps_unreliable_outbound_bandwidth();
     return 0;
 }

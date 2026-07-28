@@ -57,8 +57,7 @@ core::Result<double> parse_number<double>(std::string_view text, std::string_vie
     return math::length(lhs.relative_to(rhs.anchor) - rhs.local_offset);
 }
 
-void write_binary_position(net::BinaryMessageWriter& writer,
-                           const world::WorldPosition& position) {
+void write_binary_position(net::BinaryMessageWriter& writer, const world::WorldPosition& position) {
     writer.i64(position.anchor.x);
     writer.i64(position.anchor.y);
     writer.i64(position.anchor.z);
@@ -166,13 +165,12 @@ std::string PlayerInputBundleBinaryCodec::encode(const PlayerInputBundle& bundle
     return writer.take();
 }
 
-core::Result<PlayerInputBundle>
-PlayerInputBundleBinaryCodec::decode(std::string_view payload) {
+core::Result<PlayerInputBundle> PlayerInputBundleBinaryCodec::decode(std::string_view payload) {
     net::BinaryMessageReader reader(payload);
     std::uint32_t magic = 0;
     std::uint8_t count = 0;
-    if (!reader.u32(magic) || magic != 0x3142494dU || !reader.u8(count) ||
-        count == 0 || count > 4) {
+    if (!reader.u32(magic) || magic != 0x3142494dU || !reader.u8(count) || count == 0 ||
+        count > 4) {
         return core::Result<PlayerInputBundle>::failure(
             "movement_input_bundle.invalid_binary_header",
             "movement input bundle binary header is invalid");
@@ -188,9 +186,8 @@ PlayerInputBundleBinaryCodec::decode(std::string_view payload) {
         std::int64_t yaw = 0;
         std::int64_t pitch = 0;
         if (!reader.var_u64(version) || !reader.var_u64(frame.tick) ||
-            !reader.var_u64(frame.sequence) || !reader.var_i64(move_x) ||
-            !reader.var_i64(move_z) || !reader.var_i64(yaw) ||
-            !reader.var_i64(pitch) || !reader.var_u64(held_buttons) ||
+            !reader.var_u64(frame.sequence) || !reader.var_i64(move_x) || !reader.var_i64(move_z) ||
+            !reader.var_i64(yaw) || !reader.var_i64(pitch) || !reader.var_u64(held_buttons) ||
             !reader.var_u64(pressed_buttons) ||
             version > std::numeric_limits<std::uint16_t>::max() ||
             move_x < std::numeric_limits<std::int16_t>::min() ||
@@ -230,8 +227,7 @@ PlayerInputBundleBinaryCodec::decode(std::string_view payload) {
 
 core::Status PlayerControllerSnapshot::validate(const PlayerMovementConfig& config) const {
     if (version != player_controller_snapshot_version || !player_net_id.is_valid() ||
-        !player_save_id.is_valid() ||
-        last_processed_input_sequence != state.last_input_sequence) {
+        !player_save_id.is_valid() || last_processed_input_sequence != state.last_input_sequence) {
         return core::Status::failure("movement_snapshot.invalid_identity",
                                      "movement snapshot identity or acknowledgement is invalid");
     }
@@ -245,16 +241,15 @@ std::string PlayerControllerSnapshotTextCodec::encode(const PlayerControllerSnap
     output << snapshot.version << '|' << snapshot.player_net_id.value() << '|'
            << snapshot.player_save_id.value() << '|' << snapshot.last_processed_input_sequence
            << '|' << snapshot.collision_world_revision << '|' << state.position.anchor.x << '|'
-           << state.position.anchor.y << '|'
-           << state.position.anchor.z << '|' << state.position.local_offset.x << '|'
-           << state.position.local_offset.y << '|' << state.position.local_offset.z << '|'
-           << state.velocity.x << '|' << state.velocity.y << '|' << state.velocity.z << '|'
-           << static_cast<unsigned>(state.mode) << '|' << static_cast<unsigned>(state.scripted_kind)
-           << '|' << static_cast<unsigned>(state.encumbrance) << '|' << state.crouched << '|'
+           << state.position.anchor.y << '|' << state.position.anchor.z << '|'
+           << state.position.local_offset.x << '|' << state.position.local_offset.y << '|'
+           << state.position.local_offset.z << '|' << state.velocity.x << '|' << state.velocity.y
+           << '|' << state.velocity.z << '|' << static_cast<unsigned>(state.mode) << '|'
+           << static_cast<unsigned>(state.scripted_kind) << '|'
+           << static_cast<unsigned>(state.encumbrance) << '|' << state.crouched << '|'
            << state.grounded << '|' << state.exhausted << '|' << state.invulnerable << '|'
-           << state.yaw_centidegrees << '|' << state.pitch_centidegrees << '|'
-           << state.health_milli << '|' << state.stamina_milli << '|'
-           << static_cast<unsigned>(state.dash_charges) << '|'
+           << state.yaw_centidegrees << '|' << state.pitch_centidegrees << '|' << state.health_milli
+           << '|' << state.stamina_milli << '|' << static_cast<unsigned>(state.dash_charges) << '|'
            << state.air_dash_available << '|' << state.mode_ticks << '|'
            << state.mode_duration_ticks << '|' << state.jump_buffer_ticks << '|'
            << state.coyote_ticks << '|' << state.roll_buffer_ticks << '|'
@@ -475,8 +470,7 @@ PlayerControllerSnapshotTextCodec::decode(std::string_view payload,
     return core::Result<PlayerControllerSnapshot>::success(std::move(snapshot));
 }
 
-std::string
-PlayerControllerSnapshotBinaryCodec::encode(const PlayerControllerSnapshot& snapshot) {
+std::string PlayerControllerSnapshotBinaryCodec::encode(const PlayerControllerSnapshot& snapshot) {
     net::BinaryMessageWriter writer;
     writer.u32(0x3153504dU);
     writer.u16(snapshot.version);
@@ -525,8 +519,7 @@ PlayerControllerSnapshotBinaryCodec::encode(const PlayerControllerSnapshot& snap
     }
     writer.u8(static_cast<std::uint8_t>(state.locomotion_animation.kind));
     writer.u16(state.locomotion_animation.phase);
-    writer.u8(static_cast<std::uint8_t>(
-        state.locomotion_animation.transition_from));
+    writer.u8(static_cast<std::uint8_t>(state.locomotion_animation.transition_from));
     writer.u16(state.locomotion_animation.transition_from_phase);
     writer.u64(state.locomotion_animation.transition_tick);
     writer.u64(state.simulation_tick);
@@ -549,39 +542,31 @@ PlayerControllerSnapshotBinaryCodec::decode(std::string_view payload,
     std::uint8_t locomotion_from = 0;
     bool has_fall_distance = false;
     double fall_distance = 0.0;
-    if (!reader.u32(magic) || magic != 0x3153504dU ||
-        !reader.u16(snapshot.version) || !reader.u64(player_net_id) ||
-        !reader.u64(player_save_id) ||
+    if (!reader.u32(magic) || magic != 0x3153504dU || !reader.u16(snapshot.version) ||
+        !reader.u64(player_net_id) || !reader.u64(player_save_id) ||
         !reader.u64(snapshot.last_processed_input_sequence) ||
         !reader.u64(snapshot.collision_world_revision) ||
-        !read_binary_position(reader, state.position) ||
-        !reader.f64(state.velocity.x) || !reader.f64(state.velocity.y) ||
-        !reader.f64(state.velocity.z) || !reader.u8(mode) ||
-        !reader.u8(scripted_kind) || !reader.u8(encumbrance) ||
-        !reader.boolean(state.crouched) || !reader.boolean(state.grounded) ||
-        !reader.boolean(state.exhausted) || !reader.boolean(state.invulnerable) ||
-        !reader.i16(state.yaw_centidegrees) ||
+        !read_binary_position(reader, state.position) || !reader.f64(state.velocity.x) ||
+        !reader.f64(state.velocity.y) || !reader.f64(state.velocity.z) || !reader.u8(mode) ||
+        !reader.u8(scripted_kind) || !reader.u8(encumbrance) || !reader.boolean(state.crouched) ||
+        !reader.boolean(state.grounded) || !reader.boolean(state.exhausted) ||
+        !reader.boolean(state.invulnerable) || !reader.i16(state.yaw_centidegrees) ||
         !reader.i16(state.pitch_centidegrees) || !reader.i32(state.health_milli) ||
         !reader.i32(state.stamina_milli) || !reader.u8(state.dash_charges) ||
         !reader.boolean(state.air_dash_available) || !reader.u16(state.mode_ticks) ||
-        !reader.u16(state.mode_duration_ticks) ||
-        !reader.u16(state.jump_buffer_ticks) || !reader.u16(state.coyote_ticks) ||
-        !reader.u16(state.roll_buffer_ticks) ||
+        !reader.u16(state.mode_duration_ticks) || !reader.u16(state.jump_buffer_ticks) ||
+        !reader.u16(state.coyote_ticks) || !reader.u16(state.roll_buffer_ticks) ||
         !reader.u16(state.stamina_regen_delay_ticks) ||
-        !reader.u16(state.landing_roll_window_ticks) ||
-        !reader.u8(state.stamina_drain_remainder) ||
-        !reader.u8(state.stamina_regen_remainder) ||
-        !reader.boolean(has_fall_distance) || !reader.f64(fall_distance) ||
-        (has_fall_distance &&
-         !read_binary_position(reader, state.fall_origin)) ||
+        !reader.u16(state.landing_roll_window_ticks) || !reader.u8(state.stamina_drain_remainder) ||
+        !reader.u8(state.stamina_regen_remainder) || !reader.boolean(has_fall_distance) ||
+        !reader.f64(fall_distance) ||
+        (has_fall_distance && !read_binary_position(reader, state.fall_origin)) ||
         (scripted_kind != static_cast<std::uint8_t>(ScriptedMovementKind::none) &&
-         (!reader.f64(state.scripted_direction.x) ||
-          !reader.f64(state.scripted_direction.y) ||
+         (!reader.f64(state.scripted_direction.x) || !reader.f64(state.scripted_direction.y) ||
           !reader.f64(state.scripted_direction.z) ||
           !read_binary_position(reader, state.scripted_start) ||
           !read_binary_position(reader, state.scripted_target))) ||
-        !reader.u8(locomotion_kind) ||
-        !reader.u16(state.locomotion_animation.phase) ||
+        !reader.u8(locomotion_kind) || !reader.u16(state.locomotion_animation.phase) ||
         !reader.u8(locomotion_from) ||
         !reader.u16(state.locomotion_animation.transition_from_phase) ||
         !reader.u64(state.locomotion_animation.transition_tick) ||
@@ -660,7 +645,17 @@ core::Result<ReconciliationResult> MovementPredictionBuffer::reconcile(
         return core::Result<ReconciliationResult>::success(std::move(result));
     }
     for (const auto& input : inputs_) {
-        auto replayed = controller.tick(result.state, input, modifiers, collision);
+        if (result.state.simulation_tick == std::numeric_limits<std::uint64_t>::max()) {
+            return core::Result<ReconciliationResult>::failure(
+                "movement_prediction.tick_exhausted",
+                "movement reconciliation exhausted its simulation tick space");
+        }
+        auto replay_input = input;
+        // Input sequence is the acknowledgement identity. The server intentionally rebases a
+        // delayed input onto its current authoritative simulation tick, so replay must do the
+        // same instead of treating the client's original predicted tick as immutable.
+        replay_input.tick = result.state.simulation_tick + 1;
+        auto replayed = controller.tick(result.state, replay_input, modifiers, collision);
         if (!replayed) {
             return core::Result<ReconciliationResult>::failure(replayed.error().code,
                                                                replayed.error().message);
@@ -792,10 +787,9 @@ movement_input_bundle_from_transport(const net::TransportEnvelope& envelope) {
             "movement_input_bundle.invalid_transport",
             "transport envelope is not a movement input bundle");
     }
-    auto bundle =
-        envelope.message.payload_type == movement_input_bundle_payload_type
-            ? PlayerInputBundleBinaryCodec::decode(envelope.message.payload)
-            : PlayerInputBundleTextCodec::decode(envelope.message.payload);
+    auto bundle = envelope.message.payload_type == movement_input_bundle_payload_type
+                      ? PlayerInputBundleBinaryCodec::decode(envelope.message.payload)
+                      : PlayerInputBundleTextCodec::decode(envelope.message.payload);
     if (!bundle || bundle.value().frames.back().sequence != envelope.message.sequence) {
         return core::Result<PlayerInputBundle>::failure(
             !bundle ? bundle.error().code : "movement_input_bundle.sequence_mismatch",
@@ -822,17 +816,16 @@ core::Result<PlayerControllerSnapshot>
 movement_snapshot_from_transport(const net::TransportEnvelope& envelope,
                                  const PlayerMovementConfig& config) {
     if (envelope.message.kind != net::TransportMessageKind::replication ||
-        envelope.message.channel != net::TransportChannel::unreliable ||
+        (envelope.message.channel != net::TransportChannel::unreliable &&
+         envelope.message.channel != net::TransportChannel::reliable) ||
         (envelope.message.payload_type != movement_snapshot_payload_type &&
          envelope.message.payload_type != legacy_movement_snapshot_payload_type)) {
         return core::Result<PlayerControllerSnapshot>::failure(
             "movement_snapshot.invalid_transport", "transport envelope is not a movement snapshot");
     }
     return envelope.message.payload_type == movement_snapshot_payload_type
-               ? PlayerControllerSnapshotBinaryCodec::decode(envelope.message.payload,
-                                                             config)
-               : PlayerControllerSnapshotTextCodec::decode(envelope.message.payload,
-                                                           config);
+               ? PlayerControllerSnapshotBinaryCodec::decode(envelope.message.payload, config)
+               : PlayerControllerSnapshotTextCodec::decode(envelope.message.payload, config);
 }
 
 net::TransportMessage make_player_assignment_message(core::NetId player_net_id,

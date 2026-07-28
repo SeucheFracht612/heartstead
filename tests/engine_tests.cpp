@@ -9257,6 +9257,21 @@ void test_world_replication_delta_planning() {
         heartstead::debug::Inspector::inspect(decoded_snapshot.value());
     assert(decoded_snapshot_inspection.object_type == "world_replication_delta_snapshot");
     assert(!decoded_snapshot_inspection.has_errors());
+    auto binary_snapshot =
+        heartstead::world::WorldReplicationDeltaSnapshotBinaryCodec::encode(snapshot);
+    assert(binary_snapshot);
+    assert(binary_snapshot.value().size() < encoded_snapshot.size());
+    auto decoded_binary_snapshot =
+        heartstead::world::WorldReplicationDeltaSnapshotBinaryCodec::decode(
+            binary_snapshot.value());
+    assert(decoded_binary_snapshot);
+    assert(decoded_binary_snapshot.value().plan.command_sequence == 12);
+    assert(decoded_binary_snapshot.value().plan.command_type == "debug.delta|escaped=ok");
+    assert(decoded_binary_snapshot.value().plan.global_events.front().message ==
+           "global|message=ok");
+    assert(decoded_binary_snapshot.value().build_pieces.size() == 1);
+    assert(!heartstead::world::WorldReplicationDeltaSnapshotBinaryCodec::decode(
+        binary_snapshot.value().substr(0, binary_snapshot.value().size() - 1)));
 
     auto mismatched_payload = encoded_snapshot;
     const auto materialized_count_offset = mismatched_payload.find("materialized_record_count=7");
@@ -9379,8 +9394,10 @@ void test_world_replication_delta_planning() {
 
     const auto replication_server_id = heartstead::core::NetId::from_value(500);
     const auto replication_client_id = heartstead::core::NetId::from_value(501);
-    auto delta_transport_message =
+    auto delta_transport_result =
         heartstead::world::make_replication_delta_transport_message(apply_snapshot, 15);
+    assert(delta_transport_result);
+    auto delta_transport_message = std::move(delta_transport_result).value();
     assert(delta_transport_message.kind == heartstead::net::TransportMessageKind::replication);
     assert(delta_transport_message.channel == heartstead::net::TransportChannel::reliable);
     assert(delta_transport_message.sequence == 12);
@@ -10521,6 +10538,22 @@ void test_command_payload_codec() {
     assert(message.value() == "hello;=world%|\n");
     assert(decoded.value().find("missing") == nullptr);
     assert(!decoded.value().require("missing"));
+    const auto binary = net::CommandPayloadBinaryCodec::encode(payload);
+    assert(net::CommandPayloadBinaryCodec::is_encoded(binary));
+    assert(binary.size() < encoded.size());
+    auto decoded_binary = net::CommandPayloadBinaryCodec::decode(binary);
+    assert(decoded_binary);
+    assert(decoded_binary.value().require("chunk").value() == "0|0|0");
+    assert(decoded_binary.value().require("message").value() == "hello;=world%|\n");
+    assert(!net::CommandPayloadBinaryCodec::decode(binary.substr(0, binary.size() - 1)));
+    const net::CommandEnvelope command{4, core::NetId::from_value(2), "world.set_voxel", encoded,
+                                       17};
+    const auto wire_command = net::make_command_transport_message(command);
+    assert(net::CommandPayloadBinaryCodec::is_encoded(wire_command.payload));
+    auto decoded_wire_command = net::command_envelope_from_transport(
+        {command.sender, core::NetId::from_value(1), wire_command});
+    assert(decoded_wire_command);
+    assert(decoded_wire_command.value().payload == encoded);
 
     net::CommandPayload empty;
     assert(net::CommandPayloadTextCodec::encode(empty).empty());
@@ -11898,7 +11931,7 @@ void test_network_transport() {
     response_report.reserved_ids.push_back(core::SaveId::from_value(4));
     const auto response_payload = net::host_session_result_payload(response_report);
     auto decoded_response_payload =
-        net::HostSessionCommandResultTextCodec::decode(response_payload);
+        net::HostSessionCommandResultBinaryCodec::decode(response_payload);
     assert(decoded_response_payload);
     assert(decoded_response_payload.value().success);
     assert(decoded_response_payload.value().sequence == 12);
@@ -11940,13 +11973,15 @@ void test_network_transport() {
     failure_report.error_code = "debug.failed";
     failure_report.error_message = "bad|input\nwith=delimiters;kept";
     auto failure_payload = net::host_session_result_payload(failure_report);
-    auto decoded_failure_payload = net::HostSessionCommandResultTextCodec::decode(failure_payload);
+    auto decoded_failure_payload =
+        net::HostSessionCommandResultBinaryCodec::decode(failure_payload);
     assert(decoded_failure_payload);
     assert(!decoded_failure_payload.value().success);
     assert(decoded_failure_payload.value().error_code == "debug.failed");
     assert(decoded_failure_payload.value().error_message == "bad|input\nwith=delimiters;kept");
 
-    auto invalid_result_payload = response_payload;
+    auto invalid_result_payload = net::HostSessionCommandResultTextCodec::encode(
+        net::host_session_command_result_from_report(response_report));
     const auto status_begin = invalid_result_payload.find("status=ok");
     assert(status_begin != std::string::npos);
     invalid_result_payload.replace(status_begin, std::string("status=ok").size(), "status=maybe");

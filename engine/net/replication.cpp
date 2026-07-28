@@ -1,5 +1,7 @@
 #include "engine/net/replication.hpp"
 
+#include "engine/net/binary_message.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <cstdint>
@@ -19,6 +21,10 @@ constexpr std::string_view magic = "heartstead.replication_events.v1";
 constexpr std::size_t max_replication_bytes = 4U * 1024U * 1024U;
 constexpr std::size_t max_replication_line_bytes = 1024U * 1024U;
 constexpr std::size_t max_replication_records = 100'000;
+constexpr std::size_t max_replication_command_bytes = 128;
+constexpr std::size_t max_replication_event_type_bytes = 256;
+constexpr std::size_t max_replication_event_message_bytes = 1024U * 1024U;
+constexpr std::uint32_t binary_magic = 0x31524548U; // "HER1" in little-endian byte order.
 
 [[nodiscard]] bool is_hex_digit(char value) noexcept {
     return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f') ||
@@ -350,6 +356,86 @@ core::Result<ReplicationBatch> ReplicationTextCodec::decode(std::string_view tex
     return core::Result<ReplicationBatch>::success(std::move(batch));
 }
 
+std::string ReplicationBinaryCodec::encode(const ReplicationBatch& batch) {
+    BinaryMessageWriter writer;
+    writer.u32(binary_magic);
+    writer.var_u64(replication_stream_sequence(batch));
+    writer.var_u64(batch.command_sequence);
+    writer.var_u64(batch.source_client_id.value());
+    writer.text_var(batch.command_type);
+    writer.var_u64(static_cast<std::uint64_t>(batch.events.size()));
+    for (const auto& event : batch.events) {
+        writer.text_var(event.type);
+        writer.var_u64(event.subject.value());
+        writer.text_var(event.message);
+    }
+    writer.var_u64(static_cast<std::uint64_t>(batch.reserved_ids.size()));
+    for (const auto id : batch.reserved_ids) {
+        writer.var_u64(id.value());
+    }
+    return writer.take();
+}
+
+core::Result<ReplicationBatch> ReplicationBinaryCodec::decode(std::string_view bytes) {
+    if (bytes.size() > max_replication_bytes) {
+        return core::Result<ReplicationBatch>::failure(
+            "replication.too_large", "binary replication payload exceeds its size limit");
+    }
+    BinaryMessageReader reader(bytes);
+    std::uint32_t decoded_magic = 0;
+    std::uint64_t event_count = 0;
+    ReplicationBatch batch;
+    if (!reader.u32(decoded_magic) || decoded_magic != binary_magic ||
+        !reader.var_u64(batch.replication_sequence) || !reader.var_u64(batch.command_sequence)) {
+        return core::Result<ReplicationBatch>::failure(
+            "replication.invalid_binary",
+            "binary replication payload has an invalid or truncated header");
+    }
+    std::uint64_t source_client = 0;
+    if (!reader.var_u64(source_client) ||
+        !reader.text_var(batch.command_type, max_replication_command_bytes) ||
+        !reader.var_u64(event_count) || event_count > max_replication_records) {
+        return core::Result<ReplicationBatch>::failure(
+            "replication.invalid_binary",
+            "binary replication header fields are malformed or outside their bounds");
+    }
+    batch.source_client_id = core::NetId::from_value(source_client);
+    batch.events.reserve(static_cast<std::size_t>(event_count));
+    for (std::uint64_t index = 0; index < event_count; ++index) {
+        world::OperationEvent event;
+        std::uint64_t subject = 0;
+        if (!reader.text_var(event.type, max_replication_event_type_bytes) ||
+            !reader.var_u64(subject) ||
+            !reader.text_var(event.message, max_replication_event_message_bytes)) {
+            return core::Result<ReplicationBatch>::failure(
+                "replication.invalid_binary",
+                "binary replication event is malformed, truncated, or oversized");
+        }
+        event.subject = core::SaveId::from_value(subject);
+        batch.events.push_back(std::move(event));
+    }
+    std::uint64_t reserved_count = 0;
+    if (!reader.var_u64(reserved_count) || reserved_count > max_replication_records) {
+        return core::Result<ReplicationBatch>::failure(
+            "replication.invalid_binary",
+            "binary replication reserved-id count is outside its bounds");
+    }
+    batch.reserved_ids.reserve(static_cast<std::size_t>(reserved_count));
+    for (std::uint64_t index = 0; index < reserved_count; ++index) {
+        std::uint64_t id = 0;
+        if (!reader.var_u64(id)) {
+            return core::Result<ReplicationBatch>::failure(
+                "replication.invalid_binary", "binary replication reserved-id list is truncated");
+        }
+        batch.reserved_ids.push_back(core::SaveId::from_value(id));
+    }
+    if (!reader.finished()) {
+        return core::Result<ReplicationBatch>::failure(
+            "replication.trailing_data", "binary replication payload contains trailing bytes");
+    }
+    return core::Result<ReplicationBatch>::success(std::move(batch));
+}
+
 ReplicationRelevanceReport
 ReplicationRelevance::evaluate(const ReplicationRelevancePolicy& policy,
                                const ReplicationBatch& batch,
@@ -477,9 +563,9 @@ ReplicationIntakeReport ReplicationIntake::summarize(std::span<const Replication
 TransportMessage make_replication_transport_message(const ReplicationBatch& batch,
                                                     std::int64_t server_time_ms) {
     return TransportMessage{
-        TransportMessageKind::replication,   TransportChannel::reliable,
-        replication_stream_sequence(batch),  std::string(replication_world_events_payload_type),
-        ReplicationTextCodec::encode(batch), server_time_ms,
+        TransportMessageKind::replication,     TransportChannel::reliable,
+        replication_stream_sequence(batch),    std::string(replication_world_events_payload_type),
+        ReplicationBinaryCodec::encode(batch), server_time_ms,
     };
 }
 
@@ -493,13 +579,16 @@ core::Result<ReplicationBatch> replication_batch_from_transport(const TransportE
             "replication.unreliable_replication",
             "replication batches must arrive on the reliable transport channel");
     }
-    if (envelope.message.payload_type != replication_world_events_payload_type) {
+    if (envelope.message.payload_type != replication_world_events_payload_type &&
+        envelope.message.payload_type != replication_world_events_legacy_payload_type) {
         return core::Result<ReplicationBatch>::failure(
             "replication.unexpected_payload_type",
             "replication transport message has an unexpected payload type");
     }
 
-    auto batch = ReplicationTextCodec::decode(envelope.message.payload);
+    auto batch = envelope.message.payload_type == replication_world_events_payload_type
+                     ? ReplicationBinaryCodec::decode(envelope.message.payload)
+                     : ReplicationTextCodec::decode(envelope.message.payload);
     if (!batch) {
         return batch;
     }

@@ -24,6 +24,7 @@ enum class HostSessionState {
 struct HostSessionConfig {
     TransportHostDesc transport;
     ReplicationRelevancePolicy replication_relevance;
+    std::uint32_t max_outbound_bytes_per_client_per_second = 256u * 1024u;
 };
 
 struct HostSessionCommandReport {
@@ -67,6 +68,7 @@ struct HostSessionOutboundDeliveryReport {
     std::uint32_t failed_attempt_count = 0;
     std::size_t pending_message_count = 0;
     std::uint32_t blocked_client_count = 0;
+    std::uint32_t budget_deferred_message_count = 0;
     std::vector<HostSessionOutboundDeliveryFailure> failures;
 };
 
@@ -76,6 +78,13 @@ struct HostSessionTickResult {
     std::uint32_t transport_malformed_datagram_count = 0;
     std::uint32_t transport_rejected_datagram_count = 0;
     std::uint32_t transport_rate_limited_datagram_count = 0;
+    std::uint64_t transport_client_to_server_bytes = 0;
+    std::uint64_t transport_server_to_client_bytes = 0;
+    std::uint32_t transport_client_to_server_message_count = 0;
+    std::uint32_t transport_server_to_client_message_count = 0;
+    std::uint32_t transport_simulated_dropped_unreliable_message_count = 0;
+    std::uint32_t transport_pending_impaired_message_count = 0;
+    std::uint32_t outbound_budget_dropped_unreliable_message_count = 0;
     std::uint32_t transport_message_count = 0;
     std::uint32_t command_message_count = 0;
     std::uint32_t control_message_count = 0;
@@ -112,8 +121,7 @@ class HostSession {
     [[nodiscard]] core::Result<core::NetId> connect_client();
     [[nodiscard]] core::Status disconnect_client(core::NetId client_id);
     [[nodiscard]] core::Status send_client_command(core::NetId client_id, CommandEnvelope envelope);
-    [[nodiscard]] core::Status send_client_control(core::NetId client_id,
-                                                   TransportMessage message);
+    [[nodiscard]] core::Status send_client_control(core::NetId client_id, TransportMessage message);
     [[nodiscard]] core::Status send_replication_message(core::NetId client_id,
                                                         TransportMessage message);
     [[nodiscard]] core::Result<std::vector<TransportEnvelope>>
@@ -128,28 +136,46 @@ class HostSession {
         std::uint64_t attempt_count = 0;
     };
 
+    struct OutboundBudgetWindow {
+        std::int64_t started_ms = 0;
+        std::uint64_t used_bytes = 0;
+        bool initialized = false;
+    };
+
     [[nodiscard]] core::Status require_running() const;
-    [[nodiscard]] core::Status send_welcome(core::NetId client_id,
-                                            std::int64_t server_time_ms);
+    [[nodiscard]] core::Status send_welcome(core::NetId client_id, std::int64_t server_time_ms);
     [[nodiscard]] core::Status assign_replication_sequence(HostSessionCommandReport& report);
     void queue_command_response(const HostSessionCommandReport& report);
     [[nodiscard]] ReplicationRelevanceReport
     queue_replication(const HostSessionCommandReport& report, std::int64_t server_time_ms,
                       std::uint32_t& queued_message_count);
     void flush_pending_outbound(HostSessionOutboundDeliveryReport& report);
+    [[nodiscard]] bool admit_outbound(core::NetId client_id, const TransportMessage& message);
+    [[nodiscard]] std::size_t outbound_wire_bytes(core::NetId client_id,
+                                                  const TransportMessage& message) const;
 
     HostSessionConfig config_;
     HostSessionTransportFactory transport_factory_;
     HostSessionState state_ = HostSessionState::stopped;
     std::unique_ptr<ITransportHost> transport_;
     std::map<core::NetId, std::deque<PendingOutboundMessage>> pending_outbound_;
+    std::map<core::NetId, OutboundBudgetWindow> outbound_budget_windows_;
     std::uint64_t next_replication_sequence_ = 1;
+    std::int64_t current_server_time_ms_ = 0;
+    std::uint32_t pending_budget_dropped_unreliable_message_count_ = 0;
 };
 
 class HostSessionCommandResultTextCodec {
   public:
     [[nodiscard]] static std::string encode(const HostSessionCommandResult& result);
     [[nodiscard]] static core::Result<HostSessionCommandResult> decode(std::string_view text);
+};
+
+class HostSessionCommandResultBinaryCodec {
+  public:
+    [[nodiscard]] static std::string encode(const HostSessionCommandResult& result);
+    [[nodiscard]] static core::Result<HostSessionCommandResult> decode(std::string_view bytes);
+    [[nodiscard]] static bool is_encoded(std::string_view bytes) noexcept;
 };
 
 [[nodiscard]] std::string_view host_session_state_name(HostSessionState state) noexcept;

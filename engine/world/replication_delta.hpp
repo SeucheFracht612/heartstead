@@ -24,6 +24,8 @@ namespace heartstead::world {
 class WorldState;
 
 inline constexpr std::string_view replication_delta_snapshot_payload_type =
+    "replication.world_delta_snapshot.bin.v1";
+inline constexpr std::string_view replication_delta_snapshot_legacy_payload_type =
     "replication.world_delta_snapshot";
 
 struct WorldReplicationDeltaSubjectPlan {
@@ -215,7 +217,14 @@ class WorldReplicationDeltaSnapshotTextCodec {
     [[nodiscard]] static core::Result<WorldReplicationDeltaSnapshot> decode(std::string_view text);
 };
 
-[[nodiscard]] net::TransportMessage
+class WorldReplicationDeltaSnapshotBinaryCodec {
+  public:
+    [[nodiscard]] static core::Result<std::string>
+    encode(const WorldReplicationDeltaSnapshot& snapshot);
+    [[nodiscard]] static core::Result<WorldReplicationDeltaSnapshot> decode(std::string_view bytes);
+};
+
+[[nodiscard]] core::Result<net::TransportMessage>
 make_replication_delta_transport_message(const WorldReplicationDeltaSnapshot& snapshot,
                                          std::int64_t server_time_ms);
 [[nodiscard]] core::Result<WorldReplicationDeltaSnapshot>

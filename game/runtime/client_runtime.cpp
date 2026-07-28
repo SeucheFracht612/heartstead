@@ -19,6 +19,13 @@ ClientRuntime::ClientRuntime(core::NetId expected_client_id, world::WorldStateDe
 
 core::Status ClientRuntime::receive(std::span<const net::TransportEnvelope> messages) {
     for (const auto& message : messages) {
+        // Unreliable snapshots may overtake the reliable welcome on an impaired path. They are
+        // superseding state and will be sent again, so discard them until session identity has
+        // been established instead of turning benign packet reordering into a terminal fault.
+        if (!session_.is_connected() &&
+            message.message.kind != net::TransportMessageKind::control) {
+            continue;
+        }
         auto status = session_.receive_server_message(message);
         if (!status) {
             return status;
@@ -66,12 +73,10 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render
     auto movement_messages =
         session_.drain_replication_messages(movement::movement_snapshot_payload_type);
     auto legacy_movement_messages =
-        session_.drain_replication_messages(
-            movement::legacy_movement_snapshot_payload_type);
-    movement_messages.insert(
-        movement_messages.end(),
-        std::make_move_iterator(legacy_movement_messages.begin()),
-        std::make_move_iterator(legacy_movement_messages.end()));
+        session_.drain_replication_messages(movement::legacy_movement_snapshot_payload_type);
+    movement_messages.insert(movement_messages.end(),
+                             std::make_move_iterator(legacy_movement_messages.begin()),
+                             std::make_move_iterator(legacy_movement_messages.end()));
     auto entity_motion_messages =
         session_.drain_replication_messages(entities::entity_motion_snapshot_payload_type);
     auto entity_motion_removals =
@@ -122,23 +127,22 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render
             continue;
         }
         authoritative_movement_ticks_.insert_or_assign(player_key,
-                                                        authoritative.state.simulation_tick);
+                                                       authoritative.state.simulation_tick);
         if (authoritative.player_net_id == local_player_net_id_) {
             if (predicted_local_snapshot_.has_value() && prediction_collision_ != nullptr) {
                 auto reconciled = prediction_buffer_.reconcile(
                     predicted_local_snapshot_->state, authoritative, prediction_controller_, {},
                     *prediction_collision_);
                 if (!reconciled) {
-                    return core::Result<ClientRuntimeStats>::failure(
-                        reconciled.error().code, reconciled.error().message);
+                    return core::Result<ClientRuntimeStats>::failure(reconciled.error().code,
+                                                                     reconciled.error().message);
                 }
                 reconciled_input_count +=
                     static_cast<std::uint32_t>(reconciled.value().replayed_input_count);
                 acknowledged_input_count +=
                     static_cast<std::uint32_t>(reconciled.value().acknowledged_input_count);
                 maximum_correction_distance =
-                    std::max(maximum_correction_distance,
-                             reconciled.value().correction_distance);
+                    std::max(maximum_correction_distance, reconciled.value().correction_distance);
                 if (reconciled.value().hard_correction) {
                     ++hard_correction_count;
                 }
@@ -149,12 +153,10 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render
             } else {
                 predicted_local_snapshot_ = authoritative;
             }
-            prediction_buffer_.set_collision_world_revision(
-                authoritative.collision_world_revision);
+            prediction_buffer_.set_collision_world_revision(authoritative.collision_world_revision);
             movement_snapshots_.insert_or_assign(player_key, *predicted_local_snapshot_);
         } else {
-            auto [interpolator, _] =
-                remote_player_interpolators_.try_emplace(player_key);
+            auto [interpolator, _] = remote_player_interpolators_.try_emplace(player_key);
             auto status = interpolator->second.push(authoritative);
             if (!status) {
                 return core::Result<ClientRuntimeStats>::failure(status.error().code,
@@ -235,17 +237,25 @@ ClientRuntime::create_command(std::string type, std::string payload, std::int64_
 
 core::Result<movement::PlayerInputBundle>
 ClientRuntime::movement_input_bundle(const movement::PlayerInputFrame& input) const {
-    auto status = input.validate();
+    auto normalized = input;
+    auto status = normalized.validate();
     if (!status) {
         return core::Result<movement::PlayerInputBundle>::failure(status.error().code,
                                                                   status.error().message);
     }
     movement::PlayerInputBundle bundle;
     bundle.frames = prediction_buffer_.unacknowledged();
-    bundle.frames.push_back(input);
+    if (!bundle.frames.empty() && normalized.tick <= bundle.frames.back().tick) {
+        if (bundle.frames.back().tick == std::numeric_limits<std::uint64_t>::max()) {
+            return core::Result<movement::PlayerInputBundle>::failure(
+                "client_runtime.movement_tick_exhausted",
+                "movement input history exhausted its tick space");
+        }
+        normalized.tick = bundle.frames.back().tick + 1;
+    }
+    bundle.frames.push_back(normalized);
     if (bundle.frames.size() > 4) {
-        bundle.frames.erase(bundle.frames.begin(),
-                            bundle.frames.end() - 4);
+        bundle.frames.erase(bundle.frames.begin(), bundle.frames.end() - 4);
     }
     status = bundle.validate();
     if (!status) {
@@ -262,9 +272,8 @@ core::Status ClientRuntime::predict_local_input(const movement::PlayerInputFrame
             "movement prediction requires an assigned local player snapshot");
     }
     if (prediction_collision_ == nullptr) {
-        return core::Status::failure(
-            "client_runtime.prediction_collision_unavailable",
-            "movement prediction requires a client voxel collision world");
+        return core::Status::failure("client_runtime.prediction_collision_unavailable",
+                                     "movement prediction requires a client voxel collision world");
     }
     auto status = prediction_buffer_.record(input);
     if (!status) {
@@ -279,8 +288,7 @@ core::Status ClientRuntime::predict_local_input(const movement::PlayerInputFrame
     predicted_local_snapshot_->state = std::move(predicted).value().state;
     predicted_local_snapshot_->last_processed_input_sequence =
         predicted_local_snapshot_->state.last_input_sequence;
-    movement_snapshots_.insert_or_assign(local_player_net_id_.value(),
-                                         *predicted_local_snapshot_);
+    movement_snapshots_.insert_or_assign(local_player_net_id_.value(), *predicted_local_snapshot_);
     ++predicted_inputs_since_sync_;
     return core::Status::ok();
 }
@@ -361,8 +369,8 @@ void ClientRuntime::clear_command_results() noexcept {
 
 core::Result<ClientRuntime::ChunkSnapshotApplyStats> ClientRuntime::apply_queued_chunk_snapshots() {
     auto messages = session_.drain_replication_messages(world::chunk_snapshot_slice_payload_type);
-    auto legacy_messages = session_.drain_replication_messages(
-        world::legacy_chunk_snapshot_slice_payload_type);
+    auto legacy_messages =
+        session_.drain_replication_messages(world::legacy_chunk_snapshot_slice_payload_type);
     messages.insert(messages.end(), std::make_move_iterator(legacy_messages.begin()),
                     std::make_move_iterator(legacy_messages.end()));
     std::uint32_t completed_count = 0;

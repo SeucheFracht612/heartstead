@@ -2152,6 +2152,20 @@ InspectionData Inspector::inspect(const net::HostSessionTickResult& result) {
               std::to_string(result.transport_rejected_datagram_count));
     add_field(data, "transport_rate_limited_datagram_count",
               std::to_string(result.transport_rate_limited_datagram_count));
+    add_field(data, "transport_client_to_server_bytes",
+              std::to_string(result.transport_client_to_server_bytes));
+    add_field(data, "transport_server_to_client_bytes",
+              std::to_string(result.transport_server_to_client_bytes));
+    add_field(data, "transport_client_to_server_message_count",
+              std::to_string(result.transport_client_to_server_message_count));
+    add_field(data, "transport_server_to_client_message_count",
+              std::to_string(result.transport_server_to_client_message_count));
+    add_field(data, "transport_simulated_dropped_unreliable_message_count",
+              std::to_string(result.transport_simulated_dropped_unreliable_message_count));
+    add_field(data, "transport_pending_impaired_message_count",
+              std::to_string(result.transport_pending_impaired_message_count));
+    add_field(data, "outbound_budget_dropped_unreliable_message_count",
+              std::to_string(result.outbound_budget_dropped_unreliable_message_count));
     add_field(data, "transport_message_count", std::to_string(result.transport_message_count));
     add_field(data, "command_message_count", std::to_string(result.command_message_count));
     add_field(data, "control_message_count", std::to_string(result.control_message_count));
@@ -2169,6 +2183,8 @@ InspectionData Inspector::inspect(const net::HostSessionTickResult& result) {
               std::to_string(result.outbound_delivery.pending_message_count));
     add_field(data, "outbound_delivery_blocked_client_count",
               std::to_string(result.outbound_delivery.blocked_client_count));
+    add_field(data, "outbound_delivery_budget_deferred_message_count",
+              std::to_string(result.outbound_delivery.budget_deferred_message_count));
     add_field(data, "command_report_count", std::to_string(result.command_reports.size()));
     add_field(data, "replication_relevance_report_count",
               std::to_string(result.replication_relevance_reports.size()));

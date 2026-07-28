@@ -1,5 +1,8 @@
 #include "engine/net/command_payload.hpp"
 
+#include "engine/net/binary_message.hpp"
+
+#include <cstdint>
 #include <string>
 #include <utility>
 
@@ -11,6 +14,7 @@ constexpr std::size_t max_payload_bytes = 64U * 1024U;
 constexpr std::size_t max_payload_fields = 128;
 constexpr std::size_t max_payload_key_bytes = 128;
 constexpr std::size_t max_payload_value_bytes = 32U * 1024U;
+constexpr std::uint32_t binary_magic = 0x31504348U; // "HCP1" in little-endian byte order.
 
 [[nodiscard]] bool is_hex_digit(char value) noexcept {
     return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f') ||
@@ -238,6 +242,66 @@ core::Result<CommandPayload> CommandPayloadTextCodec::decode(std::string_view te
     }
 
     return core::Result<CommandPayload>::success(std::move(payload));
+}
+
+std::string CommandPayloadBinaryCodec::encode(const CommandPayload& payload) {
+    BinaryMessageWriter writer;
+    writer.u32(binary_magic);
+    writer.var_u64(static_cast<std::uint64_t>(payload.fields().size()));
+    for (const auto& [key, value] : payload.fields()) {
+        writer.text_var(key);
+        writer.text_var(value);
+    }
+    return writer.take();
+}
+
+core::Result<CommandPayload> CommandPayloadBinaryCodec::decode(std::string_view bytes) {
+    if (bytes.size() > max_payload_bytes) {
+        return core::Result<CommandPayload>::failure("command_payload.too_large",
+                                                     "command payload exceeds 64 KiB");
+    }
+    BinaryMessageReader reader(bytes);
+    std::uint32_t decoded_magic = 0;
+    std::uint64_t field_count = 0;
+    if (!reader.u32(decoded_magic) || decoded_magic != binary_magic ||
+        !reader.var_u64(field_count)) {
+        return core::Result<CommandPayload>::failure(
+            "command_payload.invalid_binary",
+            "command payload does not contain a valid binary header");
+    }
+    if (field_count == 0 || field_count > max_payload_fields) {
+        return core::Result<CommandPayload>::failure(
+            "command_payload.invalid_binary",
+            "binary command payload field count is outside its bounds");
+    }
+
+    CommandPayload payload;
+    for (std::uint64_t index = 0; index < field_count; ++index) {
+        std::string key;
+        std::string value;
+        if (!reader.text_var(key, max_payload_key_bytes) ||
+            !reader.text_var(value, max_payload_value_bytes)) {
+            return core::Result<CommandPayload>::failure(
+                "command_payload.invalid_binary",
+                "binary command payload contains a truncated or oversized field");
+        }
+        auto status = payload.set(std::move(key), std::move(value));
+        if (!status) {
+            return core::Result<CommandPayload>::failure(status.error().code,
+                                                         status.error().message);
+        }
+    }
+    if (!reader.finished()) {
+        return core::Result<CommandPayload>::failure(
+            "command_payload.trailing_data", "binary command payload contains trailing bytes");
+    }
+    return core::Result<CommandPayload>::success(std::move(payload));
+}
+
+bool CommandPayloadBinaryCodec::is_encoded(std::string_view bytes) noexcept {
+    BinaryMessageReader reader(bytes);
+    std::uint32_t decoded_magic = 0;
+    return reader.u32(decoded_magic) && decoded_magic == binary_magic;
 }
 
 } // namespace heartstead::net

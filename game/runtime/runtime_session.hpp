@@ -40,6 +40,11 @@ struct RuntimeConfiguration {
     world::ChunkLightSystemConfig chunk_lighting{};
     std::uint32_t max_transient_snapshot_messages_per_tick = 512;
     std::uint32_t max_transient_snapshot_payload_bytes_per_tick = 256u * 1024u;
+    std::uint32_t max_outbound_bytes_per_client_per_second = 256u * 1024u;
+    std::uint32_t simulated_network_one_way_latency_ms = 0;
+    std::uint32_t simulated_network_jitter_ms = 0;
+    std::uint32_t simulated_network_unreliable_loss_basis_points = 0;
+    std::uint64_t simulated_network_seed = 0x6a09e667f3bcc909ULL;
     net::TransportEndpoint server_bind_endpoint{"0.0.0.0", 7777};
     std::optional<net::TransportEndpoint> remote_server_endpoint;
     std::vector<std::shared_ptr<IGameplayModule>> gameplay_modules;

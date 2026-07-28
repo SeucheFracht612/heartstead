@@ -438,9 +438,10 @@ through M8 so each acceptance scene builds on already verified systems.
   history, reconciles to authoritative acknowledgements, and replays only unacknowledged inputs.
   Remote players are sampled through a six-tick jitter buffer with teleport/transition-safe
   interpolation and synchronized locomotion state.
-- Player input bundles, movement snapshots, and chunk snapshot slices use bounded binary codecs.
-  Hot motion state is unreliable/latest-wins; command results, world events, and authoritative
-  store deltas remain reliable.
+- Commands, command results, world events, authoritative store deltas, player input bundles,
+  movement snapshots, and chunk snapshot slices use bounded, versioned binary live codecs. Hot
+  motion state is unreliable/latest-wins; command results, world events, and authoritative store
+  deltas remain reliable.
 - Per-tick transient snapshot message/byte budgets expose deferral and byte counters and rotate
   recipient priority. Per-client inbound message/byte limits, global handshake limits,
   pre-validation amplification limits, bounded fragment ownership, malformed counters, and
@@ -452,8 +453,16 @@ through M8 so each acceptance scene builds on already verified systems.
 - `tools/netem_multiplayer.sh` applies or clears an explicit latency/loss profile for manual LAN
   testing. It is intentionally not invoked by automated tests because it mutates privileged host
   networking state.
-- Remaining before M7 closure: binary authoritative world-delta transport, command/event live
-  codecs, measured 100 ms/2% loss acceptance, and published per-client bandwidth results.
+- The deterministic 600-tick impaired-runtime gate runs at 100 ms RTT with ±20 ms round-trip
+  jitter and 2% unreliable loss. It accepts 594/600 movement inputs, records one documented
+  collision-revision bootstrap correction with a 0.825 m maximum, averages 21.0 KiB/s encoded
+  server-to-client traffic, and peaks at 26.6 KiB over one second.
+- A fixed one-second per-client byte window hard-caps encoded outbound traffic at 256 KiB/s.
+  Reliable FIFO traffic is deferred; replaceable unreliable state is dropped and both outcomes are
+  inspectable. The acceptance average remains below the 64 KiB/s target.
+- M7 implementation and automated verification are complete. The privileged two-machine LAN
+  walkthrough remains a release-operator check using the documented `--bind`, `--connect`, and
+  netem commands rather than a containerized test.
 
 ## M8 — Production Luau
 
@@ -480,9 +489,9 @@ through M8 so each acceptance scene builds on already verified systems.
    limits, cancellation, GC pacing, and bounded error strings.
 4. Prove server/client/migration stage isolation, deterministic module ordering, unload/reload, mod
    state persistence, and content fingerprint behavior.
-5. Port one Age-0 behavior—knapping outcome selection and command emission—to
-   `mods/base/scripts/server`, leaving authoritative validation/native mutation in the registered
-   command handler.
+5. Exercise server/client/migration host APIs with neutral test-only conformance modules. Do not
+   author or port gameplay mechanics into `mods/base`; gameplay scripting begins only after the
+   production boundary and all safety gates are accepted.
 6. Add script timing/memory/instruction/event stats, inspection, and mod validation diagnostics.
 7. Add hostile fixtures for filesystem/network access, forbidden globals, cross-mod access,
    infinite loops, recursion, memory bombs, oversized bytecode/value/event output, and malformed
@@ -490,7 +499,8 @@ through M8 so each acceptance scene builds on already verified systems.
 
 ### M8 verification gates
 
-- The base mechanic is implemented in Luau and can be changed without recompiling the engine.
+- Neutral conformance modules compile and exercise each permitted stage API without adding game
+  rules or base-mod behaviors.
 - Server/client/migration and mod-to-mod isolation tests pass.
 - Filesystem, network, process, debug escape, infinite-loop, and memory-bomb tests all fail closed
   with typed errors while the host remains usable.
@@ -505,9 +515,10 @@ After M8, run one versioned acceptance world through:
 
 1. deterministic generation, collision/light/fluid derivation, and save;
 2. local movement, dropped resources, inventory UI, fire light/audio/particles, and day cycle;
-3. dedicated-server remote join with prediction, replication, animation, and scripted mechanic;
+3. dedicated-server remote join with prediction, replication, and animation;
 4. mid-flow save/reload and client reconnect;
-5. debug/release, GCC/Clang warnings-as-errors, ASan+UBSan, TSan, codec fuzzers, and published
+5. neutral Luau stage/capability conformance and hostile sandbox fixtures;
+6. debug/release, GCC/Clang warnings-as-errors, ASan+UBSan, TSan, codec fuzzers, and published
    renderer/simulation/audio/network/script benchmark scenes.
 
 The milestone is complete only when the acceptance report records the exact commit, dependency
