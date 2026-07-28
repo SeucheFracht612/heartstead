@@ -8,6 +8,8 @@ target_sources(
     assets/asset_cooker.cpp
     assets/cooked_asset_manifest.cpp
     assets/cooked_asset_store.cpp
+    assets/gltf_model_importer.cpp
+    assets/model_asset.cpp
     assets/resource_pack.cpp
     assets/virtual_file_system.cpp
     audio/audio_mixer.cpp
@@ -194,6 +196,7 @@ target_sources(
       assets/asset_cooker.hpp
       assets/cooked_asset_manifest.hpp
       assets/cooked_asset_store.hpp
+      assets/model_asset.hpp
       assets/resource_pack.hpp
       assets/virtual_file_system.hpp
       audio/audio_mixer.hpp
@@ -390,7 +393,7 @@ target_sources(
 )
 
 target_include_directories(heartstead_engine PUBLIC ${PROJECT_SOURCE_DIR})
-target_link_libraries(heartstead_engine PUBLIC Threads::Threads)
+target_link_libraries(heartstead_engine PUBLIC Threads::Threads PRIVATE fastgltf::fastgltf)
 if(HEARTSTEAD_ENABLE_MINIAUDIO)
   target_sources(heartstead_engine PRIVATE audio/miniaudio/miniaudio_implementation.cpp)
   target_include_directories(heartstead_engine SYSTEM PRIVATE ${MINIAUDIO_INCLUDE_DIRS})

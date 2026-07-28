@@ -1,5 +1,6 @@
 #include "engine/assets/asset_cooker.hpp"
 
+#include "engine/assets/model_asset.hpp"
 #include "engine/audio/procedural_tone.hpp"
 #include "engine/core/file_io.hpp"
 #include "engine/core/hash.hpp"
@@ -9,6 +10,7 @@
 #include <array>
 #include <cctype>
 #include <fstream>
+#include <optional>
 #include <span>
 #include <sstream>
 #include <string>
@@ -1009,6 +1011,16 @@ production_metadata_fields(const AssetRecord& source, std::span<const std::uint8
     return {};
 }
 
+void add_model_runtime_metadata(CookedAssetMetadataFields& metadata, const ModelAsset& model) {
+    add_metadata(metadata, "model.runtime_format", "heartstead.model.v1");
+    add_metadata(metadata, "model.vertices", model.vertices.size());
+    add_metadata(metadata, "model.indices", model.indices.size());
+    add_metadata(metadata, "model.nodes", model.nodes.size());
+    add_metadata(metadata, "model.primitives", model.primitives.size());
+    add_metadata(metadata, "model.skins", model.skins.size());
+    add_metadata(metadata, "model.animations", model.animations.size());
+}
+
 [[nodiscard]] std::vector<std::uint8_t>
 build_cooked_payload_bytes(const CookedAssetRecord& cooked, const AssetRecord& source,
                            AssetCookBackend backend, std::string_view profile,
@@ -1150,20 +1162,46 @@ core::Result<AssetCookResult> AssetCooker::cook(const AssetCatalog& catalog,
             return core::Result<AssetCookResult>::failure(source_bytes.error().code,
                                                           source_bytes.error().message);
         }
-        if (config.backend == AssetCookBackend::production_converters) {
+        std::vector<std::uint8_t> converted_bytes;
+        std::optional<ModelAsset> imported_model;
+        const std::vector<std::uint8_t>* runtime_bytes = &source_bytes.value();
+        if (config.backend == AssetCookBackend::production_converters &&
+            source->kind == AssetKind::model) {
+            ModelAssetLimits model_limits;
+            model_limits.maximum_source_bytes = config.maximum_source_bytes;
+            auto imported = import_gltf_model(source->source_path, model_limits);
+            if (!imported) {
+                return core::Result<AssetCookResult>::failure(
+                    "asset_cooker.invalid_model",
+                    "production model import failed for " + source->logical_id + ": " +
+                        imported.error().code + ": " + imported.error().message);
+            }
+            auto encoded = encode_model_asset(imported.value(), model_limits);
+            if (!encoded) {
+                return core::Result<AssetCookResult>::failure(
+                    "asset_cooker.invalid_model",
+                    "production model encoding failed for " + source->logical_id + ": " +
+                        encoded.error().code + ": " + encoded.error().message);
+            }
+            imported_model = std::move(imported).value();
+            converted_bytes = std::move(encoded).value();
+            runtime_bytes = &converted_bytes;
+        } else if (config.backend == AssetCookBackend::production_converters) {
             auto status = validate_production_source_payload(*source, source_bytes.value());
             if (!status) {
                 return core::Result<AssetCookResult>::failure(status.error().code,
                                                               status.error().message);
             }
         }
-        const auto metadata = config.backend == AssetCookBackend::production_converters
-                                  ? production_metadata_fields(*source, source_bytes.value())
-                                  : CookedAssetMetadataFields{};
+        auto metadata = config.backend == AssetCookBackend::production_converters
+                            ? production_metadata_fields(*source, source_bytes.value())
+                            : CookedAssetMetadataFields{};
+        if (imported_model.has_value()) {
+            add_model_runtime_metadata(metadata, *imported_model);
+        }
 
-        const auto payload =
-            build_cooked_payload_bytes(cooked, *source, config.backend, result.manifest.profile,
-                                       source_bytes.value(), metadata);
+        const auto payload = build_cooked_payload_bytes(
+            cooked, *source, config.backend, result.manifest.profile, *runtime_bytes, metadata);
         cooked.cooked_hash = core::stable_hash64_hex(payload);
         auto output_path = resolve_asset_path(output_root.value(), cooked.cooked_relative_path);
         if (!output_path) {
@@ -1176,7 +1214,7 @@ core::Result<AssetCookResult> AssetCooker::cook(const AssetCatalog& catalog,
                                                           status.error().message);
         }
         ++result.cooked_file_count;
-        result.cooked_payload_bytes += source_bytes.value().size();
+        result.cooked_payload_bytes += runtime_bytes->size();
     }
 
     auto status = write_manifest(result.manifest_path, result.manifest);
@@ -1266,7 +1304,7 @@ std::string_view asset_cook_pipeline_name(AssetKind kind, AssetCookBackend backe
         case AssetKind::texture:
             return "texture_png_ktx2_jpeg_converter_v1";
         case AssetKind::model:
-            return "model_gltf_runtime_converter_v1";
+            return "model_gltf_runtime_converter_v2";
         case AssetKind::shader:
             return "shader_spirv_runtime_passthrough_v1";
         case AssetKind::sound:

@@ -99,12 +99,13 @@ Implemented foundation:
   - writes cooked payload files under deterministic relative paths
   - uses explicit development passthrough backends for textures, models, shaders,
     audio, materials, fonts, UI, localization, and data assets
-  - exposes a partial production backend for data-like assets, material payloads, validated
-    glTF/GLB model payloads, validated PNG/KTX2/JPEG texture payloads, validated SPIR-V shader
+  - exposes a partial production backend for data-like assets, material payloads, converted
+    glTF/GLB runtime models, validated PNG/KTX2/JPEG texture payloads, validated SPIR-V shader
     payloads, validated WAV/OGG/FLAC audio payloads, and validated SFNT font payloads while
     rejecting unsupported source formats with explicit validation errors
   - emits production metadata for media payloads, such as texture dimensions, glTF/GLB container
-    details, SPIR-V word/bound data, WAV/OGG/FLAC container details, and SFNT/TTC font table data
+    details and runtime geometry/skin/clip counts, SPIR-V word/bound data, WAV/OGG/FLAC container
+    details, and SFNT/TTC font table data
   - writes the cook profile into payload headers so the cooked asset store can verify development
     payloads against development pipelines and production payloads against production pipelines
 
@@ -156,9 +157,13 @@ The `production_converters` backend is available but partial. It can currently c
 assets (`data`, `localization`, `ui`, and unknown/raw data), material assets, glTF/GLB `model`
 assets, PNG/KTX2/JPEG `texture` assets, `.spv` `shader` assets, WAV/OGG/FLAC `sound` or `music`
 assets, and SFNT `font` assets into deterministic production-profile payload wrappers. Text glTF
-models are validated for JSON object shape and `asset.version = "2.0"`; GLB models are validated
-for magic, version, declared length, first JSON chunk, and chunk ranges. Malformed model assets fail
-with `asset_cooker.invalid_model`. PNG textures are validated for signature and IHDR shape; KTX2
+and GLB models are strictly parsed and validated by fastgltf, bounded by engine-owned limits, and
+converted into the versioned `heartstead.model.v1` binary. That runtime format contains indexed
+triangle geometry, four-influence skin vertices, a node hierarchy, inverse-bind matrices, and
+bounded translation/rotation/scale animation clips; it never requires the runtime to parse JSON or
+follow external glTF buffer paths. Unsupported topology, morph-weight animation, excess joint
+influences, malformed hierarchies, and out-of-range accessors fail closed as
+`asset_cooker.invalid_model`. PNG textures are validated for signature and IHDR shape; KTX2
 textures are validated for identifier, dimensions, DFD range, and level index ranges; JPEG textures
 are validated for SOI, sane marker ranges, nonzero frame dimensions, and EOI. Malformed textures
 fail with `asset_cooker.invalid_texture`. SPIR-V shaders are validated for header shape, magic,
@@ -175,7 +180,8 @@ TrueType/OpenType SFNT or TrueType Collection containers before cooking; malform
 Production cooked payloads also carry deterministic metadata fields in the payload header. The
 store preserves those fields as decoded metadata, so inspectors and runtime systems can query
 facts such as `texture.width`, `texture.height`, `audio.sample_rate`, `model.container`, or
-`font.table_count` without reparsing the source container on every load. These metadata fields
+`model.vertices`, `model.skins`, `model.animations`, or `font.table_count` without reparsing the
+source container on every load. These metadata fields
 remain advisory derived data; the manifest identity, virtual path, source hash, pipeline version,
 cooked payload hash, and payload validation still define compatibility.
 

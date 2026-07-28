@@ -4,6 +4,7 @@
 #include "engine/assets/asset_cooker.hpp"
 #include "engine/assets/cooked_asset_manifest.hpp"
 #include "engine/assets/cooked_asset_store.hpp"
+#include "engine/assets/model_asset.hpp"
 #include "engine/assets/resource_pack.hpp"
 #include "engine/assets/virtual_file_system.hpp"
 #include "engine/build/build_piece.hpp"
@@ -216,7 +217,7 @@ std::vector<std::uint8_t> minimal_ktx2_bytes() {
 }
 
 std::string minimal_gltf_text() {
-    return "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[]}],\"nodes\":[]}";
+    return R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"triangle","mesh":0}],"meshes":[{"name":"triangle","primitives":[{"attributes":{"POSITION":0},"indices":1}]}],"buffers":[{"uri":"data:application/octet-stream;base64,AAAAvwAAAAAAAAAAAAAAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA","byteLength":42}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":6}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[-0.5,0,0],"max":[0.5,1,0]},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}]})";
 }
 
 std::vector<std::uint8_t> minimal_glb_bytes() {
@@ -762,7 +763,7 @@ void test_resource_pack_discovery_and_asset_catalog() {
         heartstead::assets::AssetCookBackend::production_converters);
     assert(production_model_pipeline.available);
     assert(production_model_pipeline.converts_source_format);
-    assert(production_model_pipeline.name == "model_gltf_runtime_converter_v1");
+    assert(production_model_pipeline.name == "model_gltf_runtime_converter_v2");
     const auto production_shader_pipeline = heartstead::assets::asset_cook_pipeline_info(
         heartstead::assets::AssetKind::shader,
         heartstead::assets::AssetCookBackend::production_converters);
@@ -1078,7 +1079,7 @@ void test_resource_pack_discovery_and_asset_catalog() {
     assert(production_glb_record->kind == heartstead::assets::AssetKind::model);
     assert(read_text(production_model_cook_config.output_root /
                      production_gltf_record->cooked_relative_path)
-               .find("backend=model_gltf_runtime_converter_v1") != std::string::npos);
+               .find("backend=model_gltf_runtime_converter_v2") != std::string::npos);
     auto production_model_store =
         heartstead::assets::CookedAssetStore::load(production_model_cook_config.output_root);
     assert(production_model_store);
@@ -1086,18 +1087,32 @@ void test_resource_pack_discovery_and_asset_catalog() {
         production_model_store.value().load_payload("base:models/building/wall.gltf");
     assert(production_gltf_payload);
     assert(production_gltf_payload.value().kind == heartstead::assets::AssetKind::model);
-    assert(production_gltf_payload.value().backend == "model_gltf_runtime_converter_v1");
+    assert(production_gltf_payload.value().backend == "model_gltf_runtime_converter_v2");
     assert(production_gltf_payload.value().profile == "production");
     assert(production_gltf_payload.value().metadata.at("model.container") == "gltf");
     assert(production_gltf_payload.value().metadata.at("model.gltf_version") == "2.0");
-    assert(std::string(production_gltf_payload.value().bytes.begin(),
-                       production_gltf_payload.value().bytes.end()) == minimal_gltf_text());
+    assert(production_gltf_payload.value().metadata.at("model.runtime_format") ==
+           "heartstead.model.v1");
+    assert(production_gltf_payload.value().metadata.at("model.vertices") == "3");
+    assert(production_gltf_payload.value().metadata.at("model.indices") == "3");
+    assert(production_gltf_payload.value().metadata.at("model.nodes") == "1");
+    assert(production_gltf_payload.value().metadata.at("model.primitives") == "1");
+    assert(production_gltf_payload.value().metadata.at("model.skins") == "0");
+    assert(production_gltf_payload.value().metadata.at("model.animations") == "0");
+    auto decoded_production_gltf =
+        heartstead::assets::decode_model_asset(production_gltf_payload.value().bytes);
+    assert(decoded_production_gltf);
+    assert(decoded_production_gltf.value().vertices.size() == 3);
+    assert(decoded_production_gltf.value().indices == std::vector<std::uint32_t>({0, 1, 2}));
     auto production_glb_payload =
         production_model_store.value().load_payload("base:models/building/gate.glb");
     assert(production_glb_payload);
     assert(production_glb_payload.value().metadata.at("model.container") == "glb");
     assert(production_glb_payload.value().metadata.at("model.chunk_count") == "1");
-    assert(production_glb_payload.value().bytes.size() == minimal_glb_bytes().size());
+    auto decoded_production_glb =
+        heartstead::assets::decode_model_asset(production_glb_payload.value().bytes);
+    assert(decoded_production_glb);
+    assert(decoded_production_glb.value() == decoded_production_gltf.value());
 
     const auto invalid_model_assets = root / "invalid_model_assets";
     write_text(invalid_model_assets / "models/bad.glb", "not a glb");
@@ -7487,7 +7502,7 @@ void test_debug_inspection() {
     assert(asset_model_pipeline_inspection.object_type == "asset_cook_pipeline");
     assert(asset_model_pipeline_inspection.state == "available");
     assert(asset_model_pipeline_inspection.find_field("pipeline")->value ==
-           "model_gltf_runtime_converter_v1");
+           "model_gltf_runtime_converter_v2");
     assert(asset_model_pipeline_inspection.find_field("converts_source_format")->value == "true");
     assert(asset_model_pipeline_inspection.issues.empty());
 
