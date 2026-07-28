@@ -22,6 +22,7 @@ struct CharacterShape {
 struct CharacterCollisionBox {
     math::Bounds3d bounds;
     world::BlockCoord block;
+    world::VoxelCell cell{};
     const world::VoxelDefinition* voxel = nullptr;
     bool unloaded = false;
 };
@@ -68,6 +69,8 @@ class ICharacterCollisionWorld {
     [[nodiscard]] virtual core::Result<bool>
     touches_occupancy(const world::WorldPosition& position, const CharacterShape& shape,
                       world::BlockLogicalOccupancy occupancy) = 0;
+    [[nodiscard]] virtual core::Result<double>
+    fluid_submersion(const world::WorldPosition& position, const CharacterShape& shape) = 0;
     [[nodiscard]] virtual core::Result<bool> touches_tag(const world::WorldPosition& position,
                                                          const CharacterShape& shape,
                                                          std::string_view tag) = 0;
@@ -98,6 +101,9 @@ class VoxelCharacterCollisionWorld final : public ICharacterCollisionWorld {
     [[nodiscard]] core::Result<bool>
     touches_occupancy(const world::WorldPosition& position, const CharacterShape& shape,
                       world::BlockLogicalOccupancy occupancy) override;
+    [[nodiscard]] core::Result<double>
+    fluid_submersion(const world::WorldPosition& position,
+                     const CharacterShape& shape) override;
     [[nodiscard]] core::Result<bool> touches_tag(const world::WorldPosition& position,
                                                  const CharacterShape& shape,
                                                  std::string_view tag) override;

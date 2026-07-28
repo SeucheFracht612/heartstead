@@ -1,6 +1,7 @@
 #include "engine/movement/movement_playground.hpp"
 
 #include "engine/core/ids.hpp"
+#include "engine/world/fluids/fluid_state.hpp"
 
 #include <cstdint>
 #include <string>
@@ -41,7 +42,9 @@ make_voxel(std::uint16_t type, std::string local_id, std::string display_name) {
                                      std::uint16_t type) {
     const auto location = world::block_to_chunk_local(block);
     auto& chunk = yard.chunks.get_or_create(location.chunk);
-    return chunk.set(location.local, {type, 15, 0, 0});
+    const auto state_bits =
+        type == water ? world::full_fluid_state_bits() : std::uint16_t{0};
+    return chunk.set(location.local, {type, 15, state_bits, 0});
 }
 
 [[nodiscard]] core::Status fill_box(MovementPlaygroundWorld& yard, world::BlockCoord minimum,

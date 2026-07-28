@@ -248,6 +248,9 @@ core::Status PlayerMovementConfig::validate() const {
                            ground_acceleration,
                            ground_deceleration,
                            air_acceleration,
+                           swim_acceleration,
+                           swim_vertical_acceleration,
+                           swim_vertical_drag,
                            gravity,
                            jump_apex,
                            dash_distance,
@@ -262,6 +265,15 @@ core::Status PlayerMovementConfig::validate() const {
                              [](double value) { return std::isfinite(value) && value > 0.0; })) {
         return core::Status::failure("player_controller.invalid_config",
                                      "movement dimensions and rates must be finite and positive");
+    }
+    if (!std::isfinite(swim_resting_submersion) ||
+        !std::isfinite(swim_enter_submersion) || !std::isfinite(swim_exit_submersion) ||
+        swim_resting_submersion <= 0.0 || swim_resting_submersion > 1.0 ||
+        swim_enter_submersion <= 0.0 || swim_enter_submersion > 1.0 ||
+        swim_exit_submersion < 0.0 || swim_exit_submersion >= swim_enter_submersion) {
+        return core::Status::failure(
+            "player_controller.invalid_swim_config",
+            "swim submersion thresholds must be finite, normalized, and hysteretic");
     }
     if (crouch_height > standing_height || roll_height > crouch_height ||
         eye_height >= standing_height || auto_step_height >= standing_height ||
@@ -362,13 +374,17 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
     }
 
     auto current_shape = shape_for(state);
-    auto in_fluid = collision.touches_occupancy(state.position, current_shape,
-                                                world::BlockLogicalOccupancy::fluid);
+    auto fluid_submersion = collision.fluid_submersion(state.position, current_shape);
     auto touching_ladder = collision.touches_tag(state.position, current_shape, "ladder");
-    if (!in_fluid || !touching_ladder) {
-        const auto& error = !in_fluid ? in_fluid.error() : touching_ladder.error();
+    if (!fluid_submersion || !touching_ladder) {
+        const auto& error = !fluid_submersion ? fluid_submersion.error()
+                                              : touching_ladder.error();
         return core::Result<PlayerControllerTickResult>::failure(error.code, error.message);
     }
+    const auto was_swimming = previous.mode == PlayerControllerMode::swimming;
+    const auto swim_threshold = was_swimming ? config_.swim_exit_submersion
+                                             : config_.swim_enter_submersion;
+    const auto should_swim = fluid_submersion.value() > swim_threshold;
 
     const auto direction = input_direction(input);
     const auto facing = facing_direction(input.yaw_centidegrees);
@@ -419,11 +435,12 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
 
     if (state.mode != PlayerControllerMode::rolling &&
         state.mode != PlayerControllerMode::mantling && input.pressed(PlayerInputButton::roll) &&
-        state.grounded) {
+        state.grounded && !should_swim) {
         (void)start_roll();
     }
     if (state.mode != PlayerControllerMode::rolling &&
-        state.mode != PlayerControllerMode::mantling && input.pressed(PlayerInputButton::dash)) {
+        state.mode != PlayerControllerMode::mantling && input.pressed(PlayerInputButton::dash) &&
+        !should_swim) {
         (void)start_dash();
     }
 
@@ -516,17 +533,36 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
             state.velocity = {};
             result.events.push_back({MovementEventKind::mantle_completed, input.tick});
         }
-    } else if (in_fluid.value()) {
+    } else if (should_swim) {
         state.mode = PlayerControllerMode::swimming;
         state.grounded = false;
         const auto vertical = static_cast<double>(input.held(PlayerInputButton::jump)) -
                               static_cast<double>(input.held(PlayerInputButton::crouch));
-        auto swim_direction = direction + math::Vec3d{0.0, vertical, 0.0};
-        const auto length = math::length(swim_direction);
-        if (length > 1.0) {
-            swim_direction /= length;
+        const auto target =
+            direction * config_.swim_speed * movement_modifier;
+        state.velocity.x =
+            move_towards(state.velocity.x, target.x,
+                         config_.swim_acceleration * tick_seconds);
+        state.velocity.z =
+            move_towards(state.velocity.z, target.z,
+                         config_.swim_acceleration * tick_seconds);
+        const auto drag =
+            std::max(0.0, 1.0 - config_.swim_vertical_drag *
+                                     fluid_submersion.value() * tick_seconds);
+        state.velocity.y *= drag;
+        const auto buoyancy =
+            config_.gravity *
+            (fluid_submersion.value() / config_.swim_resting_submersion - 1.0);
+        state.velocity.y +=
+            (buoyancy + vertical * config_.swim_vertical_acceleration) * tick_seconds;
+        state.velocity.y =
+            std::clamp(state.velocity.y, -config_.swim_speed, config_.swim_speed);
+        const auto horizontal_speed = horizontal_length(state.velocity);
+        if (horizontal_speed > config_.swim_speed) {
+            const auto scale = config_.swim_speed / horizontal_speed;
+            state.velocity.x *= scale;
+            state.velocity.z *= scale;
         }
-        state.velocity = swim_direction * config_.swim_speed * movement_modifier;
         auto moved = collision.move(state.position, shape_for(state), state.velocity * tick_seconds,
                                     config_.auto_step_height);
         if (!moved) {
@@ -534,7 +570,16 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
                                                                      moved.error().message);
         }
         state.position = moved.value().position;
-        if (horizontal_length(swim_direction) > 0.0 || vertical != 0.0) {
+        if (moved.value().hit_x) {
+            state.velocity.x = 0.0;
+        }
+        if (moved.value().hit_y) {
+            state.velocity.y = 0.0;
+        }
+        if (moved.value().hit_z) {
+            state.velocity.z = 0.0;
+        }
+        if (horizontal_length(direction) > 0.0 || vertical != 0.0) {
             drain_rate(state, config_.swim_drain_milli_per_second, config_);
         }
     } else if (touching_ladder.value() && input.held(PlayerInputButton::interact)) {
@@ -710,6 +755,14 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
     } else if (state.exhausted && state.stamina_milli >= 15'000) {
         state.exhausted = false;
     }
+    const auto is_swimming = state.mode == PlayerControllerMode::swimming;
+    if (!was_swimming && is_swimming) {
+        result.events.push_back({MovementEventKind::entered_fluid, input.tick,
+                                 fluid_submersion.value()});
+    } else if (was_swimming && !is_swimming) {
+        result.events.push_back({MovementEventKind::left_fluid, input.tick,
+                                 fluid_submersion.value()});
+    }
 
     state.velocity = quantize(state.velocity);
     auto quantized_position = quantize_position(state.position);
@@ -805,6 +858,10 @@ std::string_view movement_event_kind_name(MovementEventKind kind) noexcept {
         return "landed";
     case MovementEventKind::fall_impact:
         return "fall_impact";
+    case MovementEventKind::entered_fluid:
+        return "entered_fluid";
+    case MovementEventKind::left_fluid:
+        return "left_fluid";
     }
     return "unknown";
 }

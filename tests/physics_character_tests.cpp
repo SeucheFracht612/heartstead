@@ -1,5 +1,6 @@
 #include "engine/movement/physics_character_collision.hpp"
 #include "engine/movement/player_controller.hpp"
+#include "engine/world/fluids/fluid_state.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -53,7 +54,7 @@ void fill_floor_and_step(heartstead::world::ChunkDatabase& chunks) {
         }
     }
     assert(chunk.set({4, 1, 2}, {2, 0}));
-    assert(chunk.set({10, 1, 2}, {3, 0}));
+    assert(chunk.set({10, 1, 2}, {3, 0, world::full_fluid_state_bits()}));
 }
 
 void create_floor_and_step_bodies(heartstead::physics::IPhysicsWorld& physics_world) {
@@ -101,7 +102,7 @@ void test_character_api_validation_and_capabilities() {
                .supports_character_controllers);
 }
 
-void test_jolt_step_jump_and_swim_stub() {
+void test_jolt_step_jump_and_swim_buoyancy() {
     using namespace heartstead;
     if (!physics::physics_backend_info(physics::PhysicsBackend::jolt).available) {
         return;
@@ -204,12 +205,16 @@ void test_jolt_step_jump_and_swim_stub() {
     auto swimming = collision.value()->touches_occupancy(
         world::WorldPosition{10.5, 1.0, 2.5}, {0.6, 1.8}, world::BlockLogicalOccupancy::fluid);
     assert(swimming && swimming.value());
+    auto submerged =
+        collision.value()->fluid_submersion(world::WorldPosition{10.5, 1.0, 2.5}, {0.6, 1.8});
+    assert(submerged);
+    assert(std::abs(submerged.value() - (1.0 / 1.8)) < 0.0001);
 }
 
 } // namespace
 
 int main() {
     test_character_api_validation_and_capabilities();
-    test_jolt_step_jump_and_swim_stub();
+    test_jolt_step_jump_and_swim_buoyancy();
     return 0;
 }

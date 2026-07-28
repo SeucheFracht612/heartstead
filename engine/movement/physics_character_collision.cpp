@@ -263,6 +263,12 @@ PhysicsCharacterCollisionWorld::touches_occupancy(const world::WorldPosition& po
     return voxel_queries_.touches_occupancy(position, shape, occupancy);
 }
 
+core::Result<double>
+PhysicsCharacterCollisionWorld::fluid_submersion(const world::WorldPosition& position,
+                                                 const CharacterShape& shape) {
+    return voxel_queries_.fluid_submersion(position, shape);
+}
+
 core::Result<bool> PhysicsCharacterCollisionWorld::touches_tag(const world::WorldPosition& position,
                                                                const CharacterShape& shape,
                                                                std::string_view tag) {

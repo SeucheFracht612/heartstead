@@ -49,6 +49,9 @@ class PhysicsCharacterCollisionWorld final : public ICharacterCollisionWorld {
     [[nodiscard]] core::Result<bool>
     touches_occupancy(const world::WorldPosition& position, const CharacterShape& shape,
                       world::BlockLogicalOccupancy occupancy) override;
+    [[nodiscard]] core::Result<double>
+    fluid_submersion(const world::WorldPosition& position,
+                     const CharacterShape& shape) override;
     [[nodiscard]] core::Result<bool> touches_tag(const world::WorldPosition& position,
                                                  const CharacterShape& shape,
                                                  std::string_view tag) override;

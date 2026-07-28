@@ -57,13 +57,17 @@ are sufficient to resume exactly.
 Fluid cells bypass the cube greedy path. The fluid extractor emits:
 
 - a top surface whose four heights sample adjacent levels;
-- side faces down to adjacent fluid height;
+- exposed side skirts down to the cell base;
 - no interior faces between equal/full cells;
 - state flow direction in vertex UV/state data for material animation.
 
 Character submersion samples the same decoded amount-derived surface height. Swimming uses
-submerged fraction for buoyancy and drag rather than treating any contact with the cell as fully
-submerged. Dynamic bodies opt in separately and apply buoyancy through the physics boundary.
+the intersected fluid volume, normalized by the controller volume, for buoyancy and vertical drag
+rather than treating any contact with the cell as fully submerged. Separate enter/exit thresholds
+prevent mode chatter at a shallow surface, and transitions emit gameplay events. Jump ascends,
+crouch dives, and the encumbrance movement multiplier remains authoritative. The Jolt controller
+continues to resolve terrain and build-piece contact; only the fluid-volume query remains voxel
+based. Dynamic bodies opt in separately and apply buoyancy through the physics boundary.
 
 ## Budgets and observability
 

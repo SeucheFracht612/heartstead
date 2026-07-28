@@ -1,5 +1,7 @@
 #include "engine/movement/character_collision.hpp"
 
+#include "engine/world/fluids/fluid_state.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -134,6 +136,7 @@ VoxelCharacterCollisionWorld::voxel_boxes(world::BlockCoord origin, math::Bounds
                     if (!include_non_colliding) {
                         result.push_back({{local_translation, local_translation + math::splat(1.0)},
                                           block,
+                                          {},
                                           nullptr,
                                           true});
                     }
@@ -155,6 +158,7 @@ VoxelCharacterCollisionWorld::voxel_boxes(world::BlockCoord origin, math::Bounds
                 if (voxel == nullptr) {
                     result.push_back({{local_translation, local_translation + math::splat(1.0)},
                                       block,
+                                      cell.value(),
                                       nullptr,
                                       false});
                     if (z == max_z.value()) {
@@ -166,6 +170,7 @@ VoxelCharacterCollisionWorld::voxel_boxes(world::BlockCoord origin, math::Bounds
                 if (include_non_colliding) {
                     result.push_back({{local_translation, local_translation + math::splat(1.0)},
                                       block,
+                                      cell.value(),
                                       voxel,
                                       false});
                     if (z == max_z.value()) {
@@ -180,7 +185,8 @@ VoxelCharacterCollisionWorld::voxel_boxes(world::BlockCoord origin, math::Bounds
                          static_cast<double>(source.min.z)},
                         {static_cast<double>(source.max.x), static_cast<double>(source.max.y),
                          static_cast<double>(source.max.z)}};
-                    result.push_back({translated(bounds, local_translation), block, voxel, false});
+                    result.push_back(
+                        {translated(bounds, local_translation), block, cell.value(), voxel, false});
                 }
                 if (z == max_z.value()) {
                     break;
@@ -544,6 +550,71 @@ VoxelCharacterCollisionWorld::touches_occupancy(const world::WorldPosition& posi
         return box.voxel != nullptr && box.voxel->logical_occupancy == occupancy &&
                bounds_overlap(bounds, box.bounds);
     }));
+}
+
+core::Result<double>
+VoxelCharacterCollisionWorld::fluid_submersion(const world::WorldPosition& position,
+                                               const CharacterShape& shape) {
+    auto shape_status = shape.validate();
+    if (!shape_status || !position.is_valid()) {
+        return core::Result<double>::failure(
+            "character_collision.invalid_fluid_query",
+            "fluid submersion requires a valid character position and shape");
+    }
+    const auto bounds = character_local_bounds(position, position.anchor, shape);
+    auto boxes = voxel_boxes(position.anchor, bounds, true);
+    if (!boxes) {
+        return core::Result<double>::failure(boxes.error().code, boxes.error().message);
+    }
+
+    double submerged_volume = 0.0;
+    for (const auto& box : boxes.value()) {
+        if (box.voxel == nullptr ||
+            box.voxel->logical_occupancy != world::BlockLogicalOccupancy::fluid) {
+            continue;
+        }
+        auto state = world::decode_fluid_cell(box.cell, *palette_);
+        if (!state) {
+            return core::Result<double>::failure(state.error().code, state.error().message);
+        }
+        const auto above_block =
+            world::checked_block_coord_offset(box.block, world::BlockCoord{0, 1, 0});
+        if (!above_block) {
+            return core::Result<double>::failure(above_block.error().code,
+                                                 above_block.error().message);
+        }
+        const auto above_location = world::block_to_chunk_local(above_block.value());
+        const auto* above_chunk = chunks_->find(above_location.chunk);
+        auto above = world::VoxelCell::air();
+        if (above_chunk != nullptr) {
+            auto above_cell = above_chunk->get(above_location.local);
+            if (!above_cell) {
+                return core::Result<double>::failure(above_cell.error().code,
+                                                     above_cell.error().message);
+            }
+            above = above_cell.value();
+        }
+        const auto surface_height =
+            state.value().falling || above.type == box.cell.type
+                ? 1.0
+                : static_cast<double>(world::fluid_surface_height(state.value().amount));
+        const auto fluid_bounds =
+            math::Bounds3d{box.bounds.min,
+                           {box.bounds.max.x, box.bounds.min.y + surface_height, box.bounds.max.z}};
+        const auto overlap_x =
+            std::max(0.0, std::min(bounds.max.x, fluid_bounds.max.x) -
+                              std::max(bounds.min.x, fluid_bounds.min.x));
+        const auto overlap_y =
+            std::max(0.0, std::min(bounds.max.y, fluid_bounds.max.y) -
+                              std::max(bounds.min.y, fluid_bounds.min.y));
+        const auto overlap_z =
+            std::max(0.0, std::min(bounds.max.z, fluid_bounds.max.z) -
+                              std::max(bounds.min.z, fluid_bounds.min.z));
+        submerged_volume += overlap_x * overlap_y * overlap_z;
+    }
+    const auto character_volume = shape.width * shape.width * shape.height;
+    return core::Result<double>::success(
+        std::clamp(submerged_volume / character_volume, 0.0, 1.0));
 }
 
 core::Result<bool> VoxelCharacterCollisionWorld::touches_tag(const world::WorldPosition& position,

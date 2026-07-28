@@ -9,6 +9,7 @@
 #include "engine/movement/player_input.hpp"
 #include "engine/movement/remote_player_interpolation.hpp"
 #include "engine/simulation/fixed_step.hpp"
+#include "engine/world/fluids/fluid_state.hpp"
 #include "engine/world/voxels/voxel_chunk.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
 
@@ -74,7 +75,7 @@ TestYard make_yard() {
     assert(chunk.set({12, 1, 2}, {1, 0, 0, 0}));
     assert(chunk.set({16, 1, 2}, {1, 0, 0, 0}));
     assert(chunk.set({16, 2, 2}, {1, 0, 0, 0}));
-    assert(chunk.set({20, 1, 2}, {3, 0, 0, 0}));
+    assert(chunk.set({20, 1, 2}, {3, 0, world::full_fluid_state_bits(), 0}));
     assert(chunk.set({24, 1, 2}, {4, 0, 0, 0}));
     return yard;
 }
@@ -332,11 +333,63 @@ void test_environment_fall_and_verb_boundaries() {
     movement::VoxelCharacterCollisionWorld collision(yard.chunks, yard.palette);
     movement::PlayerController controller;
 
+    auto submersion =
+        collision.fluid_submersion(world::WorldPosition{20.5, 1.0, 2.5}, {0.6, 1.8});
+    assert(submersion);
+    assert(std::abs(submersion.value() - (1.0 / 1.8)) < 0.0001);
+
     auto swim_state = initial_state(20.5, 1.0, 2.5);
     auto swim = controller.tick(swim_state, input(1, 0, 0, 0, 32'767), {}, collision);
     assert(swim);
     assert(swim.value().state.mode == movement::PlayerControllerMode::swimming);
+    assert(swim.value().state.velocity.z > 0.0);
     assert(swim.value().state.stamina_milli < swim_state.stamina_milli);
+    assert(std::ranges::any_of(swim.value().events, [](const auto& event) {
+        return event.kind == movement::MovementEventKind::entered_fluid;
+    }));
+
+    const auto crouch = movement::input_button_bit(movement::PlayerInputButton::crouch);
+    auto& fluid_chunk = *yard.chunks.find({0, 0, 0});
+    assert(fluid_chunk.set({20, 2, 2},
+                           {3, 0, world::full_fluid_state_bits(), 0}));
+    auto deep_state = initial_state(20.5, 1.2, 2.5);
+    deep_state.grounded = false;
+    deep_state.mode = movement::PlayerControllerMode::airborne;
+    auto buoyant = controller.tick(deep_state, input(1), {}, collision);
+    assert(buoyant);
+    assert(buoyant.value().state.velocity.y > 0.0);
+    auto diving = controller.tick(deep_state, input(1, crouch), {}, collision);
+    assert(diving);
+    assert(diving.value().state.velocity.y < 0.0);
+
+    assert(fluid_chunk.set({20, 2, 2}, world::VoxelCell::air()));
+    auto thin_state = world::encode_fluid_state(
+        {1, false, false, world::FluidFlowDirection::positive_x});
+    assert(thin_state);
+    assert(fluid_chunk.set({20, 1, 2}, {3, 0, thin_state.value(), 0}));
+    auto shallow = collision.fluid_submersion(
+        world::WorldPosition{20.5, 1.0, 2.5}, {0.6, 1.8});
+    assert(shallow);
+    assert(std::abs(shallow.value() - (0.125 / 1.8)) < 0.0001);
+    auto wading = controller.tick(initial_state(20.5, 1.0, 2.5), input(1), {}, collision);
+    assert(wading);
+    assert(wading.value().state.mode != movement::PlayerControllerMode::swimming);
+    auto hysteretic_state = initial_state(20.5, 1.0, 2.5);
+    hysteretic_state.mode = movement::PlayerControllerMode::swimming;
+    hysteretic_state.grounded = false;
+    auto hysteretic = controller.tick(hysteretic_state, input(1), {}, collision);
+    assert(hysteretic);
+    assert(hysteretic.value().state.mode == movement::PlayerControllerMode::swimming);
+
+    auto leaving_state = hysteretic.value().state;
+    leaving_state.position = world::WorldPosition{22.5, 1.0, 2.5};
+    leaving_state.fall_origin = leaving_state.position;
+    auto left = controller.tick(leaving_state, input(2), {}, collision);
+    assert(left);
+    assert(left.value().state.mode != movement::PlayerControllerMode::swimming);
+    assert(std::ranges::any_of(left.value().events, [](const auto& event) {
+        return event.kind == movement::MovementEventKind::left_fluid;
+    }));
 
     const auto interact = movement::input_button_bit(movement::PlayerInputButton::interact);
     auto ladder_state = initial_state(24.5, 1.0, 2.5);

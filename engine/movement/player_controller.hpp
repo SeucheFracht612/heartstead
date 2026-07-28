@@ -36,6 +36,8 @@ enum class MovementEventKind : std::uint8_t {
     mantle_completed,
     landed,
     fall_impact,
+    entered_fluid,
+    left_fluid,
 };
 
 enum class PlayerTransitionCause : std::uint8_t {
@@ -83,6 +85,12 @@ struct PlayerMovementConfig {
     double ground_acceleration = 55.0;
     double ground_deceleration = 60.0;
     double air_acceleration = 12.0;
+    double swim_acceleration = 14.0;
+    double swim_vertical_acceleration = 18.0;
+    double swim_vertical_drag = 3.5;
+    double swim_resting_submersion = 0.85;
+    double swim_enter_submersion = 0.10;
+    double swim_exit_submersion = 0.05;
     double gravity = 24.0;
     double jump_apex = 1.25;
     double dash_distance = 4.0;
