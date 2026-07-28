@@ -398,6 +398,8 @@ void test_dedicated_headless_runtime_uses_same_scheduler() {
     assert(no_tick.value().authoritative_world_tick == 1);
     const auto names = runtime.session()->server()->scheduler().ordered_system_names();
     assert(names.front() == "runtime.command_gateway");
+    assert(names[1] == "runtime.chunk_collision");
+    assert(names[2] == "runtime.character_movement");
     assert(names.back() == "runtime.replication");
     assert(runtime.shutdown());
 }

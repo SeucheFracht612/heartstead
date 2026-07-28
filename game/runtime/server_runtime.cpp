@@ -127,6 +127,12 @@ core::Status ServerRuntime::initialize() {
             return scenario_status;
         }
     }
+    auto chunk_collision = physics::ChunkCollisionSystem::create(*physics_, *desc_.voxel_palette,
+                                                                 desc_.chunk_collision);
+    if (!chunk_collision) {
+        return core::Status::failure(chunk_collision.error().code, chunk_collision.error().message);
+    }
+    chunk_collision_ = std::move(chunk_collision).value();
 
     auto status = world::WorldCommandRegistry::register_engine_commands(commands_);
     if (!status) {
@@ -199,9 +205,21 @@ core::Status ServerRuntime::initialize() {
         return status;
     }
     status = scheduler_.register_system({
-        "runtime.character_movement",
+        "runtime.chunk_collision",
         simulation::SimulationPhase::movement,
         {"runtime.command_gateway"},
+        [this](simulation::SimulationContext&) {
+            return chunk_collision_->update(world_.chunks(), world_.dirty_regions(),
+                                            *desc_.voxel_palette);
+        },
+    });
+    if (!status) {
+        return status;
+    }
+    status = scheduler_.register_system({
+        "runtime.character_movement",
+        simulation::SimulationPhase::movement,
+        {"runtime.chunk_collision"},
         [this](simulation::SimulationContext& context) { return simulate_players(context); },
     });
     if (!status) {
@@ -343,6 +361,7 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     stats.commands = current_commands_;
     stats.replication = current_replication_;
     stats.physics = current_physics_;
+    stats.chunk_collision = chunk_collision_->stats();
     stats.moved_player_count = current_moved_player_count_;
     stats.repeated_input_count = current_repeated_input_count_;
     stats.movement_event_count = current_movement_event_count_;
@@ -443,6 +462,14 @@ const net::HostSession& ServerRuntime::host() const noexcept {
 
 const simulation::SimulationScheduler& ServerRuntime::scheduler() const noexcept {
     return scheduler_;
+}
+
+physics::ChunkCollisionSystem& ServerRuntime::chunk_collision() noexcept {
+    return *chunk_collision_;
+}
+
+const physics::ChunkCollisionSystem& ServerRuntime::chunk_collision() const noexcept {
+    return *chunk_collision_;
 }
 
 const simulation::TickEvents& ServerRuntime::events() const noexcept {

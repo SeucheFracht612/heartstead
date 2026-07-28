@@ -80,6 +80,7 @@ heartstead_add_foundation_test(heartstead_render_milestone_tests render_mileston
 heartstead_add_foundation_test(heartstead_renderer_frontend_tests renderer_frontend_tests.cpp)
 heartstead_add_foundation_test(heartstead_chunk_mesh_scheduler_tests
                                chunk_mesh_scheduler_tests.cpp)
+heartstead_add_foundation_test(heartstead_chunk_collision_tests chunk_collision_tests.cpp)
 heartstead_add_foundation_test(heartstead_gpu_buffer_arena_tests gpu_buffer_arena_tests.cpp)
 heartstead_add_foundation_test(heartstead_renderer_benchmark_tests renderer_benchmark_tests.cpp)
 heartstead_add_foundation_test(heartstead_render_runtime_asset_tests

@@ -5,6 +5,7 @@
 #include "engine/movement/movement_prediction.hpp"
 #include "engine/movement/player_controller_store.hpp"
 #include "engine/net/host_session.hpp"
+#include "engine/physics/chunk_collision_system.hpp"
 #include "engine/physics/physics_world.hpp"
 #include "engine/save/save_snapshot.hpp"
 #include "engine/scenarios/scenario.hpp"
@@ -26,6 +27,7 @@ struct ServerRuntimeDesc {
     world::WorldStateDesc world;
     net::HostSessionConfig host;
     physics::PhysicsWorldDesc physics;
+    physics::ChunkCollisionSystemConfig chunk_collision;
     std::uint32_t simulation_ticks_per_second = 60;
     simulation::WorldTimeConfig world_time;
     const modding::PrototypeRegistry* prototypes = nullptr;
@@ -40,6 +42,7 @@ struct ServerRuntimeTickStats {
     net::HostSessionTickResult commands;
     world::WorldReplicationDeltaDeliveryReport replication;
     physics::PhysicsStepStats physics;
+    physics::ChunkCollisionSystemStats chunk_collision;
     std::uint32_t moved_player_count = 0;
     std::uint32_t repeated_input_count = 0;
     std::uint32_t movement_event_count = 0;
@@ -49,7 +52,8 @@ struct ServerRuntimeTickStats {
 
 class ServerRuntime final {
   public:
-    [[nodiscard]] static core::Result<std::unique_ptr<ServerRuntime>> create(ServerRuntimeDesc desc);
+    [[nodiscard]] static core::Result<std::unique_ptr<ServerRuntime>>
+    create(ServerRuntimeDesc desc);
 
     ServerRuntime(const ServerRuntime&) = delete;
     ServerRuntime& operator=(const ServerRuntime&) = delete;
@@ -61,8 +65,7 @@ class ServerRuntime final {
 
     [[nodiscard]] core::Result<core::NetId> connect_client();
     [[nodiscard]] core::Status disconnect_client(core::NetId client_id);
-    [[nodiscard]] core::Status submit_command(core::NetId client_id,
-                                              net::CommandEnvelope command);
+    [[nodiscard]] core::Status submit_command(core::NetId client_id, net::CommandEnvelope command);
     [[nodiscard]] core::Result<std::vector<net::TransportEnvelope>>
     drain_client_messages(core::NetId client_id);
 
@@ -74,6 +77,8 @@ class ServerRuntime final {
     [[nodiscard]] net::HostSession& host() noexcept;
     [[nodiscard]] const net::HostSession& host() const noexcept;
     [[nodiscard]] const simulation::SimulationScheduler& scheduler() const noexcept;
+    [[nodiscard]] physics::ChunkCollisionSystem& chunk_collision() noexcept;
+    [[nodiscard]] const physics::ChunkCollisionSystem& chunk_collision() const noexcept;
     [[nodiscard]] const simulation::TickEvents& events() const noexcept;
     [[nodiscard]] movement::PlayerControllerStore& players() noexcept;
     [[nodiscard]] const movement::PlayerControllerStore& players() const noexcept;
@@ -115,6 +120,7 @@ class ServerRuntime final {
     world::WorldState world_;
     entities::EntityWorld entities_;
     std::unique_ptr<physics::IPhysicsWorld> physics_;
+    std::unique_ptr<physics::ChunkCollisionSystem> chunk_collision_;
     net::HostSession host_;
     net::ServerCommandDispatcher commands_;
     simulation::SimulationScheduler scheduler_;

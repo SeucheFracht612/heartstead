@@ -62,9 +62,10 @@ through M8 so each acceptance scene builds on already verified systems.
 - Terrain collision is cooked as chunk-local, greedily merged boxes in an engine-neutral
   `ChunkCollisionShape`. The Jolt backend materializes a `StaticCompoundShape`. This avoids one
   body per voxel and avoids triangle-mesh ghost edges for axis-aligned voxel terrain.
-- Collision cooking mirrors meshing: immutable center-plus-halo input, chunk identity and content
-  revision, bounded worker queue, cancellation, stale-result rejection, and owner-thread body
-  replacement.
+- Collision cooking mirrors meshing: immutable chunk input, chunk identity and content revision,
+  bounded worker queue, cancellation, stale-result rejection, and owner-thread body replacement.
+  Neighbor chunks are dirtied independently at boundary edits, so the chunk-local box cooker does
+  not copy a halo it cannot consume.
 - The high-level `PlayerController` remains authoritative for Souls-style acceleration, stamina,
   encumbrance, dash/roll, jump buffering, and mode transitions. Its collision adapter becomes an
   interface. The Jolt implementation owns a `CharacterVirtual`, performs slope limiting,
@@ -440,4 +441,3 @@ limits.
   <https://luau.org/api/>
 - Luau sandboxing, isolated environments, allocator limits, and interrupts:
   <https://luau.org/sandbox/>
-

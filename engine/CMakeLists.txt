@@ -67,6 +67,8 @@ target_sources(
     networks/network_derivation.cpp
     networks/spatial_network.cpp
     platform/platform.cpp
+    physics/chunk_collision_scheduler.cpp
+    physics/chunk_collision_system.cpp
     physics/jolt/jolt_backend.cpp
     physics/physics_world.cpp
     player_profiles/map_discovery.cpp
@@ -149,6 +151,7 @@ target_sources(
     world/chunks/chunk_database.cpp
     world/chunks/chunk_edit_delta_codec.cpp
     world/chunks/chunk_replication.cpp
+    world/collision/chunk_collision.cpp
     world/meshing/chunk_mesher.cpp
     world/meshing/chunk_mesh_snapshot.cpp
     world/meshing/greedy_chunk_mesher.cpp
@@ -240,6 +243,8 @@ target_sources(
       networks/network_derivation.hpp
       networks/spatial_network.hpp
       platform/platform.hpp
+      physics/chunk_collision_scheduler.hpp
+      physics/chunk_collision_system.hpp
       physics/jolt/jolt_backend.hpp
       physics/physics_world.hpp
       player_profiles/map_discovery.hpp
@@ -328,6 +333,7 @@ target_sources(
       world/chunks/chunk_edit_delta_codec.hpp
       world/chunks/chunk_replication.hpp
       world/chunks/chunk_identity.hpp
+      world/collision/chunk_collision.hpp
       world/coords/world_coords.hpp
       world/coords/world_position.hpp
       world/meshing/chunk_mesher.hpp

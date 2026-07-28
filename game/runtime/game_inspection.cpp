@@ -182,6 +182,10 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     std::uint32_t event_count = 0;
     std::uint32_t replication_message_count = 0;
     std::uint32_t physics_body_count = 0;
+    std::size_t collision_body_count = 0;
+    std::uint64_t collision_box_count = 0;
+    double collision_cooking_ms = 0.0;
+    double collision_apply_ms = 0.0;
     for (const auto& tick : stats.server_ticks) {
         simulation_ms += tick.simulation.total_ms;
         command_count += static_cast<std::uint32_t>(tick.commands.command_reports.size());
@@ -190,6 +194,10 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
         event_count += tick.simulation.event_count;
         replication_message_count += tick.replication.sent_message_count;
         physics_body_count = tick.physics.body_count;
+        collision_body_count = tick.chunk_collision.resident_body_count;
+        collision_box_count = tick.chunk_collision.current_collision_boxes;
+        collision_cooking_ms = tick.chunk_collision.last_cooking_ms;
+        collision_apply_ms = tick.chunk_collision.last_apply_ms;
     }
     add_field(data, "server_tick_count", std::to_string(stats.server_ticks.size()));
     add_field(data, "simulation_ms", std::to_string(simulation_ms));
@@ -198,6 +206,10 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     add_field(data, "event_count", std::to_string(event_count));
     add_field(data, "replication_message_count", std::to_string(replication_message_count));
     add_field(data, "physics_body_count", std::to_string(physics_body_count));
+    add_field(data, "chunk_collision_body_count", std::to_string(collision_body_count));
+    add_field(data, "chunk_collision_box_count", std::to_string(collision_box_count));
+    add_field(data, "chunk_collision_cooking_ms", std::to_string(collision_cooking_ms));
+    add_field(data, "chunk_collision_apply_ms", std::to_string(collision_apply_ms));
     add_field(data, "client_received_message_count",
               std::to_string(stats.client.received_message_count));
     add_field(data, "presentation_adapter_count", std::to_string(stats.presentation.adapter_count));
@@ -224,8 +236,7 @@ debug::InspectionData GameInspector::inspect(const RuntimeSession& session) {
     add_field(data, "ticks_per_second", std::to_string(config.fixed_step.ticks_per_second));
     add_field(data, "fixed_step_ticks_per_second",
               std::to_string(config.fixed_step.ticks_per_second));
-    add_field(data, "world_ticks_per_second",
-              std::to_string(config.world_time.ticks_per_second));
+    add_field(data, "world_ticks_per_second", std::to_string(config.world_time.ticks_per_second));
     add_field(data, "persistence_mode", "explicit_snapshot");
     add_field(data, "pending_save_count", "0");
     add_field(data, "faulted", fault.has_value() ? "true" : "false");
@@ -254,6 +265,13 @@ debug::InspectionData GameInspector::inspect(const RuntimeSession& session) {
         add_field(data, "component_count", std::to_string(entity_stats.component_count));
         add_field(data, "entity_tombstone_count", std::to_string(entity_stats.tombstone_count));
         add_field(data, "player_controller_count", std::to_string(server->players().size()));
+        const auto& collision_stats = server->chunk_collision().stats();
+        add_field(data, "chunk_collision_body_count",
+                  std::to_string(collision_stats.resident_body_count));
+        add_field(data, "chunk_collision_pending_count",
+                  std::to_string(collision_stats.pending_chunk_count));
+        add_field(data, "chunk_collision_box_count",
+                  std::to_string(collision_stats.current_collision_boxes));
         add_field(data, "simulation_system_count",
                   std::to_string(server->scheduler().registered_system_count()));
         add_field(data, "gameplay_module_count",

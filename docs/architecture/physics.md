@@ -67,6 +67,19 @@ Implemented foundation:
     the same policy as the headless reference
   - reports `physics.jolt_unavailable` only in builds that explicitly disable the dependency
 
+- Voxel terrain collision
+  - snapshots one immutable chunk plus a revisioned prototype collision table
+  - greedily merges full-cube voxels while preserving exact partial prototype collision bounds
+  - treats prototypes with empty collision bounds, including fluids and decorative occupancy, as
+    non-colliding
+  - cooks on a bounded worker queue and applies at most two results within a `2 ms` owner-thread
+    budget per simulation tick
+  - rejects results from stale chunk load generations, content revisions, or palette revisions
+  - creates one chunk-local static compound body and removes it when the chunk unloads
+  - consumes only collision dirty regions, leaving mesh and lighting work for their own schedulers
+  - exposes pending, in-flight, stale, box-count, cook-time, and apply-time statistics through the
+    runtime inspection path
+
 This layer is deliberately separate from `engine/entities/`, `engine/world/`, and
 `engine/save/`. A saved entity, build piece, cargo object, or felled tree can reference
 its own stable save id while recreating physics bodies when loaded. Save files must not
@@ -78,6 +91,6 @@ correction, and sleeping state. `physics_sandbox` repeats the same settling scen
 backends and fails if either backend is internally nondeterministic or if their final position,
 velocity, contact, and sleeping results exceed the published tolerances.
 
-Terrain collision cooking, Jolt `CharacterVirtual`, and authoritative physical-resource body
-synchronization are the next M1 slices. Their detailed contracts and acceptance budgets live in
+Jolt `CharacterVirtual` and authoritative physical-resource body synchronization are the next M1
+slices. Their detailed contracts and acceptance budgets live in
 `docs/roadmap/gameplay_foundations_m1_m8.md`.
