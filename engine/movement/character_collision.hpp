@@ -22,7 +22,6 @@ struct CharacterShape {
 struct CharacterCollisionBox {
     math::Bounds3d bounds;
     world::BlockCoord block;
-    world::VoxelCell cell{};
     const world::VoxelDefinition* voxel = nullptr;
     bool unloaded = false;
 };

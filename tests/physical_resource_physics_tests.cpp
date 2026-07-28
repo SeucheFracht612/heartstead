@@ -2,6 +2,8 @@
 #include "engine/entities/physical_resource.hpp"
 #include "engine/physics/physical_resource_physics_system.hpp"
 #include "engine/physics/physics_world.hpp"
+#include "engine/world/fluids/fluid_state.hpp"
+#include "engine/world/voxels/voxel_palette.hpp"
 #include "engine/world/world_state.hpp"
 
 #include <cassert>
@@ -37,6 +39,22 @@ physics::PhysicsBodyId add_ground(physics::IPhysicsWorld& physics_world) {
     auto body = physics_world.create_body(ground);
     assert(body);
     return body.value();
+}
+
+world::VoxelPalette water_palette() {
+    world::VoxelDefinition water;
+    water.type = 1;
+    water.prototype_id = *core::PrototypeId::parse("test:voxels/water");
+    water.display_name = "Water";
+    water.terrain_material = "water";
+    water.mining_tool = "bucket";
+    water.logical_occupancy = world::BlockLogicalOccupancy::fluid;
+    water.collision_bounds.clear();
+    water.occlusion_bounds.clear();
+    water.occlusion = world::BlockOcclusionBehavior::none;
+    world::VoxelPalette palette;
+    assert(palette.add(std::move(water)));
+    return palette;
 }
 
 void step_resources(physics::PhysicalResourcePhysicsSystem& resources,
@@ -135,6 +153,37 @@ void test_saved_resources_rebuild_in_stable_id_order() {
     assert(resources.value()->stats().restored_this_tick == 2);
 }
 
+void test_physical_resource_buoyancy_uses_declared_density() {
+    auto physics_world = physics::create_physics_world({});
+    assert(physics_world);
+    auto resources = physics::PhysicalResourcePhysicsSystem::create(*physics_world.value(), {});
+    assert(resources);
+    auto palette = water_palette();
+    world::WorldState world;
+    for (std::int64_t x = -1; x <= 1; ++x) {
+        for (std::int64_t y = -1; y <= 1; ++y) {
+            for (std::int64_t z = -1; z <= 1; ++z) {
+                const auto location = world::block_to_chunk_local({x, y, z});
+                auto& chunk = world.chunks().get_or_create(location.chunk);
+                assert(chunk.set(location.local,
+                                 {1, 0, world::full_fluid_state_bits()}));
+            }
+        }
+    }
+
+    auto resource = make_resource(250, {0.5, 0.5, 0.5});
+    assert(resources.value()->activate(resource, {2.0F, 0.0F, 0.0F}));
+    assert(world.physical_resources().insert(std::move(resource)));
+    assert(resources.value()->prepare(world, palette, 1.0F / 60.0F));
+    assert(resources.value()->stats().buoyant_this_tick == 1);
+    assert(physics_world.value()->step({1.0F / 60.0F}));
+    assert(resources.value()->synchronize(world));
+    const auto* floating = world.physical_resources().find(core::SaveId::from_value(250));
+    assert(floating != nullptr);
+    assert(floating->linear_velocity.y > 0.0F);
+    assert(floating->linear_velocity.x < 2.0F);
+}
+
 void test_jolt_compound_resource_settles() {
     if (!physics::physics_backend_info(physics::PhysicsBackend::jolt).available) {
         return;
@@ -173,6 +222,7 @@ int main() {
     test_invalid_config_is_rejected();
     test_headless_drop_settles_and_freezes();
     test_saved_resources_rebuild_in_stable_id_order();
+    test_physical_resource_buoyancy_uses_declared_density();
     test_jolt_compound_resource_settles();
     return 0;
 }

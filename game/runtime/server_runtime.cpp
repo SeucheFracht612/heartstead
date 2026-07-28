@@ -318,8 +318,10 @@ core::Status ServerRuntime::initialize() {
         "runtime.physical_resources_prepare",
         simulation::SimulationPhase::movement,
         {"runtime.character_movement"},
-        [this](simulation::SimulationContext&) {
-            return physical_resource_physics_->prepare(world_);
+        [this](simulation::SimulationContext& context) {
+            return physical_resource_physics_->prepare(
+                world_, *desc_.voxel_palette,
+                static_cast<float>(context.fixed_delta_seconds));
         },
     });
     if (!status) {

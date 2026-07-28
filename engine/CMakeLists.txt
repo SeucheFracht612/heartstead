@@ -159,6 +159,7 @@ target_sources(
     world/fluids/chunk_fluid_system.cpp
     world/fluids/fluid_simulation.cpp
     world/fluids/fluid_state.cpp
+    world/fluids/fluid_volume_query.cpp
     world/lighting/chunk_light_scheduler.cpp
     world/lighting/chunk_light_system.cpp
     world/lighting/voxel_light.cpp
@@ -351,6 +352,7 @@ target_sources(
       world/fluids/chunk_fluid_system.hpp
       world/fluids/fluid_simulation.hpp
       world/fluids/fluid_state.hpp
+      world/fluids/fluid_volume_query.hpp
       world/coords/world_coords.hpp
       world/coords/world_position.hpp
       world/lighting/chunk_light_scheduler.hpp

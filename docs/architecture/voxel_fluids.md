@@ -69,6 +69,13 @@ crouch dives, and the encumbrance movement multiplier remains authoritative. The
 continues to resolve terrain and build-piece contact; only the fluid-volume query remains voxel
 based. Dynamic bodies opt in separately and apply buoyancy through the physics boundary.
 
+Physical resources opt in through `PhysicalResourcePhysicsSystemConfig::fluid_buoyancy`.
+Their saved mass and volume determine density; submerged fraction comes from a conservative
+rotation-safe body bound, buoyancy is applied as an impulse before the fixed Jolt step, and
+velocity-proportional fluid drag damps all axes. The defaults model fresh water at 1,000 kg/m³,
+so declared resources below that density float without adding a fluid-specific flag to every
+prototype.
+
 ## Budgets and observability
 
 The default target is 32,768 active cells at 20 Hz with simulation p95 below 2 ms on the published

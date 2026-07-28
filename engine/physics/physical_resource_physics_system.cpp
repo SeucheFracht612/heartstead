@@ -1,5 +1,7 @@
 #include "engine/physics/physical_resource_physics_system.hpp"
 
+#include "engine/world/fluids/fluid_volume_query.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <utility>
@@ -26,14 +28,46 @@ sorted_resource_ids(const world::PhysicalResourceDatabase& resources) {
            state == entities::PhysicalResourceState::frozen_static;
 }
 
+[[nodiscard]] math::Bounds3d
+resource_local_bounds(const entities::PhysicalResourceRecord& resource) noexcept {
+    double maximum_radius = 0.0;
+    for (const auto& segment : resource.segments) {
+        float radius = 0.0F;
+        switch (segment.shape) {
+        case ShapeKind::box:
+            radius = static_cast<float>(math::length(segment.half_extents));
+            break;
+        case ShapeKind::sphere:
+            radius = segment.radius;
+            break;
+        case ShapeKind::capsule:
+            radius = segment.radius + segment.half_height;
+            break;
+        case ShapeKind::compound:
+            radius = static_cast<float>(math::length(segment.half_extents));
+            break;
+        }
+        maximum_radius =
+            std::max(maximum_radius, math::length(segment.local_position) +
+                                         static_cast<double>(radius));
+    }
+    const auto extent = math::splat(maximum_radius);
+    return {resource.position.local_offset - extent,
+            resource.position.local_offset + extent};
+}
+
 } // namespace
 
 core::Status PhysicalResourcePhysicsSystemConfig::validate() const {
     if (!std::isfinite(physics_island.max_local_extent) ||
-        physics_island.max_local_extent <= 0.0F) {
+        physics_island.max_local_extent <= 0.0F ||
+        !std::isfinite(fluid_density_kg_per_cubic_meter) ||
+        fluid_density_kg_per_cubic_meter <= 0.0F ||
+        !std::isfinite(buoyancy_acceleration) || buoyancy_acceleration <= 0.0F ||
+        !std::isfinite(fluid_linear_drag) || fluid_linear_drag < 0.0F) {
         return core::Status::failure(
             "physical_resource_physics.invalid_config",
-            "physical resource physics requires a positive finite island extent");
+            "physical resource physics requires finite positive island and buoyancy tuning");
     }
     return core::Status::ok();
 }
@@ -143,6 +177,21 @@ core::Status PhysicalResourcePhysicsSystem::prepare(world::WorldState& world) {
     }
     refresh_counts(resources);
     return core::Status::ok();
+}
+
+core::Status PhysicalResourcePhysicsSystem::prepare(world::WorldState& world,
+                                                    const world::VoxelPalette& palette,
+                                                    float fixed_delta_seconds) {
+    if (!std::isfinite(fixed_delta_seconds) || fixed_delta_seconds <= 0.0F) {
+        return core::Status::failure(
+            "physical_resource_physics.invalid_fixed_delta",
+            "physical resource buoyancy requires a positive finite fixed delta");
+    }
+    auto status = prepare(world);
+    if (!status || !config_.fluid_buoyancy) {
+        return status;
+    }
+    return apply_fluid_forces(world, palette, fixed_delta_seconds);
 }
 
 core::Status PhysicalResourcePhysicsSystem::synchronize(world::WorldState& world) {
@@ -288,6 +337,58 @@ core::Status PhysicalResourcePhysicsSystem::replace_with_static_body(
     return create_attached_body(resource, false);
 }
 
+core::Status PhysicalResourcePhysicsSystem::apply_fluid_forces(
+    world::WorldState& world, const world::VoxelPalette& palette,
+    float fixed_delta_seconds) {
+    for (const auto id : sorted_resource_ids(world.physical_resources())) {
+        const auto* resource = world.physical_resources().find(id);
+        if (resource == nullptr || !resource->physics_body_id.is_valid() ||
+            resource->state == entities::PhysicalResourceState::frozen_static) {
+            continue;
+        }
+        const auto body = physics_world_->body_state(resource->physics_body_id);
+        if (!body.has_value() || body->motion_type != BodyMotionType::dynamic) {
+            continue;
+        }
+        auto submerged = world::query_fluid_submersion(
+            world.chunks(), palette, resource->position.anchor,
+            resource_local_bounds(*resource));
+        if (!submerged) {
+            return core::Status::failure(submerged.error().code, submerged.error().message);
+        }
+        if (submerged.value() <= 0.0) {
+            continue;
+        }
+        constexpr double milliliters_per_cubic_meter = 1'000'000.0;
+        constexpr double grams_per_kilogram = 1'000.0;
+        const auto volume =
+            static_cast<double>(resource->volume_milliliters) /
+            milliliters_per_cubic_meter;
+        const auto mass =
+            static_cast<double>(resource->mass_grams) / grams_per_kilogram;
+        const auto drag = std::clamp(
+            static_cast<double>(config_.fluid_linear_drag) * submerged.value() *
+                static_cast<double>(fixed_delta_seconds),
+            0.0, 1.0);
+        const auto buoyant_impulse =
+            static_cast<double>(config_.fluid_density_kg_per_cubic_meter) * volume *
+            static_cast<double>(config_.buoyancy_acceleration) * submerged.value() *
+            static_cast<double>(fixed_delta_seconds);
+        const Vec3 impulse{
+            static_cast<float>(-static_cast<double>(body->linear_velocity.x) * mass * drag),
+            static_cast<float>(buoyant_impulse -
+                               static_cast<double>(body->linear_velocity.y) * mass * drag),
+            static_cast<float>(-static_cast<double>(body->linear_velocity.z) * mass * drag)};
+        auto status = physics_world_->apply_impulse(resource->physics_body_id, impulse);
+        if (!status) {
+            return status;
+        }
+        ++stats_.buoyant_this_tick;
+        ++stats_.buoyant_bodies;
+    }
+    return core::Status::ok();
+}
+
 void PhysicalResourcePhysicsSystem::reset_tick_stats() noexcept {
     stats_.created_this_tick = 0;
     stats_.restored_this_tick = 0;
@@ -295,6 +396,7 @@ void PhysicalResourcePhysicsSystem::reset_tick_stats() noexcept {
     stats_.settled_this_tick = 0;
     stats_.woken_this_tick = 0;
     stats_.frozen_this_tick = 0;
+    stats_.buoyant_this_tick = 0;
 }
 
 void PhysicalResourcePhysicsSystem::refresh_counts(
