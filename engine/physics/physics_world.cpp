@@ -16,6 +16,7 @@ namespace {
 }
 
 constexpr float sleep_linear_velocity_squared = 0.0004F;
+constexpr float sleep_angular_velocity_squared = 0.0004F;
 constexpr std::uint32_t sleep_step_threshold = 3;
 
 [[nodiscard]] Vec3 add(Vec3 lhs, Vec3 rhs) noexcept {
@@ -189,7 +190,8 @@ class HeadlessPhysicsWorld final : public IPhysicsWorld {
             id.value(),
             BodyRecord{desc,
                        PhysicsBodyState{id, desc.motion_type, desc.position, desc.rotation_degrees,
-                                        desc.linear_velocity, desc.mass, false, desc.user_data}});
+                                        desc.linear_velocity, desc.angular_velocity, desc.mass,
+                                        false, desc.user_data}});
         return core::Result<PhysicsBodyId>::success(id);
     }
 
@@ -256,6 +258,24 @@ class HeadlessPhysicsWorld final : public IPhysicsWorld {
                                          "static bodies cannot receive linear velocity");
         }
         body->state.linear_velocity = velocity;
+        body->state.sleeping = false;
+        return core::Status::ok();
+    }
+
+    [[nodiscard]] core::Status set_angular_velocity(PhysicsBodyId id, Vec3 velocity) override {
+        if (!velocity.is_finite()) {
+            return core::Status::failure("physics.invalid_angular_velocity",
+                                         "body angular velocity must be finite");
+        }
+        auto* body = find_body(id);
+        if (body == nullptr) {
+            return core::Status::failure("physics.body_not_found", "physics body was not found");
+        }
+        if (body->state.motion_type == BodyMotionType::static_body) {
+            return core::Status::failure("physics.static_body_angular_velocity",
+                                         "static bodies cannot receive angular velocity");
+        }
+        body->state.angular_velocity = velocity;
         body->state.sleeping = false;
         return core::Status::ok();
     }
@@ -336,6 +356,10 @@ class HeadlessPhysicsWorld final : public IPhysicsWorld {
                         scale(desc_.gravity, desc.delta_seconds * body.desc.gravity_scale));
                 body.state.position =
                     add(body.state.position, scale(body.state.linear_velocity, desc.delta_seconds));
+                constexpr float radians_to_degrees = 57.295779513082320876F;
+                body.state.rotation_degrees = add(
+                    body.state.rotation_degrees,
+                    scale(body.state.angular_velocity, desc.delta_seconds * radians_to_degrees));
                 ++stats.integrated_body_count;
                 continue;
             }
@@ -487,11 +511,14 @@ class HeadlessPhysicsWorld final : public IPhysicsWorld {
             }
 
             const auto speed_squared = math::length_squared(body.state.linear_velocity);
+            const auto angular_speed_squared = math::length_squared(body.state.angular_velocity);
             if (speed_squared <= sleep_linear_velocity_squared &&
+                angular_speed_squared <= sleep_angular_velocity_squared &&
                 has_contact(body.state.id, contacts)) {
                 ++body.idle_step_count;
                 if (body.idle_step_count >= sleep_step_threshold) {
                     body.state.linear_velocity = {};
+                    body.state.angular_velocity = {};
                     body.state.sleeping = true;
                 }
                 continue;
@@ -562,6 +589,10 @@ core::Status validate_physics_body_desc(const PhysicsBodyDesc& desc) {
     if (!desc.linear_velocity.is_finite()) {
         return core::Status::failure("physics.invalid_velocity",
                                      "body linear velocity must be finite");
+    }
+    if (!desc.angular_velocity.is_finite()) {
+        return core::Status::failure("physics.invalid_angular_velocity",
+                                     "body angular velocity must be finite");
     }
     if (!std::isfinite(desc.gravity_scale)) {
         return core::Status::failure("physics.invalid_gravity_scale",

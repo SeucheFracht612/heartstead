@@ -1,4 +1,5 @@
 #include "engine/content/content_validation.hpp"
+#include "engine/entities/physical_resource.hpp"
 #include "engine/net/command_payload.hpp"
 #include "game/runtime/game_inspection.hpp"
 #include "game/runtime/game_runtime.hpp"
@@ -448,6 +449,76 @@ void test_jolt_runtime_moves_on_cooked_terrain() {
     assert(after->state.position.relative_to(start.anchor).z > start.local_offset.z + 4.0);
     assert(std::abs(after->state.position.approximate_global().y - 1.0) < 0.06);
     assert(runtime.shutdown());
+}
+
+void test_jolt_runtime_drops_settles_and_restores_physical_resource() {
+    if (!physics::physics_backend_info(physics::PhysicsBackend::jolt).available) {
+        return;
+    }
+    const auto report = content::ContentValidation::validate(source_root());
+    assert(!report.has_errors());
+    auto runtime = make_runtime(report);
+    game::RuntimeConfiguration config;
+    config.physics_backend = physics::PhysicsBackend::jolt;
+    assert(runtime.start_session(config, make_session_request(report)));
+    auto* session = runtime.session();
+    assert(session != nullptr && session->server() != nullptr);
+
+    std::int64_t now_ms = 0;
+    for (std::uint32_t attempt = 0;
+         attempt < 100 && session->server()->chunk_collision().find({0, 0, 0}) == nullptr;
+         ++attempt) {
+        now_ms += 17;
+        assert(runtime.run_frame({16'667, now_ms}));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    assert(session->server()->chunk_collision().find({0, 0, 0}) != nullptr);
+
+    auto resource_id = session->server()->world().save_ids().reserve();
+    assert(resource_id);
+    entities::PhysicalResourceRecord resource;
+    resource.resource_id = resource_id.value();
+    resource.prototype_id = *core::PrototypeId::parse("base:entities/dropped_log");
+    resource.cargo_prototype_id = *core::PrototypeId::parse("base:cargo/heavy_log");
+    resource.position = {9.0, 4.0, 8.5};
+    resource.kind = entities::PhysicalResourceKind::haulable_log;
+    resource.mass_grams = 12'000;
+    resource.volume_milliliters = 24'000;
+    resource.allowed_transport_modes = cargo::CargoTransportModes::of(
+        {cargo::CargoTransportMode::hand, cargo::CargoTransportMode::cart});
+    resource.segments.push_back({physics::ShapeKind::box, {}, {0.6F, 0.2F, 0.2F}, 0.5F, 0.5F});
+    assert(session->server()->drop_physical_resource(std::move(resource), {0.4F, 0.0F, 0.0F},
+                                                     {0.0F, 0.0F, 0.5F}));
+
+    for (std::uint32_t frame_index = 0; frame_index < 720; ++frame_index) {
+        now_ms += 17;
+        assert(runtime.run_frame({16'667, now_ms}));
+    }
+    const auto* settled = session->server()->world().physical_resources().find(resource_id.value());
+    assert(settled != nullptr);
+    assert(settled->state == entities::PhysicalResourceState::frozen_static);
+    assert(settled->position.approximate_global().y > 1.1);
+    assert(settled->position.approximate_global().y < 1.9);
+    assert(session->server()->physical_resource_physics().stats().frozen_bodies == 1);
+    auto snapshot = runtime.capture_save_snapshot();
+    assert(snapshot);
+    assert(runtime.shutdown());
+
+    auto restored_runtime = make_runtime(report);
+    auto restored_request = make_session_request(report);
+    restored_request.initial_snapshot = std::move(snapshot).value();
+    assert(restored_runtime.start_session(config, std::move(restored_request)));
+    auto* restored_server = restored_runtime.session()->server();
+    assert(restored_server != nullptr);
+    auto restored_frame = restored_runtime.run_frame({16'667, 17});
+    assert(restored_frame);
+    const auto* restored = restored_server->world().physical_resources().find(resource_id.value());
+    assert(restored != nullptr);
+    assert(restored->state == entities::PhysicalResourceState::frozen_static);
+    assert(restored->physics_body_id.is_valid());
+    assert(!restored->needs_physics_rebuild);
+    assert(restored_server->physical_resource_physics().stats().restored_bodies == 1);
+    assert(restored_runtime.shutdown());
 }
 
 void test_authoritative_player_input_moves_and_replicates() {
@@ -902,6 +973,7 @@ int main() {
     test_session_rejects_unknown_or_wrong_kind_scenarios();
     test_dedicated_headless_runtime_uses_same_scheduler();
     test_jolt_runtime_moves_on_cooked_terrain();
+    test_jolt_runtime_drops_settles_and_restores_physical_resource();
     test_authoritative_player_input_moves_and_replicates();
     test_typed_voxel_commands_validate_and_replicate();
     test_session_save_and_reload_restores_authoritative_state();

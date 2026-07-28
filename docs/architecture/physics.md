@@ -21,7 +21,7 @@ Implemented foundation:
   - creates and destroys runtime physics bodies
   - exposes body state through `PhysicsBodyId`
   - exposes backend capability metadata from the created world
-  - validates shape, mass, position, velocity, gravity, and timestep inputs
+  - validates shape, mass, position, linear/angular velocity, gravity, and timestep inputs
   - steps the world through an explicit timestep
   - supports broad-phase AABB overlap queries
   - drains per-step contact records for debug, gameplay, and tests
@@ -38,6 +38,16 @@ Implemented foundation:
   - uses one compound physics body for felled trees and other large physical resources
   - stores stable resource identity separately from runtime physics body ids
   - moves from cutting, dynamic, settled, frozen, and cargo-converted lifecycle states
+  - persists authoritative position, rotation, and linear/angular velocity while rebuilding
+    runtime-only body ids after load
+
+- `PhysicalResourcePhysicsSystem`
+  - creates and restores bodies in stable save-id order
+  - synchronizes live body transforms and velocities back into authoritative world records
+  - observes backend sleeping, transitions dynamic resources to settled, and replaces long-sleeping
+    bodies with static bodies after a configurable tick threshold
+  - owns body cleanup and exposes active/dynamic/sleeping/frozen plus per-tick lifecycle counters
+  - runs once before and once after the authoritative physics phase
 
 - Motion types
   - static bodies for terrain/building collision
@@ -63,10 +73,10 @@ Implemented foundation:
     bodies
   - implements fixed stepping, configured mass/gravity, sleeping, impulses, broad-phase AABB
     queries, and deterministic engine-owned contact snapshots
-  - constrains bodies to translational degrees of freedom until the public boundary grows rotation
-    and angular-velocity state
-  - uses zero damping/friction/restitution at this foundation layer so backend comparison exercises
-    the same policy as the headless reference
+  - gives dynamic bodies all rotational and translational degrees of freedom and returns live
+    quaternion state as engine-owned Euler rotation plus angular velocity
+  - uses non-bouncy contact, moderate friction, and bounded linear/angular damping so dropped
+    resources converge to Jolt sleeping instead of sliding or spinning forever
   - reports `physics.jolt_unavailable` only in builds that explicitly disable the dependency
 
 - Voxel terrain collision
@@ -95,6 +105,8 @@ Implemented foundation:
     swimming movement is present while M3 will add buoyancy and currents
   - `dev_game` selects Jolt for interactive sessions while deterministic headless smoke runs and
     dedicated-server fixtures retain the reference backend
+  - pressing F5 in `dev_game` throws a physical log from the camera and renders its synchronized
+    transform through the existing retained static-instance path
 
 This layer is deliberately separate from `engine/entities/`, `engine/world/`, and
 `engine/save/`. A saved entity, build piece, cargo object, or felled tree can reference
@@ -107,6 +119,5 @@ correction, and sleeping state. `physics_sandbox` repeats the same settling scen
 backends and fails if either backend is internally nondeterministic or if their final position,
 velocity, contact, and sleeping results exceed the published tolerances.
 
-Authoritative physical-resource body synchronization is the next M1 slice. Its detailed contract
-and acceptance budgets live in
+The detailed milestone contract and acceptance budgets live in
 `docs/roadmap/gameplay_foundations_m1_m8.md`.

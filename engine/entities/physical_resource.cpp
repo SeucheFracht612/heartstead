@@ -65,6 +65,11 @@ core::Status PhysicalResourceRecord::validate() const {
         return core::Status::failure("physical_resource.invalid_position",
                                      "physical resource requires an anchored world position");
     }
+    if (!rotation_degrees.is_finite() || !linear_velocity.is_finite() ||
+        !angular_velocity.is_finite()) {
+        return core::Status::failure("physical_resource.invalid_transform",
+                                     "physical resource rotation and velocities must be finite");
+    }
     if (mass_grams == 0) {
         return core::Status::failure("physical_resource.invalid_mass",
                                      "physical resource mass must be non-zero");
@@ -115,11 +120,13 @@ core::Status PhysicalResourceRecord::validate() const {
 
 core::Result<physics::PhysicsBodyDesc>
 make_physical_resource_body_desc(const PhysicalResourceRecord& resource, physics::Vec3 position,
-                                 physics::Vec3 linear_velocity) {
-    if (!position.is_finite() || !linear_velocity.is_finite()) {
+                                 physics::Vec3 linear_velocity, physics::Vec3 rotation_degrees,
+                                 physics::Vec3 angular_velocity) {
+    if (!position.is_finite() || !linear_velocity.is_finite() || !rotation_degrees.is_finite() ||
+        !angular_velocity.is_finite()) {
         return core::Result<physics::PhysicsBodyDesc>::failure(
             "physical_resource.invalid_body_transform",
-            "physical resource body position and velocity must be finite");
+            "physical resource body transform and velocities must be finite");
     }
     if (resource.state == PhysicalResourceState::converted_to_cargo) {
         return core::Result<physics::PhysicsBodyDesc>::failure(
@@ -143,7 +150,9 @@ make_physical_resource_body_desc(const PhysicalResourceRecord& resource, physics
         frozen ? physics::BodyMotionType::static_body : physics::BodyMotionType::dynamic;
     desc.mass = frozen ? 0.0F : static_cast<float>(resource.mass_grams) / 1000.0F;
     desc.position = position;
+    desc.rotation_degrees = rotation_degrees;
     desc.linear_velocity = frozen ? physics::Vec3{} : linear_velocity;
+    desc.angular_velocity = frozen ? physics::Vec3{} : angular_velocity;
     desc.user_data = resource.resource_id.value();
     desc.shape.kind = physics::ShapeKind::compound;
     desc.shape.children.reserve(resource.segments.size());
@@ -175,11 +184,10 @@ core::Status attach_physical_resource_body(PhysicalResourceRecord& resource,
     }
 
     auto staged = resource;
-    const auto restoring_frozen =
-        staged.needs_physics_rebuild && staged.state == PhysicalResourceState::frozen_static;
+    const auto restored_state = staged.state;
+    const auto restoring = staged.needs_physics_rebuild;
     staged.physics_body_id = body_id;
-    staged.state =
-        restoring_frozen ? PhysicalResourceState::frozen_static : PhysicalResourceState::dynamic;
+    staged.state = restoring ? restored_state : PhysicalResourceState::dynamic;
     staged.needs_physics_rebuild = false;
     auto status = staged.validate();
     if (status) {
@@ -203,6 +211,8 @@ core::Status freeze_physical_resource(PhysicalResourceRecord& resource) {
                                      "only settled physical resources can freeze static");
     }
     resource.state = PhysicalResourceState::frozen_static;
+    resource.linear_velocity = {};
+    resource.angular_velocity = {};
     return resource.validate();
 }
 
@@ -292,6 +302,13 @@ std::string PhysicalResourceTextCodec::encode(const PhysicalResourceRecord& reso
     output << "cargo=" << resource.cargo_prototype_id.value() << '\n';
     output << "kind=" << static_cast<unsigned int>(resource.kind) << '\n';
     output << "state=" << static_cast<unsigned int>(resource.state) << '\n';
+    output << std::setprecision(std::numeric_limits<float>::max_digits10);
+    output << "rotation=" << resource.rotation_degrees.x << ',' << resource.rotation_degrees.y
+           << ',' << resource.rotation_degrees.z << '\n';
+    output << "linear_velocity=" << resource.linear_velocity.x << ',' << resource.linear_velocity.y
+           << ',' << resource.linear_velocity.z << '\n';
+    output << "angular_velocity=" << resource.angular_velocity.x << ','
+           << resource.angular_velocity.y << ',' << resource.angular_velocity.z << '\n';
     output << "mass=" << resource.mass_grams << '\n';
     output << "volume=" << resource.volume_milliliters << '\n';
     output << "stability=" << resource.stability_per_mille << '\n';
@@ -302,7 +319,7 @@ std::string PhysicalResourceTextCodec::encode(const PhysicalResourceRecord& reso
             output << ',';
         output << resource.hazard_tags[index];
     }
-    output << '\n' << std::setprecision(std::numeric_limits<float>::max_digits10);
+    output << '\n';
     for (const auto& segment : resource.segments) {
         output << "segment=" << physics::shape_kind_name(segment.shape) << ','
                << segment.local_position.x << ',' << segment.local_position.y << ','
@@ -371,6 +388,23 @@ PhysicalResourceTextCodec::decode(core::SaveId resource_id, core::PrototypeId pr
                     "physical_resource.invalid_saved_state", "physical resource state is invalid");
             resource.state = static_cast<PhysicalResourceState>(parsed);
             saw_state = true;
+        } else if (key == "rotation" || key == "linear_velocity" || key == "angular_velocity") {
+            const auto fields = split_resource(value, ',');
+            physics::Vec3 parsed;
+            if (fields.size() != 3 || !parse_resource_number(fields[0], parsed.x) ||
+                !parse_resource_number(fields[1], parsed.y) ||
+                !parse_resource_number(fields[2], parsed.z)) {
+                return core::Result<PhysicalResourceRecord>::failure(
+                    "physical_resource.invalid_saved_state",
+                    "physical resource saved transform vector is malformed");
+            }
+            if (key == "rotation") {
+                resource.rotation_degrees = parsed;
+            } else if (key == "linear_velocity") {
+                resource.linear_velocity = parsed;
+            } else {
+                resource.angular_velocity = parsed;
+            }
         } else if (key == "mass") {
             saw_mass = parse_resource_number(value, resource.mass_grams);
         } else if (key == "volume") {

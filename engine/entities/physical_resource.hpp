@@ -40,6 +40,9 @@ struct PhysicalResourceRecord {
     core::PrototypeId prototype_id;
     core::PrototypeId cargo_prototype_id;
     world::WorldPosition position;
+    physics::Vec3 rotation_degrees{};
+    physics::Vec3 linear_velocity{};
+    physics::Vec3 angular_velocity{};
     PhysicalResourceKind kind = PhysicalResourceKind::felled_tree;
     PhysicalResourceState state = PhysicalResourceState::cutting;
     physics::PhysicsBodyId physics_body_id;
@@ -68,7 +71,9 @@ class PhysicalResourceTextCodec {
 
 [[nodiscard]] core::Result<physics::PhysicsBodyDesc>
 make_physical_resource_body_desc(const PhysicalResourceRecord& resource,
-                                 physics::Vec3 position = {}, physics::Vec3 linear_velocity = {});
+                                 physics::Vec3 position = {}, physics::Vec3 linear_velocity = {},
+                                 physics::Vec3 rotation_degrees = {},
+                                 physics::Vec3 angular_velocity = {});
 
 [[nodiscard]] core::Status attach_physical_resource_body(PhysicalResourceRecord& resource,
                                                          physics::PhysicsBodyId body_id);

@@ -133,6 +133,14 @@ core::Status ServerRuntime::initialize() {
         return core::Status::failure(chunk_collision.error().code, chunk_collision.error().message);
     }
     chunk_collision_ = std::move(chunk_collision).value();
+    desc_.physical_resources.physics_island = desc_.chunk_collision.physics_island;
+    auto physical_resources =
+        physics::PhysicalResourcePhysicsSystem::create(*physics_, desc_.physical_resources);
+    if (!physical_resources) {
+        return core::Status::failure(physical_resources.error().code,
+                                     physical_resources.error().message);
+    }
+    physical_resource_physics_ = std::move(physical_resources).value();
 
     auto status = world::WorldCommandRegistry::register_engine_commands(commands_);
     if (!status) {
@@ -226,9 +234,20 @@ core::Status ServerRuntime::initialize() {
         return status;
     }
     status = scheduler_.register_system({
+        "runtime.physical_resources_prepare",
+        simulation::SimulationPhase::movement,
+        {"runtime.character_movement"},
+        [this](simulation::SimulationContext&) {
+            return physical_resource_physics_->prepare(world_);
+        },
+    });
+    if (!status) {
+        return status;
+    }
+    status = scheduler_.register_system({
         "runtime.physics",
         simulation::SimulationPhase::physics,
-        {"runtime.character_movement"},
+        {"runtime.physical_resources_prepare"},
         [this](simulation::SimulationContext& context) {
             auto result = physics_->step(
                 physics::PhysicsStepDesc{static_cast<float>(context.fixed_delta_seconds)});
@@ -243,9 +262,20 @@ core::Status ServerRuntime::initialize() {
         return status;
     }
     status = scheduler_.register_system({
-        "runtime.world_clock",
+        "runtime.physical_resources_sync",
         simulation::SimulationPhase::environment,
         {"runtime.physics"},
+        [this](simulation::SimulationContext&) {
+            return physical_resource_physics_->synchronize(world_);
+        },
+    });
+    if (!status) {
+        return status;
+    }
+    status = scheduler_.register_system({
+        "runtime.world_clock",
+        simulation::SimulationPhase::environment,
+        {"runtime.physical_resources_sync"},
         [this](simulation::SimulationContext&) {
             pending_world_time_numerator_ += desc_.world_time.ticks_per_second;
             const auto elapsed_world_ticks =
@@ -362,6 +392,7 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     stats.replication = current_replication_;
     stats.physics = current_physics_;
     stats.chunk_collision = chunk_collision_->stats();
+    stats.physical_resources = physical_resource_physics_->stats();
     stats.moved_player_count = current_moved_player_count_;
     stats.repeated_input_count = current_repeated_input_count_;
     stats.movement_event_count = current_movement_event_count_;
@@ -470,6 +501,35 @@ physics::ChunkCollisionSystem& ServerRuntime::chunk_collision() noexcept {
 
 const physics::ChunkCollisionSystem& ServerRuntime::chunk_collision() const noexcept {
     return *chunk_collision_;
+}
+
+physics::PhysicalResourcePhysicsSystem& ServerRuntime::physical_resource_physics() noexcept {
+    return *physical_resource_physics_;
+}
+
+const physics::PhysicalResourcePhysicsSystem&
+ServerRuntime::physical_resource_physics() const noexcept {
+    return *physical_resource_physics_;
+}
+
+core::Status ServerRuntime::drop_physical_resource(entities::PhysicalResourceRecord resource,
+                                                   physics::Vec3 linear_velocity,
+                                                   physics::Vec3 angular_velocity) {
+    if (world_.contains_saved_object(resource.resource_id)) {
+        return core::Status::failure(
+            "server_runtime.duplicate_physical_resource",
+            "dropped physical resource save id already belongs to a world object");
+    }
+    auto status = physical_resource_physics_->activate(resource, linear_velocity, angular_velocity);
+    if (!status) {
+        return status;
+    }
+    const auto body_id = resource.physics_body_id;
+    status = world_.physical_resources().insert(std::move(resource));
+    if (!status) {
+        (void)physics_->destroy_body(body_id);
+    }
+    return status;
 }
 
 const simulation::TickEvents& ServerRuntime::events() const noexcept {

@@ -89,6 +89,7 @@ struct PhysicsBodyDesc {
     Vec3 position{};
     Vec3 rotation_degrees{};
     Vec3 linear_velocity{};
+    Vec3 angular_velocity{};
     float mass = 0.0F;
     float gravity_scale = 1.0F;
     bool allow_sleep = true;
@@ -101,6 +102,7 @@ struct PhysicsBodyState {
     Vec3 position{};
     Vec3 rotation_degrees{};
     Vec3 linear_velocity{};
+    Vec3 angular_velocity{};
     float mass = 0.0F;
     bool sleeping = false;
     std::uint64_t user_data = 0;
@@ -208,6 +210,7 @@ class IPhysicsWorld {
     [[nodiscard]] virtual core::Status set_body_rotation(PhysicsBodyId id,
                                                          Vec3 rotation_degrees) = 0;
     [[nodiscard]] virtual core::Status set_linear_velocity(PhysicsBodyId id, Vec3 velocity) = 0;
+    [[nodiscard]] virtual core::Status set_angular_velocity(PhysicsBodyId id, Vec3 velocity) = 0;
     [[nodiscard]] virtual core::Status apply_impulse(PhysicsBodyId id, Vec3 impulse) = 0;
     [[nodiscard]] virtual core::Result<std::vector<PhysicsOverlap>>
     query_aabb(PhysicsAabb bounds) const = 0;

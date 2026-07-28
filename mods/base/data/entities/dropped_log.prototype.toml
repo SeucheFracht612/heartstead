@@ -1,0 +1,5 @@
+kind = "entity"
+id = "base:entities/dropped_log"
+display_name = "Dropped Log"
+persistent = "true"
+entity_kind = "dropped_item"

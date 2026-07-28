@@ -3404,10 +3404,15 @@ void test_physics_world() {
     assert(nearly_equal(state->linear_velocity.y, -5.0F));
     assert(nearly_equal(state->position.x, 1.0F));
     assert(nearly_equal(state->position.y, 7.5F));
+    assert(world.value()->set_angular_velocity(body.value(), {0.0F, 0.25F, 0.0F}));
+    state = world.value()->body_state(body.value());
+    assert(state);
+    assert(state->angular_velocity == (Vec3{0.0F, 0.25F, 0.0F}));
 
     auto static_velocity =
         world.value()->set_linear_velocity(ground.value(), Vec3{1.0F, 0.0F, 0.0F});
     assert(!static_velocity);
+    assert(!world.value()->set_angular_velocity(ground.value(), Vec3{0.0F, 1.0F, 0.0F}));
 
     PhysicsBodyDesc kinematic_body;
     kinematic_body.motion_type = BodyMotionType::kinematic;

@@ -70,17 +70,18 @@ InputActionMap InputActionMap::gameplay_defaults() {
     add_key(InputAction::hotbar_7, platform::KeyCode::digit_7);
     add_key(InputAction::hotbar_8, platform::KeyCode::digit_8);
     add_key(InputAction::hotbar_9, platform::KeyCode::digit_9);
+    add_key(InputAction::drop_item, platform::KeyCode::f5);
     add_key(InputAction::toggle_debug, platform::KeyCode::f3);
     (void)result.bind(InputBinding::mouse(InputAction::primary_action, InputContext::gameplay,
-                                         platform::MouseButton::left));
+                                          platform::MouseButton::left));
     (void)result.bind(InputBinding::mouse(InputAction::secondary_action, InputContext::gameplay,
-                                         platform::MouseButton::right));
+                                          platform::MouseButton::right));
     (void)result.bind(InputBinding::keyboard(InputAction::close_or_pause, InputContext::inventory,
-                                            platform::KeyCode::escape));
+                                             platform::KeyCode::escape));
     (void)result.bind(InputBinding::keyboard(InputAction::open_inventory, InputContext::inventory,
-                                            platform::KeyCode::tab));
+                                             platform::KeyCode::tab));
     (void)result.bind(InputBinding::keyboard(InputAction::close_or_pause, InputContext::menu,
-                                            platform::KeyCode::escape));
+                                             platform::KeyCode::escape));
     return result;
 }
 
@@ -162,11 +163,11 @@ InputActionFrame InputActionMap::evaluate(const platform::WindowInputSnapshot& i
             state.held = state.held ||
                          contains(std::span<const platform::KeyCode>(input.down_keys), binding.key);
             state.pressed =
-                state.pressed || contains(std::span<const platform::KeyCode>(input.pressed_keys),
-                                          binding.key);
+                state.pressed ||
+                contains(std::span<const platform::KeyCode>(input.pressed_keys), binding.key);
             state.released =
-                state.released || contains(std::span<const platform::KeyCode>(input.released_keys),
-                                           binding.key);
+                state.released ||
+                contains(std::span<const platform::KeyCode>(input.released_keys), binding.key);
         } else {
             state.held = state.held ||
                          contains(std::span<const platform::MouseButton>(input.down_mouse_buttons),
@@ -186,12 +187,11 @@ InputActionFrame InputActionMap::evaluate(const platform::WindowInputSnapshot& i
 
 std::string_view input_action_name(InputAction action) noexcept {
     constexpr std::array names{
-        "move_forward",   "move_backward", "move_left",      "move_right",
-        "jump",           "sprint",        "crouch",         "dash",
-        "roll",           "interact",      "primary_action", "secondary_action",
-        "open_inventory", "close_or_pause", "hotbar_1",      "hotbar_2",
-        "hotbar_3",       "hotbar_4",      "hotbar_5",       "hotbar_6",
-        "hotbar_7",       "hotbar_8",      "hotbar_9",       "toggle_debug",
+        "move_forward",   "move_backward",    "move_left",      "move_right",     "jump",
+        "sprint",         "crouch",           "dash",           "roll",           "interact",
+        "primary_action", "secondary_action", "open_inventory", "close_or_pause", "hotbar_1",
+        "hotbar_2",       "hotbar_3",         "hotbar_4",       "hotbar_5",       "hotbar_6",
+        "hotbar_7",       "hotbar_8",         "hotbar_9",       "drop_item",      "toggle_debug",
     };
     const auto action_index = index(action);
     return action_index < names.size() ? names[action_index] : "unknown";

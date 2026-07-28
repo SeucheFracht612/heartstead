@@ -1,6 +1,7 @@
 #include "engine/content/content_validation.hpp"
 #include "engine/core/logging.hpp"
 #include "engine/core/process_entry.hpp"
+#include "engine/entities/physical_resource.hpp"
 #include "engine/input/input_action.hpp"
 #include "engine/movement/player_camera.hpp"
 #include "engine/movement/player_input.hpp"
@@ -133,6 +134,118 @@ struct ShaderSet {
     std::vector<std::uint32_t> ui_vertex;
     std::vector<std::uint32_t> ui_fragment;
 };
+
+struct DevPhysicalResourceVisual {
+    core::SaveId resource_id;
+    renderer::RenderObjectId render_id;
+    math::Transform3f transform;
+};
+
+core::Result<renderer::RenderObjectProxy>
+physical_resource_proxy(const entities::PhysicalResourceRecord& resource,
+                        renderer::Renderer& renderer,
+                        const DevPhysicalResourceVisual* previous = nullptr) {
+    const auto origin = world::WorldPosition::from_anchor({}, {});
+    if (!origin) {
+        return core::Result<renderer::RenderObjectProxy>::failure(origin.error().code,
+                                                                  origin.error().message);
+    }
+    const auto global = resource.position.approximate_global();
+    renderer::RenderObjectProxy proxy;
+    proxy.id = previous == nullptr ? renderer::RenderObjectId{} : previous->render_id;
+    proxy.anchor = origin.value();
+    proxy.current_transform.position = {static_cast<float>(global.x), static_cast<float>(global.y),
+                                        static_cast<float>(global.z)};
+    proxy.current_transform.rotation_degrees = resource.rotation_degrees;
+    proxy.current_transform.scale = {1.2F, 0.4F, 0.4F};
+    proxy.previous_transform = previous == nullptr ? proxy.current_transform : previous->transform;
+    proxy.mesh = renderer.fallback_mesh();
+    proxy.material = {1, 1};
+    proxy.local_bounds = {{-0.5F, -0.5F, -0.5F}, {0.5F, 0.5F, 0.5F}};
+    proxy.flags = renderer::RenderObjectFlags::cast_shadow;
+    proxy.color = {0.42F, 0.20F, 0.07F, 1.0F};
+    return core::Result<renderer::RenderObjectProxy>::success(proxy);
+}
+
+core::Status drop_demo_resource(game::GameRuntime& runtime, renderer::Renderer& renderer,
+                                const movement::PlayerCameraFrame& camera,
+                                std::vector<DevPhysicalResourceVisual>& visuals) {
+    auto* session = runtime.session();
+    auto* server = session == nullptr ? nullptr : session->server();
+    if (server == nullptr) {
+        return core::Status::failure("dev_game.server_missing",
+                                     "dropping a resource requires the local authority");
+    }
+    auto resource_id = server->world().save_ids().reserve();
+    if (!resource_id) {
+        return core::Status::failure(resource_id.error().code, resource_id.error().message);
+    }
+    auto position = world::WorldPosition::from_anchor(
+        camera.position.anchor,
+        camera.position.local_offset + camera.forward * 1.5 + math::Vec3d{0.0, -0.25, 0.0});
+    if (!position) {
+        return core::Status::failure(position.error().code, position.error().message);
+    }
+    entities::PhysicalResourceRecord resource;
+    resource.resource_id = resource_id.value();
+    resource.prototype_id = *core::PrototypeId::parse("base:entities/dropped_log");
+    resource.cargo_prototype_id = *core::PrototypeId::parse("base:cargo/heavy_log");
+    resource.position = position.value();
+    resource.kind = entities::PhysicalResourceKind::haulable_log;
+    resource.mass_grams = 12'000;
+    resource.volume_milliliters = 24'000;
+    resource.allowed_transport_modes = cargo::CargoTransportModes::of(
+        {cargo::CargoTransportMode::hand, cargo::CargoTransportMode::cart});
+    resource.segments.push_back({physics::ShapeKind::box, {}, {0.6F, 0.2F, 0.2F}, 0.5F, 0.5F});
+    const physics::Vec3 velocity{static_cast<float>(camera.forward.x * 4.0),
+                                 static_cast<float>(camera.forward.y * 4.0 + 1.5),
+                                 static_cast<float>(camera.forward.z * 4.0)};
+    auto status = server->drop_physical_resource(resource, velocity, {0.0F, 0.0F, 2.0F});
+    if (!status) {
+        return status;
+    }
+    const auto* dropped = server->world().physical_resources().find(resource_id.value());
+    if (dropped == nullptr) {
+        return core::Status::failure("dev_game.resource_missing",
+                                     "dropped resource was not retained by the authority");
+    }
+    auto proxy = physical_resource_proxy(*dropped, renderer);
+    if (!proxy) {
+        return core::Status::failure(proxy.error().code, proxy.error().message);
+    }
+    auto created = renderer.create_object(proxy.value());
+    if (!created) {
+        return core::Status::failure(created.error().code, created.error().message);
+    }
+    visuals.push_back({resource_id.value(), created.value(), proxy.value().current_transform});
+    return core::Status::ok();
+}
+
+core::Status synchronize_demo_resources(const game::GameRuntime& runtime,
+                                        renderer::Renderer& renderer,
+                                        std::vector<DevPhysicalResourceVisual>& visuals) {
+    const auto* session = runtime.session();
+    const auto* server = session == nullptr ? nullptr : session->server();
+    if (server == nullptr) {
+        return core::Status::ok();
+    }
+    std::vector<renderer::RenderSceneUpdate> updates;
+    updates.reserve(visuals.size());
+    for (auto& visual : visuals) {
+        const auto* resource = server->world().physical_resources().find(visual.resource_id);
+        if (resource == nullptr) {
+            continue;
+        }
+        auto proxy = physical_resource_proxy(*resource, renderer, &visual);
+        if (!proxy) {
+            return core::Status::failure(proxy.error().code, proxy.error().message);
+        }
+        updates.push_back(
+            {renderer::RenderSceneUpdateKind::upsert_object, proxy.value(), {}, {}, {}});
+        visual.transform = proxy.value().current_transform;
+    }
+    return renderer.apply_scene_updates(updates);
+}
 
 core::Result<ShaderSet> load_shaders() {
     const auto root = std::filesystem::path{HEARTSTEAD_DEV_GAME_ASSET_DIR} / "shaders";
@@ -273,6 +386,7 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
     movement::PlayerInputSampler input_sampler;
     input_sampler.set_orientation(0.0, -2'000.0);
     movement::PlayerCameraRig camera_rig;
+    std::vector<DevPhysicalResourceVisual> physical_resource_visuals;
     const auto clay = core::PrototypeId::parse("base:voxels/clay");
     if (!clay.has_value()) {
         return fail("base clay prototype is unavailable");
@@ -360,8 +474,19 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
                     }
                 }
             }
+            if (action_frame[input::InputAction::drop_item].pressed) {
+                status = drop_demo_resource(runtime, renderer, camera_frame.value(),
+                                            physical_resource_visuals);
+                if (!status) {
+                    return fail(status.error());
+                }
+            }
             auto camera = render_camera_from(camera_frame.value());
             status = renderer.synchronize_chunks(runtime.session()->client()->world(), camera);
+            if (!status) {
+                return fail(status.error());
+            }
+            status = synchronize_demo_resources(runtime, renderer, physical_resource_visuals);
             if (!status) {
                 return fail(status.error());
             }

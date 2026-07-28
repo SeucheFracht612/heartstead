@@ -71,6 +71,7 @@ target_sources(
     physics/chunk_collision_scheduler.cpp
     physics/chunk_collision_system.cpp
     physics/jolt/jolt_backend.cpp
+    physics/physical_resource_physics_system.cpp
     physics/physics_world.cpp
     player_profiles/map_discovery.cpp
     player_profiles/player_profile.cpp
@@ -248,6 +249,7 @@ target_sources(
       physics/chunk_collision_scheduler.hpp
       physics/chunk_collision_system.hpp
       physics/jolt/jolt_backend.hpp
+      physics/physical_resource_physics_system.hpp
       physics/physics_world.hpp
       player_profiles/map_discovery.hpp
       player_profiles/player_profile.hpp

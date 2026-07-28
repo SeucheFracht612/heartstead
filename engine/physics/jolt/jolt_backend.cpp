@@ -81,6 +81,11 @@ constexpr JPH::BroadPhaseLayer moving_broad_phase_layer{1};
     return Vec3{value.GetX(), value.GetY(), value.GetZ()};
 }
 
+[[nodiscard]] Vec3 from_jolt_rotation(JPH::QuatArg value) noexcept {
+    constexpr float radians_to_degrees = 57.295779513082320876F;
+    return from_jolt(value.GetEulerAngles()) * radians_to_degrees;
+}
+
 [[nodiscard]] Vec3 from_jolt_position(JPH::RVec3Arg value) noexcept {
     return Vec3{static_cast<float>(value.GetX()), static_cast<float>(value.GetY()),
                 static_cast<float>(value.GetZ())};
@@ -543,15 +548,19 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
                                            to_jolt_rotation(desc.rotation_degrees),
                                            to_jolt(desc.motion_type), layer_for(desc.motion_type));
         settings.mLinearVelocity = to_jolt(desc.linear_velocity);
+        settings.mAngularVelocity = to_jolt(desc.angular_velocity);
         settings.mUserData = id.value();
         settings.mGravityFactor = desc.gravity_scale;
         settings.mAllowSleeping = desc.allow_sleep;
-        settings.mLinearDamping = 0.0F;
-        settings.mAngularDamping = 0.0F;
-        settings.mFriction = 0.0F;
+        settings.mLinearDamping = desc.motion_type == BodyMotionType::dynamic ? 0.05F : 0.0F;
+        settings.mAngularDamping = desc.motion_type == BodyMotionType::dynamic ? 0.1F : 0.0F;
+        settings.mFriction = 0.6F;
         settings.mRestitution = 0.0F;
-        settings.mAllowedDOFs = JPH::EAllowedDOFs::TranslationX | JPH::EAllowedDOFs::TranslationY |
-                                JPH::EAllowedDOFs::TranslationZ;
+        settings.mAllowedDOFs = desc.motion_type == BodyMotionType::dynamic
+                                    ? JPH::EAllowedDOFs::All
+                                    : JPH::EAllowedDOFs::TranslationX |
+                                          JPH::EAllowedDOFs::TranslationY |
+                                          JPH::EAllowedDOFs::TranslationZ;
         if (desc.motion_type == BodyMotionType::dynamic) {
             settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
             settings.mMassPropertiesOverride.mMass = desc.mass;
@@ -604,10 +613,13 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
         state.id = id;
         state.motion_type = record.motion_type;
         state.position = from_jolt_position(bodies.GetPosition(record.jolt_id));
-        state.rotation_degrees = record.rotation_degrees;
+        state.rotation_degrees = from_jolt_rotation(bodies.GetRotation(record.jolt_id));
         state.linear_velocity = record.motion_type == BodyMotionType::static_body
                                     ? Vec3{}
                                     : from_jolt(bodies.GetLinearVelocity(record.jolt_id));
+        state.angular_velocity = record.motion_type == BodyMotionType::static_body
+                                     ? Vec3{}
+                                     : from_jolt(bodies.GetAngularVelocity(record.jolt_id));
         state.mass = record.mass;
         state.sleeping =
             record.motion_type == BodyMotionType::dynamic && !bodies.IsActive(record.jolt_id);
@@ -659,6 +671,23 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
                                          "static bodies cannot receive linear velocity");
         }
         physics_system_.GetBodyInterface().SetLinearVelocity(record->jolt_id, to_jolt(velocity));
+        return core::Status::ok();
+    }
+
+    [[nodiscard]] core::Status set_angular_velocity(PhysicsBodyId id, Vec3 velocity) override {
+        if (!velocity.is_finite()) {
+            return core::Status::failure("physics.invalid_angular_velocity",
+                                         "body angular velocity must be finite");
+        }
+        auto* record = find_record(id);
+        if (record == nullptr) {
+            return core::Status::failure("physics.body_not_found", "physics body was not found");
+        }
+        if (record->motion_type == BodyMotionType::static_body) {
+            return core::Status::failure("physics.static_body_angular_velocity",
+                                         "static bodies cannot receive angular velocity");
+        }
+        physics_system_.GetBodyInterface().SetAngularVelocity(record->jolt_id, to_jolt(velocity));
         return core::Status::ok();
     }
 

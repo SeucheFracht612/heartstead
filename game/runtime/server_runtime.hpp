@@ -7,6 +7,7 @@
 #include "engine/movement/player_controller_store.hpp"
 #include "engine/net/host_session.hpp"
 #include "engine/physics/chunk_collision_system.hpp"
+#include "engine/physics/physical_resource_physics_system.hpp"
 #include "engine/physics/physics_world.hpp"
 #include "engine/save/save_snapshot.hpp"
 #include "engine/scenarios/scenario.hpp"
@@ -29,6 +30,7 @@ struct ServerRuntimeDesc {
     net::HostSessionConfig host;
     physics::PhysicsWorldDesc physics;
     physics::ChunkCollisionSystemConfig chunk_collision;
+    physics::PhysicalResourcePhysicsSystemConfig physical_resources;
     std::uint32_t simulation_ticks_per_second = 60;
     simulation::WorldTimeConfig world_time;
     const modding::PrototypeRegistry* prototypes = nullptr;
@@ -44,6 +46,7 @@ struct ServerRuntimeTickStats {
     world::WorldReplicationDeltaDeliveryReport replication;
     physics::PhysicsStepStats physics;
     physics::ChunkCollisionSystemStats chunk_collision;
+    physics::PhysicalResourcePhysicsSystemStats physical_resources;
     std::uint32_t moved_player_count = 0;
     std::uint32_t repeated_input_count = 0;
     std::uint32_t movement_event_count = 0;
@@ -80,6 +83,12 @@ class ServerRuntime final {
     [[nodiscard]] const simulation::SimulationScheduler& scheduler() const noexcept;
     [[nodiscard]] physics::ChunkCollisionSystem& chunk_collision() noexcept;
     [[nodiscard]] const physics::ChunkCollisionSystem& chunk_collision() const noexcept;
+    [[nodiscard]] physics::PhysicalResourcePhysicsSystem& physical_resource_physics() noexcept;
+    [[nodiscard]] const physics::PhysicalResourcePhysicsSystem&
+    physical_resource_physics() const noexcept;
+    [[nodiscard]] core::Status drop_physical_resource(entities::PhysicalResourceRecord resource,
+                                                      physics::Vec3 linear_velocity = {},
+                                                      physics::Vec3 angular_velocity = {});
     [[nodiscard]] const simulation::TickEvents& events() const noexcept;
     [[nodiscard]] movement::PlayerControllerStore& players() noexcept;
     [[nodiscard]] const movement::PlayerControllerStore& players() const noexcept;
@@ -123,6 +132,7 @@ class ServerRuntime final {
     entities::EntityWorld entities_;
     std::unique_ptr<physics::IPhysicsWorld> physics_;
     std::unique_ptr<physics::ChunkCollisionSystem> chunk_collision_;
+    std::unique_ptr<physics::PhysicalResourcePhysicsSystem> physical_resource_physics_;
     net::HostSession host_;
     net::ServerCommandDispatcher commands_;
     simulation::SimulationScheduler scheduler_;
