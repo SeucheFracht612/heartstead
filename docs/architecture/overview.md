@@ -199,7 +199,9 @@ The repository currently implements the initial engine-owned foundation:
 - save inspector tool
 - workpiece inspector tool
 
-The next engine slices should be:
+The active implementation sequence and acceptance budgets are tracked in
+[`docs/roadmap/gameplay_foundations_m1_m8.md`](../roadmap/gameplay_foundations_m1_m8.md).
+The broader next engine slices remain:
 
 1. production Luau VM binding behind the registered scripting host API contract
 2. proven-library external networking backend beyond the current POSIX UDP reliability foundation
