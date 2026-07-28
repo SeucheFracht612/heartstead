@@ -15,14 +15,21 @@ The animation boundary follows the glTF interpolation rules:
 
 `SkeletalPose` stores one local TRS value per model node. Pose blending interpolates translation
 and scale and uses shortest-path quaternion interpolation for rotation. Hierarchy evaluation then
-produces global node matrices. A skin palette is produced in the primitive mesh node's local space:
+produces global node matrices. Two explicit palette conventions are available. The low-level
+mesh-local form is:
 
 `inverse(mesh_global) * joint_global * inverse_bind`
 
-This keeps one entity/object transform outside the palette and lets multiple primitives rooted at
-different model nodes share the same animated hierarchy. Palettes—not replicated bone transforms—
-are presentation data. Replication carries a bounded locomotion state and phase; clients sample and
-blend their local copy of the cooked clips.
+The retained whole-entity presentation path uses model-space palettes:
+
+`joint_global * inverse_bind`
+
+The latter preserves the authored model-node transform inside the palette while the entity's
+floating-origin transform remains on the render object. This is the standard whole-model glTF
+instance composition and avoids decomposing animated node matrices back into renderer TRS values.
+Palettes—not replicated bone transforms—are presentation data. Replication carries a bounded
+idle/walk/swim state, normalized phase, source state, and transition tick. Clients interpolate that
+state, sample the same cooked clips, and blend locally.
 
 `skin_model_vertex` is the CPU reference implementation for position and normal linear-blend
 skinning. The renderer uses GPU skinning through the existing static-instance path: its unified
@@ -36,3 +43,9 @@ instance metadata. Palette and instance capacities are explicit configuration bu
 mismatched, or over-budget skinned instances fail closed and are visible in renderer statistics.
 The CPU implementation remains the golden correctness oracle for tests/headless tools rather than
 a per-frame vertex rewrite.
+
+`AnimatedModelPresentation` is the game-to-renderer ownership bridge. It uploads each model
+primitive once, retains one render object and (for skinned primitives) one palette per observed
+entity, skips unchanged authoritative revisions, and removes objects before their referenced
+palettes. Creation rolls back partial renderer ownership on failure. A headless renderer integration
+test covers insertion, locomotion-driven palette replacement, rendering, removal, and shutdown.

@@ -9,6 +9,7 @@ target_sources(
     features/interaction/voxel_interaction_module.cpp
     framework/gameplay_module.cpp
     framework/domain_service_registry.cpp
+    presentation/animated_model_presentation.cpp
     presentation/client_audio_presentation.cpp
     presentation/client_presentation.cpp
     presentation/presentation_world.cpp
@@ -28,6 +29,7 @@ target_sources(
       features/interaction/voxel_interaction_module.hpp
       framework/gameplay_module.hpp
       framework/domain_service_registry.hpp
+      presentation/animated_model_presentation.hpp
       presentation/client_audio_presentation.hpp
       presentation/client_presentation.hpp
       presentation/presentation_world.hpp

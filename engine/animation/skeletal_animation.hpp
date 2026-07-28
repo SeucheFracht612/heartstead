@@ -50,6 +50,9 @@ evaluate_model_node_matrices(const assets::ModelAsset& model, const SkeletalPose
                                                                    std::uint32_t skin,
                                                                    std::uint32_t mesh_node,
                                                                    const SkeletalPose& pose);
+[[nodiscard]] core::Result<SkinningPalette>
+build_model_space_skinning_palette(const assets::ModelAsset& model, std::uint32_t skin,
+                                   std::uint32_t mesh_node, const SkeletalPose& pose);
 [[nodiscard]] core::Result<CpuSkinnedVertex>
 skin_model_vertex(const assets::ModelVertex& vertex, std::span<const math::Mat4f> joint_matrices);
 

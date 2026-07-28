@@ -158,6 +158,14 @@ int main() {
     assert(mesh_local_vertex);
     assert(nearly_equal(mesh_local_vertex.value().position.x, 0.0F));
     assert(nearly_equal(mesh_local_vertex.value().position.y, 2.0F));
+    auto model_space_palette = animation::build_model_space_skinning_palette(
+        translated_model, 0, 0, translated_pose.value());
+    assert(model_space_palette);
+    auto model_space_vertex = animation::skin_model_vertex(
+        translated_model.vertices.front(), model_space_palette.value().joint_matrices);
+    assert(model_space_vertex);
+    assert(nearly_equal(model_space_vertex.value().position.x, 5.0F));
+    assert(nearly_equal(model_space_vertex.value().position.y, 2.0F));
 
     animation::ReplicatedLocomotionAnimation locomotion;
     locomotion.kind = animation::LocomotionAnimationKind::walk;

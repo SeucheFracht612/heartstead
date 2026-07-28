@@ -413,6 +413,38 @@ core::Result<SkinningPalette> build_skinning_palette(const assets::ModelAsset& m
     return core::Result<SkinningPalette>::success(std::move(result));
 }
 
+core::Result<SkinningPalette> build_model_space_skinning_palette(const assets::ModelAsset& model,
+                                                                 std::uint32_t skin,
+                                                                 std::uint32_t mesh_node,
+                                                                 const SkeletalPose& pose) {
+    if (skin >= model.skins.size() || mesh_node >= model.nodes.size()) {
+        return core::Result<SkinningPalette>::failure(
+            "skeletal_animation.invalid_skin_binding",
+            "skinning palette requires valid skin and mesh-node indices");
+    }
+    auto globals = evaluate_model_node_matrices(model, pose);
+    if (!globals) {
+        return core::Result<SkinningPalette>::failure(globals.error().code,
+                                                      globals.error().message);
+    }
+    SkinningPalette result;
+    result.skin = skin;
+    result.mesh_node = mesh_node;
+    const auto& source_skin = model.skins[skin];
+    result.joint_matrices.reserve(source_skin.joints.size());
+    for (std::size_t joint = 0; joint < source_skin.joints.size(); ++joint) {
+        const auto node = source_skin.joints[joint];
+        if (node >= globals.value().size() || joint >= source_skin.inverse_bind_matrices.size()) {
+            return core::Result<SkinningPalette>::failure(
+                "skeletal_animation.invalid_skin",
+                "skin joint or inverse-bind matrix is outside the model");
+        }
+        result.joint_matrices.push_back(globals.value()[node] *
+                                        source_skin.inverse_bind_matrices[joint]);
+    }
+    return core::Result<SkinningPalette>::success(std::move(result));
+}
+
 core::Result<CpuSkinnedVertex> skin_model_vertex(const assets::ModelVertex& vertex,
                                                  std::span<const math::Mat4f> joint_matrices) {
     if (joint_matrices.empty()) {

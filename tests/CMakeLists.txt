@@ -49,6 +49,13 @@ target_link_libraries(heartstead_presentation_world_tests PRIVATE Heartstead::Ga
 heartstead_configure_test_target(heartstead_presentation_world_tests)
 heartstead_register_unit_test(heartstead_presentation_world_tests)
 
+add_executable(heartstead_animated_model_presentation_tests
+               animated_model_presentation_tests.cpp)
+target_link_libraries(heartstead_animated_model_presentation_tests
+                      PRIVATE Heartstead::GameRuntime)
+heartstead_configure_test_target(heartstead_animated_model_presentation_tests)
+heartstead_register_unit_test(heartstead_animated_model_presentation_tests)
+
 add_executable(heartstead_headless_session_tests headless_session_tests.cpp)
 target_link_libraries(heartstead_headless_session_tests PRIVATE Heartstead::GameRuntime)
 target_compile_definitions(
