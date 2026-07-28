@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/assets/asset_catalog.hpp"
 #include "engine/audio/audio_mixer.hpp"
 #include "engine/audio/audio_types.hpp"
 #include "engine/audio/sound_event.hpp"
@@ -14,10 +15,12 @@ namespace heartstead::audio {
 struct AudioSystemDesc {
     AudioBackend backend = AudioBackend::null_backend;
     const SoundEventRegistry* events = nullptr;
+    const assets::AssetCatalog* assets = nullptr;
     AudioMixerConfig mixer{};
     std::uint32_t sample_rate = 48'000;
     std::uint32_t output_channels = 2;
     std::uint32_t period_frames = 256;
+    bool use_null_output_device = false;
 
     [[nodiscard]] core::Status validate() const;
 };
@@ -40,6 +43,7 @@ class IAudioSystem {
     [[nodiscard]] virtual std::optional<AudioVoiceSnapshot>
     voice_snapshot(AudioVoiceId voice) const = 0;
     [[nodiscard]] virtual AudioSystemStats stats() const noexcept = 0;
+    [[nodiscard]] virtual core::Status request_device_reinitialize() = 0;
 };
 
 [[nodiscard]] core::Result<std::unique_ptr<IAudioSystem>> create_audio_system(AudioSystemDesc desc);

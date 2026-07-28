@@ -8,12 +8,17 @@
     {
       "name": "joltphysics",
       "default-features": false
-    }
+    },
+    "miniaudio"
   ],
   "overrides": [
     {
       "name": "joltphysics",
       "version": "5.6.0"
+    },
+    {
+      "name": "miniaudio",
+      "version": "0.11.25"
     }
   ]
 }

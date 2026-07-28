@@ -54,11 +54,15 @@ reinitialize playback and restore logical looping voices; failure moves the syst
 fallback while gameplay continues. This follows miniaudio's rule that device start, stop,
 initialization, and uninitialization must not run in the device callback.
 
+Tests can select miniaudio's null output device through `AudioSystemDesc`. This still runs the real
+device callback and mixer graph without depending on host speakers; it is distinct from
+Heartstead's logical null audio backend.
+
 ## Current external basis
 
-The implementation tracks miniaudio 0.11.x through the pinned vcpkg baseline. It uses the
-split `miniaudio.c` implementation form recommended ahead of 0.12, rather than defining
-`MINIAUDIO_IMPLEMENTATION` in an engine source file.
+The implementation pins miniaudio 0.11.25 through the vcpkg baseline. The vcpkg port distributes
+the upstream header-only form, so one private translation unit defines `MINIAUDIO_IMPLEMENTATION`.
+No other engine source defines it, and public engine headers never include `miniaudio.h`.
 
 Primary references:
 

@@ -1,5 +1,7 @@
 #include "engine/audio/audio_system.hpp"
 
+#include "engine/audio/miniaudio/miniaudio_backend.hpp"
+
 #include <cmath>
 #include <memory>
 
@@ -60,6 +62,10 @@ class NullAudioSystem final : public IAudioSystem {
         return mixer_.stats();
     }
 
+    [[nodiscard]] core::Status request_device_reinitialize() override {
+        return core::Status::ok();
+    }
+
   private:
     AudioMixer mixer_;
 };
@@ -109,6 +115,10 @@ core::Status AudioSystemDesc::validate() const {
         return core::Status::failure("audio.missing_event_registry",
                                      "audio system requires a sound event registry");
     }
+    if (backend == AudioBackend::miniaudio && assets == nullptr) {
+        return core::Status::failure("audio.missing_asset_catalog",
+                                     "miniaudio backend requires the active asset catalog");
+    }
     auto status = mixer.validate();
     if (!status) {
         return status;
@@ -139,8 +149,7 @@ core::Result<std::unique_ptr<IAudioSystem>> create_audio_system(AudioSystemDesc 
         return core::Result<std::unique_ptr<IAudioSystem>>::success(
             std::make_unique<NullAudioSystem>(desc));
     case AudioBackend::miniaudio:
-        return core::Result<std::unique_ptr<IAudioSystem>>::failure(
-            "audio.miniaudio_unavailable", "miniaudio backend is not built yet");
+        return miniaudio::create_system(desc);
     }
     return core::Result<std::unique_ptr<IAudioSystem>>::failure("audio.unknown_backend",
                                                                 "unknown audio backend");

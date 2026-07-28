@@ -12,6 +12,7 @@ target_sources(
     assets/virtual_file_system.cpp
     audio/audio_mixer.cpp
     audio/audio_system.cpp
+    audio/miniaudio/miniaudio_backend.cpp
     audio/sound_event.cpp
     assemblies/assembly.cpp
     assemblies/assembly_prototype.cpp
@@ -197,6 +198,7 @@ target_sources(
       audio/audio_mixer.hpp
       audio/audio_system.hpp
       audio/audio_types.hpp
+      audio/miniaudio/miniaudio_backend.hpp
       audio/sound_event.hpp
       assemblies/assembly.hpp
       assemblies/assembly_prototype.hpp
@@ -387,6 +389,14 @@ target_sources(
 
 target_include_directories(heartstead_engine PUBLIC ${PROJECT_SOURCE_DIR})
 target_link_libraries(heartstead_engine PUBLIC Threads::Threads)
+if(HEARTSTEAD_ENABLE_MINIAUDIO)
+  target_sources(heartstead_engine PRIVATE audio/miniaudio/miniaudio_implementation.cpp)
+  target_include_directories(heartstead_engine SYSTEM PRIVATE ${MINIAUDIO_INCLUDE_DIRS})
+  target_link_libraries(heartstead_engine PRIVATE ${CMAKE_DL_LIBS})
+  target_compile_definitions(heartstead_engine PRIVATE HEARTSTEAD_HAS_MINIAUDIO=1)
+else()
+  target_compile_definitions(heartstead_engine PRIVATE HEARTSTEAD_HAS_MINIAUDIO=0)
+endif()
 if(HEARTSTEAD_ENABLE_JOLT)
   target_link_libraries(heartstead_engine PRIVATE Jolt::Jolt)
   target_compile_definitions(heartstead_engine PRIVATE HEARTSTEAD_HAS_JOLT=1)

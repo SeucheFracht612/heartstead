@@ -4,8 +4,13 @@
 #include "engine/audio/sound_event.hpp"
 #include "engine/modding/generic_prototype.hpp"
 
+#include <array>
 #include <cassert>
+#include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <vector>
 
 namespace {
 
@@ -172,6 +177,108 @@ void test_null_backend_owns_logical_voices() {
     assert(!system.value()->is_active(voice.value()));
 }
 
+void append_u16(std::vector<std::uint8_t>& bytes, std::uint16_t value) {
+    bytes.push_back(static_cast<std::uint8_t>(value & 0xFFU));
+    bytes.push_back(static_cast<std::uint8_t>((value >> 8U) & 0xFFU));
+}
+
+void append_u32(std::vector<std::uint8_t>& bytes, std::uint32_t value) {
+    bytes.push_back(static_cast<std::uint8_t>(value & 0xFFU));
+    bytes.push_back(static_cast<std::uint8_t>((value >> 8U) & 0xFFU));
+    bytes.push_back(static_cast<std::uint8_t>((value >> 16U) & 0xFFU));
+    bytes.push_back(static_cast<std::uint8_t>((value >> 24U) & 0xFFU));
+}
+
+void append_text(std::vector<std::uint8_t>& bytes, std::string_view value) {
+    bytes.insert(bytes.end(), value.begin(), value.end());
+}
+
+void write_silent_wave(const std::filesystem::path& path) {
+    constexpr std::uint32_t sample_rate = 48'000;
+    constexpr std::uint16_t channels = 1;
+    constexpr std::uint16_t bits_per_sample = 16;
+    constexpr std::uint32_t sample_count = 4'800;
+    constexpr std::uint32_t data_size = sample_count * channels * (bits_per_sample / 8U);
+
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(44U + data_size);
+    append_text(bytes, "RIFF");
+    append_u32(bytes, 36U + data_size);
+    append_text(bytes, "WAVEfmt ");
+    append_u32(bytes, 16U);
+    append_u16(bytes, 1U);
+    append_u16(bytes, channels);
+    append_u32(bytes, sample_rate);
+    append_u32(bytes, sample_rate * channels * (bits_per_sample / 8U));
+    append_u16(bytes, channels * (bits_per_sample / 8U));
+    append_u16(bytes, bits_per_sample);
+    append_text(bytes, "data");
+    append_u32(bytes, data_size);
+    bytes.resize(44U + data_size, 0U);
+
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    assert(output.is_open());
+    output.write(reinterpret_cast<const char*>(bytes.data()),
+                 static_cast<std::streamsize>(bytes.size()));
+    assert(output.good());
+}
+
+void test_miniaudio_backend_and_owner_thread_device_rebuild() {
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto directory = std::filesystem::temp_directory_path() /
+                           ("heartstead_audio_system_tests_" + std::to_string(unique));
+    assert(std::filesystem::create_directories(directory));
+    const auto path = directory / "loop.wav";
+    write_silent_wave(path);
+
+    assets::AssetCatalog assets;
+    assert(assets.add(assets::AssetRecord{
+        "test:sounds/loop.wav",
+        assets::AssetKind::sound,
+        assets::VirtualPath{"test", "sounds/loop.wav"},
+        assets::AssetSourceKind::mod,
+        "test",
+        0,
+        path,
+        "hash",
+        false,
+        {},
+    }));
+    audio::SoundEventRegistry registry;
+    auto loop = event("test:audio/miniaudio_loop");
+    loop.asset_id = "test:sounds/loop.wav";
+    loop.spatialized = false;
+    loop.looping = true;
+    loop.maximum_instances = 1;
+    assert(registry.add(loop));
+
+    audio::AudioSystemDesc desc;
+    desc.backend = audio::AudioBackend::miniaudio;
+    desc.events = &registry;
+    desc.assets = &assets;
+    desc.use_null_output_device = true;
+    auto system = audio::create_audio_system(desc);
+    assert(system);
+    assert(system.value()->backend() == audio::AudioBackend::miniaudio);
+    assert(system.value()->device_state() == audio::AudioDeviceState::running);
+    auto voice = system.value()->play({id("test:audio/miniaudio_loop"), std::nullopt, 1.0F, 1.0F});
+    assert(voice);
+    assert(system.value()->update(0.01F));
+    assert(system.value()->request_device_reinitialize());
+    assert(system.value()->update(0.01F));
+    assert(system.value()->device_state() == audio::AudioDeviceState::running);
+    assert(system.value()->stats().device_reinitializations == 1);
+    assert(system.value()->is_active(voice.value()));
+    auto replacement =
+        system.value()->play({id("test:audio/miniaudio_loop"), std::nullopt, 1.0F, 1.0F});
+    assert(replacement);
+    assert(!system.value()->is_active(voice.value()));
+    assert(system.value()->is_active(replacement.value()));
+    assert(system.value()->stop(replacement.value()));
+    system.value().reset();
+    assert(std::filesystem::remove_all(directory) > 0);
+}
+
 } // namespace
 
 int main() {
@@ -179,5 +286,6 @@ int main() {
     test_floating_origin_spatial_math_and_gain_ramps();
     test_cone_attenuation_and_priority_stealing();
     test_null_backend_owns_logical_voices();
+    test_miniaudio_backend_and_owner_thread_device_rebuild();
     return 0;
 }
