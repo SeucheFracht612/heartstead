@@ -33,8 +33,9 @@ Current implemented foundation:
 - aggregate content validation that combines mods, resource packs, asset indexing, material
   definitions, lifecycle planning, and material asset-reference checks
 - semantic validation for engine-owned representation fields
-- script runtime boundary with disabled backend, restricted Luau foundation backend, and
-  registered host API/event validation plus ordered host event intake records for emitted events
+- script runtime boundary with a build-disabled backend and the pinned production Luau
+  compiler/VM, isolated per-mod/stage VMs, hard resource limits, registered host API/event
+  validation, and ordered host event intake records for emitted events
 - lifecycle-classified script files are materialized into validated script module descriptors
   with stable module ids, stages, declared permissions, and API versions
 - game runtime startup validation consumes the same report and requires `mods/base`
@@ -113,7 +114,9 @@ runtime server stage
 runtime client stage
 ```
 
-Runtime server/client/migration script stages now have an engine boundary and a
-restricted Luau-like call path with data-only event emission. Lifecycle planning classifies
-those script files, and mod validation materializes them into `ScriptModuleDesc` records before
-runtime loading. The production Luau VM sandbox is still future work.
+Runtime server/client/migration script stages run through the production Luau sandbox with
+data-only event emission. Lifecycle planning classifies those script files, mod validation
+materializes them into `ScriptModuleDesc` records, and Luau-enabled validation compiles and
+bounded-initializes them before content is accepted. Each mod/stage pair owns an isolated VM and
+each module receives its own sandbox environment. No gameplay mechanic is supplied by this
+engine-level boundary.

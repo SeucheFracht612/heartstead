@@ -1,6 +1,7 @@
 # Gameplay Foundations Roadmap: M1–M8
 
-Status: active  
+Status: implementation and automated acceptance complete
+
 Last reviewed: 2026-07-28
 
 This roadmap turns the remaining engine foundations into a playable, moddable co-op game. It is
@@ -509,6 +510,23 @@ through M8 so each acceptance scene builds on already verified systems.
 - Disabled scripting, warnings-as-errors, sanitizers, headless server, save migration, and mod
   validator configurations remain green.
 
+### M8 completion evidence
+
+- Production Luau integration is complete at implementation commit
+  `74bd4c339de4025a68d71a7b6bf8b52216772f06`.
+- The official Luau compiler and VM are pinned at 0.729 through vcpkg baseline
+  `b81cab76a175645e047601da8f982ad86bff1cc3` and remain private to the engine scripting
+  boundary.
+- Neutral server, client, and migration conformance tests cover VM/module isolation, lifecycle,
+  capabilities, fingerprints, hostile limits, and recovery without adding behavior to
+  `mods/base`.
+- GCC and Clang warnings-as-errors, Release, ASan+UBSan, TSan, and the full Luau-disabled
+  configuration each pass all 95 tests.
+- The Release script benchmark records 0.006492 ms p50, 0.007999 ms p95, and 0.040471 ms maximum
+  for 10,000 measured calls across 16 neutral modules, below the 0.25 ms p95 target.
+- The exact matrix, benchmark machine, limits, and intentionally deferred physical-LAN check are
+  recorded in `docs/verification/m8_production_luau_acceptance.md`.
+
 ## Final integration gate
 
 After M8, run one versioned acceptance world through:
@@ -524,6 +542,11 @@ After M8, run one versioned acceptance world through:
 The milestone is complete only when the acceptance report records the exact commit, dependency
 baseline, build presets, benchmark machine, p50/p95/max results, and any intentionally deferred
 limits.
+
+The automated M1-M8 implementation and acceptance gate is complete. The only intentionally
+deferred validation is M7's physical two-machine LAN walkthrough, which remains a release-operator
+check because it requires a second host and privileged network shaping. No Age-0 or other gameplay
+mechanic was authored as part of M8.
 
 ## Primary references reviewed
 
