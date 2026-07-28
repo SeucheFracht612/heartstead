@@ -12,11 +12,13 @@ Implemented foundation:
   - deterministic surface variation
   - optional cave generation with per-mille frequency and minimum depth
   - per-mille resource/feature frequency
+  - optional sea level and ocean fluid prototype
 
 - `DeterministicTerrainGenerator`
   - resolves the requested region from `RegionGraph`
   - selects a terrain voxel through the region's resource rules and `VoxelPalette`
   - creates a heightfield `VoxelChunk` deterministically from seed and chunk coordinate
+  - fills exposed cells at or below the configured sea level with renewable ocean source cells
   - can carve deterministic caves and replace cells with depth/placement-qualified voxel resource
     rules
   - `generate_chunk_with_features` also emits typed rich-block, block-entity, surface-object,

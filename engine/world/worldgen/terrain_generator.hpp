@@ -6,6 +6,7 @@
 #include "engine/world/voxels/voxel_palette.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,8 @@ struct TerrainGenerationConfig {
     std::uint16_t cave_frequency_per_mille = 0;
     std::uint16_t cave_min_depth = 8;
     std::uint16_t feature_frequency_per_mille = 1000;
+    std::optional<std::int64_t> sea_level;
+    core::PrototypeId ocean_voxel_id;
 };
 
 enum class GeneratedWorldFeatureKind {

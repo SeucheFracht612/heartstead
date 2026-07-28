@@ -1,0 +1,1 @@
+placeholder texture source for base:voxels/water

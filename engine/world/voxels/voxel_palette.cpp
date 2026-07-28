@@ -1,5 +1,7 @@
 #include "engine/world/voxels/voxel_palette.hpp"
 
+#include "engine/world/fluids/fluid_state.hpp"
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -343,7 +345,12 @@ core::Result<VoxelCell> VoxelPalette::cell_for(const core::PrototypeId& prototyp
                                                 "voxel prototype is not in the palette: " +
                                                     prototype_id.value());
     }
-    return core::Result<VoxelCell>::success(VoxelCell{type.value(), light});
+    const auto* definition = find_by_type(*type);
+    const std::uint16_t state_bits =
+        definition != nullptr && definition->logical_occupancy == BlockLogicalOccupancy::fluid
+            ? full_fluid_state_bits()
+            : std::uint16_t{0};
+    return core::Result<VoxelCell>::success(VoxelCell{type.value(), light, state_bits});
 }
 
 std::vector<const VoxelDefinition*> VoxelPalette::definitions() const {

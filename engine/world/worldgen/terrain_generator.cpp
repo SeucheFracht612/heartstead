@@ -1,6 +1,7 @@
 #include "engine/world/worldgen/terrain_generator.hpp"
 
 #include "engine/core/hash.hpp"
+#include "engine/world/fluids/fluid_state.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -136,6 +137,28 @@ core::Result<VoxelChunk> DeterministicTerrainGenerator::generate_chunk(
             "terrain_generator.invalid_frequency",
             "worldgen cave and feature frequencies must be 0..1000 per mille");
     }
+    std::optional<VoxelCell> ocean_cell;
+    if (config.sea_level.has_value()) {
+        if (!config.ocean_voxel_id.is_valid()) {
+            return core::Result<VoxelChunk>::failure(
+                "terrain_generator.missing_ocean_voxel",
+                "terrain generation with a sea level requires an ocean voxel prototype");
+        }
+        auto resolved = palette.cell_for(config.ocean_voxel_id);
+        if (!resolved) {
+            return core::Result<VoxelChunk>::failure(resolved.error().code,
+                                                     resolved.error().message);
+        }
+        const auto* definition = palette.find_by_type(resolved.value().type);
+        if (definition == nullptr ||
+            definition->logical_occupancy != BlockLogicalOccupancy::fluid) {
+            return core::Result<VoxelChunk>::failure(
+                "terrain_generator.invalid_ocean_voxel",
+                "terrain generation ocean voxel must have fluid logical occupancy");
+        }
+        resolved.value().state_bits = full_fluid_source_state_bits();
+        ocean_cell = resolved.value();
+    }
 
     const auto* region = regions.find(config.region_id);
     if (region == nullptr) {
@@ -170,7 +193,11 @@ core::Result<VoxelChunk> DeterministicTerrainGenerator::generate_chunk(
                 const auto global_x = chunk_origin.value().x + static_cast<std::int64_t>(x);
                 const auto surface_y = surface_height_at(config, global_x, global_z);
                 if (global_y > surface_y) {
-                    cells.push_back(VoxelCell{VoxelPalette::air_type, 255});
+                    if (ocean_cell.has_value() && global_y <= *config.sea_level) {
+                        cells.push_back(*ocean_cell);
+                    } else {
+                        cells.push_back(VoxelCell{VoxelPalette::air_type, 255});
+                    }
                     continue;
                 }
                 // The mathematical depth can span the entire signed coordinate range. Unsigned
