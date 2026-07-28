@@ -11,6 +11,10 @@
 #include <string_view>
 #include <vector>
 
+namespace heartstead::world {
+class ChunkFluidSystem;
+}
+
 namespace heartstead::renderer::benchmark {
 
 enum class BenchmarkSceneKind {
@@ -24,6 +28,7 @@ enum class BenchmarkSceneKind {
     chunk_load_unload_churn,
     large_coordinates,
     resize_minimize_stress,
+    active_water,
 };
 
 [[nodiscard]] std::string_view benchmark_scene_name(BenchmarkSceneKind kind) noexcept;
@@ -59,6 +64,7 @@ class BenchmarkScene {
     [[nodiscard]] std::uint64_t seed() const noexcept;
 
     [[nodiscard]] core::Result<BenchmarkSceneStep> advance(std::uint64_t frame_index);
+    void activate_fluid_work(world::ChunkFluidSystem& fluids) const;
 
   private:
     explicit BenchmarkScene(BenchmarkSceneConfig config);

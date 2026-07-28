@@ -68,6 +68,17 @@ struct BenchmarkSummary {
     std::uint64_t total_voxel_relight_changed_chunks = 0;
     std::uint64_t final_voxel_relight_stale_results = 0;
     std::uint64_t final_voxel_relight_apply_budget_overruns = 0;
+    double median_voxel_fluid_snapshot_ms = 0.0;
+    double p95_voxel_fluid_snapshot_ms = 0.0;
+    double median_voxel_fluid_simulation_ms = 0.0;
+    double p95_voxel_fluid_simulation_ms = 0.0;
+    double median_voxel_fluid_apply_ms = 0.0;
+    double p95_voxel_fluid_apply_ms = 0.0;
+    std::uint64_t maximum_voxel_fluid_active_cells = 0;
+    std::uint64_t maximum_voxel_fluid_processed_cells = 0;
+    std::uint64_t total_voxel_fluid_changed_chunks = 0;
+    std::uint64_t final_voxel_fluid_budget_exhaustions = 0;
+    std::uint64_t final_voxel_fluid_apply_budget_overruns = 0;
     std::uint64_t total_uploaded_bytes = 0;
     RendererStats slowest_frame{};
 };

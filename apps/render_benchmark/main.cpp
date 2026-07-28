@@ -5,6 +5,7 @@
 #include "engine/renderer/benchmark/benchmark_statistics.hpp"
 #include "engine/renderer/renderer.hpp"
 #include "engine/renderer/shaders/spirv_loader.hpp"
+#include "engine/world/fluids/chunk_fluid_system.hpp"
 #include "engine/world/lighting/chunk_light_system.hpp"
 
 #include <charconv>
@@ -135,7 +136,8 @@ struct Options {
 void print_usage(std::ostream& output) {
     output << "Usage: heartstead_render_benchmark [options]\n"
               "  --scene NAME       flat, mountains, caves, checkerboard, forest, rapid-edits,\n"
-              "                     flythrough, churn, large-coordinates, resize-minimize\n"
+              "                     flythrough, churn, large-coordinates, resize-minimize,\n"
+              "                     active-water\n"
               "  --vulkan           Use a native Vulkan window (headless is the default)\n"
               "  --headless         Use the deterministic validation backend\n"
               "  --frames N         Measured frames (default 300)\n"
@@ -159,7 +161,7 @@ void print_scenes() {
         Kind::flat_terrain,           Kind::mountainous_terrain,     Kind::dense_caves,
         Kind::checkerboard_geometry,  Kind::forest_cross_planes,     Kind::rapid_voxel_edits,
         Kind::high_speed_flythrough,  Kind::chunk_load_unload_churn, Kind::large_coordinates,
-        Kind::resize_minimize_stress,
+        Kind::resize_minimize_stress, Kind::active_water,
     };
     for (const auto kind : kinds) {
         std::cout << renderer::benchmark::benchmark_scene_name(kind) << '\n';
@@ -538,6 +540,10 @@ int main(int argc, char** argv) {
             return fail(initial_lighting.error().message);
         }
         active_renderer.set_voxel_lighting_stats(initial_lighting.value());
+        auto chunk_fluids = world::ChunkFluidSystem::create(scene.value()->palette());
+        if (!chunk_fluids) {
+            return fail(chunk_fluids.error().message);
+        }
         if (options.scene == renderer::benchmark::BenchmarkSceneKind::forest_cross_planes) {
             status = populate_instanced_forest_props(active_renderer, scene.value()->camera());
             if (!status) {
@@ -632,6 +638,14 @@ int main(int argc, char** argv) {
             if (!step) {
                 return fail(step.error().message);
             }
+            scene.value()->activate_fluid_work(*chunk_fluids.value());
+            status = chunk_fluids.value()->update(
+                scene.value()->world().chunks(), scene.value()->world().dirty_regions(),
+                scene.value()->palette(), simulation_frame);
+            if (!status) {
+                return fail(status.error().message);
+            }
+            active_renderer.set_voxel_fluid_stats(chunk_fluids.value()->stats());
             auto lighting = settle_chunk_lighting(*chunk_lighting.value(), scene.value()->world(),
                                                   scene.value()->palette());
             if (!lighting) {

@@ -151,6 +151,20 @@ heartstead_add_smoke_test(
   --output
   ${CMAKE_CURRENT_BINARY_DIR}/smoke_render_benchmark_relight.json
 )
+heartstead_add_smoke_test(
+  smoke.render_benchmark_fluids
+  heartstead_render_benchmark
+  --scene
+  active-water
+  --radius
+  0
+  --warmup
+  1
+  --frames
+  3
+  --output
+  ${CMAKE_CURRENT_BINARY_DIR}/smoke_render_benchmark_fluids.json
+)
 heartstead_add_smoke_test(smoke.dev_game heartstead_dev_game --frames 3)
 heartstead_add_smoke_test(smoke.dedicated_server heartstead_dedicated_server --ticks 3)
 heartstead_add_smoke_test(smoke.physics heartstead_physics_sandbox)

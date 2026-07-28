@@ -3,6 +3,8 @@
 #include "engine/core/ids.hpp"
 #include "engine/world/blocks/block_model.hpp"
 #include "engine/world/coords/world_coords.hpp"
+#include "engine/world/fluids/chunk_fluid_system.hpp"
+#include "engine/world/fluids/fluid_state.hpp"
 
 #include <algorithm>
 #include <array>
@@ -19,6 +21,7 @@ constexpr std::uint16_t stone_type = 1;
 constexpr std::uint16_t surface_type = 2;
 constexpr std::uint16_t soil_type = 3;
 constexpr std::uint16_t foliage_type = 4;
+constexpr std::uint16_t water_type = 5;
 
 [[nodiscard]] std::uint64_t mix_hash(std::uint64_t value) noexcept {
     value ^= value >> 30U;
@@ -64,6 +67,7 @@ constexpr std::uint16_t foliage_type = 4;
     case BenchmarkSceneKind::chunk_load_unload_churn:
     case BenchmarkSceneKind::large_coordinates:
     case BenchmarkSceneKind::resize_minimize_stress:
+    case BenchmarkSceneKind::active_water:
         return BenchmarkSceneKind::flat_terrain;
     }
     return BenchmarkSceneKind::flat_terrain;
@@ -93,6 +97,8 @@ std::string_view benchmark_scene_name(BenchmarkSceneKind kind) noexcept {
         return "large-coordinates";
     case BenchmarkSceneKind::resize_minimize_stress:
         return "resize-minimize";
+    case BenchmarkSceneKind::active_water:
+        return "active-water";
     }
     return "unknown";
 }
@@ -104,6 +110,7 @@ std::optional<BenchmarkSceneKind> parse_benchmark_scene(std::string_view name) n
         BenchmarkSceneKind::forest_cross_planes,   BenchmarkSceneKind::rapid_voxel_edits,
         BenchmarkSceneKind::high_speed_flythrough, BenchmarkSceneKind::chunk_load_unload_churn,
         BenchmarkSceneKind::large_coordinates,     BenchmarkSceneKind::resize_minimize_stress,
+        BenchmarkSceneKind::active_water,
     };
     const auto found = std::ranges::find_if(
         kinds, [name](BenchmarkSceneKind kind) { return benchmark_scene_name(kind) == name; });
@@ -227,6 +234,7 @@ core::Status BenchmarkScene::initialize_palette() {
         DefinitionSpec{surface_type, "benchmark:surface", "Surface", "surface"},
         DefinitionSpec{soil_type, "benchmark:soil", "Soil", "soil"},
         DefinitionSpec{foliage_type, "benchmark:foliage", "Foliage", "foliage"},
+        DefinitionSpec{water_type, "benchmark:water", "Water", "water"},
     };
     for (const auto& spec : definitions) {
         auto id = prototype(spec.id);
@@ -245,6 +253,12 @@ core::Status BenchmarkScene::initialize_palette() {
             definition.occlusion = world::BlockOcclusionBehavior::none;
             definition.collision_bounds.clear();
             definition.occlusion_bounds.clear();
+        } else if (spec.type == water_type) {
+            definition.logical_occupancy = world::BlockLogicalOccupancy::fluid;
+            definition.occlusion = world::BlockOcclusionBehavior::none;
+            definition.collision_bounds.clear();
+            definition.occlusion_bounds.clear();
+            definition.light_absorption = 8;
         }
         status = palette_.add(std::move(definition));
         if (!status) {
@@ -290,6 +304,12 @@ std::vector<world::VoxelCell> BenchmarkScene::generate_cells(world::ChunkCoord c
                 const auto global_y = coordinate.y * edge_i64 + static_cast<std::int64_t>(y);
                 const auto global_z = coordinate.z * edge_i64 + static_cast<std::int64_t>(z);
                 const auto noise = coordinate_hash(global_x, global_y, global_z, config_.seed);
+                if (config_.kind == BenchmarkSceneKind::active_water &&
+                    coordinate == center_chunk_) {
+                    cells[cell_index(x, y, z)] = {
+                        water_type, 255, world::full_fluid_source_state_bits(), 0};
+                    continue;
+                }
                 std::uint16_t type = 0;
                 switch (shape) {
                 case BenchmarkSceneKind::flat_terrain:
@@ -333,6 +353,7 @@ std::vector<world::VoxelCell> BenchmarkScene::generate_cells(world::ChunkCoord c
                 case BenchmarkSceneKind::chunk_load_unload_churn:
                 case BenchmarkSceneKind::large_coordinates:
                 case BenchmarkSceneKind::resize_minimize_stress:
+                case BenchmarkSceneKind::active_water:
                     break;
                 }
                 if (type != 0) {
@@ -377,6 +398,7 @@ core::Result<BenchmarkSceneStep> BenchmarkScene::advance(std::uint64_t frame_ind
     case BenchmarkSceneKind::dense_caves:
     case BenchmarkSceneKind::checkerboard_geometry:
     case BenchmarkSceneKind::forest_cross_planes:
+    case BenchmarkSceneKind::active_water:
         break;
     }
     if (!status) {
@@ -389,6 +411,19 @@ core::Result<BenchmarkSceneStep> BenchmarkScene::advance(std::uint64_t frame_ind
                                                          status.error().message);
     }
     return core::Result<BenchmarkSceneStep>::success(step);
+}
+
+void BenchmarkScene::activate_fluid_work(world::ChunkFluidSystem& fluids) const {
+    if (config_.kind != BenchmarkSceneKind::active_water) {
+        return;
+    }
+    for (std::uint16_t z = 0; z < world::VoxelChunk::edge_length; ++z) {
+        for (std::uint16_t y = 0; y < world::VoxelChunk::edge_length; ++y) {
+            for (std::uint16_t x = 0; x < world::VoxelChunk::edge_length; ++x) {
+                fluids.activate(world::ChunkLocalCoord{center_chunk_, {x, y, z}});
+            }
+        }
+    }
 }
 
 core::Status BenchmarkScene::apply_rapid_edits(std::uint64_t frame_index) {

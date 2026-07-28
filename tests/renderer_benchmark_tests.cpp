@@ -1,5 +1,6 @@
 #include "engine/renderer/benchmark/benchmark_scene.hpp"
 #include "engine/renderer/benchmark/benchmark_statistics.hpp"
+#include "engine/world/fluids/chunk_fluid_system.hpp"
 
 #include <array>
 #include <cassert>
@@ -38,6 +39,14 @@ void test_benchmark_statistics() {
         stats.voxel_relight_changed_chunks = static_cast<std::uint32_t>(index);
         stats.voxel_relight_stale_results = index / 2U;
         stats.voxel_relight_apply_budget_overruns = index / 3U;
+        stats.voxel_fluid_snapshot_ms = 0.05 * static_cast<double>(index);
+        stats.voxel_fluid_simulation_ms = 0.5 * static_cast<double>(index);
+        stats.voxel_fluid_apply_ms = 0.2 * static_cast<double>(index);
+        stats.voxel_fluid_active_cells = index * 1'000U;
+        stats.voxel_fluid_processed_cells = index * 2'000U;
+        stats.voxel_fluid_changed_chunks = static_cast<std::uint32_t>(index);
+        stats.voxel_fluid_budget_exhaustions = index / 2U;
+        stats.voxel_fluid_apply_budget_overruns = index / 3U;
         stats.uploaded_bytes_this_frame = 16;
         if (index >= 2) {
             stats.gpu_timing_valid = true;
@@ -80,6 +89,14 @@ void test_benchmark_statistics() {
     assert(summary.total_voxel_relight_changed_chunks == 6);
     assert(summary.final_voxel_relight_stale_results == 1);
     assert(summary.final_voxel_relight_apply_budget_overruns == 1);
+    assert(std::abs(summary.median_voxel_fluid_snapshot_ms - 0.075) < 0.0001);
+    assert(std::abs(summary.p95_voxel_fluid_simulation_ms - 1.425) < 0.0001);
+    assert(std::abs(summary.median_voxel_fluid_apply_ms - 0.3) < 0.0001);
+    assert(summary.maximum_voxel_fluid_active_cells == 3'000);
+    assert(summary.maximum_voxel_fluid_processed_cells == 6'000);
+    assert(summary.total_voxel_fluid_changed_chunks == 6);
+    assert(summary.final_voxel_fluid_budget_exhaustions == 1);
+    assert(summary.final_voxel_fluid_apply_budget_overruns == 1);
     assert(summary.slowest_frame.frame_index == 3);
     assert(std::abs(summary.mean_chunk_synchronization_ms - 3.0) < 0.0001);
     assert(std::abs(summary.mean_command_recording_ms - 0.1875) < 0.0001);
@@ -94,6 +111,10 @@ void test_benchmark_statistics() {
     assert(recorder.to_json().find("\"p95_voxel_relight_solve_ms\": 0.712500") !=
            std::string::npos);
     assert(recorder.to_json().find("\"voxel_relight_visited_cells\": 300") != std::string::npos);
+    assert(recorder.to_json().find("\"p95_voxel_fluid_simulation_ms\": 1.425000") !=
+           std::string::npos);
+    assert(recorder.to_json().find("\"voxel_fluid_processed_cells\": 6000") !=
+           std::string::npos);
     assert(recorder.to_json().find("\"slowest_frame\": {\"frame\": 3") != std::string::npos);
     assert(
         recorder.to_csv().find(
@@ -104,6 +125,8 @@ void test_benchmark_statistics() {
     assert(benchmark::format_benchmark_summary(summary).find("0.1%low=10.000fps") !=
            std::string::npos);
     assert(benchmark::format_benchmark_summary(summary).find("relight=0.375/0.71") !=
+           std::string::npos);
+    assert(benchmark::format_benchmark_summary(summary).find("fluid=0.750/1.425") !=
            std::string::npos);
 }
 
@@ -130,6 +153,7 @@ void test_all_deterministic_scenes_construct() {
         BenchmarkSceneKind::forest_cross_planes,   BenchmarkSceneKind::rapid_voxel_edits,
         BenchmarkSceneKind::high_speed_flythrough, BenchmarkSceneKind::chunk_load_unload_churn,
         BenchmarkSceneKind::large_coordinates,     BenchmarkSceneKind::resize_minimize_stress,
+        BenchmarkSceneKind::active_water,
     };
     for (const auto kind : kinds) {
         BenchmarkSceneConfig config;
@@ -139,11 +163,29 @@ void test_all_deterministic_scenes_construct() {
         auto scene = BenchmarkScene::create(config);
         assert(scene);
         assert(scene.value()->world().chunks().chunk_count() == 1);
-        assert(scene.value()->palette().size() == 4);
+        assert(scene.value()->palette().size() == 5);
         assert(scene.value()->camera().view_projection.is_finite());
         assert(parse_benchmark_scene(benchmark_scene_name(kind)) == kind);
     }
     assert(!parse_benchmark_scene("not-a-scene"));
+}
+
+void test_active_water_scene_exposes_exact_stress_workload() {
+    using namespace heartstead;
+    renderer::benchmark::BenchmarkSceneConfig config;
+    config.kind = renderer::benchmark::BenchmarkSceneKind::active_water;
+    config.chunk_radius = 0;
+    auto scene = renderer::benchmark::BenchmarkScene::create(config);
+    assert(scene);
+    auto fluids = world::ChunkFluidSystem::create(scene.value()->palette());
+    assert(fluids);
+    scene.value()->activate_fluid_work(*fluids.value());
+    assert(fluids.value()->update(scene.value()->world().chunks(),
+                                  scene.value()->world().dirty_regions(),
+                                  scene.value()->palette(), 3));
+    assert(fluids.value()->stats().processed_cells_this_update == 32'768);
+    assert(!fluids.value()->stats().budget_exhausted);
+    assert(fluids.value()->stats().active_cell_count == 0);
 }
 
 void test_scene_content_is_reproducible() {
@@ -242,5 +284,6 @@ int main() {
     test_all_deterministic_scenes_construct();
     test_scene_content_is_reproducible();
     test_dynamic_scene_schedules();
+    test_active_water_scene_exposes_exact_stress_workload();
     return 0;
 }

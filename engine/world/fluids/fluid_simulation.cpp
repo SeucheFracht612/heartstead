@@ -342,7 +342,9 @@ simulate_fluid_step(const FluidSimulationSnapshot& snapshot, const FluidBlockTab
                                                               encoded.error().message);
             }
             next = {current.value().type, previous->light, encoded.value(), 0};
-            proposals.push_back({address, *previous, next});
+            if (next != *previous) {
+                proposals.push_back({address, *previous, next});
+            }
             ++result.stats.accepted_transfer_count;
             result.stats.transferred_unit_count += maximum_fluid_amount;
             continue;
@@ -367,7 +369,9 @@ simulate_fluid_step(const FluidSimulationSnapshot& snapshot, const FluidBlockTab
                                                                   encoded.error().message);
                 }
                 next = {above_view.value().type, previous->light, encoded.value(), 0};
-                proposals.push_back({address, *previous, next});
+                if (next != *previous) {
+                    proposals.push_back({address, *previous, next});
+                }
                 ++result.stats.accepted_transfer_count;
                 result.stats.transferred_unit_count += maximum_fluid_amount;
                 continue;
