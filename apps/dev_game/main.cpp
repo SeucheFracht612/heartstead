@@ -1,3 +1,4 @@
+#include "engine/assets/asset_cooker.hpp"
 #include "engine/assets/cooked_asset_store.hpp"
 #include "engine/assets/model_asset.hpp"
 #include "engine/audio/audio_system.hpp"
@@ -329,8 +330,11 @@ core::Result<assets::ModelAsset> load_storybook_player_model() {
         return core::Result<assets::ModelAsset>::failure(payload.error().code,
                                                          payload.error().message);
     }
+    const auto production_model_pipeline = assets::asset_cook_pipeline_name(
+        assets::AssetKind::model, assets::AssetCookBackend::production_converters);
     if (payload.value().kind != assets::AssetKind::model ||
-        payload.value().backend != "production_converters") {
+        payload.value().profile != "production" ||
+        payload.value().backend != production_model_pipeline) {
         return core::Result<assets::ModelAsset>::failure(
             "dev_game.invalid_character_asset",
             "storybook player must be a production-cooked model asset");
