@@ -266,6 +266,17 @@ core::Status ChunkDatabase::set(ChunkCoord chunk_coord, VoxelCoord voxel_coord, 
             return status;
         }
     }
+    if (auto block = chunk_local_to_block(chunk_coord, voxel_coord); block) {
+        auto bounds = dirty::DirtyRegionBounds::single(block.value());
+        if (auto expanded = bounds.expanded(1); expanded) {
+            bounds = expanded.value();
+        }
+        status = staged_dirty.mark(dirty::DirtyRegionKind::water_network, bounds,
+                                   "voxel fluid activation");
+        if (!status) {
+            return status;
+        }
+    }
 
     status = set(chunk_coord, voxel_coord, cell);
     if (!status) {

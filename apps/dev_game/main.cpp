@@ -449,6 +449,7 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
         if (!runtime_frame) {
             return fail(runtime_frame.error());
         }
+        renderer.set_voxel_fluid_stats(runtime.session()->server()->chunk_fluids().stats());
         renderer.set_voxel_lighting_stats(runtime.session()->server()->chunk_lighting().stats());
         auto day_night = renderer::evaluate_day_night(
             runtime_frame.value().authoritative_world_tick, runtime.session()->config().world_time);

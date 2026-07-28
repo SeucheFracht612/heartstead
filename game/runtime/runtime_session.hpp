@@ -9,6 +9,7 @@
 #include "engine/save/save_snapshot.hpp"
 #include "engine/simulation/fixed_step.hpp"
 #include "engine/simulation/world_time.hpp"
+#include "engine/world/fluids/chunk_fluid_system.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
 #include "game/features/interaction/voxel_commands.hpp"
 #include "game/framework/gameplay_module.hpp"
@@ -34,6 +35,7 @@ struct RuntimeConfiguration {
     simulation::FixedStepConfig fixed_step{};
     simulation::WorldTimeConfig world_time{};
     physics::PhysicsBackend physics_backend = physics::PhysicsBackend::headless;
+    world::ChunkFluidSystemConfig chunk_fluids{};
     world::ChunkLightSystemConfig chunk_lighting{};
     std::vector<std::shared_ptr<IGameplayModule>> gameplay_modules;
 

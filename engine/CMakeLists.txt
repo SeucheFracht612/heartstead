@@ -156,6 +156,8 @@ target_sources(
     world/chunks/chunk_edit_delta_codec.cpp
     world/chunks/chunk_replication.cpp
     world/collision/chunk_collision.cpp
+    world/fluids/chunk_fluid_system.cpp
+    world/fluids/fluid_simulation.cpp
     world/fluids/fluid_state.cpp
     world/lighting/chunk_light_scheduler.cpp
     world/lighting/chunk_light_system.cpp
@@ -346,6 +348,8 @@ target_sources(
       world/chunks/chunk_replication.hpp
       world/chunks/chunk_identity.hpp
       world/collision/chunk_collision.hpp
+      world/fluids/chunk_fluid_system.hpp
+      world/fluids/fluid_simulation.hpp
       world/fluids/fluid_state.hpp
       world/coords/world_coords.hpp
       world/coords/world_position.hpp

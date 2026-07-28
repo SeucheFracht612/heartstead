@@ -1,6 +1,7 @@
 #include "engine/content/content_validation.hpp"
 #include "engine/entities/physical_resource.hpp"
 #include "engine/net/command_payload.hpp"
+#include "engine/world/fluids/fluid_state.hpp"
 #include "game/runtime/game_inspection.hpp"
 #include "game/runtime/game_runtime.hpp"
 
@@ -403,7 +404,8 @@ void test_dedicated_headless_runtime_uses_same_scheduler() {
     const auto names = runtime.session()->server()->scheduler().ordered_system_names();
     assert(names.front() == "runtime.command_gateway");
     assert(names[1] == "runtime.chunk_collision");
-    assert(names[2] == "runtime.character_movement");
+    assert(names[2] == "runtime.chunk_fluids");
+    assert(names[3] == "runtime.character_movement");
     assert(names.back() == "runtime.replication");
     assert(runtime.shutdown());
 }
@@ -696,6 +698,60 @@ void test_runtime_relights_and_replicates_chunk_light() {
     assert(authoritative.value().light == 255);
     assert(replicated.value().light == authoritative.value().light);
     assert(session->server()->chunk_lighting().stats().total_changed_chunks >= 2);
+    assert(runtime.shutdown());
+}
+
+void test_runtime_simulates_and_replicates_voxel_fluid() {
+    const auto report = content::ContentValidation::validate(source_root());
+    assert(!report.has_errors());
+    auto runtime = make_runtime(report);
+    game::RuntimeConfiguration config;
+    config.chunk_fluids.simulation_tick_interval = 1;
+    config.chunk_fluids.maximum_active_cells_per_step = world::VoxelChunk::total_cells;
+    config.chunk_fluids.apply_time_budget_ms = 20.0;
+    assert(runtime.start_session(config, make_session_request(report)));
+    auto* session = runtime.session();
+    assert(session != nullptr && session->server() != nullptr && session->client() != nullptr);
+    auto& server_world = session->server()->world();
+    const auto water_type =
+        report.voxel_palette.type_for(*core::PrototypeId::parse("base:voxels/water"));
+    assert(water_type.has_value());
+
+    constexpr world::BlockCoord source_position{12, 1, 12};
+    constexpr world::BlockCoord flow_position{13, 1, 12};
+    const auto source = world::block_to_chunk_local(source_position);
+    const auto flow = world::block_to_chunk_local(flow_position);
+    const world::VoxelCell water_source{
+        *water_type, 0, world::full_fluid_source_state_bits()};
+    assert(server_world.chunks().set(source.chunk, source.local, water_source,
+                                     server_world.dirty_regions(), report.voxel_palette));
+    for (std::size_t frame_index = 0; frame_index < 12; ++frame_index) {
+        auto frame =
+            runtime.run_frame({16'667, static_cast<std::int64_t>((frame_index + 1) * 17)});
+        assert(frame);
+    }
+
+    auto authoritative = server_world.chunks().get(flow.chunk, flow.local);
+    auto replicated = session->client()->world().chunks().get(flow.chunk, flow.local);
+    assert(authoritative && replicated && authoritative.value().type == *water_type);
+    assert(replicated.value().type == authoritative.value().type);
+    assert(replicated.value().state_bits == authoritative.value().state_bits);
+    auto state = world::decode_fluid_state(authoritative.value().state_bits);
+    assert(state && state.value().amount == 7);
+    assert(session->server()->chunk_fluids().stats().steps > 0);
+    assert(session->server()->chunk_fluids().stats().total_changed_cells > 0);
+
+    assert(server_world.chunks().set(source.chunk, source.local, world::VoxelCell::air(),
+                                     server_world.dirty_regions(), report.voxel_palette));
+    for (std::size_t frame_index = 0; frame_index < 12; ++frame_index) {
+        auto frame =
+            runtime.run_frame({16'667, static_cast<std::int64_t>((frame_index + 20) * 17)});
+        assert(frame);
+    }
+    authoritative = server_world.chunks().get(flow.chunk, flow.local);
+    replicated = session->client()->world().chunks().get(flow.chunk, flow.local);
+    assert(authoritative && authoritative.value().is_air());
+    assert(replicated && replicated.value().is_air());
     assert(runtime.shutdown());
 }
 
@@ -1045,6 +1101,7 @@ int main() {
     test_authoritative_player_input_moves_and_replicates();
     test_typed_voxel_commands_validate_and_replicate();
     test_runtime_relights_and_replicates_chunk_light();
+    test_runtime_simulates_and_replicates_voxel_fluid();
     test_session_save_and_reload_restores_authoritative_state();
     test_session_file_load_preserves_missing_prototypes();
     test_gameplay_modules_extend_runtime_through_registration_contract();

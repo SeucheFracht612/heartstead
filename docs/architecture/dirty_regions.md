@@ -23,6 +23,7 @@ Implemented foundation:
 - Chunk database integration
   - voxel edits can mark chunk mesh/collision/lighting rebuild regions
   - boundary edits include existing neighbor chunks without mutating neighbor voxel data
+  - voxel edits activate a one-cell `water_network` halo for the bounded fluid frontier
 
 - Room and network integration
   - `RoomGraph::mark_dirty_region`

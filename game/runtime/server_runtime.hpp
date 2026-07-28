@@ -13,6 +13,7 @@
 #include "engine/scenarios/scenario.hpp"
 #include "engine/simulation/simulation_scheduler.hpp"
 #include "engine/simulation/world_time.hpp"
+#include "engine/world/fluids/chunk_fluid_system.hpp"
 #include "engine/world/lighting/chunk_light_system.hpp"
 #include "engine/world/replication_delta.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
@@ -32,6 +33,7 @@ struct ServerRuntimeDesc {
     physics::PhysicsWorldDesc physics;
     physics::ChunkCollisionSystemConfig chunk_collision;
     physics::PhysicalResourcePhysicsSystemConfig physical_resources;
+    world::ChunkFluidSystemConfig chunk_fluids;
     world::ChunkLightSystemConfig chunk_lighting;
     std::uint32_t simulation_ticks_per_second = 60;
     simulation::WorldTimeConfig world_time;
@@ -49,6 +51,7 @@ struct ServerRuntimeTickStats {
     physics::PhysicsStepStats physics;
     physics::ChunkCollisionSystemStats chunk_collision;
     physics::PhysicalResourcePhysicsSystemStats physical_resources;
+    world::ChunkFluidSystemStats chunk_fluids;
     world::ChunkLightSystemStats chunk_lighting;
     std::uint32_t moved_player_count = 0;
     std::uint32_t repeated_input_count = 0;
@@ -89,6 +92,8 @@ class ServerRuntime final {
     [[nodiscard]] physics::PhysicalResourcePhysicsSystem& physical_resource_physics() noexcept;
     [[nodiscard]] const physics::PhysicalResourcePhysicsSystem&
     physical_resource_physics() const noexcept;
+    [[nodiscard]] world::ChunkFluidSystem& chunk_fluids() noexcept;
+    [[nodiscard]] const world::ChunkFluidSystem& chunk_fluids() const noexcept;
     [[nodiscard]] world::ChunkLightSystem& chunk_lighting() noexcept;
     [[nodiscard]] const world::ChunkLightSystem& chunk_lighting() const noexcept;
     [[nodiscard]] core::Status drop_physical_resource(entities::PhysicalResourceRecord resource,
@@ -128,7 +133,7 @@ class ServerRuntime final {
     [[nodiscard]] core::Status spawn_player(core::NetId client_id);
     [[nodiscard]] core::Status simulate_players(simulation::SimulationContext& context);
     [[nodiscard]] core::Status replicate_players();
-    [[nodiscard]] core::Status replicate_relit_chunks();
+    [[nodiscard]] core::Status replicate_changed_chunks();
     [[nodiscard]] core::Status send_initial_chunks(core::NetId client_id);
     [[nodiscard]] core::Result<std::uint64_t> reserve_custom_replication_sequence();
     [[nodiscard]] std::uint64_t collision_world_revision() const noexcept;
@@ -139,6 +144,7 @@ class ServerRuntime final {
     std::unique_ptr<physics::IPhysicsWorld> physics_;
     std::unique_ptr<physics::ChunkCollisionSystem> chunk_collision_;
     std::unique_ptr<physics::PhysicalResourcePhysicsSystem> physical_resource_physics_;
+    std::unique_ptr<world::ChunkFluidSystem> chunk_fluids_;
     std::unique_ptr<world::ChunkLightSystem> chunk_lighting_;
     net::HostSession host_;
     net::ServerCommandDispatcher commands_;

@@ -18,6 +18,7 @@
 #include "engine/renderer/scene/render_scene.hpp"
 #include "engine/renderer/scene/scene_render_system.hpp"
 #include "engine/renderer/ui/ui_renderer.hpp"
+#include "engine/world/fluids/chunk_fluid_system.hpp"
 #include "engine/world/lighting/chunk_light_system.hpp"
 #include "engine/world/streaming/chunk_streamer.hpp"
 #include "engine/world/world_state.hpp"
@@ -104,6 +105,7 @@ class Renderer {
     [[nodiscard]] core::Result<RenderFrameResult> render_frame(const RenderFrameInput& input);
     [[nodiscard]] core::Status resize(rhi::RenderExtent extent);
     [[nodiscard]] core::Status set_environment(rhi::RenderEnvironmentData environment);
+    void set_voxel_fluid_stats(const world::ChunkFluidSystemStats& fluids) noexcept;
     void set_voxel_lighting_stats(const world::ChunkLightSystemStats& lighting) noexcept;
     [[nodiscard]] RenderObjectId reserve_object_id();
     [[nodiscard]] RenderLightId reserve_light_id();

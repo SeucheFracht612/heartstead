@@ -1,10 +1,20 @@
+#include "engine/world/chunks/chunk_database.hpp"
+#include "engine/world/chunks/chunk_edit_delta_codec.hpp"
+#include "engine/world/fluids/chunk_fluid_system.hpp"
+#include "engine/world/fluids/fluid_simulation.hpp"
 #include "engine/world/fluids/fluid_state.hpp"
 #include "engine/world/regions/region_graph.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
 #include "engine/world/worldgen/terrain_generator.hpp"
 
+#include <algorithm>
 #include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <span>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -118,11 +128,241 @@ void test_worldgen_seeds_ocean_sources_below_sea_level() {
     assert(invalid.error().code == "terrain_generator.invalid_ocean_voxel");
 }
 
+[[nodiscard]] std::size_t cell_index(heartstead::world::VoxelCoord coordinate) {
+    constexpr auto edge =
+        static_cast<std::size_t>(heartstead::world::VoxelChunk::edge_length);
+    return static_cast<std::size_t>(coordinate.z) * edge * edge +
+           static_cast<std::size_t>(coordinate.y) * edge +
+           static_cast<std::size_t>(coordinate.x);
+}
+
+[[nodiscard]] heartstead::world::VoxelChunk
+dam_chunk(heartstead::world::ChunkCoord coordinate, bool source_chunk) {
+    using namespace heartstead::world;
+    std::vector<VoxelCell> cells(VoxelChunk::total_cells, VoxelCell::air());
+    for (std::uint16_t z = 0; z < VoxelChunk::edge_length; ++z) {
+        for (std::uint16_t x = 0; x < VoxelChunk::edge_length; ++x) {
+            cells[cell_index({x, 0, z})] = VoxelCell{1};
+        }
+    }
+    if (source_chunk) {
+        cells[cell_index({30, 1, 16})] =
+            VoxelCell{2, 0, full_fluid_source_state_bits()};
+        for (std::uint16_t z = 0; z < VoxelChunk::edge_length; ++z) {
+            cells[cell_index({31, 1, z})] = VoxelCell{1};
+        }
+    }
+    VoxelChunk chunk(coordinate);
+    assert(chunk.load_generated_cells(std::move(cells)));
+    return chunk;
+}
+
+[[nodiscard]] heartstead::world::ChunkDatabase dam_world(bool reverse_load_order) {
+    using namespace heartstead::world;
+    ChunkDatabase chunks;
+    if (reverse_load_order) {
+        assert(chunks.insert_generated(dam_chunk({1, 0, 0}, false)));
+        assert(chunks.insert_generated(dam_chunk({0, 0, 0}, true)));
+    } else {
+        assert(chunks.insert_generated(dam_chunk({0, 0, 0}, true)));
+        assert(chunks.insert_generated(dam_chunk({1, 0, 0}, false)));
+    }
+    return chunks;
+}
+
+struct SettledFluid {
+    std::uint64_t next_tick = 0;
+    std::size_t steps = 0;
+};
+
+[[nodiscard]] SettledFluid settle(heartstead::world::ChunkDatabase& chunks,
+                                  heartstead::dirty::DirtyRegionTracker& dirty_regions,
+                                  const heartstead::world::FluidBlockTable& table,
+                                  std::uint64_t first_tick = 0,
+                                  std::size_t maximum_steps = 128) {
+    using namespace heartstead::world;
+    auto snapshot = build_fluid_simulation_snapshot(chunks);
+    auto active = fluid_cells_and_neighbors(snapshot, table);
+    std::uint64_t tick = first_tick;
+    for (std::size_t step = 0; step < maximum_steps; ++step, ++tick) {
+        snapshot = build_fluid_simulation_snapshot(chunks);
+        auto result = simulate_fluid_step(snapshot, table, active, 32'768, tick);
+        assert(result);
+        auto applied = apply_fluid_step(chunks, dirty_regions, result.value());
+        assert(applied);
+        active = std::move(result.value().next_active);
+        if (active.empty()) {
+            return {tick + 1, step + 1};
+        }
+    }
+    assert(false && "fluid fixture failed to settle");
+    return {};
+}
+
+void test_dam_break_crosses_chunk_border_and_is_load_order_independent() {
+    using namespace heartstead::world;
+    FluidFixture fixture;
+    const auto table = build_fluid_block_table(fixture.palette);
+
+    auto forward = dam_world(false);
+    auto reverse = dam_world(true);
+    heartstead::dirty::DirtyRegionTracker forward_dirty;
+    heartstead::dirty::DirtyRegionTracker reverse_dirty;
+    auto forward_tick = settle(forward, forward_dirty, table);
+    auto reverse_tick = settle(reverse, reverse_dirty, table);
+    assert(forward_tick.steps == reverse_tick.steps);
+
+    assert(forward.set({0, 0, 0}, {31, 1, 16}, VoxelCell::air()));
+    assert(reverse.set({0, 0, 0}, {31, 1, 16}, VoxelCell::air()));
+    forward_tick = settle(forward, forward_dirty, table, forward_tick.next_tick);
+    reverse_tick = settle(reverse, reverse_dirty, table, reverse_tick.next_tick);
+    assert(forward_tick.steps == reverse_tick.steps);
+
+    for (const auto coordinate : {ChunkCoord{0, 0, 0}, ChunkCoord{1, 0, 0}}) {
+        const auto* forward_chunk = forward.find(coordinate);
+        const auto* reverse_chunk = reverse.find(coordinate);
+        assert(forward_chunk != nullptr && reverse_chunk != nullptr);
+        assert(std::ranges::equal(forward_chunk->cells(), reverse_chunk->cells()));
+    }
+    const auto across_border = forward.get({1, 0, 0}, {0, 1, 16}).value();
+    auto state = decode_fluid_state(across_border.state_bits);
+    assert(across_border.type == 2 && state);
+    assert(state.value().amount == 6);
+    assert(state.value().flow == FluidFlowDirection::positive_x);
+}
+
+void test_source_removal_cleans_up_and_budget_defers_work() {
+    using namespace heartstead::world;
+    FluidFixture fixture;
+    const auto table = build_fluid_block_table(fixture.palette);
+    auto chunks = dam_world(false);
+    heartstead::dirty::DirtyRegionTracker dirty_regions;
+    auto settled = settle(chunks, dirty_regions, table);
+    assert(chunks.set({0, 0, 0}, {30, 1, 16}, VoxelCell::air()));
+
+    auto snapshot = build_fluid_simulation_snapshot(chunks);
+    auto active = fluid_cells_and_neighbors(snapshot, table);
+    auto budgeted = simulate_fluid_step(snapshot, table, active, 1, settled.next_tick);
+    assert(budgeted);
+    assert(budgeted.value().stats.processed_active_cell_count == 1);
+    assert(budgeted.value().stats.budget_exhausted);
+    assert(budgeted.value().stats.deferred_active_cell_count + 1 == active.size());
+
+    (void)settle(chunks, dirty_regions, table, settled.next_tick);
+    for (const auto* chunk : chunks.records()) {
+        assert(std::ranges::none_of(chunk->cells(),
+                                    [](const VoxelCell& cell) { return cell.type == 2; }));
+    }
+}
+
+void test_stale_fluid_result_fails_before_application() {
+    using namespace heartstead::world;
+    FluidFixture fixture;
+    const auto table = build_fluid_block_table(fixture.palette);
+    auto chunks = dam_world(false);
+    auto snapshot = build_fluid_simulation_snapshot(chunks);
+    auto active = fluid_cells_and_neighbors(snapshot, table);
+    auto result = simulate_fluid_step(snapshot, table, active, 32'768, 0);
+    assert(result && !result.value().changes.empty());
+    assert(chunks.set({0, 0, 0}, {1, 1, 1}, VoxelCell{1}));
+    heartstead::dirty::DirtyRegionTracker dirty_regions;
+    auto applied = apply_fluid_step(chunks, dirty_regions, result.value());
+    assert(!applied);
+    assert(applied.error().code == "fluid_simulation.stale_result");
+}
+
+void run_system_ticks(heartstead::world::ChunkFluidSystem& system,
+                      heartstead::world::ChunkDatabase& chunks,
+                      heartstead::dirty::DirtyRegionTracker& dirty_regions,
+                      const heartstead::world::VoxelPalette& palette,
+                      std::uint64_t first_tick, std::uint64_t end_tick) {
+    for (auto tick = first_tick; tick < end_tick; ++tick) {
+        assert(system.update(chunks, dirty_regions, palette, tick));
+    }
+}
+
+void test_chunk_fluid_system_consumes_dirty_work_and_reports_backlog() {
+    using namespace heartstead::world;
+    FluidFixture fixture;
+    auto chunks = dam_world(false);
+    heartstead::dirty::DirtyRegionTracker dirty_regions;
+    ChunkFluidSystemConfig config;
+    config.simulation_tick_interval = 1;
+    config.maximum_active_cells_per_step = 1;
+    auto system = ChunkFluidSystem::create(fixture.palette, config);
+    assert(system);
+    assert(system.value()->update(chunks, dirty_regions, fixture.palette, 0));
+    assert(system.value()->stats().topology_rebuilds == 1);
+    assert(system.value()->stats().budget_exhausted);
+    assert(system.value()->stats().processed_cells_this_update == 1);
+    assert(system.value()->stats().active_cell_count > 0);
+
+    assert(chunks.set({0, 0, 0}, {31, 1, 16}, VoxelCell::air(), dirty_regions,
+                      fixture.palette));
+    assert(dirty_regions.count(heartstead::dirty::DirtyRegionKind::water_network) == 1);
+    assert(system.value()->update(chunks, dirty_regions, fixture.palette, 1));
+    assert(system.value()->stats().dirty_regions_consumed == 1);
+    assert(dirty_regions.count(heartstead::dirty::DirtyRegionKind::water_network) == 0);
+}
+
+void test_save_reload_mid_flow_matches_uninterrupted_simulation() {
+    using namespace heartstead::world;
+    FluidFixture fixture;
+    ChunkFluidSystemConfig config;
+    config.simulation_tick_interval = 1;
+
+    auto continuous = dam_world(false);
+    heartstead::dirty::DirtyRegionTracker continuous_dirty;
+    auto continuous_system = ChunkFluidSystem::create(fixture.palette, config);
+    assert(continuous_system);
+    run_system_ticks(*continuous_system.value(), continuous, continuous_dirty, fixture.palette,
+                     0, 12);
+    assert(continuous.set({0, 0, 0}, {31, 1, 16}, VoxelCell::air(), continuous_dirty,
+                          fixture.palette));
+    run_system_ticks(*continuous_system.value(), continuous, continuous_dirty, fixture.palette,
+                     12, 15);
+
+    const auto saved_edits = continuous.edit_log();
+    std::map<ChunkCoord, std::vector<const VoxelEditRecord*>> edits_by_chunk;
+    for (const auto& edit : saved_edits) {
+        edits_by_chunk[edit.chunk_coord].push_back(&edit);
+    }
+    std::vector<VoxelEditRecord> restored_edits;
+    for (const auto& [coordinate, edits] : edits_by_chunk) {
+        const auto encoded = ChunkEditDeltaTextCodec::encode(coordinate, edits);
+        auto decoded = ChunkEditDeltaTextCodec::decode(coordinate, encoded);
+        assert(decoded);
+        restored_edits.insert(restored_edits.end(), decoded.value().begin(),
+                              decoded.value().end());
+    }
+
+    auto reloaded = dam_world(false);
+    heartstead::dirty::DirtyRegionTracker reloaded_dirty;
+    assert(reloaded.apply_saved_edits(restored_edits, reloaded_dirty));
+    auto reloaded_system = ChunkFluidSystem::create(fixture.palette, config);
+    assert(reloaded_system);
+
+    run_system_ticks(*continuous_system.value(), continuous, continuous_dirty, fixture.palette,
+                     15, 32);
+    run_system_ticks(*reloaded_system.value(), reloaded, reloaded_dirty, fixture.palette, 15, 32);
+    for (const auto coordinate : {ChunkCoord{0, 0, 0}, ChunkCoord{1, 0, 0}}) {
+        const auto* continuous_chunk = continuous.find(coordinate);
+        const auto* reloaded_chunk = reloaded.find(coordinate);
+        assert(continuous_chunk != nullptr && reloaded_chunk != nullptr);
+        assert(std::ranges::equal(continuous_chunk->cells(), reloaded_chunk->cells()));
+    }
+}
+
 } // namespace
 
 int main() {
     test_fluid_state_round_trip_and_rejects_reserved_state();
     test_palette_creates_full_finite_fluid_cells();
     test_worldgen_seeds_ocean_sources_below_sea_level();
+    test_dam_break_crosses_chunk_border_and_is_load_order_independent();
+    test_source_removal_cleans_up_and_budget_defers_work();
+    test_stale_fluid_result_fails_before_application();
+    test_chunk_fluid_system_consumes_dirty_work_and_reports_backlog();
+    test_save_reload_mid_flow_matches_uninterrupted_simulation();
     return 0;
 }

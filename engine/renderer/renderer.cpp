@@ -919,6 +919,19 @@ void Renderer::set_voxel_lighting_stats(const world::ChunkLightSystemStats& ligh
     stats_.voxel_relight_apply_budget_overruns = lighting.apply_budget_overruns;
 }
 
+void Renderer::set_voxel_fluid_stats(const world::ChunkFluidSystemStats& fluids) noexcept {
+    stats_.voxel_fluid_snapshot_ms = fluids.last_snapshot_ms;
+    stats_.voxel_fluid_simulation_ms = fluids.last_simulation_ms;
+    stats_.voxel_fluid_apply_ms = fluids.last_apply_ms;
+    stats_.voxel_fluid_changed_chunks = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+        fluids.changed_chunks_this_update,
+        static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())));
+    stats_.voxel_fluid_active_cells = fluids.active_cell_count;
+    stats_.voxel_fluid_processed_cells = fluids.processed_cells_this_update;
+    stats_.voxel_fluid_budget_exhaustions = fluids.budget_exhaustions;
+    stats_.voxel_fluid_apply_budget_overruns = fluids.apply_budget_overruns;
+}
+
 RenderObjectId Renderer::reserve_object_id() {
     return scene_.reserve_object_id();
 }

@@ -197,6 +197,13 @@ core::Status ServerRuntime::initialize() {
                                      physical_resources.error().message);
     }
     physical_resource_physics_ = std::move(physical_resources).value();
+    auto chunk_fluids =
+        world::ChunkFluidSystem::create(*desc_.voxel_palette, desc_.chunk_fluids);
+    if (!chunk_fluids) {
+        return core::Status::failure(chunk_fluids.error().code,
+                                     chunk_fluids.error().message);
+    }
+    chunk_fluids_ = std::move(chunk_fluids).value();
     auto chunk_lighting =
         world::ChunkLightSystem::create(*desc_.voxel_palette, desc_.chunk_lighting);
     if (!chunk_lighting) {
@@ -287,9 +294,21 @@ core::Status ServerRuntime::initialize() {
         return status;
     }
     status = scheduler_.register_system({
-        "runtime.character_movement",
+        "runtime.chunk_fluids",
         simulation::SimulationPhase::movement,
         {"runtime.chunk_collision"},
+        [this](simulation::SimulationContext& context) {
+            return chunk_fluids_->update(world_.chunks(), world_.dirty_regions(),
+                                         *desc_.voxel_palette, context.tick);
+        },
+    });
+    if (!status) {
+        return status;
+    }
+    status = scheduler_.register_system({
+        "runtime.character_movement",
+        simulation::SimulationPhase::movement,
+        {"runtime.chunk_fluids"},
         [this](simulation::SimulationContext& context) { return simulate_players(context); },
     });
     if (!status) {
@@ -391,9 +410,9 @@ core::Status ServerRuntime::initialize() {
                 return core::Status::failure(delivery.error().code, delivery.error().message);
             }
             current_replication_ = std::move(delivery).value();
-            auto relit_status = replicate_relit_chunks();
-            if (!relit_status) {
-                return relit_status;
+            auto chunk_status = replicate_changed_chunks();
+            if (!chunk_status) {
+                return chunk_status;
             }
             return replicate_players();
         },
@@ -475,6 +494,7 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     stats.physics = current_physics_;
     stats.chunk_collision = chunk_collision_->stats();
     stats.physical_resources = physical_resource_physics_->stats();
+    stats.chunk_fluids = chunk_fluids_->stats();
     stats.chunk_lighting = chunk_lighting_->stats();
     stats.moved_player_count = current_moved_player_count_;
     stats.repeated_input_count = current_repeated_input_count_;
@@ -593,6 +613,14 @@ physics::PhysicalResourcePhysicsSystem& ServerRuntime::physical_resource_physics
 const physics::PhysicalResourcePhysicsSystem&
 ServerRuntime::physical_resource_physics() const noexcept {
     return *physical_resource_physics_;
+}
+
+world::ChunkFluidSystem& ServerRuntime::chunk_fluids() noexcept {
+    return *chunk_fluids_;
+}
+
+const world::ChunkFluidSystem& ServerRuntime::chunk_fluids() const noexcept {
+    return *chunk_fluids_;
 }
 
 world::ChunkLightSystem& ServerRuntime::chunk_lighting() noexcept {
@@ -1075,8 +1103,19 @@ core::Status ServerRuntime::replicate_players() {
     return core::Status::ok();
 }
 
-core::Status ServerRuntime::replicate_relit_chunks() {
-    if (chunk_lighting_->changed_chunks().empty() || player_connections_.empty()) {
+core::Status ServerRuntime::replicate_changed_chunks() {
+    if (player_connections_.empty()) {
+        return core::Status::ok();
+    }
+    std::vector<world::ChunkCoord> changed_chunks;
+    changed_chunks.insert(changed_chunks.end(), chunk_fluids_->changed_chunks().begin(),
+                          chunk_fluids_->changed_chunks().end());
+    changed_chunks.insert(changed_chunks.end(), chunk_lighting_->changed_chunks().begin(),
+                          chunk_lighting_->changed_chunks().end());
+    std::ranges::sort(changed_chunks);
+    changed_chunks.erase(std::unique(changed_chunks.begin(), changed_chunks.end()),
+                         changed_chunks.end());
+    if (changed_chunks.empty()) {
         return core::Status::ok();
     }
     std::vector<std::uint64_t> client_ids;
@@ -1085,7 +1124,7 @@ core::Status ServerRuntime::replicate_relit_chunks() {
         client_ids.push_back(client_id);
     }
     std::ranges::sort(client_ids);
-    for (const auto coordinate : chunk_lighting_->changed_chunks()) {
+    for (const auto coordinate : changed_chunks) {
         const auto* chunk = world_.chunks().find(coordinate);
         if (chunk == nullptr) {
             continue;

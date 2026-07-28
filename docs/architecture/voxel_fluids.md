@@ -40,10 +40,13 @@ boundary. This mirrors deterministic sort-key playback in
 [Unity's entity command buffers](https://github.com/Unity-Technologies/EntityComponentSystemSamples/blob/master/EntitiesSamples/Docs/entity-command-buffers.md):
 container or worker iteration order cannot decide a tie.
 
-For each 20 Hz fluid tick, gravity is resolved before lateral equalization. Source cells refill,
-finite cells conserve integer volume, and only resident cross-chunk neighbors participate.
-Unloaded space is a closed boundary. Changed cells reactivate themselves and their six neighbors;
-a quiet frontier is settled and consumes no work.
+For each 20 Hz fluid tick, vertical inflow is resolved before lateral spread. A vertical column
+uses a full falling level; supported lateral flow decays by one level per cell, giving a source a
+seven-cell reach on flat terrain. Source cells refill, finite flowing levels retract when their
+upstream support disappears, and only resident cross-chunk neighbors participate. This is a
+gameplay level model, not volume-conserving CFD. Unloaded space is a closed boundary. Changed
+cells reactivate themselves and their six neighbors; a quiet frontier is settled and consumes no
+work.
 
 The frontier is reconstructible rather than saved: loading a chunk containing fluid, or loading a
 neighbor beside fluid, activates its fluid cells and six-neighbor halo. The authoritative cells

@@ -190,6 +190,10 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     std::uint64_t relight_visited_cells = 0;
     double relight_solve_ms = 0.0;
     double relight_apply_ms = 0.0;
+    std::size_t fluid_active_cells = 0;
+    std::size_t fluid_processed_cells = 0;
+    double fluid_simulation_ms = 0.0;
+    double fluid_apply_ms = 0.0;
     for (const auto& tick : stats.server_ticks) {
         simulation_ms += tick.simulation.total_ms;
         command_count += static_cast<std::uint32_t>(tick.commands.command_reports.size());
@@ -207,6 +211,10 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
                                 tick.chunk_lighting.last_block_light_queue_visits;
         relight_solve_ms = tick.chunk_lighting.last_solve_ms;
         relight_apply_ms = tick.chunk_lighting.last_apply_ms;
+        fluid_active_cells = tick.chunk_fluids.active_cell_count;
+        fluid_processed_cells = tick.chunk_fluids.processed_cells_this_update;
+        fluid_simulation_ms = tick.chunk_fluids.last_simulation_ms;
+        fluid_apply_ms = tick.chunk_fluids.last_apply_ms;
     }
     add_field(data, "server_tick_count", std::to_string(stats.server_ticks.size()));
     add_field(data, "simulation_ms", std::to_string(simulation_ms));
@@ -223,6 +231,10 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     add_field(data, "voxel_relight_visited_cells", std::to_string(relight_visited_cells));
     add_field(data, "voxel_relight_solve_ms", std::to_string(relight_solve_ms));
     add_field(data, "voxel_relight_apply_ms", std::to_string(relight_apply_ms));
+    add_field(data, "voxel_fluid_active_cells", std::to_string(fluid_active_cells));
+    add_field(data, "voxel_fluid_processed_cells", std::to_string(fluid_processed_cells));
+    add_field(data, "voxel_fluid_simulation_ms", std::to_string(fluid_simulation_ms));
+    add_field(data, "voxel_fluid_apply_ms", std::to_string(fluid_apply_ms));
     add_field(data, "client_received_message_count",
               std::to_string(stats.client.received_message_count));
     add_field(data, "presentation_adapter_count", std::to_string(stats.presentation.adapter_count));
@@ -285,6 +297,16 @@ debug::InspectionData GameInspector::inspect(const RuntimeSession& session) {
                   std::to_string(collision_stats.pending_chunk_count));
         add_field(data, "chunk_collision_box_count",
                   std::to_string(collision_stats.current_collision_boxes));
+        const auto& fluid_stats = server->chunk_fluids().stats();
+        add_field(data, "voxel_fluid_active_cells",
+                  std::to_string(fluid_stats.active_cell_count));
+        add_field(data, "voxel_fluid_steps", std::to_string(fluid_stats.steps));
+        add_field(data, "voxel_fluid_changed_cells",
+                  std::to_string(fluid_stats.total_changed_cells));
+        add_field(data, "voxel_fluid_budget_exhaustions",
+                  std::to_string(fluid_stats.budget_exhaustions));
+        add_field(data, "voxel_fluid_apply_budget_overruns",
+                  std::to_string(fluid_stats.apply_budget_overruns));
         const auto& lighting_stats = server->chunk_lighting().stats();
         add_field(data, "voxel_relight_backlog_cells",
                   std::to_string(lighting_stats.snapshot_pending_cell_count));
