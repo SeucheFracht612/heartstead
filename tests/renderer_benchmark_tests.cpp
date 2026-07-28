@@ -31,6 +31,13 @@ void test_benchmark_statistics() {
         stats.meshing_ms = static_cast<double>(index);
         stats.upload_ms = 0.5;
         stats.gpu_wait_ms = 0.25;
+        stats.voxel_relight_solve_ms = 0.25 * static_cast<double>(index);
+        stats.voxel_relight_apply_ms = 0.1 * static_cast<double>(index);
+        stats.voxel_relight_backlog_cells = index * 10U;
+        stats.voxel_relight_visited_cells = index * 100U;
+        stats.voxel_relight_changed_chunks = static_cast<std::uint32_t>(index);
+        stats.voxel_relight_stale_results = index / 2U;
+        stats.voxel_relight_apply_budget_overruns = index / 3U;
         stats.uploaded_bytes_this_frame = 16;
         if (index >= 2) {
             stats.gpu_timing_valid = true;
@@ -64,6 +71,15 @@ void test_benchmark_statistics() {
     assert(std::abs(summary.point_one_percent_low_fps - 10.0) < 0.0001);
     assert(summary.maximum_frame_ms == 100.0);
     assert(summary.total_uploaded_bytes == 64);
+    assert(std::abs(summary.median_voxel_relight_solve_ms - 0.375) < 0.0001);
+    assert(std::abs(summary.p95_voxel_relight_solve_ms - 0.7125) < 0.0001);
+    assert(std::abs(summary.median_voxel_relight_apply_ms - 0.15) < 0.0001);
+    assert(std::abs(summary.p95_voxel_relight_apply_ms - 0.285) < 0.0001);
+    assert(summary.maximum_voxel_relight_backlog_cells == 30);
+    assert(summary.maximum_voxel_relight_visited_cells == 300);
+    assert(summary.total_voxel_relight_changed_chunks == 6);
+    assert(summary.final_voxel_relight_stale_results == 1);
+    assert(summary.final_voxel_relight_apply_budget_overruns == 1);
     assert(summary.slowest_frame.frame_index == 3);
     assert(std::abs(summary.mean_chunk_synchronization_ms - 3.0) < 0.0001);
     assert(std::abs(summary.mean_command_recording_ms - 0.1875) < 0.0001);
@@ -74,8 +90,10 @@ void test_benchmark_statistics() {
     assert(recorder.to_json().find("\"p99_frame_ms\": 97.090000") != std::string::npos);
     assert(recorder.to_json().find("\"frames\": [") != std::string::npos);
     assert(recorder.to_json().find("\"gpu_upload_ms\": 0.750000") != std::string::npos);
-    assert(recorder.to_json().find("\"gpu_alpha_tested_ms\": 0.250000") !=
+    assert(recorder.to_json().find("\"gpu_alpha_tested_ms\": 0.250000") != std::string::npos);
+    assert(recorder.to_json().find("\"p95_voxel_relight_solve_ms\": 0.712500") !=
            std::string::npos);
+    assert(recorder.to_json().find("\"voxel_relight_visited_cells\": 300") != std::string::npos);
     assert(recorder.to_json().find("\"slowest_frame\": {\"frame\": 3") != std::string::npos);
     assert(
         recorder.to_csv().find(
@@ -84,6 +102,8 @@ void test_benchmark_statistics() {
     assert(recorder.to_csv().find("\"headless\",\"greedy\",1920,1080,16,120,4") !=
            std::string::npos);
     assert(benchmark::format_benchmark_summary(summary).find("0.1%low=10.000fps") !=
+           std::string::npos);
+    assert(benchmark::format_benchmark_summary(summary).find("relight=0.375/0.71") !=
            std::string::npos);
 }
 

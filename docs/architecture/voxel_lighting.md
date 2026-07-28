@@ -78,3 +78,25 @@ correct before it is bandwidth-optimal.
 Fire prototypes retain their existing 8-bit field. Legacy fire values in the conventional `0..15`
 range are expanded to the full voxel-light range when they become spatial sources. A fire is
 spatial when its `fire_id` owns a build piece, entity, or physical resource transform.
+
+## Day/night presentation
+
+`evaluate_day_night` maps the authoritative `WorldTick` and configured ticks-per-day onto a
+normalized, wrapping solar orbit. Tick zero is midnight by default, with dawn at one-quarter day,
+solar noon at one-half day, and dusk at three-quarters day. Non-24-hour calendars use the same
+normalized phase.
+
+The evaluator produces one `RenderEnvironmentData` value containing the sun direction and
+intensity, ambient term, horizon/fog color, and fog distances. Dawn and dusk use a smooth
+elevation-based twilight band, so the value is continuous at both horizons and at day wrap.
+`dev_game` evaluates it from `RuntimeFrameStats::authoritative_world_tick`, never wall-clock time.
+
+The renderer's sky phase owns a fullscreen triangle. Its fragment shader interpolates from the
+environment's horizon/fog color to a derived zenith color before terrain is drawn. Sky, terrain,
+static instances, debug geometry, and UI retain the existing 128-byte frame push-constant contract;
+this stays within Vulkan's portable minimum push-constant size.
+
+The renderer benchmark runs the same `ChunkLightSystem` over every scene, waits for initial
+lighting and meshing to settle, and feeds per-update lighting telemetry into `RendererStats`.
+JSON/CSV output includes solve/apply p50 and p95, maximum backlog and visited cells, changed chunks,
+stale results, and apply-budget overruns.

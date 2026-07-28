@@ -5,6 +5,7 @@
 #include "engine/renderer/benchmark/benchmark_statistics.hpp"
 #include "engine/renderer/renderer.hpp"
 #include "engine/renderer/shaders/spirv_loader.hpp"
+#include "engine/world/lighting/chunk_light_system.hpp"
 
 #include <charconv>
 #include <chrono>
@@ -349,6 +350,35 @@ struct NativeWindow {
     return core::Result<bool>::success(!window.platform->should_quit());
 }
 
+[[nodiscard]] core::Result<world::ChunkLightSystemStats>
+settle_chunk_lighting(world::ChunkLightSystem& lighting, world::WorldState& world,
+                      const world::VoxelPalette& palette) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    std::size_t maximum_backlog = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto status = lighting.update(world.chunks(), world.dirty_regions(), palette);
+        if (!status) {
+            return core::Result<world::ChunkLightSystemStats>::failure(status.error().code,
+                                                                       status.error().message);
+        }
+        auto stats = lighting.stats();
+        maximum_backlog = std::max(maximum_backlog, stats.snapshot_pending_cell_count);
+        if (!stats.relight_requested && !stats.snapshot_in_progress && !stats.solve_in_flight &&
+            stats.completed_mailbox_count == 0) {
+            stats.snapshot_pending_cell_count = maximum_backlog;
+            return core::Result<world::ChunkLightSystemStats>::success(stats);
+        }
+        if (stats.solve_in_flight) {
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        } else {
+            std::this_thread::yield();
+        }
+    }
+    return core::Result<world::ChunkLightSystemStats>::failure(
+        "render_benchmark.relight_settlement_timeout",
+        "chunk lighting did not settle within the benchmark update budget");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -408,6 +438,8 @@ int main(int argc, char** argv) {
             return fail(device.error().message);
         }
 
+        std::vector<std::uint32_t> sky_vertex_spirv;
+        std::vector<std::uint32_t> sky_fragment_spirv;
         std::vector<std::uint32_t> vertex_spirv;
         std::vector<std::uint32_t> fragment_spirv;
         std::vector<std::uint32_t> static_vertex_spirv;
@@ -419,6 +451,8 @@ int main(int argc, char** argv) {
         if (options.backend == renderer::rhi::RenderBackend::vulkan) {
             const auto shader_root =
                 std::filesystem::path{HEARTSTEAD_RENDER_BENCHMARK_ASSET_DIR} / "shaders";
+            auto sky_vertex = renderer::shaders::load_spirv_file(shader_root / "sky.vert.spv");
+            auto sky_fragment = renderer::shaders::load_spirv_file(shader_root / "sky.frag.spv");
             auto vertex = renderer::shaders::load_spirv_file(shader_root / "terrain.vert.spv");
             auto fragment = renderer::shaders::load_spirv_file(shader_root / "terrain.frag.spv");
             auto static_vertex =
@@ -431,9 +465,12 @@ int main(int argc, char** argv) {
                 renderer::shaders::load_spirv_file(shader_root / "debug_line.frag.spv");
             auto ui_vertex = renderer::shaders::load_spirv_file(shader_root / "ui.vert.spv");
             auto ui_fragment = renderer::shaders::load_spirv_file(shader_root / "ui.frag.spv");
-            if (!vertex || !fragment || !static_vertex || !static_fragment || !debug_vertex ||
-                !debug_fragment || !ui_vertex || !ui_fragment) {
-                const auto& error = !vertex            ? vertex.error()
+            if (!sky_vertex || !sky_fragment || !vertex || !fragment || !static_vertex ||
+                !static_fragment || !debug_vertex || !debug_fragment || !ui_vertex ||
+                !ui_fragment) {
+                const auto& error = !sky_vertex        ? sky_vertex.error()
+                                    : !sky_fragment    ? sky_fragment.error()
+                                    : !vertex          ? vertex.error()
                                     : !fragment        ? fragment.error()
                                     : !static_vertex   ? static_vertex.error()
                                     : !static_fragment ? static_fragment.error()
@@ -443,6 +480,8 @@ int main(int argc, char** argv) {
                                                        : ui_fragment.error();
                 return fail(error.message);
             }
+            sky_vertex_spirv = std::move(sky_vertex).value();
+            sky_fragment_spirv = std::move(sky_fragment).value();
             vertex_spirv = std::move(vertex).value();
             fragment_spirv = std::move(fragment).value();
             static_vertex_spirv = std::move(static_vertex).value();
@@ -454,6 +493,8 @@ int main(int argc, char** argv) {
         } else {
             vertex_spirv = {0x07230203, 0x00010000, 0, 1, 0};
             fragment_spirv = vertex_spirv;
+            sky_vertex_spirv = vertex_spirv;
+            sky_fragment_spirv = vertex_spirv;
             static_vertex_spirv = vertex_spirv;
             static_fragment_spirv = vertex_spirv;
             debug_vertex_spirv = vertex_spirv;
@@ -464,6 +505,8 @@ int main(int argc, char** argv) {
 
         renderer::RendererInitDesc renderer_init;
         renderer_init.device = std::move(device).value();
+        renderer_init.sky_vertex_spirv = std::move(sky_vertex_spirv);
+        renderer_init.sky_fragment_spirv = std::move(sky_fragment_spirv);
         renderer_init.terrain_vertex_spirv = std::move(vertex_spirv);
         renderer_init.terrain_fragment_spirv = std::move(fragment_spirv);
         renderer_init.static_mesh_vertex_spirv = std::move(static_vertex_spirv);
@@ -485,6 +528,16 @@ int main(int argc, char** argv) {
         if (!status) {
             return fail(status.error().message);
         }
+        auto chunk_lighting = world::ChunkLightSystem::create(scene.value()->palette());
+        if (!chunk_lighting) {
+            return fail(chunk_lighting.error().message);
+        }
+        auto initial_lighting = settle_chunk_lighting(
+            *chunk_lighting.value(), scene.value()->world(), scene.value()->palette());
+        if (!initial_lighting) {
+            return fail(initial_lighting.error().message);
+        }
+        active_renderer.set_voxel_lighting_stats(initial_lighting.value());
         if (options.scene == renderer::benchmark::BenchmarkSceneKind::forest_cross_planes) {
             status = populate_instanced_forest_props(active_renderer, scene.value()->camera());
             if (!status) {
@@ -579,6 +632,12 @@ int main(int argc, char** argv) {
             if (!step) {
                 return fail(step.error().message);
             }
+            auto lighting = settle_chunk_lighting(*chunk_lighting.value(), scene.value()->world(),
+                                                  scene.value()->palette());
+            if (!lighting) {
+                return fail(lighting.error().message);
+            }
+            active_renderer.set_voxel_lighting_stats(lighting.value());
             if (step.value().requested_extent && step.value().requested_extent->is_valid()) {
                 const auto extent = *step.value().requested_extent;
                 status = active_renderer.resize(extent);
@@ -626,6 +685,7 @@ int main(int argc, char** argv) {
             }
         }
 
+        chunk_lighting.value()->shutdown();
         status = active_renderer.shutdown();
         if (!status) {
             return fail(status.error().message);

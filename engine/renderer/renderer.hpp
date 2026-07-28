@@ -8,6 +8,7 @@
 #include "engine/renderer/assets/texture_manager.hpp"
 #include "engine/renderer/chunks/chunk_render_system.hpp"
 #include "engine/renderer/debug/debug_renderer.hpp"
+#include "engine/renderer/environment/sky_renderer.hpp"
 #include "engine/renderer/frame/frame_builder.hpp"
 #include "engine/renderer/materials/material_runtime_cache.hpp"
 #include "engine/renderer/materials/pipeline_cache.hpp"
@@ -54,6 +55,8 @@ struct RenderFrameResult {
 
 struct RendererInitDesc {
     std::unique_ptr<rhi::IRenderDevice> device;
+    std::vector<std::uint32_t> sky_vertex_spirv;
+    std::vector<std::uint32_t> sky_fragment_spirv;
     std::vector<std::uint32_t> terrain_vertex_spirv;
     std::vector<std::uint32_t> terrain_fragment_spirv;
     std::vector<std::uint32_t> static_mesh_vertex_spirv;
@@ -136,6 +139,8 @@ class Renderer {
     [[nodiscard]] const rhi::IRenderDevice* device() const noexcept;
 
   private:
+    [[nodiscard]] core::Status create_sky_pipeline(std::span<const std::uint32_t> vertex_spirv,
+                                                   std::span<const std::uint32_t> fragment_spirv);
     [[nodiscard]] core::Status
     create_terrain_pipeline(std::span<const std::uint32_t> vertex_spirv,
                             std::span<const std::uint32_t> fragment_spirv,
@@ -152,6 +157,8 @@ class Renderer {
     void update_backend_stats(const rhi::RenderFrameStats& frame) noexcept;
 
     std::unique_ptr<rhi::IRenderDevice> device_;
+    rhi::RenderResourceHandle sky_pipeline_{};
+    GraphicsPipelineKey sky_pipeline_key_{};
     TerrainPipelineSet terrain_pipelines_{};
     std::array<GraphicsPipelineKey, 4> terrain_pipeline_keys_{};
     ScenePipelineSet scene_pipelines_{};
@@ -161,6 +168,7 @@ class Renderer {
     rhi::RenderResourceHandle ui_pipeline_{};
     GraphicsPipelineKey ui_pipeline_key_{};
     ShaderProgramHandle terrain_shader_program_;
+    ShaderProgramHandle sky_shader_program_;
     ShaderProgramHandle scene_shader_program_;
     ShaderProgramHandle debug_shader_program_;
     ShaderProgramHandle ui_shader_program_;
@@ -175,6 +183,7 @@ class Renderer {
     std::unique_ptr<MeshManager> mesh_manager_;
     std::unique_ptr<ChunkGpuCache> chunk_cache_;
     std::unique_ptr<ChunkRenderSystem> chunk_system_;
+    std::unique_ptr<SkyRenderer> sky_renderer_;
     std::unique_ptr<SceneRenderSystem> scene_render_system_;
     std::unique_ptr<DebugRenderer> debug_renderer_;
     std::unique_ptr<UiRenderer> ui_renderer_;

@@ -17,6 +17,32 @@ namespace {
 
 const ChunkRenderStats empty_chunk_stats{};
 
+[[nodiscard]] ShaderProgramDesc
+make_sky_shader_program(std::span<const std::uint32_t> vertex_spirv,
+                        std::span<const std::uint32_t> fragment_spirv) {
+    ShaderProgramDesc shader_program;
+    shader_program.id = "sky_gradient";
+    shader_program.stages = {
+        {rhi::RenderShaderStage::vertex,
+         "main",
+         {vertex_spirv.begin(), vertex_spirv.end()},
+         "sky.vert.spv"},
+        {rhi::RenderShaderStage::fragment,
+         "main",
+         {fragment_spirv.begin(), fragment_spirv.end()},
+         "sky.frag.spv"},
+    };
+    shader_program.interface.vertex_stride = sizeof(GpuSkyVertex);
+    for (const auto& attribute : gpu_sky_vertex_attributes) {
+        shader_program.interface.vertex_inputs.push_back({attribute.location, attribute.format});
+    }
+    shader_program.interface.push_constant_ranges.push_back(
+        {rhi::RenderShaderStageFlags::vertex | rhi::RenderShaderStageFlags::fragment, 0,
+         sizeof(rhi::ChunkPushConstants)});
+    shader_program.dependencies = {"gpu_sky_vertex_v1", "chunk_push_constants_v2"};
+    return shader_program;
+}
+
 [[nodiscard]] std::vector<std::byte> make_terrain_tile(std::array<std::uint8_t, 3> color,
                                                        bool error = false) {
     constexpr std::uint32_t tile_size = 16;
@@ -341,8 +367,14 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         (void)shutdown();
         return core::Status::failure(error.code, error.message);
     }
-    auto pipeline_status = create_terrain_pipeline(desc.terrain_vertex_spirv,
-                                                   desc.terrain_fragment_spirv, desc.voxel_palette);
+    auto pipeline_status = create_sky_pipeline(desc.sky_vertex_spirv, desc.sky_fragment_spirv);
+    if (!pipeline_status) {
+        const auto error = pipeline_status.error();
+        (void)shutdown();
+        return core::Status::failure(error.code, error.message);
+    }
+    pipeline_status = create_terrain_pipeline(desc.terrain_vertex_spirv,
+                                              desc.terrain_fragment_spirv, desc.voxel_palette);
     if (!pipeline_status) {
         const auto error = pipeline_status.error();
         (void)shutdown();
@@ -369,6 +401,13 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
     }
     pipeline_cache_->seal();
 
+    sky_renderer_ = std::make_unique<SkyRenderer>(*device_, sky_pipeline_);
+    auto sky_status = sky_renderer_->initialize();
+    if (!sky_status) {
+        const auto error = sky_status.error();
+        (void)shutdown();
+        return core::Status::failure(error.code, error.message);
+    }
     mesh_manager_ = std::make_unique<MeshManager>(*device_);
     auto mesh_status = mesh_manager_->initialize(desc.mesh_manager_config);
     if (!mesh_status) {
@@ -440,6 +479,10 @@ core::Status Renderer::shutdown() {
     debug_text_labels_.clear();
     scene_.clear();
     frame_builder_.reset();
+    if (sky_renderer_ != nullptr) {
+        remember_failure(sky_renderer_->shutdown());
+        sky_renderer_.reset();
+    }
     if (ui_renderer_ != nullptr) {
         remember_failure(ui_renderer_->shutdown());
         ui_renderer_.reset();
@@ -485,6 +528,8 @@ core::Status Renderer::shutdown() {
         shader_manager_.reset();
     }
     terrain_pipelines_ = {};
+    sky_pipeline_ = {};
+    sky_pipeline_key_ = {};
     terrain_pipeline_keys_ = {};
     scene_pipelines_ = {};
     scene_pipeline_keys_ = {};
@@ -493,6 +538,7 @@ core::Status Renderer::shutdown() {
     ui_pipeline_ = {};
     ui_pipeline_key_ = {};
     terrain_shader_program_ = {};
+    sky_shader_program_ = {};
     scene_shader_program_ = {};
     debug_shader_program_ = {};
     ui_shader_program_ = {};
@@ -580,7 +626,8 @@ core::Status Renderer::process_world_render_updates(std::span<const ChunkRenderU
 core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
                                                      float simulation_alpha, float delta_seconds) {
     if (device_ == nullptr || chunk_system_ == nullptr || scene_render_system_ == nullptr ||
-        debug_renderer_ == nullptr || ui_renderer_ == nullptr || frame_builder_ == nullptr) {
+        sky_renderer_ == nullptr || debug_renderer_ == nullptr || ui_renderer_ == nullptr ||
+        frame_builder_ == nullptr) {
         return core::Result<rhi::RenderFrameStats>::failure(
             "renderer.not_initialized", "renderer must be initialized before rendering");
     }
@@ -597,6 +644,13 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
     }
     chunk_draw_scratch_ = std::move(draws.draws);
     RenderCommandLists command_lists;
+    auto sky_draw = sky_renderer_->build_draw();
+    if (!sky_draw) {
+        frame_timing_active_ = false;
+        return core::Result<rhi::RenderFrameStats>::failure(sky_draw.error().code,
+                                                            sky_draw.error().message);
+    }
+    command_lists.sky_draws.push_back(sky_draw.value());
     command_lists.opaque_terrain_draws = std::move(draw_command_scratch_.opaque_terrain_draws);
     command_lists.alpha_tested_terrain_draws =
         std::move(draw_command_scratch_.alpha_tested_terrain_draws);
@@ -845,6 +899,10 @@ core::Status Renderer::set_environment(rhi::RenderEnvironmentData environment) {
         return status;
     }
     environment_ = environment;
+    if (frame_builder_ != nullptr) {
+        frame_builder_->set_clear_color(
+            {environment.fog_color.x, environment.fog_color.y, environment.fog_color.z, 1.0F});
+    }
     return core::Status::ok();
 }
 
@@ -913,8 +971,9 @@ bool Renderer::is_initialized() const noexcept {
     return device_ != nullptr && chunk_cache_ != nullptr && chunk_system_ != nullptr &&
            frame_builder_ != nullptr && shader_manager_ != nullptr && texture_manager_ != nullptr &&
            material_cache_ != nullptr && pipeline_cache_ != nullptr && mesh_manager_ != nullptr &&
-           scene_render_system_ != nullptr && debug_renderer_ != nullptr &&
-           ui_renderer_ != nullptr && terrain_pipelines_.is_valid() &&
+           scene_render_system_ != nullptr && sky_renderer_ != nullptr &&
+           sky_renderer_->is_initialized() && debug_renderer_ != nullptr &&
+           ui_renderer_ != nullptr && sky_pipeline_.is_valid() && terrain_pipelines_.is_valid() &&
            scene_pipelines_.is_valid() && debug_pipelines_.is_valid() && ui_pipeline_.is_valid();
 }
 
@@ -1092,6 +1151,69 @@ void Renderer::update_backend_stats(const rhi::RenderFrameStats& frame) noexcept
     stats_.gpu_upload_ms = frame.gpu_upload_ms;
     stats_.gpu_transfer_ms = frame.gpu_transfer_ms;
     stats_.gpu_final_copy_ms = frame.gpu_final_copy_ms;
+}
+
+core::Status Renderer::create_sky_pipeline(std::span<const std::uint32_t> vertex_spirv,
+                                           std::span<const std::uint32_t> fragment_spirv) {
+    if (shader_manager_ == nullptr || pipeline_cache_ == nullptr) {
+        return core::Status::failure("renderer.runtime_assets_uninitialized",
+                                     "sky runtime asset managers must be initialized first");
+    }
+    const auto material = core::PrototypeId::parse("base:materials/sky");
+    if (!material) {
+        return core::Status::failure("renderer.invalid_sky_material",
+                                     "internal sky material id is invalid");
+    }
+    auto shader =
+        shader_manager_->create_program(make_sky_shader_program(vertex_spirv, fragment_spirv));
+    if (!shader) {
+        return core::Status::failure(shader.error().code, shader.error().message);
+    }
+    sky_shader_program_ = shader.value();
+
+    rhi::RenderPipelineLayoutDesc layout;
+    layout.material_id = material.value();
+    layout.shader_template = {"base", "shaders/sky.vert"};
+    layout.push_constant_ranges.push_back(
+        {rhi::RenderShaderStageFlags::vertex | rhi::RenderShaderStageFlags::fragment, 0,
+         sizeof(rhi::ChunkPushConstants)});
+    layout.debug_name = "sky_gradient_layout";
+
+    rhi::RenderGraphicsPipelineDesc pipeline;
+    pipeline.material_id = material.value();
+    pipeline.debug_name = "sky_gradient_pipeline";
+    pipeline.vertex_stride = sizeof(GpuSkyVertex);
+    pipeline.vertex_attributes.assign(gpu_sky_vertex_attributes.begin(),
+                                      gpu_sky_vertex_attributes.end());
+    pipeline.topology = rhi::RenderPrimitiveTopology::triangle_list;
+    pipeline.polygon_mode = rhi::RenderPolygonMode::fill;
+    pipeline.cull_mode = rhi::RenderCullMode::none;
+    pipeline.front_face = rhi::RenderFrontFace::counter_clockwise;
+    pipeline.depth_test_enable = true;
+    pipeline.depth_write_enable = false;
+    pipeline.depth_compare = rhi::RenderCompareOperation::always;
+    pipeline.blend_mode = rhi::RenderBlendMode::disabled;
+    pipeline.color_target_format = rhi::RenderImageFormat::rgba8_unorm;
+    pipeline.depth_target_format = rhi::RenderImageFormat::d32_sfloat;
+
+    sky_pipeline_key_.shader_program = sky_shader_program_;
+    sky_pipeline_key_.vertex_layout =
+        hash_vertex_layout(pipeline.vertex_stride, pipeline.vertex_attributes);
+    sky_pipeline_key_.render_phase = RenderPhase::sky;
+    sky_pipeline_key_.color_format = pipeline.color_target_format;
+    sky_pipeline_key_.depth_format = pipeline.depth_target_format;
+    sky_pipeline_key_.cull_mode = pipeline.cull_mode;
+    sky_pipeline_key_.front_face = pipeline.front_face;
+    sky_pipeline_key_.depth_test = pipeline.depth_test_enable;
+    sky_pipeline_key_.depth_write = pipeline.depth_write_enable;
+    sky_pipeline_key_.depth_compare = pipeline.depth_compare;
+    sky_pipeline_key_.blend_mode = pipeline.blend_mode;
+    auto created = pipeline_cache_->prewarm(sky_pipeline_key_, layout, std::move(pipeline));
+    if (!created) {
+        return core::Status::failure(created.error().code, created.error().message);
+    }
+    sky_pipeline_ = created.value();
+    return core::Status::ok();
 }
 
 core::Status Renderer::create_terrain_pipeline(std::span<const std::uint32_t> vertex_spirv,

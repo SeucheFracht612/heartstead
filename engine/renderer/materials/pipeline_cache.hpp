@@ -13,6 +13,7 @@
 namespace heartstead::renderer {
 
 enum class RenderPhase : std::uint8_t {
+    sky,
     opaque_terrain,
     alpha_tested_terrain,
     transparent_terrain,

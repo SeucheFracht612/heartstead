@@ -910,8 +910,7 @@ find_descriptor_binding(const rhi::RenderPipelineLayoutDesc& layout,
     return left.width == right.width && left.height == right.height;
 }
 
-[[nodiscard]] core::Status
-validate_vulkan_clear_frame_plan(const rhi::RenderFramePlan& plan) {
+[[nodiscard]] core::Status validate_vulkan_clear_frame_plan(const rhi::RenderFramePlan& plan) {
     const auto supported_pass_count = plan.has_present_pass() ? 2U : 1U;
     if (plan.resources.size() != 1 || plan.passes.size() != supported_pass_count) {
         return core::Status::failure(
@@ -920,12 +919,12 @@ validate_vulkan_clear_frame_plan(const rhi::RenderFramePlan& plan) {
     }
     const auto& target = plan.resources.front();
     const auto& clear = plan.passes.front();
-    const auto clear_supported =
-        target.lifetime == rhi::RenderResourceLifetime::external &&
-        target.format == rhi::RenderImageFormat::rgba8_unorm &&
-        same_extent(target.extent, plan.extent) && clear.kind == rhi::RenderPassKind::clear &&
-        clear.reads.empty() && clear.writes.size() == 1 && clear.writes.front() == target.name &&
-        !clear.presents;
+    const auto clear_supported = target.lifetime == rhi::RenderResourceLifetime::external &&
+                                 target.format == rhi::RenderImageFormat::rgba8_unorm &&
+                                 same_extent(target.extent, plan.extent) &&
+                                 clear.kind == rhi::RenderPassKind::clear && clear.reads.empty() &&
+                                 clear.writes.size() == 1 && clear.writes.front() == target.name &&
+                                 !clear.presents;
     if (!clear_supported) {
         return core::Status::failure(
             "renderer.vulkan_unsupported_frame_plan",
@@ -933,10 +932,9 @@ validate_vulkan_clear_frame_plan(const rhi::RenderFramePlan& plan) {
     }
     if (plan.passes.size() == 2) {
         const auto& present = plan.passes[1];
-        const auto present_supported = present.kind == rhi::RenderPassKind::present &&
-                                       present.reads.size() == 1 &&
-                                       present.reads.front() == target.name &&
-                                       present.writes.empty() && present.presents;
+        const auto present_supported =
+            present.kind == rhi::RenderPassKind::present && present.reads.size() == 1 &&
+            present.reads.front() == target.name && present.writes.empty() && present.presents;
         if (!present_supported) {
             return core::Status::failure(
                 "renderer.vulkan_unsupported_frame_plan",
@@ -949,8 +947,7 @@ validate_vulkan_clear_frame_plan(const rhi::RenderFramePlan& plan) {
 [[nodiscard]] bool pass_matches(const rhi::RenderPassDesc& pass, std::string_view name,
                                 rhi::RenderPassKind kind,
                                 std::initializer_list<std::string_view> reads,
-                                std::initializer_list<std::string_view> writes,
-                                bool presents) {
+                                std::initializer_list<std::string_view> writes, bool presents) {
     if (pass.name != name || pass.kind != kind || pass.reads.size() != reads.size() ||
         pass.writes.size() != writes.size() || pass.presents != presents) {
         return false;
@@ -976,7 +973,8 @@ validate_vulkan_unified_frame_plan(const rhi::RenderFrameSubmission& frame) {
         depth.format == rhi::RenderImageFormat::d32_sfloat &&
         same_extent(depth.extent, plan.extent);
     const auto passes_supported =
-        pass_matches(plan.passes[0], "sky", rhi::RenderPassKind::clear, {}, {"output"}, false) &&
+        pass_matches(plan.passes[0], "sky", rhi::RenderPassKind::clear, {}, {"output", "depth"},
+                     false) &&
         pass_matches(plan.passes[1], "opaque_terrain", rhi::RenderPassKind::world, {"output"},
                      {"output", "depth"}, false) &&
         pass_matches(plan.passes[2], "alpha_tested_terrain", rhi::RenderPassKind::world,
@@ -989,11 +987,10 @@ validate_vulkan_unified_frame_plan(const rhi::RenderFrameSubmission& frame) {
                      {"output", "depth"}, false) &&
         pass_matches(plan.passes[6], "ui", rhi::RenderPassKind::ui, {"output", "depth"},
                      {"output", "depth"}, false) &&
-        pass_matches(plan.passes[7], "present", rhi::RenderPassKind::present, {"output"}, {},
-                     true);
+        pass_matches(plan.passes[7], "present", rhi::RenderPassKind::present, {"output"}, {}, true);
     const auto command_passes_supported =
         std::ranges::all_of(frame.pass_commands, [](const rhi::RenderPassCommands& commands) {
-            return commands.pass_index >= 1 && commands.pass_index <= 6;
+            return commands.pass_index <= 6;
         });
     if (!resources_supported || !passes_supported || !command_passes_supported) {
         return core::Status::failure(
@@ -2980,9 +2977,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             }
             const auto key = layout.desc.material_id.value() + "|" + binding.name;
             if (!descriptor_write_records_.contains(key)) {
-                return core::Status::failure(
-                    "renderer.required_descriptor_unbound",
-                    "required descriptor binding has not been written: " + binding.name);
+                return core::Status::failure("renderer.required_descriptor_unbound",
+                                             "required descriptor binding has not been written: " +
+                                                 binding.name);
             }
         }
         return core::Status::ok();
@@ -4996,6 +4993,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 end_debug_label(frame_commands);
             };
 
+            record_labelled_pass("sky", "Sky gradient pass", 0.20F, 0.42F, 0.86F);
             record_timed_pass("opaque_terrain", "Opaque terrain pass", opaque_start_timestamp,
                               opaque_end_timestamp, 0.20F, 0.72F, 0.28F);
             record_timed_pass("alpha_tested_terrain", "Alpha-tested terrain pass",

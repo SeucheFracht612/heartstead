@@ -87,6 +87,8 @@ heartstead_add_foundation_test(heartstead_physical_resource_physics_tests
 heartstead_add_foundation_test(heartstead_voxel_light_tests voxel_light_tests.cpp)
 heartstead_add_foundation_test(heartstead_chunk_light_system_tests
                                chunk_light_system_tests.cpp)
+heartstead_add_foundation_test(heartstead_day_night_environment_tests
+                               day_night_environment_tests.cpp)
 heartstead_add_foundation_test(heartstead_gpu_buffer_arena_tests gpu_buffer_arena_tests.cpp)
 heartstead_add_foundation_test(heartstead_renderer_benchmark_tests renderer_benchmark_tests.cpp)
 heartstead_add_foundation_test(heartstead_render_runtime_asset_tests
@@ -133,6 +135,20 @@ heartstead_add_smoke_test(
   3
   --output
   ${CMAKE_CURRENT_BINARY_DIR}/smoke_render_benchmark.json
+)
+heartstead_add_smoke_test(
+  smoke.render_benchmark_relight
+  heartstead_render_benchmark
+  --scene
+  rapid-edits
+  --radius
+  0
+  --warmup
+  1
+  --frames
+  3
+  --output
+  ${CMAKE_CURRENT_BINARY_DIR}/smoke_render_benchmark_relight.json
 )
 heartstead_add_smoke_test(smoke.dev_game heartstead_dev_game --frames 3)
 heartstead_add_smoke_test(smoke.dedicated_server heartstead_dedicated_server --ticks 3)

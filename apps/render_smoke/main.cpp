@@ -104,6 +104,8 @@ int main(int argc, char** argv) {
 
         const std::filesystem::path shader_root =
             std::filesystem::path{HEARTSTEAD_RENDER_SMOKE_ASSET_DIR} / "shaders";
+        auto sky_vertex_spirv = renderer::shaders::load_spirv_file(shader_root / "sky.vert.spv");
+        auto sky_fragment_spirv = renderer::shaders::load_spirv_file(shader_root / "sky.frag.spv");
         auto vertex_spirv = renderer::shaders::load_spirv_file(shader_root / "terrain.vert.spv");
         auto fragment_spirv = renderer::shaders::load_spirv_file(shader_root / "terrain.frag.spv");
         auto static_vertex_spirv =
@@ -116,6 +118,11 @@ int main(int argc, char** argv) {
             renderer::shaders::load_spirv_file(shader_root / "debug_line.frag.spv");
         auto ui_vertex_spirv = renderer::shaders::load_spirv_file(shader_root / "ui.vert.spv");
         auto ui_fragment_spirv = renderer::shaders::load_spirv_file(shader_root / "ui.frag.spv");
+        if (!sky_vertex_spirv || !sky_fragment_spirv) {
+            return fail("Sky shader loading failed visibly: " +
+                        (!sky_vertex_spirv ? sky_vertex_spirv.error().message
+                                           : sky_fragment_spirv.error().message));
+        }
         if (!vertex_spirv) {
             return fail("Vertex shader loading failed visibly: " + vertex_spirv.error().message);
         }
@@ -141,6 +148,8 @@ int main(int argc, char** argv) {
 
         renderer::RendererInitDesc renderer_init;
         renderer_init.device = std::move(device).value();
+        renderer_init.sky_vertex_spirv = std::move(sky_vertex_spirv).value();
+        renderer_init.sky_fragment_spirv = std::move(sky_fragment_spirv).value();
         renderer_init.terrain_vertex_spirv = std::move(vertex_spirv).value();
         renderer_init.terrain_fragment_spirv = std::move(fragment_spirv).value();
         renderer_init.static_mesh_vertex_spirv = std::move(static_vertex_spirv).value();

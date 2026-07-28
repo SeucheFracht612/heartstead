@@ -140,8 +140,10 @@ through M8 so each acceptance scene builds on already verified systems.
 - Light is derived/cache state, not a player edit. Relighting advances chunk content revision and
   dirties mesh/replication only when visible stored light changes; save deltas do not record
   reproducible baseline sunlight.
-- A relight job consumes immutable voxel/palette snapshots with a one-light-radius halo and emits
-  revision-tagged per-chunk light patches. The owner thread validates and applies patches.
+- A relight job consumes one immutable snapshot of all resident voxel/palette/source state and
+  emits revision-tagged per-chunk light patches. Snapshot copying is incremental; the complete
+  connected field is applied atomically after owner-thread validation. Region/halo narrowing is
+  deferred until profiling shows the global deterministic solve is insufficient.
 - Sunlight uses column seeding from the highest loaded opaque cell and special downward
   transmission; horizontal/upward spread and block light use a deterministic six-neighbor BFS.
 - Missing chunks form a known boundary state, not implicit air. Loading a neighbor invalidates
@@ -169,8 +171,11 @@ through M8 so each acceptance scene builds on already verified systems.
 - Removing an emitter leaves no orphan light; loading chunks in a different order converges to the
   same field.
 - A 24-hour time lapse is continuous at wraparound and matches golden dawn/noon/dusk/night values.
-- Default relight budget is `4096` visited cells and `2.0 ms` apply work per frame; the renderer
-  benchmark reports p50/p95, visited cells, backlog, stale results, and changed chunks.
+- Default owner-thread snapshot work is `4096` copied cells per update and complete-field apply has
+  a `2.0 ms` budget. The one-chunk `rapid-edits` reference target is solve p95 below `50 ms` on the
+  background worker and zero apply-budget overruns in a warnings-as-errors debug build. The
+  renderer benchmark reports solve/apply p50/p95, visited cells, backlog, stale results, and
+  changed chunks.
 
 ## M3 — Fluids
 

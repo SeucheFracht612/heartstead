@@ -59,6 +59,15 @@ struct BenchmarkSummary {
     double mean_gpu_transparent_terrain_ms = 0.0;
     double mean_gpu_transfer_ms = 0.0;
     double mean_gpu_final_copy_ms = 0.0;
+    double median_voxel_relight_solve_ms = 0.0;
+    double p95_voxel_relight_solve_ms = 0.0;
+    double median_voxel_relight_apply_ms = 0.0;
+    double p95_voxel_relight_apply_ms = 0.0;
+    std::uint64_t maximum_voxel_relight_backlog_cells = 0;
+    std::uint64_t maximum_voxel_relight_visited_cells = 0;
+    std::uint64_t total_voxel_relight_changed_chunks = 0;
+    std::uint64_t final_voxel_relight_stale_results = 0;
+    std::uint64_t final_voxel_relight_apply_budget_overruns = 0;
     std::uint64_t total_uploaded_bytes = 0;
     RendererStats slowest_frame{};
 };

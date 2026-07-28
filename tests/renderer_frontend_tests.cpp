@@ -64,6 +64,7 @@ void test_frame_builder_preserves_terrain_phase_commands() {
     assert(camera.set_aspect_ratio(640.0F / 360.0F));
     const renderer::rhi::RenderDrawCommand draw{{1}, {2}, {3}, 3};
     renderer::RenderCommandLists commands;
+    commands.sky_draws.push_back(draw);
     commands.opaque_terrain_draws.push_back(draw);
     commands.alpha_tested_terrain_draws.push_back(draw);
     commands.transparent_terrain_draws.push_back(draw);
@@ -75,10 +76,11 @@ void test_frame_builder_preserves_terrain_phase_commands() {
     assert(frame.value().plan.passes[2].name == "alpha_tested_terrain");
     assert(frame.value().plan.passes[4].name == "transparent_terrain");
     assert(frame.value().plan.passes[7].name == "present");
-    assert(frame.value().pass_commands.size() == 3);
-    assert(frame.value().pass_commands[0].pass_index == 1);
-    assert(frame.value().pass_commands[1].pass_index == 2);
-    assert(frame.value().pass_commands[2].pass_index == 4);
+    assert(frame.value().pass_commands.size() == 4);
+    assert(frame.value().pass_commands[0].pass_index == 0);
+    assert(frame.value().pass_commands[1].pass_index == 1);
+    assert(frame.value().pass_commands[2].pass_index == 2);
+    assert(frame.value().pass_commands[3].pass_index == 4);
 }
 
 void test_chunk_gpu_cache_lifecycle() {
@@ -627,6 +629,8 @@ void test_renderer_frontend_submits_headless_frames() {
     const std::vector<std::uint32_t> test_spirv{0x07230203, 0x00010000, 0, 1, 0};
     renderer::RendererInitDesc init;
     init.device = std::move(device).value();
+    init.sky_vertex_spirv = test_spirv;
+    init.sky_fragment_spirv = test_spirv;
     init.terrain_vertex_spirv = test_spirv;
     init.terrain_fragment_spirv = test_spirv;
     init.static_mesh_vertex_spirv = test_spirv;
@@ -651,10 +655,10 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(retained_renderer.is_initialized());
     assert(retained_renderer.device() != nullptr);
     const auto initialized_resource_count = retained_renderer.device()->live_resource_count();
-    // Eight shader modules, ten prewarmed pipelines, four fallback textures, terrain/UI arrays,
-    // one shared sampler, one material-table buffer, static arenas/instances, and buffered
-    // debug/UI geometry.
-    assert(initialized_resource_count == 33);
+    // Ten shader modules, eleven prewarmed pipelines, sky geometry, four fallback textures,
+    // terrain/UI arrays, one shared sampler, one material-table buffer, static arenas/instances,
+    // and buffered debug/UI geometry.
+    assert(initialized_resource_count == 38);
 
     renderer::rhi::RenderEnvironmentData invalid_environment;
     invalid_environment.fog_end = invalid_environment.fog_start;
@@ -727,7 +731,7 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(first_frame_result);
     const auto& first_frame = first_frame_result.value().frame;
     assert(first_frame_result.value().renderer.frame_index == first_frame.frame_index);
-    assert(first_frame.draw_count == 1);
+    assert(first_frame.draw_count == 2);
     auto invalid_frame_input = frame_input;
     invalid_frame_input.simulation_alpha = 2.0F;
     assert(!retained_renderer.render_frame(invalid_frame_input));
@@ -735,8 +739,11 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(first_frame.opaque_terrain_draw_count == 1);
     assert(first_frame.alpha_tested_terrain_draw_count == 0);
     assert(first_frame.transparent_terrain_draw_count == 0);
-    assert(first_frame.indexed_draw_count == 1);
-    assert(first_frame.pipeline_bind_count == 1);
+    assert(first_frame.indexed_draw_count == 2);
+    assert(first_frame.pipeline_bind_count == 2);
+    assert(first_frame.clear_color.red == environment.fog_color.x);
+    assert(first_frame.clear_color.green == environment.fog_color.y);
+    assert(first_frame.clear_color.blue == environment.fog_color.z);
     assert(first_frame.total_indices > 0);
     assert(retained_renderer.chunk_stats().visible_chunk_count == 1);
     assert(retained_renderer.chunk_stats().culled_chunk_count == 0);
@@ -759,11 +766,11 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(renderer_stats.resident_chunks == 1);
     assert(renderer_stats.visible_chunks == 1);
     assert(renderer_stats.drawn_chunks == 1);
-    assert(renderer_stats.draw_calls == 1);
-    assert(renderer_stats.pipeline_switches == 1);
+    assert(renderer_stats.draw_calls == 2);
+    assert(renderer_stats.pipeline_switches == 2);
     assert(renderer_stats.resident_textures == 6);
     assert(renderer_stats.runtime_materials == 255);
-    assert(renderer_stats.resident_pipelines == 10);
+    assert(renderer_stats.resident_pipelines == 11);
     assert(renderer_stats.resident_texture_bytes > 0);
     assert(renderer_stats.vertices > 0);
     assert(renderer_stats.triangles > 0);
@@ -825,9 +832,9 @@ void test_renderer_frontend_submits_headless_frames() {
         {{12.0F, 48.0F}, "FPS 144", 8.0F, {1.0F, 1.0F, 1.0F, 1.0F}}));
     auto instanced_frame = retained_renderer.render(camera, 0.5F);
     assert(instanced_frame);
-    assert(instanced_frame.value().draw_count == 5);
-    assert(instanced_frame.value().indexed_draw_count == 5);
-    assert(instanced_frame.value().pipeline_bind_count == 4);
+    assert(instanced_frame.value().draw_count == 6);
+    assert(instanced_frame.value().indexed_draw_count == 6);
+    assert(instanced_frame.value().pipeline_bind_count == 5);
     assert(retained_renderer.scene_stats().scene.visible_objects == 3);
     assert(retained_renderer.scene_stats().submitted_instances == 2);
     assert(retained_renderer.scene_stats().draw_calls == 1);
@@ -856,7 +863,7 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(retained_renderer.release_static_mesh(object_mesh.value()));
     auto terrain_only_frame = retained_renderer.render(camera);
     assert(terrain_only_frame);
-    assert(terrain_only_frame.value().draw_count == 1);
+    assert(terrain_only_frame.value().draw_count == 2);
 
     const auto uploaded_before_resize = retained_renderer.chunk_stats().cache.uploaded_chunk_count;
     assert(retained_renderer.resize({800, 400}));
@@ -869,7 +876,7 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(resized_frame);
     assert(resized_frame.value().extent.width == 800);
     assert(resized_frame.value().extent.height == 400);
-    assert(resized_frame.value().draw_count == 1);
+    assert(resized_frame.value().draw_count == 2);
 
     assert(world.chunks().erase(identity.coordinate));
     renderer::ChunkRenderUpdate eviction_update;
@@ -880,7 +887,7 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(retained_renderer.device()->live_resource_count() == initialized_resource_count + 2);
     auto empty_frame = retained_renderer.render(camera);
     assert(empty_frame);
-    assert(empty_frame.value().draw_count == 0);
+    assert(empty_frame.value().draw_count == 1);
 
     assert(retained_renderer.shutdown());
     assert(!retained_renderer.is_initialized());

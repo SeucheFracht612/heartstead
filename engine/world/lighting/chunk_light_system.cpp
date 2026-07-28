@@ -65,6 +65,7 @@ core::Status ChunkLightSystem::update(ChunkDatabase& chunks,
     stats_.changed_cells_this_update = 0;
     stats_.last_sunlight_queue_visits = 0;
     stats_.last_block_light_queue_visits = 0;
+    stats_.last_solve_ms = 0.0;
     stats_.last_apply_ms = 0.0;
     changed_chunks_.clear();
 

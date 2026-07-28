@@ -134,7 +134,11 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
     }
 
     std::vector<double> frame_times;
+    std::vector<double> relight_solve_times;
+    std::vector<double> relight_apply_times;
     frame_times.reserve(samples_.size());
+    relight_solve_times.reserve(samples_.size());
+    relight_apply_times.reserve(samples_.size());
     double cpu_total = 0.0;
     double gpu_total = 0.0;
     double gpu_upload_total = 0.0;
@@ -156,6 +160,8 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
     double gpu_final_copy_total = 0.0;
     for (const auto& sample : samples_) {
         frame_times.push_back(sample.cpu_frame_ms);
+        relight_solve_times.push_back(sample.voxel_relight_solve_ms);
+        relight_apply_times.push_back(sample.voxel_relight_apply_ms);
         cpu_total += sample.cpu_frame_ms;
         extraction_total += sample.render_extraction_ms;
         synchronization_total += sample.chunk_synchronization_ms;
@@ -169,6 +175,16 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
         upload_total += sample.upload_ms;
         gpu_wait_total += sample.gpu_wait_ms;
         summary.total_uploaded_bytes += sample.uploaded_bytes_this_frame;
+        summary.maximum_voxel_relight_backlog_cells = std::max(
+            summary.maximum_voxel_relight_backlog_cells, sample.voxel_relight_backlog_cells);
+        summary.maximum_voxel_relight_visited_cells = std::max(
+            summary.maximum_voxel_relight_visited_cells, sample.voxel_relight_visited_cells);
+        summary.total_voxel_relight_changed_chunks += sample.voxel_relight_changed_chunks;
+        summary.final_voxel_relight_stale_results =
+            std::max(summary.final_voxel_relight_stale_results, sample.voxel_relight_stale_results);
+        summary.final_voxel_relight_apply_budget_overruns =
+            std::max(summary.final_voxel_relight_apply_budget_overruns,
+                     sample.voxel_relight_apply_budget_overruns);
         if (sample.gpu_timing_valid) {
             gpu_total += sample.gpu_frame_ms;
             gpu_opaque_total += sample.gpu_opaque_terrain_ms;
@@ -184,12 +200,18 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
         }
     }
     std::ranges::sort(frame_times);
+    std::ranges::sort(relight_solve_times);
+    std::ranges::sort(relight_apply_times);
     summary.median_frame_ms = percentile(frame_times, 0.50);
     summary.p95_frame_ms = percentile(frame_times, 0.95);
     summary.p99_frame_ms = percentile(frame_times, 0.99);
     summary.one_percent_low_fps = low_fps(frame_times, 0.01);
     summary.point_one_percent_low_fps = low_fps(frame_times, 0.001);
     summary.maximum_frame_ms = frame_times.back();
+    summary.median_voxel_relight_solve_ms = percentile(relight_solve_times, 0.50);
+    summary.p95_voxel_relight_solve_ms = percentile(relight_solve_times, 0.95);
+    summary.median_voxel_relight_apply_ms = percentile(relight_apply_times, 0.50);
+    summary.p95_voxel_relight_apply_ms = percentile(relight_apply_times, 0.95);
     summary.slowest_frame = *std::ranges::max_element(
         samples_, {}, [](const RendererStats& sample) { return sample.cpu_frame_ms; });
     const auto sample_count = static_cast<double>(samples_.size());
@@ -272,10 +294,26 @@ std::string BenchmarkRecorder::to_json() const {
            << "    \"mean_gpu_opaque_terrain_ms\": " << summary.mean_gpu_opaque_terrain_ms << ",\n"
            << "    \"mean_gpu_alpha_tested_terrain_ms\": "
            << summary.mean_gpu_alpha_tested_terrain_ms << ",\n"
-           << "    \"mean_gpu_transparent_terrain_ms\": "
-           << summary.mean_gpu_transparent_terrain_ms << ",\n"
+           << "    \"mean_gpu_transparent_terrain_ms\": " << summary.mean_gpu_transparent_terrain_ms
+           << ",\n"
            << "    \"mean_gpu_transfer_ms\": " << summary.mean_gpu_transfer_ms << ",\n"
            << "    \"mean_gpu_final_copy_ms\": " << summary.mean_gpu_final_copy_ms << ",\n"
+           << "    \"median_voxel_relight_solve_ms\": " << summary.median_voxel_relight_solve_ms
+           << ",\n"
+           << "    \"p95_voxel_relight_solve_ms\": " << summary.p95_voxel_relight_solve_ms << ",\n"
+           << "    \"median_voxel_relight_apply_ms\": " << summary.median_voxel_relight_apply_ms
+           << ",\n"
+           << "    \"p95_voxel_relight_apply_ms\": " << summary.p95_voxel_relight_apply_ms << ",\n"
+           << "    \"maximum_voxel_relight_backlog_cells\": "
+           << summary.maximum_voxel_relight_backlog_cells << ",\n"
+           << "    \"maximum_voxel_relight_visited_cells\": "
+           << summary.maximum_voxel_relight_visited_cells << ",\n"
+           << "    \"total_voxel_relight_changed_chunks\": "
+           << summary.total_voxel_relight_changed_chunks << ",\n"
+           << "    \"final_voxel_relight_stale_results\": "
+           << summary.final_voxel_relight_stale_results << ",\n"
+           << "    \"final_voxel_relight_apply_budget_overruns\": "
+           << summary.final_voxel_relight_apply_budget_overruns << ",\n"
            << "    \"total_uploaded_bytes\": " << summary.total_uploaded_bytes << ",\n"
            << "    \"slowest_frame\": {\"frame\": " << summary.slowest_frame.frame_index
            << ", \"cpu_frame_ms\": " << summary.slowest_frame.cpu_frame_ms
@@ -320,6 +358,14 @@ std::string BenchmarkRecorder::to_json() const {
                << ", \"upload_preparation_ms\": " << sample.upload_preparation_ms
                << ", \"upload_ms\": " << sample.upload_ms
                << ", \"gpu_wait_ms\": " << sample.gpu_wait_ms
+               << ", \"voxel_relight_solve_ms\": " << sample.voxel_relight_solve_ms
+               << ", \"voxel_relight_apply_ms\": " << sample.voxel_relight_apply_ms
+               << ", \"voxel_relight_backlog_cells\": " << sample.voxel_relight_backlog_cells
+               << ", \"voxel_relight_visited_cells\": " << sample.voxel_relight_visited_cells
+               << ", \"voxel_relight_changed_chunks\": " << sample.voxel_relight_changed_chunks
+               << ", \"voxel_relight_stale_results\": " << sample.voxel_relight_stale_results
+               << ", \"voxel_relight_apply_budget_overruns\": "
+               << sample.voxel_relight_apply_budget_overruns
                << ", \"loaded_chunks\": " << sample.loaded_chunks
                << ", \"mesh_pending_chunks\": " << sample.mesh_pending_chunks
                << ", \"upload_pending_chunks\": " << sample.upload_pending_chunks
@@ -374,7 +420,10 @@ std::string BenchmarkRecorder::to_csv() const {
               "gpu_upload_submission_serial,gpu_upload_ms,gpu_opaque_ms,gpu_alpha_tested_ms,"
               "gpu_transparent_ms,gpu_transfer_ms,gpu_final_copy_ms,extraction_ms,"
               "sync_ms,culling_ms,draw_list_ms,command_build_ms,command_recording_ms,snapshot_ms,"
-              "meshing_ms,upload_preparation_ms,upload_ms,gpu_wait_ms,loaded_chunks,"
+              "meshing_ms,upload_preparation_ms,upload_ms,gpu_wait_ms,"
+              "voxel_relight_solve_ms,voxel_relight_apply_ms,voxel_relight_backlog_cells,"
+              "voxel_relight_visited_cells,voxel_relight_changed_chunks,"
+              "voxel_relight_stale_results,voxel_relight_apply_budget_overruns,loaded_chunks,"
               "mesh_pending_chunks,upload_pending_chunks,resident_chunks,visible_chunks,"
               "culled_chunks,drawn_chunks,draw_calls,opaque_terrain_draws,"
               "alpha_tested_terrain_draws,transparent_terrain_draws,pipeline_switches,"
@@ -408,20 +457,24 @@ std::string BenchmarkRecorder::to_csv() const {
                << sample.draw_list_ms << ',' << sample.command_build_ms << ','
                << sample.command_recording_ms << ',' << sample.chunk_snapshot_ms << ','
                << sample.meshing_ms << ',' << sample.upload_preparation_ms << ','
-               << sample.upload_ms << ',' << sample.gpu_wait_ms << ',' << sample.loaded_chunks
-               << ',' << sample.mesh_pending_chunks << ',' << sample.upload_pending_chunks << ','
+               << sample.upload_ms << ',' << sample.gpu_wait_ms << ','
+               << sample.voxel_relight_solve_ms << ',' << sample.voxel_relight_apply_ms << ','
+               << sample.voxel_relight_backlog_cells << ',' << sample.voxel_relight_visited_cells
+               << ',' << sample.voxel_relight_changed_chunks << ','
+               << sample.voxel_relight_stale_results << ','
+               << sample.voxel_relight_apply_budget_overruns << ',' << sample.loaded_chunks << ','
+               << sample.mesh_pending_chunks << ',' << sample.upload_pending_chunks << ','
                << sample.resident_chunks << ',' << sample.visible_chunks << ','
                << sample.culled_chunks << ',' << sample.drawn_chunks << ',' << sample.draw_calls
                << ',' << sample.opaque_terrain_draws << ',' << sample.alpha_tested_terrain_draws
                << ',' << sample.transparent_terrain_draws << ',' << sample.pipeline_switches << ','
-               << sample.resident_textures << ','
-               << sample.runtime_materials << ',' << sample.resident_pipelines << ','
-               << sample.retained_objects << ',' << sample.visible_objects << ','
-               << sample.culled_objects << ',' << sample.submitted_instances << ','
-               << sample.instance_draw_calls << ',' << sample.debug_lines << ','
-               << sample.debug_draw_calls << ',' << sample.debug_labels << ','
-               << sample.ui_vertices << ',' << sample.ui_glyphs << ',' << sample.ui_draw_calls << ','
-               << sample.ui_clipped_draw_calls << ','
+               << sample.resident_textures << ',' << sample.runtime_materials << ','
+               << sample.resident_pipelines << ',' << sample.retained_objects << ','
+               << sample.visible_objects << ',' << sample.culled_objects << ','
+               << sample.submitted_instances << ',' << sample.instance_draw_calls << ','
+               << sample.debug_lines << ',' << sample.debug_draw_calls << ',' << sample.debug_labels
+               << ',' << sample.ui_vertices << ',' << sample.ui_glyphs << ','
+               << sample.ui_draw_calls << ',' << sample.ui_clipped_draw_calls << ','
                << sample.vertices << ',' << sample.triangles << ',' << sample.resident_texture_bytes
                << ',' << sample.resident_mesh_bytes << ',' << sample.gpu_arena_capacity_bytes << ','
                << sample.gpu_arena_used_bytes << ',' << sample.gpu_arena_free_bytes << ','
@@ -450,8 +503,8 @@ std::string format_benchmark_summary(const BenchmarkSummary& summary) {
     if (summary.gpu_sample_count == 0) {
         output << "unavailable";
     } else {
-        output << summary.mean_gpu_frame_ms << "ms gpu_phases="
-               << summary.mean_gpu_opaque_terrain_ms << '/'
+        output << summary.mean_gpu_frame_ms
+               << "ms gpu_phases=" << summary.mean_gpu_opaque_terrain_ms << '/'
                << summary.mean_gpu_alpha_tested_terrain_ms << '/'
                << summary.mean_gpu_transparent_terrain_ms << "ms";
     }
@@ -461,6 +514,11 @@ std::string format_benchmark_summary(const BenchmarkSummary& summary) {
     } else {
         output << summary.mean_gpu_upload_ms << "ms";
     }
+    output << " relight=" << summary.median_voxel_relight_solve_ms << '/'
+           << summary.p95_voxel_relight_solve_ms << "ms solve "
+           << summary.median_voxel_relight_apply_ms << '/' << summary.p95_voxel_relight_apply_ms
+           << "ms apply" << " relight_backlog=" << summary.maximum_voxel_relight_backlog_cells
+           << " relight_budget_overruns=" << summary.final_voxel_relight_apply_budget_overruns;
     output << " sync=" << summary.mean_chunk_synchronization_ms
            << "ms cull=" << summary.mean_culling_ms << "ms build=" << summary.mean_command_build_ms
            << "ms record=" << summary.mean_command_recording_ms

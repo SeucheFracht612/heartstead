@@ -227,6 +227,8 @@ hash_vertex_layout(std::uint32_t stride,
 
 std::string_view render_phase_name(RenderPhase phase) noexcept {
     switch (phase) {
+    case RenderPhase::sky:
+        return "sky";
     case RenderPhase::opaque_terrain:
         return "opaque_terrain";
     case RenderPhase::alpha_tested_terrain:

@@ -6,6 +6,7 @@
 #include "engine/movement/player_camera.hpp"
 #include "engine/movement/player_input.hpp"
 #include "engine/platform/platform.hpp"
+#include "engine/renderer/environment/day_night.hpp"
 #include "engine/renderer/renderer.hpp"
 #include "engine/renderer/shaders/spirv_loader.hpp"
 #include "game/features/interaction/voxel_raycast.hpp"
@@ -125,6 +126,8 @@ int run_headless(game::GameRuntime& runtime, std::uint32_t frame_count) {
 }
 
 struct ShaderSet {
+    std::vector<std::uint32_t> sky_vertex;
+    std::vector<std::uint32_t> sky_fragment;
     std::vector<std::uint32_t> terrain_vertex;
     std::vector<std::uint32_t> terrain_fragment;
     std::vector<std::uint32_t> static_vertex;
@@ -250,15 +253,17 @@ core::Status synchronize_demo_resources(const game::GameRuntime& runtime,
 core::Result<ShaderSet> load_shaders() {
     const auto root = std::filesystem::path{HEARTSTEAD_DEV_GAME_ASSET_DIR} / "shaders";
     const std::array paths{
-        root / "terrain.vert.spv",     root / "terrain.frag.spv",    root / "static_mesh.vert.spv",
-        root / "static_mesh.frag.spv", root / "debug_line.vert.spv", root / "debug_line.frag.spv",
-        root / "ui.vert.spv",          root / "ui.frag.spv",
+        root / "sky.vert.spv",        root / "sky.frag.spv",         root / "terrain.vert.spv",
+        root / "terrain.frag.spv",    root / "static_mesh.vert.spv", root / "static_mesh.frag.spv",
+        root / "debug_line.vert.spv", root / "debug_line.frag.spv",  root / "ui.vert.spv",
+        root / "ui.frag.spv",
     };
-    std::array<core::Result<std::vector<std::uint32_t>>, 8> loaded{
+    std::array<core::Result<std::vector<std::uint32_t>>, 10> loaded{
         renderer::shaders::load_spirv_file(paths[0]), renderer::shaders::load_spirv_file(paths[1]),
         renderer::shaders::load_spirv_file(paths[2]), renderer::shaders::load_spirv_file(paths[3]),
         renderer::shaders::load_spirv_file(paths[4]), renderer::shaders::load_spirv_file(paths[5]),
         renderer::shaders::load_spirv_file(paths[6]), renderer::shaders::load_spirv_file(paths[7]),
+        renderer::shaders::load_spirv_file(paths[8]), renderer::shaders::load_spirv_file(paths[9]),
     };
     for (std::size_t index = 0; index < loaded.size(); ++index) {
         if (!loaded[index]) {
@@ -268,14 +273,16 @@ core::Result<ShaderSet> load_shaders() {
         }
     }
     ShaderSet result;
-    result.terrain_vertex = std::move(loaded[0]).value();
-    result.terrain_fragment = std::move(loaded[1]).value();
-    result.static_vertex = std::move(loaded[2]).value();
-    result.static_fragment = std::move(loaded[3]).value();
-    result.debug_vertex = std::move(loaded[4]).value();
-    result.debug_fragment = std::move(loaded[5]).value();
-    result.ui_vertex = std::move(loaded[6]).value();
-    result.ui_fragment = std::move(loaded[7]).value();
+    result.sky_vertex = std::move(loaded[0]).value();
+    result.sky_fragment = std::move(loaded[1]).value();
+    result.terrain_vertex = std::move(loaded[2]).value();
+    result.terrain_fragment = std::move(loaded[3]).value();
+    result.static_vertex = std::move(loaded[4]).value();
+    result.static_fragment = std::move(loaded[5]).value();
+    result.debug_vertex = std::move(loaded[6]).value();
+    result.debug_fragment = std::move(loaded[7]).value();
+    result.ui_vertex = std::move(loaded[8]).value();
+    result.ui_fragment = std::move(loaded[9]).value();
     return core::Result<ShaderSet>::success(std::move(result));
 }
 
@@ -363,6 +370,8 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
     }
     renderer::RendererInitDesc renderer_desc;
     renderer_desc.device = std::move(device).value();
+    renderer_desc.sky_vertex_spirv = std::move(shaders.value().sky_vertex);
+    renderer_desc.sky_fragment_spirv = std::move(shaders.value().sky_fragment);
     renderer_desc.terrain_vertex_spirv = std::move(shaders.value().terrain_vertex);
     renderer_desc.terrain_fragment_spirv = std::move(shaders.value().terrain_fragment);
     renderer_desc.static_mesh_vertex_spirv = std::move(shaders.value().static_vertex);
@@ -441,6 +450,15 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
             return fail(runtime_frame.error());
         }
         renderer.set_voxel_lighting_stats(runtime.session()->server()->chunk_lighting().stats());
+        auto day_night = renderer::evaluate_day_night(
+            runtime_frame.value().authoritative_world_tick, runtime.session()->config().world_time);
+        if (!day_night) {
+            return fail(day_night.error());
+        }
+        status = renderer.set_environment(day_night.value().render);
+        if (!status) {
+            return fail(status.error());
+        }
         const auto* player = runtime.session()->client()->local_player_snapshot();
         if (player == nullptr) {
             return fail("client has no assigned player snapshot");
