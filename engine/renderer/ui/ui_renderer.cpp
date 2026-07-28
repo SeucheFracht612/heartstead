@@ -156,7 +156,9 @@ core::Status UiRenderer::submit_triangles(const UiTriangleBatchDesc& batch) {
     pending.scissor_enabled = batch.scissor_enabled;
     pending.scissor = batch.scissor;
     vertices_.insert(vertices_.end(), batch.vertices.begin(), batch.vertices.end());
-    indices_.insert(indices_.end(), batch.indices.begin(), batch.indices.end());
+    for (const auto index : batch.indices) {
+        indices_.push_back(index + pending.first_vertex);
+    }
     batches_.push_back(pending);
     return core::Status::ok();
 }
@@ -268,13 +270,29 @@ core::Result<UiFrameCommands> UiRenderer::build_frame(UiFrameCommands scratch) {
     const auto vertex_segment_offset = frame_slot * config_.maximum_vertices;
     const auto index_segment_offset = frame_slot * config_.maximum_indices;
     for (const auto& batch : batches_) {
+        const auto same_scissor =
+            !batch.scissor_enabled ||
+            (!scratch.draws.empty() && scratch.draws.back().scissor.x == batch.scissor.x &&
+             scratch.draws.back().scissor.y == batch.scissor.y &&
+             scratch.draws.back().scissor.width == batch.scissor.width &&
+             scratch.draws.back().scissor.height == batch.scissor.height);
+        const auto can_merge = !scratch.draws.empty() &&
+                               scratch.draws.back().scissor_enabled == batch.scissor_enabled &&
+                               same_scissor &&
+                               scratch.draws.back().first_index +
+                                       scratch.draws.back().index_count ==
+                                   index_segment_offset + batch.first_index;
+        if (can_merge) {
+            scratch.draws.back().index_count += batch.index_count;
+            continue;
+        }
         rhi::RenderDrawCommand draw;
         draw.pipeline = pipeline_;
         draw.vertex_buffer = vertex_buffer_;
         draw.index_buffer = index_buffer_;
         draw.index_count = batch.index_count;
         draw.first_index = static_cast<std::uint32_t>(index_segment_offset + batch.first_index);
-        draw.vertex_offset = static_cast<std::int32_t>(vertex_segment_offset + batch.first_vertex);
+        draw.vertex_offset = static_cast<std::int32_t>(vertex_segment_offset);
         draw.index_type = rhi::RenderIndexType::uint32;
         draw.scissor_enabled = batch.scissor_enabled;
         draw.scissor = {batch.scissor.x, batch.scissor.y, batch.scissor.width,
@@ -286,8 +304,8 @@ core::Result<UiFrameCommands> UiRenderer::build_frame(UiFrameCommands scratch) {
     stats_.submitted_indices = static_cast<std::uint32_t>(indices_.size());
     stats_.draw_calls = static_cast<std::uint32_t>(scratch.draws.size());
     stats_.clipped_draw_calls = static_cast<std::uint32_t>(
-        std::ranges::count_if(batches_, [](const PendingBatch& batch) {
-            return batch.scissor_enabled;
+        std::ranges::count_if(scratch.draws, [](const rhi::RenderDrawCommand& draw) {
+            return draw.scissor_enabled;
         }));
     stats_.submitted_glyphs = pending_glyph_count_;
     stats_.overflowed_batches = overflowed_batches_;
