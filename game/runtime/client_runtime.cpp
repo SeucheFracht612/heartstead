@@ -7,9 +7,15 @@
 namespace heartstead::game {
 
 ClientRuntime::ClientRuntime(core::NetId expected_client_id, world::WorldStateDesc world_desc,
-                             const ReplicationRegistry* replication_registry)
+                             const ReplicationRegistry* replication_registry,
+                             const world::VoxelPalette* movement_palette)
     : world_(std::move(world_desc)), replication_registry_(replication_registry),
-      session_(expected_client_id) {}
+      session_(expected_client_id) {
+    if (movement_palette != nullptr) {
+        prediction_collision_ = std::make_unique<movement::VoxelCharacterCollisionWorld>(
+            world_.chunks(), *movement_palette);
+    }
+}
 
 core::Status ClientRuntime::receive(std::span<const net::TransportEnvelope> messages) {
     for (const auto& message : messages) {
@@ -22,7 +28,12 @@ core::Status ClientRuntime::receive(std::span<const net::TransportEnvelope> mess
     return core::Status::ok();
 }
 
-core::Result<ClientRuntimeStats> ClientRuntime::synchronize() {
+core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render_tick) {
+    std::uint32_t reconciled_input_count = 0;
+    std::uint32_t acknowledged_input_count = 0;
+    std::uint32_t hard_correction_count = 0;
+    std::uint32_t interpolated_player_count = 0;
+    double maximum_correction_distance = 0.0;
     player_tombstones_.clear();
     auto completed_chunks = apply_queued_chunk_snapshots();
     if (!completed_chunks) {
@@ -54,6 +65,13 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize() {
                             std::make_move_iterator(results.end()));
     auto movement_messages =
         session_.drain_replication_messages(movement::movement_snapshot_payload_type);
+    auto legacy_movement_messages =
+        session_.drain_replication_messages(
+            movement::legacy_movement_snapshot_payload_type);
+    movement_messages.insert(
+        movement_messages.end(),
+        std::make_move_iterator(legacy_movement_messages.begin()),
+        std::make_move_iterator(legacy_movement_messages.end()));
     auto entity_motion_messages =
         session_.drain_replication_messages(entities::entity_motion_snapshot_payload_type);
     auto entity_motion_removals =
@@ -81,6 +99,12 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize() {
                                                              removal.error().message);
         }
         movement_snapshots_.erase(removal.value().value());
+        authoritative_movement_ticks_.erase(removal.value().value());
+        remote_player_interpolators_.erase(removal.value().value());
+        if (removal.value() == local_player_net_id_) {
+            predicted_local_snapshot_.reset();
+            prediction_buffer_.clear();
+        }
         player_tombstones_.push_back(removal.value());
     }
     std::uint32_t movement_snapshot_count = 0;
@@ -90,14 +114,73 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize() {
             return core::Result<ClientRuntimeStats>::failure(snapshot.error().code,
                                                              snapshot.error().message);
         }
-        const auto player_key = snapshot.value().player_net_id.value();
-        const auto found = movement_snapshots_.find(player_key);
-        if (found != movement_snapshots_.end() &&
-            found->second.state.simulation_tick >= snapshot.value().state.simulation_tick) {
+        auto authoritative = std::move(snapshot).value();
+        const auto player_key = authoritative.player_net_id.value();
+        const auto previous_tick = authoritative_movement_ticks_.find(player_key);
+        if (previous_tick != authoritative_movement_ticks_.end() &&
+            previous_tick->second >= authoritative.state.simulation_tick) {
             continue;
         }
-        movement_snapshots_.insert_or_assign(player_key, std::move(snapshot).value());
+        authoritative_movement_ticks_.insert_or_assign(player_key,
+                                                        authoritative.state.simulation_tick);
+        if (authoritative.player_net_id == local_player_net_id_) {
+            if (predicted_local_snapshot_.has_value() && prediction_collision_ != nullptr) {
+                auto reconciled = prediction_buffer_.reconcile(
+                    predicted_local_snapshot_->state, authoritative, prediction_controller_, {},
+                    *prediction_collision_);
+                if (!reconciled) {
+                    return core::Result<ClientRuntimeStats>::failure(
+                        reconciled.error().code, reconciled.error().message);
+                }
+                reconciled_input_count +=
+                    static_cast<std::uint32_t>(reconciled.value().replayed_input_count);
+                acknowledged_input_count +=
+                    static_cast<std::uint32_t>(reconciled.value().acknowledged_input_count);
+                maximum_correction_distance =
+                    std::max(maximum_correction_distance,
+                             reconciled.value().correction_distance);
+                if (reconciled.value().hard_correction) {
+                    ++hard_correction_count;
+                }
+                predicted_local_snapshot_ = authoritative;
+                predicted_local_snapshot_->state = std::move(reconciled).value().state;
+                predicted_local_snapshot_->last_processed_input_sequence =
+                    predicted_local_snapshot_->state.last_input_sequence;
+            } else {
+                predicted_local_snapshot_ = authoritative;
+            }
+            prediction_buffer_.set_collision_world_revision(
+                authoritative.collision_world_revision);
+            movement_snapshots_.insert_or_assign(player_key, *predicted_local_snapshot_);
+        } else {
+            auto [interpolator, _] =
+                remote_player_interpolators_.try_emplace(player_key);
+            auto status = interpolator->second.push(authoritative);
+            if (!status) {
+                return core::Result<ClientRuntimeStats>::failure(status.error().code,
+                                                                 status.error().message);
+            }
+            movement_snapshots_.insert_or_assign(player_key, std::move(authoritative));
+        }
         ++movement_snapshot_count;
+    }
+    if (render_tick == 0) {
+        for (const auto& [_, tick] : authoritative_movement_ticks_) {
+            render_tick = std::max(render_tick, tick);
+        }
+    }
+    for (const auto& [player_key, interpolator] : remote_player_interpolators_) {
+        auto found = movement_snapshots_.find(player_key);
+        if (found == movement_snapshots_.end()) {
+            continue;
+        }
+        auto sampled = interpolator.sample(render_tick);
+        if (!sampled) {
+            return core::Result<ClientRuntimeStats>::failure(sampled.error().code,
+                                                             sampled.error().message);
+        }
+        found->second.state = std::move(sampled).value();
+        ++interpolated_player_count;
     }
     for (const auto& message : entity_motion_removals) {
         auto removal = entities::entity_motion_removal_from_transport(message);
@@ -130,17 +213,76 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize() {
     stats.entity_motion_snapshot_count = entity_motion_snapshot_count;
     stats.entity_motion_tombstone_count = static_cast<std::uint32_t>(entity_motion_removals.size());
     stats.player_tombstone_count = static_cast<std::uint32_t>(player_tombstones_.size());
+    stats.predicted_input_count = predicted_inputs_since_sync_;
+    stats.reconciled_input_count = reconciled_input_count;
+    stats.acknowledged_input_count = acknowledged_input_count;
+    stats.hard_correction_count = hard_correction_count;
+    stats.interpolated_player_count = interpolated_player_count;
+    stats.maximum_correction_distance = maximum_correction_distance;
     stats.chunk_snapshot_slice_count = completed_chunks.value().slice_count;
     stats.completed_chunk_snapshot_count = completed_chunks.value().completed_chunk_count;
     stats.replication = std::move(replication).value();
     stats.feature_replication = feature_replication;
     messages_since_sync_ = 0;
+    predicted_inputs_since_sync_ = 0;
     return core::Result<ClientRuntimeStats>::success(std::move(stats));
 }
 
 core::Result<net::CommandEnvelope>
 ClientRuntime::create_command(std::string type, std::string payload, std::int64_t now_ms) {
     return session_.create_command(std::move(type), std::move(payload), now_ms);
+}
+
+core::Result<movement::PlayerInputBundle>
+ClientRuntime::movement_input_bundle(const movement::PlayerInputFrame& input) const {
+    auto status = input.validate();
+    if (!status) {
+        return core::Result<movement::PlayerInputBundle>::failure(status.error().code,
+                                                                  status.error().message);
+    }
+    movement::PlayerInputBundle bundle;
+    bundle.frames = prediction_buffer_.unacknowledged();
+    bundle.frames.push_back(input);
+    if (bundle.frames.size() > 4) {
+        bundle.frames.erase(bundle.frames.begin(),
+                            bundle.frames.end() - 4);
+    }
+    status = bundle.validate();
+    if (!status) {
+        return core::Result<movement::PlayerInputBundle>::failure(status.error().code,
+                                                                  status.error().message);
+    }
+    return core::Result<movement::PlayerInputBundle>::success(std::move(bundle));
+}
+
+core::Status ClientRuntime::predict_local_input(const movement::PlayerInputFrame& input) {
+    if (!local_player_net_id_.is_valid() || !predicted_local_snapshot_.has_value()) {
+        return core::Status::failure(
+            "client_runtime.local_player_unavailable",
+            "movement prediction requires an assigned local player snapshot");
+    }
+    if (prediction_collision_ == nullptr) {
+        return core::Status::failure(
+            "client_runtime.prediction_collision_unavailable",
+            "movement prediction requires a client voxel collision world");
+    }
+    auto status = prediction_buffer_.record(input);
+    if (!status) {
+        return status;
+    }
+    auto predicted = prediction_controller_.tick(predicted_local_snapshot_->state, input, {},
+                                                 *prediction_collision_);
+    if (!predicted) {
+        prediction_buffer_.clear();
+        return core::Status::failure(predicted.error().code, predicted.error().message);
+    }
+    predicted_local_snapshot_->state = std::move(predicted).value().state;
+    predicted_local_snapshot_->last_processed_input_sequence =
+        predicted_local_snapshot_->state.last_input_sequence;
+    movement_snapshots_.insert_or_assign(local_player_net_id_.value(),
+                                         *predicted_local_snapshot_);
+    ++predicted_inputs_since_sync_;
+    return core::Status::ok();
 }
 
 bool ClientRuntime::is_connected() const noexcept {
@@ -219,6 +361,10 @@ void ClientRuntime::clear_command_results() noexcept {
 
 core::Result<ClientRuntime::ChunkSnapshotApplyStats> ClientRuntime::apply_queued_chunk_snapshots() {
     auto messages = session_.drain_replication_messages(world::chunk_snapshot_slice_payload_type);
+    auto legacy_messages = session_.drain_replication_messages(
+        world::legacy_chunk_snapshot_slice_payload_type);
+    messages.insert(messages.end(), std::make_move_iterator(legacy_messages.begin()),
+                    std::make_move_iterator(legacy_messages.end()));
     std::uint32_t completed_count = 0;
     for (const auto& message : messages) {
         auto slice = world::chunk_snapshot_slice_from_transport(message);

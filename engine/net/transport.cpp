@@ -213,7 +213,7 @@ class PosixDatagramTransportHost final : public ITransportHost {
               client_reliability(client_id, server_id, reliability_config),
               server_command_sequencer(reliability_config.max_in_flight), token(token_value),
               remote(remote_value), last_received_ms(connected_at_ms),
-              last_sent_ms(connected_at_ms) {}
+              last_sent_ms(connected_at_ms), inbound_window_started_ms(connected_at_ms) {}
 
         std::optional<PosixDatagramSocket> socket;
         sockaddr_in address{};
@@ -227,6 +227,9 @@ class PosixDatagramTransportHost final : public ITransportHost {
         bool remote = false;
         std::int64_t last_received_ms = 0;
         std::int64_t last_sent_ms = 0;
+        std::int64_t inbound_window_started_ms = 0;
+        std::uint32_t inbound_message_count = 0;
+        std::uint32_t inbound_byte_count = 0;
         bool connected = true;
     };
 
@@ -471,6 +474,12 @@ class PosixDatagramTransportHost final : public ITransportHost {
         (void)server_reassembler_.expire(now_ms);
         TransportMaintenanceResult result;
         pump_server_socket();
+        result.malformed_datagram_count = pending_malformed_datagram_count_;
+        result.rejected_datagram_count = pending_rejected_datagram_count_;
+        result.rate_limited_datagram_count = pending_rate_limited_datagram_count_;
+        pending_malformed_datagram_count_ = 0;
+        pending_rejected_datagram_count_ = 0;
+        pending_rate_limited_datagram_count_ = 0;
         result.connected_clients.swap(pending_connected_clients_);
         result.disconnected_clients.swap(pending_disconnected_clients_);
         for (auto& [_, client] : clients_) {
@@ -664,6 +673,40 @@ class PosixDatagramTransportHost final : public ITransportHost {
         return static_cast<std::uint64_t>(non_negative_time / 1'000) + 1;
     }
 
+    [[nodiscard]] bool admit_handshake() noexcept {
+        if (current_time_ms_ < handshake_window_started_ms_ ||
+            current_time_ms_ - handshake_window_started_ms_ >= 1'000) {
+            handshake_window_started_ms_ = current_time_ms_;
+            handshake_count_ = 0;
+        }
+        if (handshake_count_ >= config_.max_handshakes_per_second) {
+            return false;
+        }
+        ++handshake_count_;
+        return true;
+    }
+
+    [[nodiscard]] bool admit_client_message(ClientEndpoint& client,
+                                            std::size_t approximate_bytes) noexcept {
+        if (current_time_ms_ < client.inbound_window_started_ms ||
+            current_time_ms_ - client.inbound_window_started_ms >= 1'000) {
+            client.inbound_window_started_ms = current_time_ms_;
+            client.inbound_message_count = 0;
+            client.inbound_byte_count = 0;
+        }
+        if (client.inbound_message_count >=
+                config_.max_inbound_messages_per_second ||
+            approximate_bytes >
+                config_.max_inbound_bytes_per_second -
+                    std::min(config_.max_inbound_bytes_per_second,
+                             client.inbound_byte_count)) {
+            return false;
+        }
+        ++client.inbound_message_count;
+        client.inbound_byte_count += static_cast<std::uint32_t>(approximate_bytes);
+        return true;
+    }
+
     [[nodiscard]] ClientEndpoint* remote_client_at(const sockaddr_in& address) noexcept {
         for (auto& [_, client] : clients_) {
             if (client.connected && client.remote &&
@@ -701,34 +744,34 @@ class PosixDatagramTransportHost final : public ITransportHost {
             });
     }
 
-    void accept_handshake(const TransportHandshakePacket& packet, const sockaddr_in& remote) {
+    void accept_handshake(const TransportHandshakePacket& packet, const sockaddr_in& remote,
+                          std::size_t received_bytes) {
         const auto scope = fragment_source_scope(remote);
         if (packet.kind == TransportHandshakeKind::client_hello) {
             const auto bucket = handshake_time_bucket();
             const auto cookie = make_transport_address_cookie(
                 security_secret_, scope, packet.client_nonce, packet.content_fingerprint, bucket);
-            (void)send_handshake(
-                remote,
-                TransportHandshakePacket{
-                    TransportHandshakeKind::server_challenge,
-                    transport_handshake_protocol_version,
-                    packet.client_nonce,
-                    cookie,
-                    bucket,
-                    config_.server_id,
-                    {},
-                    {},
-                    config_.content_fingerprint,
-                    {},
-                });
+            const TransportHandshakePacket challenge{
+                TransportHandshakeKind::server_challenge,
+                transport_handshake_protocol_version,
+                packet.client_nonce,
+                cookie,
+                bucket,
+                config_.server_id,
+                {},
+                {},
+                config_.content_fingerprint,
+                {},
+            };
+            auto encoded = TransportHandshakeCodec::encode(challenge);
+            if (encoded && encoded.value().size() <= received_bytes * 3U) {
+                (void)send_datagram(server_socket_.fd(), remote, encoded.value());
+            } else {
+                ++pending_rejected_datagram_count_;
+            }
             return;
         }
         if (packet.kind != TransportHandshakeKind::client_response) {
-            return;
-        }
-        if (packet.content_fingerprint != config_.content_fingerprint) {
-            reject_handshake(remote, packet.client_nonce,
-                             "transport_handshake.content_mismatch");
             return;
         }
         const auto current_bucket = handshake_time_bucket();
@@ -744,6 +787,11 @@ class PosixDatagramTransportHost final : public ITransportHost {
         if (!constant_time_token_equal(expected, packet.cookie)) {
             reject_handshake(remote, packet.client_nonce,
                              "transport_handshake.invalid_cookie");
+            return;
+        }
+        if (packet.content_fingerprint != config_.content_fingerprint) {
+            reject_handshake(remote, packet.client_nonce,
+                             "transport_handshake.content_mismatch");
             return;
         }
         if (auto* existing = remote_client_at(remote); existing != nullptr) {
@@ -810,15 +858,24 @@ class PosixDatagramTransportHost final : public ITransportHost {
 
     void accept_server_envelope(TransportEnvelope envelope, const sockaddr_in& remote) {
         if (envelope.recipient != config_.server_id) {
+            ++pending_rejected_datagram_count_;
             return;
         }
         auto client = find_connected_client(envelope.sender);
         if (!client || !same_socket_endpoint(client.value()->address, remote) ||
             !constant_time_token_equal(envelope.session_token, client.value()->token)) {
+            ++pending_rejected_datagram_count_;
             return;
         }
         auto status = validate_transport_message(envelope.message, config_.max_payload_bytes);
         if (!status) {
+            ++pending_malformed_datagram_count_;
+            return;
+        }
+        const auto approximate_bytes =
+            envelope.message.payload.size() + envelope.message.payload_type.size() + 128U;
+        if (!admit_client_message(*client.value(), approximate_bytes)) {
+            ++pending_rate_limited_datagram_count_;
             return;
         }
         client.value()->last_received_ms = current_time_ms_;
@@ -907,13 +964,19 @@ class PosixDatagramTransportHost final : public ITransportHost {
                 std::string_view(buffer.data(), static_cast<std::size_t>(received));
             auto handshake = TransportHandshakeCodec::decode(datagram);
             if (handshake) {
-                accept_handshake(handshake.value(), remote);
+                if (!admit_handshake()) {
+                    ++pending_rate_limited_datagram_count_;
+                    continue;
+                }
+                accept_handshake(handshake.value(), remote, datagram.size());
                 continue;
             }
             auto envelope =
                 decode_datagram(datagram, server_reassembler_, fragment_source_scope(remote));
             if (envelope) {
                 accept_server_envelope(std::move(envelope).value(), remote);
+            } else if (!datagram.starts_with("heartstead.transport.fragment.v1")) {
+                ++pending_malformed_datagram_count_;
             }
         }
     }
@@ -1026,6 +1089,11 @@ class PosixDatagramTransportHost final : public ITransportHost {
     std::vector<TransportEnvelope> server_messages_;
     std::vector<core::NetId> pending_connected_clients_;
     std::vector<core::NetId> pending_disconnected_clients_;
+    std::int64_t handshake_window_started_ms_ = 0;
+    std::uint32_t handshake_count_ = 0;
+    std::uint32_t pending_malformed_datagram_count_ = 0;
+    std::uint32_t pending_rejected_datagram_count_ = 0;
+    std::uint32_t pending_rate_limited_datagram_count_ = 0;
 };
 
 #endif
@@ -1311,6 +1379,13 @@ core::Status validate_external_transport_host_config(const ExternalTransportHost
         config.keepalive_interval_ms >= config.idle_timeout_ms) {
         return core::Status::failure("transport.invalid_timeouts",
                                      "transport handshake, keepalive, or idle timeout is invalid");
+    }
+    if (config.max_inbound_messages_per_second == 0 ||
+        config.max_inbound_bytes_per_second < config.max_payload_bytes ||
+        config.max_handshakes_per_second == 0) {
+        return core::Status::failure(
+            "transport.invalid_rate_limits",
+            "transport inbound message, byte, and handshake limits are invalid");
     }
     return core::Status::ok();
 }

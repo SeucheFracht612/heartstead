@@ -1,8 +1,11 @@
 #include "engine/movement/movement_prediction.hpp"
 
+#include "engine/net/binary_message.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <limits>
 #include <sstream>
 #include <vector>
 
@@ -52,6 +55,32 @@ core::Result<double> parse_number<double>(std::string_view text, std::string_vie
 [[nodiscard]] double position_distance(const world::WorldPosition& lhs,
                                        const world::WorldPosition& rhs) noexcept {
     return math::length(lhs.relative_to(rhs.anchor) - rhs.local_offset);
+}
+
+void write_binary_position(net::BinaryMessageWriter& writer,
+                           const world::WorldPosition& position) {
+    writer.i64(position.anchor.x);
+    writer.i64(position.anchor.y);
+    writer.i64(position.anchor.z);
+    writer.f64(position.local_offset.x);
+    writer.f64(position.local_offset.y);
+    writer.f64(position.local_offset.z);
+}
+
+[[nodiscard]] bool read_binary_position(net::BinaryMessageReader& reader,
+                                        world::WorldPosition& position) {
+    world::BlockCoord anchor;
+    math::Vec3d local;
+    if (!reader.i64(anchor.x) || !reader.i64(anchor.y) || !reader.i64(anchor.z) ||
+        !reader.f64(local.x) || !reader.f64(local.y) || !reader.f64(local.z)) {
+        return false;
+    }
+    auto decoded = world::WorldPosition::from_anchor(anchor, local);
+    if (!decoded) {
+        return false;
+    }
+    position = decoded.value();
+    return true;
 }
 
 } // namespace
@@ -110,6 +139,86 @@ core::Result<PlayerInputBundle> PlayerInputBundleTextCodec::decode(std::string_v
             break;
         }
         first = last + 1;
+    }
+    auto status = bundle.validate();
+    if (!status) {
+        return core::Result<PlayerInputBundle>::failure(status.error().code,
+                                                        status.error().message);
+    }
+    return core::Result<PlayerInputBundle>::success(std::move(bundle));
+}
+
+std::string PlayerInputBundleBinaryCodec::encode(const PlayerInputBundle& bundle) {
+    net::BinaryMessageWriter writer;
+    writer.u32(0x3142494dU);
+    writer.u8(static_cast<std::uint8_t>(bundle.frames.size()));
+    for (const auto& frame : bundle.frames) {
+        writer.var_u64(frame.version);
+        writer.var_u64(frame.tick);
+        writer.var_u64(frame.sequence);
+        writer.var_i64(frame.move_x);
+        writer.var_i64(frame.move_z);
+        writer.var_i64(frame.yaw_centidegrees);
+        writer.var_i64(frame.pitch_centidegrees);
+        writer.var_u64(frame.held_buttons);
+        writer.var_u64(frame.pressed_buttons);
+    }
+    return writer.take();
+}
+
+core::Result<PlayerInputBundle>
+PlayerInputBundleBinaryCodec::decode(std::string_view payload) {
+    net::BinaryMessageReader reader(payload);
+    std::uint32_t magic = 0;
+    std::uint8_t count = 0;
+    if (!reader.u32(magic) || magic != 0x3142494dU || !reader.u8(count) ||
+        count == 0 || count > 4) {
+        return core::Result<PlayerInputBundle>::failure(
+            "movement_input_bundle.invalid_binary_header",
+            "movement input bundle binary header is invalid");
+    }
+    PlayerInputBundle bundle;
+    bundle.frames.resize(count);
+    for (auto& frame : bundle.frames) {
+        std::uint64_t version = 0;
+        std::uint64_t held_buttons = 0;
+        std::uint64_t pressed_buttons = 0;
+        std::int64_t move_x = 0;
+        std::int64_t move_z = 0;
+        std::int64_t yaw = 0;
+        std::int64_t pitch = 0;
+        if (!reader.var_u64(version) || !reader.var_u64(frame.tick) ||
+            !reader.var_u64(frame.sequence) || !reader.var_i64(move_x) ||
+            !reader.var_i64(move_z) || !reader.var_i64(yaw) ||
+            !reader.var_i64(pitch) || !reader.var_u64(held_buttons) ||
+            !reader.var_u64(pressed_buttons) ||
+            version > std::numeric_limits<std::uint16_t>::max() ||
+            move_x < std::numeric_limits<std::int16_t>::min() ||
+            move_x > std::numeric_limits<std::int16_t>::max() ||
+            move_z < std::numeric_limits<std::int16_t>::min() ||
+            move_z > std::numeric_limits<std::int16_t>::max() ||
+            yaw < std::numeric_limits<std::int16_t>::min() ||
+            yaw > std::numeric_limits<std::int16_t>::max() ||
+            pitch < std::numeric_limits<std::int16_t>::min() ||
+            pitch > std::numeric_limits<std::int16_t>::max() ||
+            held_buttons > std::numeric_limits<std::uint32_t>::max() ||
+            pressed_buttons > std::numeric_limits<std::uint32_t>::max()) {
+            return core::Result<PlayerInputBundle>::failure(
+                "movement_input_bundle.truncated_binary",
+                "movement input bundle binary payload is truncated");
+        }
+        frame.version = static_cast<std::uint16_t>(version);
+        frame.move_x = static_cast<std::int16_t>(move_x);
+        frame.move_z = static_cast<std::int16_t>(move_z);
+        frame.yaw_centidegrees = static_cast<std::int16_t>(yaw);
+        frame.pitch_centidegrees = static_cast<std::int16_t>(pitch);
+        frame.held_buttons = static_cast<std::uint32_t>(held_buttons);
+        frame.pressed_buttons = static_cast<std::uint32_t>(pressed_buttons);
+    }
+    if (!reader.finished()) {
+        return core::Result<PlayerInputBundle>::failure(
+            "movement_input_bundle.trailing_binary",
+            "movement input bundle binary payload has trailing bytes");
     }
     auto status = bundle.validate();
     if (!status) {
@@ -366,6 +475,141 @@ PlayerControllerSnapshotTextCodec::decode(std::string_view payload,
     return core::Result<PlayerControllerSnapshot>::success(std::move(snapshot));
 }
 
+std::string
+PlayerControllerSnapshotBinaryCodec::encode(const PlayerControllerSnapshot& snapshot) {
+    net::BinaryMessageWriter writer;
+    writer.u32(0x3153504dU);
+    writer.u16(snapshot.version);
+    writer.u64(snapshot.player_net_id.value());
+    writer.u64(snapshot.player_save_id.value());
+    writer.u64(snapshot.last_processed_input_sequence);
+    writer.u64(snapshot.collision_world_revision);
+    const auto& state = snapshot.state;
+    write_binary_position(writer, state.position);
+    writer.f64(state.velocity.x);
+    writer.f64(state.velocity.y);
+    writer.f64(state.velocity.z);
+    writer.u8(static_cast<std::uint8_t>(state.mode));
+    writer.u8(static_cast<std::uint8_t>(state.scripted_kind));
+    writer.u8(static_cast<std::uint8_t>(state.encumbrance));
+    writer.boolean(state.crouched);
+    writer.boolean(state.grounded);
+    writer.boolean(state.exhausted);
+    writer.boolean(state.invulnerable);
+    writer.i16(state.yaw_centidegrees);
+    writer.i16(state.pitch_centidegrees);
+    writer.i32(state.health_milli);
+    writer.i32(state.stamina_milli);
+    writer.u8(state.dash_charges);
+    writer.boolean(state.air_dash_available);
+    writer.u16(state.mode_ticks);
+    writer.u16(state.mode_duration_ticks);
+    writer.u16(state.jump_buffer_ticks);
+    writer.u16(state.coyote_ticks);
+    writer.u16(state.roll_buffer_ticks);
+    writer.u16(state.stamina_regen_delay_ticks);
+    writer.u16(state.landing_roll_window_ticks);
+    writer.u8(state.stamina_drain_remainder);
+    writer.u8(state.stamina_regen_remainder);
+    writer.boolean(state.pending_fall_distance.has_value());
+    writer.f64(state.pending_fall_distance.value_or(0.0));
+    if (state.pending_fall_distance.has_value()) {
+        write_binary_position(writer, state.fall_origin);
+    }
+    if (state.scripted_kind != ScriptedMovementKind::none) {
+        writer.f64(state.scripted_direction.x);
+        writer.f64(state.scripted_direction.y);
+        writer.f64(state.scripted_direction.z);
+        write_binary_position(writer, state.scripted_start);
+        write_binary_position(writer, state.scripted_target);
+    }
+    writer.u8(static_cast<std::uint8_t>(state.locomotion_animation.kind));
+    writer.u16(state.locomotion_animation.phase);
+    writer.u8(static_cast<std::uint8_t>(
+        state.locomotion_animation.transition_from));
+    writer.u16(state.locomotion_animation.transition_from_phase);
+    writer.u64(state.locomotion_animation.transition_tick);
+    writer.u64(state.simulation_tick);
+    return writer.take();
+}
+
+core::Result<PlayerControllerSnapshot>
+PlayerControllerSnapshotBinaryCodec::decode(std::string_view payload,
+                                            const PlayerMovementConfig& config) {
+    net::BinaryMessageReader reader(payload);
+    std::uint32_t magic = 0;
+    PlayerControllerSnapshot snapshot;
+    std::uint64_t player_net_id = 0;
+    std::uint64_t player_save_id = 0;
+    auto& state = snapshot.state;
+    std::uint8_t mode = 0;
+    std::uint8_t scripted_kind = 0;
+    std::uint8_t encumbrance = 0;
+    std::uint8_t locomotion_kind = 0;
+    std::uint8_t locomotion_from = 0;
+    bool has_fall_distance = false;
+    double fall_distance = 0.0;
+    if (!reader.u32(magic) || magic != 0x3153504dU ||
+        !reader.u16(snapshot.version) || !reader.u64(player_net_id) ||
+        !reader.u64(player_save_id) ||
+        !reader.u64(snapshot.last_processed_input_sequence) ||
+        !reader.u64(snapshot.collision_world_revision) ||
+        !read_binary_position(reader, state.position) ||
+        !reader.f64(state.velocity.x) || !reader.f64(state.velocity.y) ||
+        !reader.f64(state.velocity.z) || !reader.u8(mode) ||
+        !reader.u8(scripted_kind) || !reader.u8(encumbrance) ||
+        !reader.boolean(state.crouched) || !reader.boolean(state.grounded) ||
+        !reader.boolean(state.exhausted) || !reader.boolean(state.invulnerable) ||
+        !reader.i16(state.yaw_centidegrees) ||
+        !reader.i16(state.pitch_centidegrees) || !reader.i32(state.health_milli) ||
+        !reader.i32(state.stamina_milli) || !reader.u8(state.dash_charges) ||
+        !reader.boolean(state.air_dash_available) || !reader.u16(state.mode_ticks) ||
+        !reader.u16(state.mode_duration_ticks) ||
+        !reader.u16(state.jump_buffer_ticks) || !reader.u16(state.coyote_ticks) ||
+        !reader.u16(state.roll_buffer_ticks) ||
+        !reader.u16(state.stamina_regen_delay_ticks) ||
+        !reader.u16(state.landing_roll_window_ticks) ||
+        !reader.u8(state.stamina_drain_remainder) ||
+        !reader.u8(state.stamina_regen_remainder) ||
+        !reader.boolean(has_fall_distance) || !reader.f64(fall_distance) ||
+        (has_fall_distance &&
+         !read_binary_position(reader, state.fall_origin)) ||
+        (scripted_kind != static_cast<std::uint8_t>(ScriptedMovementKind::none) &&
+         (!reader.f64(state.scripted_direction.x) ||
+          !reader.f64(state.scripted_direction.y) ||
+          !reader.f64(state.scripted_direction.z) ||
+          !read_binary_position(reader, state.scripted_start) ||
+          !read_binary_position(reader, state.scripted_target))) ||
+        !reader.u8(locomotion_kind) ||
+        !reader.u16(state.locomotion_animation.phase) ||
+        !reader.u8(locomotion_from) ||
+        !reader.u16(state.locomotion_animation.transition_from_phase) ||
+        !reader.u64(state.locomotion_animation.transition_tick) ||
+        !reader.u64(state.simulation_tick) || !reader.finished()) {
+        return core::Result<PlayerControllerSnapshot>::failure(
+            "movement_snapshot.invalid_binary",
+            "movement snapshot binary payload is malformed or truncated");
+    }
+    snapshot.player_net_id = core::NetId::from_value(player_net_id);
+    snapshot.player_save_id = core::SaveId::from_value(player_save_id);
+    state.mode = static_cast<PlayerControllerMode>(mode);
+    state.scripted_kind = static_cast<ScriptedMovementKind>(scripted_kind);
+    state.encumbrance = static_cast<EncumbranceTier>(encumbrance);
+    state.pending_fall_distance =
+        has_fall_distance ? std::optional<double>{fall_distance} : std::nullopt;
+    state.locomotion_animation.kind =
+        static_cast<animation::LocomotionAnimationKind>(locomotion_kind);
+    state.locomotion_animation.transition_from =
+        static_cast<animation::LocomotionAnimationKind>(locomotion_from);
+    state.last_input_sequence = snapshot.last_processed_input_sequence;
+    auto status = snapshot.validate(config);
+    if (!status) {
+        return core::Result<PlayerControllerSnapshot>::failure(status.error().code,
+                                                               status.error().message);
+    }
+    return core::Result<PlayerControllerSnapshot>::success(std::move(snapshot));
+}
+
 MovementPredictionBuffer::MovementPredictionBuffer(std::size_t capacity) : capacity_(capacity) {}
 
 core::Status MovementPredictionBuffer::record(PlayerInputFrame input) {
@@ -534,7 +778,7 @@ net::TransportMessage make_movement_input_bundle_message(const PlayerInputBundle
             net::TransportChannel::unreliable,
             sequence,
             std::string(movement_input_bundle_payload_type),
-            PlayerInputBundleTextCodec::encode(bundle),
+            PlayerInputBundleBinaryCodec::encode(bundle),
             timestamp_ms};
 }
 
@@ -542,12 +786,16 @@ core::Result<PlayerInputBundle>
 movement_input_bundle_from_transport(const net::TransportEnvelope& envelope) {
     if (envelope.message.kind != net::TransportMessageKind::control ||
         envelope.message.channel != net::TransportChannel::unreliable ||
-        envelope.message.payload_type != movement_input_bundle_payload_type) {
+        (envelope.message.payload_type != movement_input_bundle_payload_type &&
+         envelope.message.payload_type != legacy_movement_input_bundle_payload_type)) {
         return core::Result<PlayerInputBundle>::failure(
             "movement_input_bundle.invalid_transport",
             "transport envelope is not a movement input bundle");
     }
-    auto bundle = PlayerInputBundleTextCodec::decode(envelope.message.payload);
+    auto bundle =
+        envelope.message.payload_type == movement_input_bundle_payload_type
+            ? PlayerInputBundleBinaryCodec::decode(envelope.message.payload)
+            : PlayerInputBundleTextCodec::decode(envelope.message.payload);
     if (!bundle || bundle.value().frames.back().sequence != envelope.message.sequence) {
         return core::Result<PlayerInputBundle>::failure(
             !bundle ? bundle.error().code : "movement_input_bundle.sequence_mismatch",
@@ -563,10 +811,10 @@ net::TransportMessage make_movement_snapshot_message(const PlayerControllerSnaps
     const auto sequence =
         transport_sequence == 0 ? snapshot.state.simulation_tick : transport_sequence;
     return {net::TransportMessageKind::replication,
-            net::TransportChannel::reliable,
+            net::TransportChannel::unreliable,
             sequence,
             std::string(movement_snapshot_payload_type),
-            PlayerControllerSnapshotTextCodec::encode(snapshot),
+            PlayerControllerSnapshotBinaryCodec::encode(snapshot),
             timestamp_ms};
 }
 
@@ -574,12 +822,17 @@ core::Result<PlayerControllerSnapshot>
 movement_snapshot_from_transport(const net::TransportEnvelope& envelope,
                                  const PlayerMovementConfig& config) {
     if (envelope.message.kind != net::TransportMessageKind::replication ||
-        envelope.message.channel != net::TransportChannel::reliable ||
-        envelope.message.payload_type != movement_snapshot_payload_type) {
+        envelope.message.channel != net::TransportChannel::unreliable ||
+        (envelope.message.payload_type != movement_snapshot_payload_type &&
+         envelope.message.payload_type != legacy_movement_snapshot_payload_type)) {
         return core::Result<PlayerControllerSnapshot>::failure(
             "movement_snapshot.invalid_transport", "transport envelope is not a movement snapshot");
     }
-    return PlayerControllerSnapshotTextCodec::decode(envelope.message.payload, config);
+    return envelope.message.payload_type == movement_snapshot_payload_type
+               ? PlayerControllerSnapshotBinaryCodec::decode(envelope.message.payload,
+                                                             config)
+               : PlayerControllerSnapshotTextCodec::decode(envelope.message.payload,
+                                                           config);
 }
 
 net::TransportMessage make_player_assignment_message(core::NetId player_net_id,

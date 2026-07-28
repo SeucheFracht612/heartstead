@@ -127,6 +127,15 @@ void test_fixed_step_and_input_codec() {
     auto bundle_round_trip = movement::PlayerInputBundleTextCodec::decode(
         movement::PlayerInputBundleTextCodec::encode(bundle));
     assert(bundle_round_trip && bundle_round_trip.value().frames.size() == 3);
+    const auto binary_bundle = movement::PlayerInputBundleBinaryCodec::encode(bundle);
+    auto binary_bundle_round_trip =
+        movement::PlayerInputBundleBinaryCodec::decode(binary_bundle);
+    assert(binary_bundle_round_trip &&
+           binary_bundle_round_trip.value().frames == bundle.frames);
+    assert(binary_bundle.size() <
+           movement::PlayerInputBundleTextCodec::encode(bundle).size());
+    assert(!movement::PlayerInputBundleBinaryCodec::decode(
+        std::string_view(binary_bundle).substr(0, binary_bundle.size() - 1)));
     movement::ServerMovementInputQueue queue;
     auto first_bundle = queue.push_bundle(bundle_round_trip.value());
     assert(first_bundle && first_bundle.value() == 3);
@@ -286,6 +295,17 @@ void test_snapshot_prediction_camera_and_load() {
     assert(decoded.value().state.position == snapshot.state.position);
     assert(decoded.value().collision_world_revision == 9);
     assert(decoded.value().state.locomotion_animation == snapshot.state.locomotion_animation);
+    const auto binary_snapshot =
+        movement::PlayerControllerSnapshotBinaryCodec::encode(snapshot);
+    auto decoded_binary =
+        movement::PlayerControllerSnapshotBinaryCodec::decode(binary_snapshot);
+    assert(decoded_binary);
+    assert(decoded_binary.value().state.position == snapshot.state.position);
+    assert(decoded_binary.value().state.locomotion_animation ==
+           snapshot.state.locomotion_animation);
+    assert(binary_snapshot.size() <= 384);
+    assert(!movement::PlayerControllerSnapshotBinaryCodec::decode(
+        std::string_view(binary_snapshot).substr(0, binary_snapshot.size() - 1)));
 
     movement::MovementPredictionBuffer prediction;
     auto second_input = input(2, 0, 0, 0, 32'767);

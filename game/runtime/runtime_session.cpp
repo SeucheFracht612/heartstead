@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace heartstead::game {
@@ -48,6 +49,12 @@ core::Status RuntimeConfiguration::validate() const {
     status = chunk_fluids.validate();
     if (!status) {
         return status;
+    }
+    if (max_transient_snapshot_messages_per_tick == 0 ||
+        max_transient_snapshot_payload_bytes_per_tick == 0) {
+        return core::Status::failure(
+            "runtime_configuration.invalid_replication_budget",
+            "transient replication message and byte budgets must be non-zero");
     }
     if (!create_server && !create_client) {
         return core::Status::failure("runtime_configuration.empty",
@@ -176,6 +183,10 @@ core::Status RuntimeSession::initialize() {
         server_desc.chunk_fluids = config_.chunk_fluids;
         server_desc.chunk_lighting = config_.chunk_lighting;
         server_desc.simulation_ticks_per_second = config_.fixed_step.ticks_per_second;
+        server_desc.max_transient_snapshot_messages_per_tick =
+            config_.max_transient_snapshot_messages_per_tick;
+        server_desc.max_transient_snapshot_payload_bytes_per_tick =
+            config_.max_transient_snapshot_payload_bytes_per_tick;
         server_desc.world_time = config_.world_time;
         server_desc.prototypes = prototypes_;
         server_desc.voxel_palette = voxel_palette_;
@@ -210,7 +221,7 @@ core::Status RuntimeSession::initialize() {
             }
             client_ = std::make_unique<ClientRuntime>(
                 connected.value(), std::move(client_world),
-                &server_->replication_registry());
+                &server_->replication_registry(), voxel_palette_);
         } else {
             auto endpoint = config_.remote_server_endpoint;
             if (!endpoint.has_value() && server_ != nullptr) {
@@ -241,7 +252,8 @@ core::Status RuntimeSession::initialize() {
             }
             client_ = std::make_unique<ClientRuntime>(
                 core::NetId{}, std::move(client_world),
-                server_ == nullptr ? nullptr : &server_->replication_registry());
+                server_ == nullptr ? nullptr : &server_->replication_registry(),
+                voxel_palette_);
         }
         auto status = pump_client_messages(0);
         if (!status) {
@@ -302,7 +314,7 @@ core::Result<RuntimeFrameStats> RuntimeSession::run_frame(RuntimeFrameInput inpu
             return fault_frame(status.error());
         }
         if (client_ != nullptr) {
-            auto synchronized = client_->synchronize();
+            auto synchronized = client_->synchronize(frame.value().first_tick + step);
             if (!synchronized) {
                 return fault_frame(synchronized.error());
             }
@@ -395,11 +407,43 @@ RuntimeSession::submit_inventory_transfer(const world::InventoryTransferRequest&
 
 core::Status RuntimeSession::submit_player_input(const movement::PlayerInputFrame& input,
                                                  std::int64_t now_ms) {
-    auto status = input.validate();
+    auto network_input = input;
+    if (client_ != nullptr) {
+        const auto* predicted = client_->local_player_snapshot();
+        if (predicted != nullptr &&
+            network_input.tick <= predicted->state.simulation_tick) {
+            if (predicted->state.simulation_tick ==
+                std::numeric_limits<std::uint64_t>::max()) {
+                return core::Status::failure(
+                    "runtime_session.movement_tick_exhausted",
+                    "local movement prediction exhausted its 64-bit tick space");
+            }
+            network_input.tick = predicted->state.simulation_tick + 1;
+        }
+    }
+    auto status = network_input.validate();
     if (!status) {
         return status;
     }
-    return submit_command("player.input", movement::PlayerInputTextCodec::encode(input), now_ms);
+    if (!running_ || client_ == nullptr ||
+        (server_ == nullptr && remote_transport_ == nullptr) ||
+        !client_->is_connected()) {
+        return core::Status::failure(
+            "runtime_session.movement_path_unavailable",
+            "movement input requires an active connected client");
+    }
+    auto bundle = client_->movement_input_bundle(network_input);
+    if (!bundle) {
+        return core::Status::failure(bundle.error().code, bundle.error().message);
+    }
+    status = remote_transport_ != nullptr
+                 ? remote_transport_->send_to_server(
+                       movement::make_movement_input_bundle_message(bundle.value(), now_ms))
+                 : server_->submit_movement_input(client_->client_id(), bundle.value(), now_ms);
+    if (!status) {
+        return status;
+    }
+    return client_->predict_local_input(network_input);
 }
 
 core::Status RuntimeSession::submit_place_voxel(const interaction::PlaceVoxelCommand& command,
@@ -461,8 +505,29 @@ core::Status RuntimeSession::pump_client_messages(std::int64_t now_ms) {
             return core::Status::failure(maintenance.error().code,
                                          maintenance.error().message);
         }
+        if (maintenance.value().disconnected) {
+            const auto reason =
+                maintenance.value().disconnect_reason_code.empty()
+                    ? std::string("transport_client.disconnected")
+                    : maintenance.value().disconnect_reason_code;
+            client_->session().mark_transport_disconnected(
+                reason, "remote transport disconnected", now_ms);
+            return core::Status::failure(reason, "remote transport disconnected");
+        }
         const auto messages = remote_transport_->drain_server_messages();
-        return client_->receive(messages);
+        auto status = client_->receive(messages);
+        if (!status || client_->is_connected() ||
+            remote_transport_->state() != net::TransportClientState::disconnected) {
+            return status;
+        }
+        const auto session_stats = client_->session().stats();
+        return core::Status::failure(
+            session_stats.disconnect_reason_code.empty()
+                ? "transport_client.disconnected"
+                : session_stats.disconnect_reason_code,
+            session_stats.disconnect_reason_message.empty()
+                ? "remote server disconnected the client"
+                : session_stats.disconnect_reason_message);
     }
     if (server_ == nullptr) {
         return core::Status::ok();

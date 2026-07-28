@@ -87,6 +87,8 @@ heartstead_add_foundation_test(heartstead_workpiece_v02_tests workpiece_v02_test
 heartstead_add_foundation_test(heartstead_assembly_v02_tests assembly_v02_tests.cpp)
 heartstead_add_foundation_test(heartstead_infrastructure_v02_tests infrastructure_v02_tests.cpp)
 heartstead_add_foundation_test(heartstead_transport_integrity_tests transport_integrity_tests.cpp)
+heartstead_add_foundation_test(heartstead_transport_codec_fuzz_tests
+                               transport_codec_fuzz_tests.cpp)
 heartstead_add_foundation_test(heartstead_filesystem_tests filesystem_tests.cpp)
 heartstead_add_foundation_test(heartstead_render_milestone_tests render_milestone_tests.cpp)
 heartstead_add_foundation_test(heartstead_renderer_frontend_tests renderer_frontend_tests.cpp)

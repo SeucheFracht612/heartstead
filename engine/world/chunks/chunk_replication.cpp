@@ -1,5 +1,7 @@
 #include "engine/world/chunks/chunk_replication.hpp"
 
+#include "engine/net/binary_message.hpp"
+
 #include <charconv>
 #include <limits>
 #include <span>
@@ -229,23 +231,126 @@ ChunkSnapshotSliceTextCodec::decode(std::string_view payload) {
     return core::Result<ChunkSnapshotSlice>::success(std::move(result));
 }
 
+std::string ChunkSnapshotSliceBinaryCodec::encode(const ChunkSnapshotSlice& slice) {
+    net::BinaryMessageWriter writer;
+    writer.u32(0x31534348U);
+    writer.var_i64(slice.identity.coordinate.x);
+    writer.var_i64(slice.identity.coordinate.y);
+    writer.var_i64(slice.identity.coordinate.z);
+    writer.var_u64(slice.identity.load_generation);
+    writer.var_u64(slice.content_revision);
+    writer.var_u64(slice.slice_y);
+    std::uint64_t run_count = 0;
+    for (std::size_t first = 0; first < slice.cells.size();) {
+        std::size_t count = 1;
+        while (first + count < slice.cells.size() &&
+               slice.cells[first + count] == slice.cells[first]) {
+            ++count;
+        }
+        ++run_count;
+        first += count;
+    }
+    writer.var_u64(run_count);
+    for (std::size_t first = 0; first < slice.cells.size();) {
+        std::size_t count = 1;
+        while (first + count < slice.cells.size() &&
+               slice.cells[first + count] == slice.cells[first]) {
+            ++count;
+        }
+        const auto& cell = slice.cells[first];
+        writer.var_u64(cell.type);
+        writer.u8(cell.light);
+        writer.var_u64(cell.state_bits);
+        writer.var_u64(cell.metadata_handle);
+        writer.var_u64(count);
+        first += count;
+    }
+    return writer.take();
+}
+
+core::Result<ChunkSnapshotSlice>
+ChunkSnapshotSliceBinaryCodec::decode(std::string_view payload) {
+    net::BinaryMessageReader reader(payload);
+    std::uint32_t magic_value = 0;
+    std::int64_t x = 0;
+    std::int64_t y = 0;
+    std::int64_t z = 0;
+    std::uint64_t generation = 0;
+    std::uint64_t revision = 0;
+    std::uint64_t slice_y = 0;
+    std::uint64_t run_count = 0;
+    if (!reader.u32(magic_value) || magic_value != 0x31534348U ||
+        !reader.var_i64(x) || !reader.var_i64(y) || !reader.var_i64(z) ||
+        !reader.var_u64(generation) || !reader.var_u64(revision) ||
+        !reader.var_u64(slice_y) || !reader.var_u64(run_count) ||
+        slice_y >= VoxelChunk::edge_length || run_count == 0 ||
+        run_count > cells_per_slice) {
+        return core::Result<ChunkSnapshotSlice>::failure(
+            "chunk_snapshot.invalid_binary_header",
+            "chunk snapshot binary header is invalid");
+    }
+    ChunkSnapshotSlice result;
+    result.identity.coordinate = {x, y, z};
+    result.identity.load_generation = generation;
+    result.content_revision = revision;
+    result.slice_y = static_cast<std::uint16_t>(slice_y);
+    result.cells.reserve(cells_per_slice);
+    for (std::uint64_t run = 0; run < run_count; ++run) {
+        std::uint64_t type = 0;
+        std::uint8_t light = 0;
+        std::uint64_t state_bits = 0;
+        std::uint64_t metadata = 0;
+        std::uint64_t count = 0;
+        if (!reader.var_u64(type) || !reader.u8(light) ||
+            !reader.var_u64(state_bits) || !reader.var_u64(metadata) ||
+            !reader.var_u64(count) ||
+            type > std::numeric_limits<std::uint16_t>::max() ||
+            state_bits > std::numeric_limits<std::uint16_t>::max() ||
+            metadata > std::numeric_limits<std::uint32_t>::max() || count == 0 ||
+            count > cells_per_slice - result.cells.size()) {
+            return core::Result<ChunkSnapshotSlice>::failure(
+                "chunk_snapshot.invalid_binary_run",
+                "chunk snapshot binary run is invalid");
+        }
+        result.cells.insert(
+            result.cells.end(), static_cast<std::size_t>(count),
+            VoxelCell{static_cast<std::uint16_t>(type), light,
+                      static_cast<std::uint16_t>(state_bits),
+                      static_cast<std::uint32_t>(metadata)});
+    }
+    if (!reader.finished()) {
+        return core::Result<ChunkSnapshotSlice>::failure(
+            "chunk_snapshot.trailing_binary",
+            "chunk snapshot binary payload has trailing bytes");
+    }
+    auto status = result.validate();
+    if (!status) {
+        return core::Result<ChunkSnapshotSlice>::failure(status.error().code,
+                                                         status.error().message);
+    }
+    return core::Result<ChunkSnapshotSlice>::success(std::move(result));
+}
+
 net::TransportMessage make_chunk_snapshot_slice_message(const ChunkSnapshotSlice& slice,
                                                         std::uint64_t transport_sequence,
                                                         std::int64_t timestamp_ms) {
     return {net::TransportMessageKind::replication, net::TransportChannel::reliable,
             transport_sequence, std::string(chunk_snapshot_slice_payload_type),
-            ChunkSnapshotSliceTextCodec::encode(slice), timestamp_ms};
+            ChunkSnapshotSliceBinaryCodec::encode(slice), timestamp_ms};
 }
 
 core::Result<ChunkSnapshotSlice>
 chunk_snapshot_slice_from_transport(const net::TransportEnvelope& envelope) {
     if (envelope.message.kind != net::TransportMessageKind::replication ||
         envelope.message.channel != net::TransportChannel::reliable ||
-        envelope.message.payload_type != chunk_snapshot_slice_payload_type) {
+        (envelope.message.payload_type != chunk_snapshot_slice_payload_type &&
+         envelope.message.payload_type != legacy_chunk_snapshot_slice_payload_type)) {
         return core::Result<ChunkSnapshotSlice>::failure(
             "chunk_snapshot.invalid_transport", "transport envelope is not a chunk snapshot slice");
     }
-    return ChunkSnapshotSliceTextCodec::decode(envelope.message.payload);
+    return envelope.message.payload_type == chunk_snapshot_slice_payload_type
+               ? ChunkSnapshotSliceBinaryCodec::decode(envelope.message.payload)
+               : ChunkSnapshotSliceTextCodec::decode(envelope.message.payload);
 }
 
 } // namespace heartstead::world

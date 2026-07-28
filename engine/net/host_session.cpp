@@ -232,6 +232,20 @@ core::Status HostSession::send_client_command(core::NetId client_id, CommandEnve
     return transport_->send_client_to_server(client_id, make_command_transport_message(envelope));
 }
 
+core::Status HostSession::send_client_control(core::NetId client_id, TransportMessage message) {
+    auto running = require_running();
+    if (!running) {
+        return running;
+    }
+    if (message.kind != TransportMessageKind::control ||
+        message.channel != TransportChannel::unreliable) {
+        return core::Status::failure(
+            "host_session.not_unreliable_control",
+            "client control path accepts only unreliable control messages");
+    }
+    return transport_->send_client_to_server(client_id, std::move(message));
+}
+
 core::Status HostSession::send_replication_message(core::NetId client_id,
                                                    TransportMessage message) {
     auto running = require_running();
@@ -299,6 +313,12 @@ core::Result<HostSessionTickResult> HostSession::tick(const ServerCommandDispatc
     tick_result.transport_retransmission_count = maintenance.value().retransmission_count;
     tick_result.transport_dropped_reliable_message_count =
         maintenance.value().dropped_reliable_message_count;
+    tick_result.transport_malformed_datagram_count =
+        maintenance.value().malformed_datagram_count;
+    tick_result.transport_rejected_datagram_count =
+        maintenance.value().rejected_datagram_count;
+    tick_result.transport_rate_limited_datagram_count =
+        maintenance.value().rate_limited_datagram_count;
     for (const auto client_id : maintenance.value().connected_clients) {
         auto status = send_welcome(client_id, context.server_time_ms);
         if (!status) {
@@ -326,6 +346,12 @@ core::Result<HostSessionTickResult> HostSession::tick(const ServerCommandDispatc
     tick_result.transport_message_count = static_cast<std::uint32_t>(messages.size());
 
     for (const auto& message : messages) {
+        if (message.message.kind == TransportMessageKind::control &&
+            message.message.channel == TransportChannel::unreliable) {
+            ++tick_result.control_message_count;
+            tick_result.control_messages.push_back(message);
+            continue;
+        }
         HostSessionCommandReport report;
         if (message.message.kind != TransportMessageKind::command) {
             report = make_transport_error_report(message, "transport.not_command_message",

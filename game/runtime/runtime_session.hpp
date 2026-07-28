@@ -38,6 +38,8 @@ struct RuntimeConfiguration {
     physics::PhysicsBackend physics_backend = physics::PhysicsBackend::headless;
     world::ChunkFluidSystemConfig chunk_fluids{};
     world::ChunkLightSystemConfig chunk_lighting{};
+    std::uint32_t max_transient_snapshot_messages_per_tick = 512;
+    std::uint32_t max_transient_snapshot_payload_bytes_per_tick = 256u * 1024u;
     net::TransportEndpoint server_bind_endpoint{"0.0.0.0", 7777};
     std::optional<net::TransportEndpoint> remote_server_endpoint;
     std::vector<std::shared_ptr<IGameplayModule>> gameplay_modules;

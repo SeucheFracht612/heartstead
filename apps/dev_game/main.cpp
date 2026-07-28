@@ -552,11 +552,9 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
             active_platform.value()->request_quit();
         }
         auto player_input = input_sampler.sample(*input_snapshot, ++input_tick);
-        if (ui_input.value().consumed.blocks_gameplay) {
-            const auto* previous_player = runtime.session()->client()->local_player_snapshot();
-            if (previous_player == nullptr) {
-                return fail("client has no assigned player snapshot");
-            }
+        const auto* previous_player =
+            runtime.session()->client()->local_player_snapshot();
+        if (ui_input.value().consumed.blocks_gameplay && previous_player != nullptr) {
             player_input.move_x = 0;
             player_input.move_z = 0;
             player_input.yaw_centidegrees = previous_player->state.yaw_centidegrees;
@@ -564,10 +562,13 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
             player_input.held_buttons = 0;
             player_input.pressed_buttons = 0;
         }
-        status = runtime.session()->submit_player_input(player_input,
-                                                        active_platform.value()->clock().now_ms());
-        if (!status) {
-            return fail(status.error());
+        if (runtime.session()->client()->is_connected() &&
+            previous_player != nullptr) {
+            status = runtime.session()->submit_player_input(
+                player_input, active_platform.value()->clock().now_ms());
+            if (!status) {
+                return fail(status.error());
+            }
         }
         auto runtime_frame =
             runtime.run_frame({frame_us, active_platform.value()->clock().now_ms()});
@@ -593,7 +594,9 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
         }
         const auto* player = runtime.session()->client()->local_player_snapshot();
         if (player == nullptr) {
-            return fail("client has no assigned player snapshot");
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            ++frame_count;
+            continue;
         }
         if (extent.is_valid()) {
             auto camera_frame =
@@ -679,10 +682,12 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
                 }
             }
             if (action_frame[input::InputAction::drop_item].pressed) {
-                status = drop_demo_resource(runtime, renderer, camera_frame.value(),
-                                            physical_resource_visuals);
-                if (!status) {
-                    return fail(status.error());
+                if (runtime.session()->server() != nullptr) {
+                    status = drop_demo_resource(runtime, renderer, camera_frame.value(),
+                                                physical_resource_visuals);
+                    if (!status) {
+                        return fail(status.error());
+                    }
                 }
             }
             auto camera = render_camera_from(camera_frame.value());

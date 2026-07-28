@@ -114,7 +114,8 @@ RemotePlayerInterpolator::sample(std::uint64_t render_tick) const {
         result.locomotion_animation.phase =
             interpolate_phase(lower->state.locomotion_animation.phase,
                               upper->state.locomotion_animation.phase, alpha);
-    } else if (alpha >= 0.5) {
+    } else if (target_tick >=
+               upper->state.locomotion_animation.transition_tick) {
         result.locomotion_animation = upper->state.locomotion_animation;
     }
     result.simulation_tick = target_tick;

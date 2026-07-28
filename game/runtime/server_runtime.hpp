@@ -22,8 +22,10 @@
 #include "game/framework/gameplay_module.hpp"
 
 #include <cstdint>
+#include <cstddef>
 #include <memory>
 #include <optional>
+#include <span>
 #include <unordered_map>
 
 namespace heartstead::game {
@@ -37,6 +39,8 @@ struct ServerRuntimeDesc {
     world::ChunkFluidSystemConfig chunk_fluids;
     world::ChunkLightSystemConfig chunk_lighting;
     std::uint32_t simulation_ticks_per_second = 60;
+    std::uint32_t max_transient_snapshot_messages_per_tick = 512;
+    std::uint32_t max_transient_snapshot_payload_bytes_per_tick = 256u * 1024u;
     simulation::WorldTimeConfig world_time;
     const modding::PrototypeRegistry* prototypes = nullptr;
     const world::VoxelPalette* voxel_palette = nullptr;
@@ -57,10 +61,14 @@ struct ServerRuntimeTickStats {
     std::uint32_t moved_player_count = 0;
     std::uint32_t repeated_input_count = 0;
     std::uint32_t movement_event_count = 0;
+    std::uint32_t accepted_movement_input_count = 0;
+    std::uint32_t rejected_movement_input_count = 0;
     std::uint32_t movement_snapshot_count = 0;
     std::uint32_t entity_motion_snapshot_count = 0;
     std::uint32_t entity_motion_tombstone_count = 0;
     std::uint32_t player_tombstone_count = 0;
+    std::uint32_t deferred_transient_snapshot_count = 0;
+    std::uint32_t transient_snapshot_payload_bytes = 0;
 };
 
 class ServerRuntime final {
@@ -79,6 +87,9 @@ class ServerRuntime final {
     [[nodiscard]] core::Result<core::NetId> connect_client();
     [[nodiscard]] core::Status disconnect_client(core::NetId client_id);
     [[nodiscard]] core::Status submit_command(core::NetId client_id, net::CommandEnvelope command);
+    [[nodiscard]] core::Status submit_movement_input(core::NetId client_id,
+                                                     movement::PlayerInputBundle bundle,
+                                                     std::int64_t now_ms = 0);
     [[nodiscard]] core::Result<std::vector<net::TransportEnvelope>>
     drain_client_messages(core::NetId client_id);
 
@@ -135,12 +146,14 @@ class ServerRuntime final {
     [[nodiscard]] world::WorldPosition scenario_spawn_position() const noexcept;
     [[nodiscard]] core::Status spawn_player(core::NetId client_id);
     [[nodiscard]] core::Status remove_player_connection(core::NetId client_id);
+    void process_movement_control_messages(std::span<const net::TransportEnvelope> messages);
     [[nodiscard]] core::Status simulate_players(simulation::SimulationContext& context);
     [[nodiscard]] core::Status replicate_players();
     [[nodiscard]] core::Status replicate_entity_motion(std::uint64_t simulation_tick);
     [[nodiscard]] core::Status replicate_changed_chunks();
     [[nodiscard]] core::Status send_initial_chunks(core::NetId client_id);
     [[nodiscard]] core::Result<std::uint64_t> reserve_custom_replication_sequence();
+    [[nodiscard]] bool admit_transient_snapshot(std::size_t payload_bytes) noexcept;
     [[nodiscard]] std::uint64_t collision_world_revision() const noexcept;
 
     ServerRuntimeDesc desc_;
@@ -174,14 +187,20 @@ class ServerRuntime final {
     std::uint32_t current_moved_player_count_ = 0;
     std::uint32_t current_repeated_input_count_ = 0;
     std::uint32_t current_movement_event_count_ = 0;
+    std::uint32_t current_accepted_movement_input_count_ = 0;
+    std::uint32_t current_rejected_movement_input_count_ = 0;
     std::uint32_t current_movement_snapshot_count_ = 0;
     std::uint32_t current_entity_motion_snapshot_count_ = 0;
     std::uint32_t current_entity_motion_tombstone_count_ = 0;
     std::uint32_t current_player_tombstone_count_ = 0;
+    std::uint32_t current_deferred_transient_snapshot_count_ = 0;
+    std::uint32_t current_transient_snapshot_payload_bytes_ = 0;
+    std::uint32_t current_transient_snapshot_message_count_ = 0;
     std::int64_t current_time_ms_ = 0;
     std::uint64_t pending_world_time_numerator_ = 0;
     bool spawn_area_initialized_ = false;
     std::uint64_t next_custom_replication_sequence_ = 1;
+    std::uint64_t transient_replication_cursor_ = 0;
 };
 
 } // namespace heartstead::game

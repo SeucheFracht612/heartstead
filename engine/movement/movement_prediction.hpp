@@ -16,8 +16,12 @@ namespace heartstead::movement {
 
 inline constexpr std::uint16_t player_controller_snapshot_version = 3;
 inline constexpr std::string_view movement_input_payload_type = "movement.input.v1";
-inline constexpr std::string_view movement_snapshot_payload_type = "movement.snapshot.v3";
-inline constexpr std::string_view movement_input_bundle_payload_type = "movement.input_bundle.v1";
+inline constexpr std::string_view legacy_movement_snapshot_payload_type =
+    "movement.snapshot.v3";
+inline constexpr std::string_view movement_snapshot_payload_type = "movement.snapshot.bin.v1";
+inline constexpr std::string_view legacy_movement_input_bundle_payload_type =
+    "movement.input_bundle.v1";
+inline constexpr std::string_view movement_input_bundle_payload_type = "movement.input_bundle.v2";
 inline constexpr std::string_view player_assignment_payload_type = "movement.player_assignment.v1";
 inline constexpr std::string_view player_removal_payload_type = "movement.player_removal.v1";
 
@@ -28,6 +32,12 @@ struct PlayerInputBundle {
 };
 
 class PlayerInputBundleTextCodec {
+  public:
+    [[nodiscard]] static std::string encode(const PlayerInputBundle& bundle);
+    [[nodiscard]] static core::Result<PlayerInputBundle> decode(std::string_view payload);
+};
+
+class PlayerInputBundleBinaryCodec {
   public:
     [[nodiscard]] static std::string encode(const PlayerInputBundle& bundle);
     [[nodiscard]] static core::Result<PlayerInputBundle> decode(std::string_view payload);
@@ -45,6 +55,13 @@ struct PlayerControllerSnapshot {
 };
 
 class PlayerControllerSnapshotTextCodec {
+  public:
+    [[nodiscard]] static std::string encode(const PlayerControllerSnapshot& snapshot);
+    [[nodiscard]] static core::Result<PlayerControllerSnapshot>
+    decode(std::string_view payload, const PlayerMovementConfig& config = {});
+};
+
+class PlayerControllerSnapshotBinaryCodec {
   public:
     [[nodiscard]] static std::string encode(const PlayerControllerSnapshot& snapshot);
     [[nodiscard]] static core::Result<PlayerControllerSnapshot>

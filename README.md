@@ -44,11 +44,11 @@ Implemented in this repository:
   Jolt 5.6 backend for rigid bodies, compounds, full dynamic rotation, collision response,
   sleeping, AABB queries, contact snapshots, cooked voxel terrain, virtual character movement, and
   authoritative dropped-resource lifecycle synchronization
-- backend-selectable network transport boundary with in-memory host implementation and a POSIX UDP
-  foundation host for host-owned loopback client endpoints when sockets are available, plus
-  endpoint config, reliable command sequence enforcement, packet fragmentation/reassembly,
-  integrated deterministic reliable acknowledgement/retry/drop maintenance, and capability
-  reporting
+- backend-selectable network transport boundary with in-memory host implementation and independent
+  POSIX UDP server/client endpoints, challenge-cookie remote session negotiation, endpoint-bound
+  random session tokens, keepalive/timeout/disconnect handling, rate limits, packet
+  fragmentation/reassembly, deterministic reliable acknowledgement/retry/drop maintenance, and
+  capability reporting
 - host-session lifecycle for local authoritative command processing
 - scripting runtime boundary with capability-gated calls, sandbox resource limits, disabled
   backend, restricted Luau foundation backend, and registered host API/event validation for
@@ -158,8 +158,8 @@ Implemented in this repository:
 - world-layer replication delta planning that classifies event subjects across build pieces,
   persistent entities, cargo, assemblies, owner inventories, workpieces, and owner processes without
   collapsing those stores into one replicated object model
-- typed replication delta materialization that reuses existing save-section record shapes for the
-  current text transport payload and future binary codecs
+- typed replication delta materialization that reuses existing save-section record shapes, plus
+  bounded binary hot-path codecs for player inputs, movement snapshots, and chunk snapshot slices
 - world-layer host-tick delta materialization that converts successful authoritative mutating
   command reports into typed replication snapshots while reporting skipped commands explicitly
 - world-layer typed replication delta apply that upserts separate world stores while preserving
@@ -173,6 +173,11 @@ Implemented in this repository:
   can be decoded and drained by the world layer without teaching networking about world stores
 - deterministic text codec for typed replication delta snapshots, reusing save snapshot text for
   materialized sections while validating delta-plan counts
+- shared client/server movement prediction with input redundancy, authoritative acknowledgement,
+  reconciliation/replay, correction diagnostics, and buffered interpolation of remote players
+- unreliable latest-wins movement/entity snapshots with deterministic per-tick message/byte
+  budgets, round-robin recipient fairness, and inspectable deferral/byte counters
+- deterministic transport/handshake/replication codec mutation and random-input fuzz coverage
 - server-side player profile persistence with stable UUIDs, display-name history, roles,
   spawn/bed state, markers, portable flags/settings, and layered map-discovery region bitsets
 - server-side append/flush log storage for join, leave, and chat records with UTC and world
@@ -196,8 +201,9 @@ Implemented in this repository:
   execution, and complete JSON/CSV frame export
 - CTest coverage for unit tests plus headless-safe sample and tool smoke tests
 
-Full game feature rules, remote-client composition, production Jolt/Luau integrations, and wider
-native platform coverage remain future work. Renderer V1 and the local gameplay vertical slice are
+Full game feature rules, production Luau integration, encrypted/authenticated Internet identity,
+NAT traversal/matchmaking, and wider native platform coverage remain future work. Renderer V1, the
+local gameplay vertical slice, and direct numeric-IPv4 remote client/server composition are
 implemented; new renderer work is driven by measured gameplay needs.
 
 The normative target and the implementation audit are in
@@ -284,12 +290,23 @@ mouse button to split a stack:
 Run the long-lived headless dedicated-server process:
 
 ```bash
-./build/default-debug/apps/dedicated_server/heartstead_dedicated_server
+./build/default-debug/apps/dedicated_server/heartstead_dedicated_server \
+  --bind 0.0.0.0:7777
 ```
 
 It runs fixed ticks until `SIGINT` or `SIGTERM`. For a bounded smoke/test run, pass a positive tick
-count, for example `--ticks 120`. The executable still defaults to the in-memory transport and has
-no remote join path; long-lived process behavior does not yet make it a remotely joinable server.
+count, for example `--ticks 120`. Join it from another machine by passing its numeric IPv4 address:
+
+```bash
+./build/default-debug/apps/dev_game/heartstead_dev_game \
+  --connect 192.168.1.10:7777
+```
+
+The direct-UDP path is intended for controlled LAN/testing use at this stage. Session tokens reject
+off-path injection, but the protocol does not yet provide encryption, account identity, NAT
+traversal, or matchmaking. Use `tools/netem_multiplayer.sh` to apply or clear a local latency and
+loss profile while testing; the helper prints the privileged `tc netem` operation before applying
+it.
 
 Run an uncapped deterministic renderer benchmark (headless by default, add `--vulkan` for GPU
 timestamps and a native window):

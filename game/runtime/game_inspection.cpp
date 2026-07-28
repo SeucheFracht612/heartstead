@@ -129,6 +129,14 @@ debug::InspectionData GameInspector::inspect(const ClientRuntimeStats& stats) {
     add_field(data, "command_result_count", std::to_string(stats.command_result_count));
     add_field(data, "movement_snapshot_count", std::to_string(stats.movement_snapshot_count));
     add_field(data, "player_tombstone_count", std::to_string(stats.player_tombstone_count));
+    add_field(data, "predicted_input_count", std::to_string(stats.predicted_input_count));
+    add_field(data, "reconciled_input_count", std::to_string(stats.reconciled_input_count));
+    add_field(data, "acknowledged_input_count", std::to_string(stats.acknowledged_input_count));
+    add_field(data, "hard_correction_count", std::to_string(stats.hard_correction_count));
+    add_field(data, "interpolated_player_count",
+              std::to_string(stats.interpolated_player_count));
+    add_field(data, "maximum_correction_distance",
+              std::to_string(stats.maximum_correction_distance));
     add_field(data, "chunk_snapshot_slice_count", std::to_string(stats.chunk_snapshot_slice_count));
     add_field(data, "completed_chunk_snapshot_count",
               std::to_string(stats.completed_chunk_snapshot_count));
@@ -181,6 +189,8 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     std::uint32_t failed_command_count = 0;
     std::uint32_t event_count = 0;
     std::uint32_t replication_message_count = 0;
+    std::uint32_t transient_snapshot_payload_bytes = 0;
+    std::uint32_t deferred_transient_snapshot_count = 0;
     std::uint32_t physics_body_count = 0;
     std::size_t collision_body_count = 0;
     std::uint64_t collision_box_count = 0;
@@ -201,6 +211,10 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
             tick.commands.command_reports, [](const auto& report) { return !report.success; }));
         event_count += tick.simulation.event_count;
         replication_message_count += tick.replication.sent_message_count;
+        transient_snapshot_payload_bytes +=
+            tick.transient_snapshot_payload_bytes;
+        deferred_transient_snapshot_count +=
+            tick.deferred_transient_snapshot_count;
         physics_body_count = tick.physics.body_count;
         collision_body_count = tick.chunk_collision.resident_body_count;
         collision_box_count = tick.chunk_collision.current_collision_boxes;
@@ -222,6 +236,10 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     add_field(data, "failed_command_count", std::to_string(failed_command_count));
     add_field(data, "event_count", std::to_string(event_count));
     add_field(data, "replication_message_count", std::to_string(replication_message_count));
+    add_field(data, "transient_snapshot_payload_bytes",
+              std::to_string(transient_snapshot_payload_bytes));
+    add_field(data, "deferred_transient_snapshot_count",
+              std::to_string(deferred_transient_snapshot_count));
     add_field(data, "physics_body_count", std::to_string(physics_body_count));
     add_field(data, "chunk_collision_body_count", std::to_string(collision_body_count));
     add_field(data, "chunk_collision_box_count", std::to_string(collision_box_count));

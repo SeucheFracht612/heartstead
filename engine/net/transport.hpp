@@ -99,6 +99,9 @@ struct TransportEnvelope {
 struct TransportMaintenanceResult {
     std::uint32_t retransmission_count = 0;
     std::uint32_t dropped_reliable_message_count = 0;
+    std::uint32_t malformed_datagram_count = 0;
+    std::uint32_t rejected_datagram_count = 0;
+    std::uint32_t rate_limited_datagram_count = 0;
     std::vector<TransportEnvelope> dropped_reliable_messages;
     std::vector<core::NetId> connected_clients;
     std::vector<core::NetId> disconnected_clients;
@@ -131,6 +134,9 @@ struct ExternalTransportHostConfig {
     std::uint32_t handshake_timeout_ms = 5'000;
     std::uint32_t idle_timeout_ms = 15'000;
     std::uint32_t keepalive_interval_ms = 1'000;
+    std::uint32_t max_inbound_messages_per_second = 240;
+    std::uint32_t max_inbound_bytes_per_second = 512u * 1024u;
+    std::uint32_t max_handshakes_per_second = 128;
 };
 
 struct TransportHostDesc {

@@ -73,13 +73,18 @@ struct HostSessionOutboundDeliveryReport {
 struct HostSessionTickResult {
     std::uint32_t transport_retransmission_count = 0;
     std::uint32_t transport_dropped_reliable_message_count = 0;
+    std::uint32_t transport_malformed_datagram_count = 0;
+    std::uint32_t transport_rejected_datagram_count = 0;
+    std::uint32_t transport_rate_limited_datagram_count = 0;
     std::uint32_t transport_message_count = 0;
     std::uint32_t command_message_count = 0;
+    std::uint32_t control_message_count = 0;
     std::uint32_t response_message_count = 0;
     std::uint32_t replication_message_count = 0;
     std::vector<core::NetId> connected_clients;
     std::vector<core::NetId> disconnected_clients;
     HostSessionOutboundDeliveryReport outbound_delivery;
+    std::vector<TransportEnvelope> control_messages;
     std::vector<HostSessionCommandReport> command_reports;
     std::vector<ReplicationRelevanceReport> replication_relevance_reports;
 };
@@ -107,6 +112,8 @@ class HostSession {
     [[nodiscard]] core::Result<core::NetId> connect_client();
     [[nodiscard]] core::Status disconnect_client(core::NetId client_id);
     [[nodiscard]] core::Status send_client_command(core::NetId client_id, CommandEnvelope envelope);
+    [[nodiscard]] core::Status send_client_control(core::NetId client_id,
+                                                   TransportMessage message);
     [[nodiscard]] core::Status send_replication_message(core::NetId client_id,
                                                         TransportMessage message);
     [[nodiscard]] core::Result<std::vector<TransportEnvelope>>

@@ -272,6 +272,7 @@ target_sources(
       movement/player_input.hpp
       movement/remote_player_interpolation.hpp
       net/client_session.hpp
+      net/binary_message.hpp
       net/command_payload.hpp
       net/host_session.hpp
       net/replication.hpp

@@ -9,7 +9,8 @@ Implemented foundation:
   - reliability channel
   - sequence id
   - payload type
-  - payload bytes as a string payload for the current foundation
+  - bounded opaque payload bytes; live hot paths may use versioned binary codecs while saves,
+    tools, and compatibility fixtures may retain deterministic text codecs
   - timestamp
 
 - `TransportEnvelope`
@@ -89,6 +90,13 @@ Implemented foundation:
   - gives external backends a stable session handshake payload without mixing it into
     gameplay command semantics
 
+- `TransportHandshakeCodec`
+  - defines a bounded binary remote hello/challenge/response/accept/reject exchange
+  - negotiates protocol/content fingerprints before gameplay traffic is admitted
+  - validates an endpoint-bound, expiring challenge cookie before allocating a client session
+  - returns a cryptographically random session token that every admitted datagram must carry
+  - limits response amplification and handshake response rate before an endpoint is trusted
+
 - `TransportClientSession`
   - is created by accepting a reliable `control.server_welcome` transport envelope
   - validates the expected client `NetId`, envelope recipient, payload type, reliable channel,
@@ -143,6 +151,9 @@ Implemented foundation:
   - queues decoded command results and replication batches for future client gameplay/UI layers
   - queues non-event replication payloads as raw envelopes so higher layers can own typed payload
     decoding without adding gameplay/world dependencies to the client protocol session
+  - accepts unreliable typed state snapshots while keeping authoritative world-event batches on
+    the reliable ordered path
+  - can be marked transport-disconnected when client maintenance detects timeout or retry failure
   - exposes an inspectable `ReplicationIntakeReport` for queued batches before they are drained
 
 - `HostSession`
@@ -185,7 +196,7 @@ Implemented foundation:
   - world replication delta planning classifies event subjects before typed snapshot/state-delta
     payloads are serialized
   - world replication delta materialization copies typed authoritative records into sectioned
-    delta snapshots for the current text payload codec and future binary codecs
+    delta snapshots behind bounded, versioned codecs
   - world code converts host tick command reports into per-command typed delta snapshots without
     teaching `HostSession` about build/entity/cargo/inventory/workpiece/assembly/process stores
   - world code can apply typed delta snapshots through separate world stores while preserving
@@ -200,6 +211,14 @@ Implemented foundation:
     decode, and apply those queued snapshots against matching event batches
   - `WorldReplicationDeltaSnapshotTextCodec` provides a deterministic early state-delta payload for
     tests and tools before production binary delta transport exists
+  - `BinaryMessageWriter`/`BinaryMessageReader` provide explicit little-endian fixed-width fields
+    and bounded varints for live codecs without exposing host ABI/layout
+  - player input bundles, movement snapshots, and chunk snapshot slices use binary live codecs;
+    input redundancy sends the current and recent frames over unreliable transport
+  - movement and entity-motion snapshots use unreliable latest-wins delivery; world events and
+    store deltas remain reliable
+  - server transient snapshot message/byte budgets defer excess work and rotate recipient priority
+    so one client cannot permanently starve another
   - world code can derive that filter from simulation subjects and viewer positions without
     teaching transport or host sessions about world representation storage
   - the world layer can refresh a host session with a newly derived filter between ticks as
@@ -213,9 +232,15 @@ Implemented foundation:
   - creates a POSIX UDP packet host when sockets are available
   - keeps the historical public backend name `external_library`, although the current
     implementation is project-owned POSIX socket code rather than a third-party library
-  - creates every accepted client endpoint itself as a loopback UDP socket in the host process
-  - accepts server-bound packets only when both the claimed client `NetId` and the datagram source
-    endpoint match one of those host-created sockets
+  - exposes independent POSIX UDP server and client implementations; the client binds an ephemeral
+    local endpoint and connects to a numeric IPv4 server endpoint
+  - admits unknown endpoints only through the challenge-cookie handshake, then binds assigned
+    client `NetId`, source endpoint, and session token together
+  - accepts established datagrams only when claimed identity, source endpoint, and token all match
+  - times out incomplete handshakes and idle sessions, sends keepalives, supports graceful
+    disconnect, and surfaces malformed/rate-limited datagram counters
+  - applies per-client inbound message/byte limits, a global handshake response limit, bounded
+    fragment/reassembly ownership, and an amplification limit before cookie validation
   - carries `TransportPacketCodec` payloads, using `TransportPacketFragmentCodec` when a
     backend packet budget is smaller than a command/replication/control packet
   - reassembles incoming fragments before decoding envelopes
@@ -237,12 +262,21 @@ through transactions, emits events, and marks save/replication dirtiness.
 `NetId` is multiplayer session identity. It must not be written as permanent save
 identity, and transport endpoints must not become gameplay object ids.
 
-The in-memory backend and POSIX packet host are still foundation transports, not the final co-op
-network stack. They exist so command flow, host-session behavior, packet encoding,
-replay-adjacent tooling, packet fragmentation/reassembly contracts, and integrated reliability
-acknowledgement/retry behavior can be tested before or alongside a dedicated networking library.
-The current reliability layer is a bounded deterministic ACK/resend/drop primitive; it is not
-congestion control, rollback, NAT traversal, matchmaking, encryption, or a substitute for a proven
-production networking library. In particular, binding the POSIX host to a non-loopback address does
-not make arbitrary remote clients joinable: there is no remote accept/identity assignment or
-authentication handshake, and `RuntimeSession` still rejects a remote-client-only composition.
+The POSIX backend now supports directly joinable remote-client-only and dedicated-server
+compositions using numeric IPv4 endpoints. Client prediction/reconciliation and delayed remote
+interpolation keep presentation responsive independently of the authoritative round trip. The
+same controller is used for authoritative and predicted movement, with a bounded input history and
+hard-correction diagnostics when replay cannot converge.
+
+This remains a controlled-LAN/testing transport rather than a complete public-Internet service.
+The current reliability layer is a bounded ACK/resend/drop primitive; it does not provide
+congestion control or pacing. The endpoint-bound random session token prevents off-path datagram
+injection, but it is not encryption, account authentication, forward secrecy, NAT traversal, or
+matchmaking. Public deployment requires those properties (or migration to a proven secure
+transport) before accepting untrusted Internet clients.
+
+The challenge validation and pre-validation amplification limits follow the address-validation
+principles in [RFC 9000](https://www.rfc-editor.org/rfc/rfc9000); UDP rate/burst guidance follows
+[RFC 8085](https://www.rfc-editor.org/rfc/rfc8085). A future congestion/pacing pass should use the
+recovery principles in [RFC 9002](https://www.rfc-editor.org/rfc/rfc9002) instead of growing this
+foundation into an ad-hoc congestion controller.

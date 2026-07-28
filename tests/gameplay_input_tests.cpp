@@ -4,6 +4,7 @@
 #include "game/features/interaction/voxel_raycast.hpp"
 
 #include <cassert>
+#include <string_view>
 
 using namespace heartstead;
 
@@ -101,6 +102,12 @@ void test_chunk_snapshot_slices_round_trip_worst_case_geometry() {
         assert(decoded.value().content_revision == slice.content_revision);
         assert(decoded.value().slice_y == slice.slice_y);
         assert(decoded.value().cells == slice.cells);
+        const auto binary = world::ChunkSnapshotSliceBinaryCodec::encode(slice);
+        auto decoded_binary = world::ChunkSnapshotSliceBinaryCodec::decode(binary);
+        assert(decoded_binary && decoded_binary.value().cells == slice.cells);
+        assert(binary.size() < encoded.size());
+        assert(!world::ChunkSnapshotSliceBinaryCodec::decode(
+            std::string_view(binary).substr(0, binary.size() - 1)));
     }
 }
 

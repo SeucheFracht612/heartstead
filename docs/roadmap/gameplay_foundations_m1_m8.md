@@ -381,7 +381,7 @@ through M8 so each acceptance scene builds on already verified systems.
 - Renderer statistics expose layout time, paint time, and widget count. The Release
   `heartstead_ui_benchmark` run built 2,000 widgets in 0.186 ms median / 0.206 ms p95, with a
   0.228 ms maximum and one draw call, below the 1.0 ms p95 target.
-- M6 verification is complete. M7 is the next delivery milestone.
+- M6 verification is complete.
 
 ## M7 — Actually remote multiplayer
 
@@ -424,6 +424,36 @@ through M8 so each acceptance scene builds on already verified systems.
   `256 KiB/s`; deferred deltas remain fair and inspectable.
 - Spoofed tokens/endpoints, replayed handshakes, malformed fragments/codecs, floods, and timeouts
   fail closed. Fuzzers and sanitizers run clean.
+
+### M7 progress evidence
+
+- Independent POSIX UDP client/server endpoints now negotiate a versioned binary
+  hello/challenge/cookie/accept handshake. The server binds a random session token to the source
+  endpoint and assigned `NetId`; protocol/content mismatches, spoofed tokens/endpoints, replayed
+  cookies, and expired handshakes fail closed.
+- Dedicated server `--bind` and development client `--connect` options exercise real
+  remote-client-only composition. Keepalive, graceful disconnect, idle timeout, retry exhaustion,
+  and reconnect-safe lifecycle are handled below gameplay.
+- The local player predicts immediately through the shared controller, retains a bounded input
+  history, reconciles to authoritative acknowledgements, and replays only unacknowledged inputs.
+  Remote players are sampled through a six-tick jitter buffer with teleport/transition-safe
+  interpolation and synchronized locomotion state.
+- Player input bundles, movement snapshots, and chunk snapshot slices use bounded binary codecs.
+  Hot motion state is unreliable/latest-wins; command results, world events, and authoritative
+  store deltas remain reliable.
+- Per-tick transient snapshot message/byte budgets expose deferral and byte counters and rotate
+  recipient priority. Per-client inbound message/byte limits, global handshake limits,
+  pre-validation amplification limits, bounded fragment ownership, malformed counters, and
+  session-token validation protect dispatch.
+- True-socket integration covers two independent clients predicting and observing each other, as
+  well as server loss and idle disconnect. The deterministic transport-codec fuzz target mutates
+  seeds and submits 25,000 random inputs across packet, fragment, handshake, movement, and chunk
+  codecs.
+- `tools/netem_multiplayer.sh` applies or clears an explicit latency/loss profile for manual LAN
+  testing. It is intentionally not invoked by automated tests because it mutates privileged host
+  networking state.
+- Remaining before M7 closure: binary authoritative world-delta transport, command/event live
+  codecs, measured 100 ms/2% loss acceptance, and published per-client bandwidth results.
 
 ## M8 — Production Luau
 
@@ -498,6 +528,12 @@ limits.
   <https://learn.microsoft.com/vcpkg/concepts/manifest-mode>
 - miniaudio engine, node graph, resource manager, and spatialization:
   <https://miniaud.io/docs/manual/index.html>
+- QUIC address validation and amplification guidance:
+  <https://www.rfc-editor.org/rfc/rfc9000>
+- UDP usage and congestion guidance:
+  <https://www.rfc-editor.org/rfc/rfc8085>
+- QUIC loss detection, congestion control, and pacing:
+  <https://www.rfc-editor.org/rfc/rfc9002>
 - Luau embedding API:
   <https://luau.org/api/>
 - Luau sandboxing, isolated environments, allocator limits, and interrupts:

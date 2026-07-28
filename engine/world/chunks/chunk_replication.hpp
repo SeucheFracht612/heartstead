@@ -12,7 +12,10 @@
 
 namespace heartstead::world {
 
-inline constexpr std::string_view chunk_snapshot_slice_payload_type = "chunk.snapshot_slice.v1";
+inline constexpr std::string_view legacy_chunk_snapshot_slice_payload_type =
+    "chunk.snapshot_slice.v1";
+inline constexpr std::string_view chunk_snapshot_slice_payload_type =
+    "chunk.snapshot_slice.bin.v1";
 
 struct ChunkSnapshotSlice {
     ChunkIdentity identity;
@@ -27,6 +30,12 @@ struct ChunkSnapshotSlice {
 make_chunk_snapshot_slices(const VoxelChunk& chunk);
 
 class ChunkSnapshotSliceTextCodec {
+  public:
+    [[nodiscard]] static std::string encode(const ChunkSnapshotSlice& slice);
+    [[nodiscard]] static core::Result<ChunkSnapshotSlice> decode(std::string_view payload);
+};
+
+class ChunkSnapshotSliceBinaryCodec {
   public:
     [[nodiscard]] static std::string encode(const ChunkSnapshotSlice& slice);
     [[nodiscard]] static core::Result<ChunkSnapshotSlice> decode(std::string_view payload);

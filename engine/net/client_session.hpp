@@ -57,6 +57,8 @@ class ClientSession {
     [[nodiscard]] ReplicationIntakeReport replication_intake_report() const;
 
     [[nodiscard]] core::Status accept_welcome(const TransportEnvelope& envelope);
+    void mark_transport_disconnected(std::string reason_code, std::string reason_message,
+                                     std::int64_t disconnected_at_ms);
     [[nodiscard]] core::Result<CommandEnvelope>
     create_command(std::string type, std::string payload, std::int64_t client_time_ms = 0);
     [[nodiscard]] core::Status receive_server_message(const TransportEnvelope& envelope);

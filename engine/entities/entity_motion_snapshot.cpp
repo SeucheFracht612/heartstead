@@ -210,7 +210,7 @@ net::TransportMessage make_entity_motion_snapshot_message(const EntityMotionSnap
                                                           std::uint64_t transport_sequence,
                                                           std::int64_t timestamp_ms) {
     return {net::TransportMessageKind::replication,
-            net::TransportChannel::reliable,
+            net::TransportChannel::unreliable,
             transport_sequence,
             std::string(entity_motion_snapshot_payload_type),
             EntityMotionSnapshotTextCodec::encode(snapshot),
@@ -220,7 +220,7 @@ net::TransportMessage make_entity_motion_snapshot_message(const EntityMotionSnap
 core::Result<EntityMotionSnapshot>
 entity_motion_snapshot_from_transport(const net::TransportEnvelope& envelope) {
     if (envelope.message.kind != net::TransportMessageKind::replication ||
-        envelope.message.channel != net::TransportChannel::reliable ||
+        envelope.message.channel != net::TransportChannel::unreliable ||
         envelope.message.payload_type != entity_motion_snapshot_payload_type) {
         return core::Result<EntityMotionSnapshot>::failure(
             "entity_motion_snapshot.invalid_transport",

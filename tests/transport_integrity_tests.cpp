@@ -317,6 +317,42 @@ void test_remote_endpoint_rejects_content_mismatch() {
     assert(client.value()->state() == net::TransportClientState::disconnected);
 }
 
+void test_remote_endpoint_rate_limits_unreliable_input() {
+    if (!net::transport_backend_info(net::TransportBackend::external_library).available) {
+        return;
+    }
+    net::TransportHostDesc desc;
+    desc.backend = net::TransportBackend::external_library;
+    desc.external.bind_endpoint = {"127.0.0.1", 0};
+    desc.external.max_payload_bytes = 4096;
+    desc.external.content_fingerprint = "rate-limit-test";
+    desc.external.max_inbound_messages_per_second = 2;
+    auto host = net::create_transport_host(desc);
+    assert(host && host.value()->local_endpoint().has_value());
+
+    net::ExternalTransportClientConfig config;
+    config.server_endpoint = *host.value()->local_endpoint();
+    config.max_payload_bytes = 4096;
+    config.content_fingerprint = desc.external.content_fingerprint;
+    auto client = net::create_external_transport_client(config);
+    assert(client && client.value()->connect(0));
+    assert(host.value()->poll_maintenance(0));
+    assert(client.value()->poll_maintenance(0));
+    auto accepted = host.value()->poll_maintenance(1);
+    assert(accepted && accepted.value().connected_clients.size() == 1);
+    assert(client.value()->poll_maintenance(1));
+
+    for (std::uint64_t sequence = 1; sequence <= 3; ++sequence) {
+        assert(client.value()->send_to_server(
+            {net::TransportMessageKind::control, net::TransportChannel::unreliable,
+             sequence, "test.input", "payload", 2}));
+    }
+    auto maintenance = host.value()->poll_maintenance(2);
+    assert(maintenance && maintenance.value().rate_limited_datagram_count == 1);
+    auto messages = host.value()->drain_server_messages();
+    assert(messages.size() == 2);
+}
+
 void test_fragment_reassembly_is_scoped_and_expires() {
     net::TransportPacketFragmentCodecConfig config;
     config.max_fragment_payload_bytes = 4;
@@ -609,6 +645,7 @@ int main() {
     test_external_capacity_failure_does_not_leak_untracked_datagram();
     test_remote_endpoint_challenge_token_and_timeout();
     test_remote_endpoint_rejects_content_mismatch();
+    test_remote_endpoint_rate_limits_unreliable_input();
     test_fragment_reassembly_is_scoped_and_expires();
     test_reliable_commands_are_delivered_only_after_gaps_close();
     test_host_retries_responses_without_redispatching_drained_commands();

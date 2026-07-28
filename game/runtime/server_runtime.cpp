@@ -130,6 +130,12 @@ core::Result<std::unique_ptr<ServerRuntime>> ServerRuntime::create(ServerRuntime
             "server_runtime.invalid_simulation_rate",
             "authoritative simulation rate must be between 1 and 1000 Hz");
     }
+    if (desc.max_transient_snapshot_messages_per_tick == 0 ||
+        desc.max_transient_snapshot_payload_bytes_per_tick == 0) {
+        return core::Result<std::unique_ptr<ServerRuntime>>::failure(
+            "server_runtime.invalid_replication_budget",
+            "transient replication message and byte budgets must be non-zero");
+    }
     auto world_time_status = desc.world_time.validate();
     if (!world_time_status) {
         return core::Result<std::unique_ptr<ServerRuntime>>::failure(
@@ -263,6 +269,7 @@ core::Status ServerRuntime::initialize() {
                 return core::Status::failure(result.error().code, result.error().message);
             }
             current_commands_ = std::move(result).value();
+            process_movement_control_messages(current_commands_.control_messages);
             for (const auto client_id : current_commands_.connected_clients) {
                 auto connection_status = spawn_player(client_id);
                 if (connection_status) {
@@ -507,10 +514,15 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     current_moved_player_count_ = 0;
     current_repeated_input_count_ = 0;
     current_movement_event_count_ = 0;
+    current_accepted_movement_input_count_ = 0;
+    current_rejected_movement_input_count_ = 0;
     current_movement_snapshot_count_ = 0;
     current_entity_motion_snapshot_count_ = 0;
     current_entity_motion_tombstone_count_ = 0;
     current_player_tombstone_count_ = 0;
+    current_deferred_transient_snapshot_count_ = 0;
+    current_transient_snapshot_payload_bytes_ = 0;
+    current_transient_snapshot_message_count_ = 0;
     auto simulation =
         scheduler_.run_tick({tick, fixed_delta_seconds, &world_, physics_.get(), &events_});
     if (!simulation) {
@@ -529,10 +541,16 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     stats.moved_player_count = current_moved_player_count_;
     stats.repeated_input_count = current_repeated_input_count_;
     stats.movement_event_count = current_movement_event_count_;
+    stats.accepted_movement_input_count = current_accepted_movement_input_count_;
+    stats.rejected_movement_input_count = current_rejected_movement_input_count_;
     stats.movement_snapshot_count = current_movement_snapshot_count_;
     stats.entity_motion_snapshot_count = current_entity_motion_snapshot_count_;
     stats.entity_motion_tombstone_count = current_entity_motion_tombstone_count_;
     stats.player_tombstone_count = current_player_tombstone_count_;
+    stats.deferred_transient_snapshot_count =
+        current_deferred_transient_snapshot_count_;
+    stats.transient_snapshot_payload_bytes =
+        current_transient_snapshot_payload_bytes_;
     return core::Result<ServerRuntimeTickStats>::success(std::move(stats));
 }
 
@@ -595,6 +613,17 @@ core::Status ServerRuntime::remove_player_connection(core::NetId client_id) {
 
 core::Status ServerRuntime::submit_command(core::NetId client_id, net::CommandEnvelope command) {
     return host_.send_client_command(client_id, std::move(command));
+}
+
+core::Status ServerRuntime::submit_movement_input(core::NetId client_id,
+                                                  movement::PlayerInputBundle bundle,
+                                                  std::int64_t now_ms) {
+    auto status = bundle.validate();
+    if (!status) {
+        return status;
+    }
+    return host_.send_client_control(
+        client_id, movement::make_movement_input_bundle_message(bundle, now_ms));
 }
 
 core::Result<std::vector<net::TransportEnvelope>>
@@ -742,6 +771,42 @@ ServerRuntime::player_for_client(core::NetId client_id) const noexcept {
     const auto found = player_connections_.find(client_id.value());
     return found == player_connections_.end() ? nullptr
                                               : players_.find(found->second.runtime_handle);
+}
+
+void ServerRuntime::process_movement_control_messages(
+    std::span<const net::TransportEnvelope> messages) {
+    for (const auto& message : messages) {
+        const auto found = player_connections_.find(message.sender.value());
+        if (found == player_connections_.end()) {
+            ++current_rejected_movement_input_count_;
+            continue;
+        }
+        if (message.message.payload_type == movement::movement_input_bundle_payload_type ||
+            message.message.payload_type ==
+                movement::legacy_movement_input_bundle_payload_type) {
+            auto bundle = movement::movement_input_bundle_from_transport(message);
+            if (!bundle) {
+                ++current_rejected_movement_input_count_;
+                continue;
+            }
+            auto accepted = found->second.pending_inputs.push_bundle(bundle.value());
+            if (!accepted) {
+                ++current_rejected_movement_input_count_;
+                continue;
+            }
+            current_accepted_movement_input_count_ +=
+                static_cast<std::uint32_t>(accepted.value());
+        } else if (message.message.payload_type == movement::movement_input_payload_type) {
+            auto input = movement::movement_input_from_transport(message);
+            if (!input || !found->second.pending_inputs.push(std::move(input).value())) {
+                ++current_rejected_movement_input_count_;
+                continue;
+            }
+            ++current_accepted_movement_input_count_;
+        } else {
+            ++current_rejected_movement_input_count_;
+        }
+    }
 }
 
 core::Status ServerRuntime::ensure_spawn_area() {
@@ -1094,6 +1159,14 @@ core::Status ServerRuntime::replicate_players() {
         client_ids.push_back(client_id);
     }
     std::ranges::sort(client_ids);
+    if (!client_ids.empty()) {
+        const auto offset = static_cast<std::size_t>(
+            transient_replication_cursor_ % client_ids.size());
+        const auto iterator_offset =
+            static_cast<std::vector<std::uint64_t>::difference_type>(offset);
+        std::rotate(client_ids.begin(), client_ids.begin() + iterator_offset, client_ids.end());
+        ++transient_replication_cursor_;
+    }
     const auto collision_revision = collision_world_revision();
     for (const auto recipient : client_ids) {
         for (const auto removed_player : pending_player_removals_) {
@@ -1122,6 +1195,11 @@ core::Status ServerRuntime::replicate_players() {
             snapshot.state = player->state;
             snapshot.last_processed_input_sequence = player->state.last_input_sequence;
             snapshot.collision_world_revision = collision_revision;
+            const auto payload_bytes =
+                movement::PlayerControllerSnapshotBinaryCodec::encode(snapshot).size();
+            if (!admit_transient_snapshot(payload_bytes)) {
+                continue;
+            }
             auto sequence = reserve_custom_replication_sequence();
             if (!sequence) {
                 return core::Status::failure(sequence.error().code, sequence.error().message);
@@ -1180,6 +1258,14 @@ core::Status ServerRuntime::replicate_entity_motion(std::uint64_t simulation_tic
         recipients.push_back(client_id);
     }
     std::ranges::sort(recipients);
+    if (!recipients.empty()) {
+        const auto offset = static_cast<std::size_t>(
+            transient_replication_cursor_ % recipients.size());
+        const auto iterator_offset =
+            static_cast<std::vector<std::uint64_t>::difference_type>(offset);
+        std::rotate(recipients.begin(), recipients.begin() + iterator_offset, recipients.end());
+        ++transient_replication_cursor_;
+    }
     for (const auto recipient : recipients) {
         for (const auto removed : pending_entity_motion_removals_) {
             auto sequence = reserve_custom_replication_sequence();
@@ -1196,6 +1282,11 @@ core::Status ServerRuntime::replicate_entity_motion(std::uint64_t simulation_tic
             ++current_entity_motion_tombstone_count_;
         }
         for (const auto& snapshot : snapshots) {
+            const auto payload_bytes =
+                entities::EntityMotionSnapshotTextCodec::encode(snapshot).size();
+            if (!admit_transient_snapshot(payload_bytes)) {
+                continue;
+            }
             auto sequence = reserve_custom_replication_sequence();
             if (!sequence) {
                 return core::Status::failure(sequence.error().code, sequence.error().message);
@@ -1347,6 +1438,23 @@ core::Result<std::uint64_t> ServerRuntime::reserve_custom_replication_sequence()
     next_custom_replication_sequence_ =
         sequence == std::numeric_limits<std::uint64_t>::max() ? 0 : sequence + 1;
     return core::Result<std::uint64_t>::success(sequence);
+}
+
+bool ServerRuntime::admit_transient_snapshot(std::size_t payload_bytes) noexcept {
+    const auto remaining_bytes =
+        desc_.max_transient_snapshot_payload_bytes_per_tick -
+        std::min(desc_.max_transient_snapshot_payload_bytes_per_tick,
+                 current_transient_snapshot_payload_bytes_);
+    if (current_transient_snapshot_message_count_ >=
+            desc_.max_transient_snapshot_messages_per_tick ||
+        payload_bytes > remaining_bytes) {
+        ++current_deferred_transient_snapshot_count_;
+        return false;
+    }
+    ++current_transient_snapshot_message_count_;
+    current_transient_snapshot_payload_bytes_ +=
+        static_cast<std::uint32_t>(payload_bytes);
+    return true;
 }
 
 std::uint64_t ServerRuntime::collision_world_revision() const noexcept {

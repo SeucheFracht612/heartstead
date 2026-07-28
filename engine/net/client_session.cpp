@@ -98,6 +98,16 @@ core::Status ClientSession::accept_welcome(const TransportEnvelope& envelope) {
     return core::Status::ok();
 }
 
+void ClientSession::mark_transport_disconnected(std::string reason_code,
+                                                std::string reason_message,
+                                                std::int64_t disconnected_at_ms) {
+    disconnect_reason_code_ = std::move(reason_code);
+    disconnect_reason_message_ = std::move(reason_message);
+    disconnected_at_ms_ = disconnected_at_ms;
+    pending_commands_.clear();
+    state_ = ClientSessionState::disconnected;
+}
+
 core::Result<CommandEnvelope> ClientSession::create_command(std::string type, std::string payload,
                                                             std::int64_t client_time_ms) {
     auto connected = require_connected();
@@ -239,13 +249,14 @@ core::Status ClientSession::receive_command_result(const TransportEnvelope& enve
 }
 
 core::Status ClientSession::receive_replication(const TransportEnvelope& envelope) {
-    if (envelope.message.channel != TransportChannel::reliable) {
-        return core::Status::failure("client_session.unreliable_replication",
-                                     "client session only accepts reliable replication messages");
-    }
     if (envelope.message.payload_type != replication_world_events_payload_type) {
         replication_messages_.push_back(envelope);
         return core::Status::ok();
+    }
+    if (envelope.message.channel != TransportChannel::reliable) {
+        return core::Status::failure(
+            "client_session.unreliable_world_replication",
+            "authoritative world replication batches require reliable delivery");
     }
 
     auto batch = replication_batch_from_transport(envelope);

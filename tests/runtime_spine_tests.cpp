@@ -436,6 +436,24 @@ void test_external_listen_runtime_uses_true_remote_endpoint() {
     assert(runtime.session()->server()->player_for_client(
                runtime.session()->client()->client_id()) != nullptr);
 
+    const auto predicted_start =
+        runtime.session()->client()->local_player_snapshot()->state.position;
+    movement::PlayerInputFrame movement_input;
+    movement_input.tick = 1;
+    movement_input.sequence = 1;
+    movement_input.move_z = 32'767;
+    assert(runtime.session()->submit_player_input(movement_input, now_ms));
+    const auto predicted_position =
+        runtime.session()->client()->local_player_snapshot()->state.position;
+    assert(predicted_position.relative_to(predicted_start.anchor).z >
+           predicted_start.local_offset.z);
+    now_ms += 17;
+    auto movement_frame = runtime.run_frame({16'667, now_ms});
+    assert(movement_frame);
+    assert(movement_frame.value().server_ticks.front().commands.control_message_count == 1);
+    assert(movement_frame.value().server_ticks.front().accepted_movement_input_count == 1);
+    assert(movement_frame.value().client.acknowledged_input_count == 1);
+
     assert(runtime.submit_command("world.set_voxel", set_voxel_payload(), now_ms));
     for (std::uint32_t frame_index = 0; frame_index < 4; ++frame_index) {
         now_ms += 17;
@@ -447,6 +465,83 @@ void test_external_listen_runtime_uses_true_remote_endpoint() {
     const auto cell = replicated->get({1, 2, 3});
     assert(cell && cell.value().type != 0);
     assert(runtime.shutdown());
+}
+
+void test_two_remote_clients_predict_and_interpolate() {
+    if (!net::transport_backend_info(net::TransportBackend::external_library).available) {
+        return;
+    }
+    const auto report = content::ContentValidation::validate(source_root());
+    assert(!report.has_errors());
+    auto server = make_runtime(report);
+    game::RuntimeConfiguration server_config;
+    server_config.create_client = false;
+    server_config.use_in_memory_transport = false;
+    server_config.server_bind_endpoint = {"127.0.0.1", 0};
+    assert(server.start_session(server_config, make_session_request(report)));
+    const auto endpoint = server.session()->server()->host().local_endpoint();
+    assert(endpoint.has_value() && endpoint->port != 0);
+
+    auto first = make_runtime(report);
+    auto second = make_runtime(report);
+    game::RuntimeConfiguration client_config;
+    client_config.create_server = false;
+    client_config.create_client = true;
+    client_config.use_in_memory_transport = false;
+    client_config.remote_server_endpoint = endpoint;
+    assert(first.start_session(client_config, make_session_request(report)));
+    assert(second.start_session(client_config, make_session_request(report)));
+
+    std::int64_t now_ms = 0;
+    for (std::uint32_t frame_index = 0; frame_index < 12; ++frame_index) {
+        now_ms += 17;
+        assert(server.run_frame({16'667, now_ms}));
+        assert(first.run_frame({16'667, now_ms}));
+        assert(second.run_frame({16'667, now_ms}));
+        if (first.session()->client()->is_connected() &&
+            second.session()->client()->is_connected() &&
+            first.session()->client()->local_player_snapshot() != nullptr &&
+            second.session()->client()->local_player_snapshot() != nullptr) {
+            break;
+        }
+    }
+    assert(first.session()->client()->is_connected());
+    assert(second.session()->client()->is_connected());
+    const auto first_player = first.session()->client()->local_player_net_id();
+    assert(first_player.is_valid() &&
+           first_player != second.session()->client()->local_player_net_id());
+    const auto start =
+        first.session()->client()->local_player_snapshot()->state.position;
+    movement::PlayerInputFrame input;
+    input.tick = 1;
+    input.sequence = 1;
+    input.move_z = 32'767;
+    assert(first.session()->submit_player_input(input, now_ms));
+    const auto immediate =
+        first.session()->client()->local_player_snapshot()->state.position;
+    assert(immediate.relative_to(start.anchor).z > start.local_offset.z);
+
+    game::RuntimeFrameStats second_frame;
+    for (std::uint32_t frame_index = 0; frame_index < 12; ++frame_index) {
+        now_ms += 17;
+        assert(server.run_frame({16'667, now_ms}));
+        assert(first.run_frame({16'667, now_ms}));
+        auto observed = second.run_frame({16'667, now_ms});
+        assert(observed);
+        second_frame = std::move(observed).value();
+    }
+    const auto* interpolated = second.session()->client()->player_snapshot(first_player);
+    assert(interpolated != nullptr);
+    assert(interpolated->state.position.relative_to(start.anchor).z >
+           start.local_offset.z);
+    assert(second_frame.client.interpolated_player_count >= 1);
+    assert(server.shutdown());
+    now_ms += 16'000;
+    auto timed_out = first.run_frame({16'667, now_ms});
+    assert(!timed_out &&
+           timed_out.error().code == "transport_client.idle_timeout");
+    assert(first.shutdown());
+    assert(second.shutdown());
 }
 
 void test_jolt_runtime_moves_on_cooked_terrain() {
@@ -592,11 +687,15 @@ void test_authoritative_player_input_moves_and_replicates() {
     assert(frame);
     assert(frame.value().server_ticks.size() == 1);
     const auto& tick = frame.value().server_ticks.front();
-    assert(tick.commands.command_reports.size() == 1);
-    assert(tick.commands.command_reports.front().success);
-    assert(!tick.commands.command_reports.front().committed_world_mutation);
+    assert(tick.commands.command_reports.empty());
+    assert(tick.commands.control_message_count == 1);
+    assert(tick.accepted_movement_input_count == 1);
+    assert(tick.rejected_movement_input_count == 0);
     assert(tick.moved_player_count == 1);
     assert(tick.movement_snapshot_count == 1);
+    assert(frame.value().client.predicted_input_count == 1);
+    assert(frame.value().client.acknowledged_input_count == 1);
+    assert(frame.value().client.hard_correction_count == 0);
     assert(session->server()->events().character_moved.size() == 1);
 
     const auto* player_after = session->server()->player_for_client(client_id);
@@ -622,6 +721,27 @@ void test_authoritative_player_input_moves_and_replicates() {
     assert(repeated_player != nullptr);
     assert(repeated_player->state.last_input_sequence == 1);
     assert(repeated_player->state.simulation_tick == 2);
+    assert(runtime.shutdown());
+}
+
+void test_transient_replication_budget_defers_latest_state() {
+    const auto report = content::ContentValidation::validate(source_root());
+    assert(!report.has_errors());
+    auto runtime = make_runtime(report);
+    game::RuntimeConfiguration config;
+    config.max_transient_snapshot_payload_bytes_per_tick = 1;
+    assert(runtime.start_session(config, make_session_request(report)));
+    movement::PlayerInputFrame input;
+    input.tick = 1;
+    input.sequence = 1;
+    input.move_z = 32'767;
+    assert(runtime.session()->submit_player_input(input, 10));
+    auto frame = runtime.run_frame({16'667, 17});
+    assert(frame && frame.value().server_ticks.size() == 1);
+    assert(frame.value().server_ticks.front().movement_snapshot_count == 0);
+    assert(frame.value().server_ticks.front().deferred_transient_snapshot_count == 1);
+    assert(frame.value().server_ticks.front().transient_snapshot_payload_bytes == 0);
+    assert(frame.value().client.acknowledged_input_count == 0);
     assert(runtime.shutdown());
 }
 
@@ -1136,9 +1256,11 @@ int main() {
     test_session_rejects_unknown_or_wrong_kind_scenarios();
     test_dedicated_headless_runtime_uses_same_scheduler();
     test_external_listen_runtime_uses_true_remote_endpoint();
+    test_two_remote_clients_predict_and_interpolate();
     test_jolt_runtime_moves_on_cooked_terrain();
     test_jolt_runtime_drops_settles_and_restores_physical_resource();
     test_authoritative_player_input_moves_and_replicates();
+    test_transient_replication_budget_defers_latest_state();
     test_typed_voxel_commands_validate_and_replicate();
     test_runtime_relights_and_replicates_chunk_light();
     test_runtime_simulates_and_replicates_voxel_fluid();

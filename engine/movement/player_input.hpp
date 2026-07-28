@@ -39,6 +39,7 @@ struct PlayerInputFrame {
     [[nodiscard]] core::Status validate() const;
     [[nodiscard]] bool held(PlayerInputButton button) const noexcept;
     [[nodiscard]] bool pressed(PlayerInputButton button) const noexcept;
+    friend bool operator==(const PlayerInputFrame&, const PlayerInputFrame&) = default;
 };
 
 class PlayerInputTextCodec {

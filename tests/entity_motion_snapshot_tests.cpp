@@ -40,7 +40,7 @@ int main() {
     auto transported = entities::entity_motion_snapshot_from_transport(envelope);
     assert(transported);
     assert(transported.value() == snapshot);
-    envelope.message.channel = net::TransportChannel::unreliable;
+    envelope.message.channel = net::TransportChannel::reliable;
     assert(!entities::entity_motion_snapshot_from_transport(envelope));
 
     envelope.message =

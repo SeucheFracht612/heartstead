@@ -2146,8 +2146,15 @@ InspectionData Inspector::inspect(const net::HostSessionTickResult& result) {
               std::to_string(result.transport_retransmission_count));
     add_field(data, "transport_dropped_reliable_message_count",
               std::to_string(result.transport_dropped_reliable_message_count));
+    add_field(data, "transport_malformed_datagram_count",
+              std::to_string(result.transport_malformed_datagram_count));
+    add_field(data, "transport_rejected_datagram_count",
+              std::to_string(result.transport_rejected_datagram_count));
+    add_field(data, "transport_rate_limited_datagram_count",
+              std::to_string(result.transport_rate_limited_datagram_count));
     add_field(data, "transport_message_count", std::to_string(result.transport_message_count));
     add_field(data, "command_message_count", std::to_string(result.command_message_count));
+    add_field(data, "control_message_count", std::to_string(result.control_message_count));
     add_field(data, "response_message_count", std::to_string(result.response_message_count));
     add_field(data, "replication_message_count", std::to_string(result.replication_message_count));
     add_field(data, "outbound_delivery_attempted_message_count",
@@ -2207,9 +2214,11 @@ InspectionData Inspector::inspect(const net::HostSessionTickResult& result) {
         add_issue(data, InspectionSeverity::error, "host_tick.response_count_mismatch",
                   "host session tick response count must match command report count");
     }
-    if (result.transport_message_count != result.command_reports.size()) {
+    if (result.transport_message_count !=
+        result.command_reports.size() + result.control_messages.size()) {
         add_issue(data, InspectionSeverity::error, "host_tick.transport_count_mismatch",
-                  "host session tick transport message count must match command report count");
+                  "host session tick transport message count must match command and control "
+                  "message counts");
     }
     if (result.replication_message_count != relevant_client_count) {
         add_issue(data, InspectionSeverity::error, "host_tick.replication_count_mismatch",
