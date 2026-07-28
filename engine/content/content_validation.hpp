@@ -23,6 +23,7 @@
 #include "engine/scenarios/scenario.hpp"
 #include "engine/scripting/script_runtime.hpp"
 #include "engine/workpieces/workpiece_definition.hpp"
+#include "engine/ui/widget_tree.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
 
 #include <cstddef>
@@ -59,6 +60,7 @@ struct ContentValidationReport {
     renderer::materials::MaterialRegistry material_registry;
     renderer::materials::MaterialAssetValidationResult material_assets;
     std::vector<renderer::ParticlePrototype> particle_prototypes;
+    ui::UiSkin ui_skin;
     std::vector<modding::ModDiagnostic> diagnostics;
 
     [[nodiscard]] bool has_errors() const noexcept;

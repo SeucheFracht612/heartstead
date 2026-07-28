@@ -946,6 +946,13 @@ void Renderer::set_particle_stats(const ParticleSystemStats& particles, double p
     stats_.particle_dropped = particles.dropped_particles + presentation_dropped;
 }
 
+void Renderer::set_ui_widget_stats(double layout_ms, double paint_ms,
+                                   std::uint32_t widget_count) noexcept {
+    stats_.ui_layout_ms = layout_ms;
+    stats_.ui_paint_ms = paint_ms;
+    stats_.ui_widgets = widget_count;
+}
+
 RenderObjectId Renderer::reserve_object_id() {
     return scene_.reserve_object_id();
 }

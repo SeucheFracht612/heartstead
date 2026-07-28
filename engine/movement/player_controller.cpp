@@ -317,7 +317,8 @@ core::Status PlayerMovementConfig::validate() const {
         return core::Status::failure("player_controller.invalid_relationship",
                                      "movement configuration dimensions or speeds conflict");
     }
-    const std::array costs{stamina_pool_milli,
+    const std::array costs{health_pool_milli,
+                           stamina_pool_milli,
                            stamina_regen_milli_per_second,
                            sprint_drain_milli_per_second,
                            swim_drain_milli_per_second,
@@ -326,8 +327,8 @@ core::Status PlayerMovementConfig::validate() const {
                            roll_cost_milli,
                            mantle_cost_milli};
     if (!std::ranges::all_of(costs, [](std::int32_t value) { return value > 0; })) {
-        return core::Status::failure("player_controller.invalid_stamina_config",
-                                     "movement stamina values must be positive");
+        return core::Status::failure("player_controller.invalid_vitals_config",
+                                     "movement health and stamina values must be positive");
     }
     return core::Status::ok();
 }
@@ -338,7 +339,8 @@ core::Status PlayerControllerState::validate(const PlayerMovementConfig& config)
         return core::Status::failure("player_controller.invalid_state_position",
                                      "player controller state contains an invalid position/vector");
     }
-    if (stamina_milli < 0 || stamina_milli > config.stamina_pool_milli || dash_charges > 2 ||
+    if (health_milli < 0 || health_milli > config.health_pool_milli || stamina_milli < 0 ||
+        stamina_milli > config.stamina_pool_milli || dash_charges > 2 ||
         pitch_centidegrees < -8'900 || pitch_centidegrees > 8'900) {
         return core::Status::failure("player_controller.invalid_state",
                                      "player controller state values are out of range");

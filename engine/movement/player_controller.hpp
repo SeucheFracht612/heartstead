@@ -100,6 +100,7 @@ struct PlayerMovementConfig {
     double heavy_roll_distance = 2.2;
     double mantle_max_height = 2.0;
     double vault_max_height = 1.05;
+    std::int32_t health_pool_milli = 100'000;
     std::int32_t stamina_pool_milli = 100'000;
     std::int32_t stamina_regen_milli_per_second = 14'000;
     std::int32_t sprint_drain_milli_per_second = 5'000;
@@ -129,6 +130,7 @@ struct PlayerControllerState {
     bool invulnerable = false;
     std::int16_t yaw_centidegrees = 0;
     std::int16_t pitch_centidegrees = 0;
+    std::int32_t health_milli = 100'000;
     std::int32_t stamina_milli = 100'000;
     std::uint8_t dash_charges = 2;
     bool air_dash_available = true;

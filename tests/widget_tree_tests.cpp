@@ -293,6 +293,50 @@ void test_nine_slice_tooltip_paint_and_batching() {
     assert(renderer.shutdown());
 }
 
+void test_scroll_area_and_platform_navigation_adapter() {
+    ui::WidgetTree tree;
+    auto root = root_desc("scroll.root");
+    assert(tree.add(root));
+    ui::WidgetDesc scroll;
+    scroll.id = ui::widget_id("scroll.area");
+    scroll.parent = root.id;
+    scroll.kind = ui::WidgetKind::scroll_area;
+    scroll.layout.width = ui::UiSize::pixels(120.0F);
+    scroll.layout.height = ui::UiSize::pixels(100.0F);
+    scroll.layout.mode = ui::UiLayoutMode::column;
+    scroll.layout.horizontal_alignment = ui::UiAlignment::start;
+    scroll.layout.vertical_alignment = ui::UiAlignment::start;
+    scroll.layout.gap = 2.0F;
+    scroll.layout.clip_children = true;
+    assert(tree.add(scroll));
+    for (std::uint32_t index = 0; index < 10; ++index) {
+        ui::WidgetDesc row;
+        row.id = ui::widget_id("scroll.row." + std::to_string(index));
+        row.parent = scroll.id;
+        row.layout.width = ui::UiSize::fill();
+        row.layout.height = ui::UiSize::pixels(30.0F);
+        assert(tree.add(row));
+    }
+    assert(tree.layout({640.0F, 360.0F}));
+    const auto before = tree.rect(ui::widget_id("scroll.row.0"));
+    assert(before);
+    ui::UiInputFrame wheel;
+    wheel.pointer_inside = true;
+    wheel.pointer = {20.0F, 20.0F};
+    wheel.wheel_delta = -3.0F;
+    auto routed = tree.route_input(wheel);
+    assert(routed.consumed.pointer);
+    assert(tree.scroll_offset(scroll.id) > 0.0F);
+    const auto after = tree.rect(ui::widget_id("scroll.row.0"));
+    assert(after && after->y < before->y);
+
+    platform::WindowInputSnapshot snapshot;
+    snapshot.pressed_keys = {platform::KeyCode::arrow_down, platform::KeyCode::backspace};
+    auto adapted = ui::UiInputFrame::from_platform(snapshot);
+    assert(adapted.navigation == ui::UiNavigation::down);
+    assert(adapted.backspace_pressed);
+}
+
 void test_two_thousand_widget_layout_budget_probe() {
     ui::WidgetTree tree;
     auto root = root_desc("budget.root");
@@ -328,6 +372,7 @@ int main() {
     test_capture_focus_text_and_gameplay_consumption();
     test_drag_drop_and_slider();
     test_nine_slice_tooltip_paint_and_batching();
+    test_scroll_area_and_platform_navigation_adapter();
     test_two_thousand_widget_layout_budget_probe();
     return 0;
 }

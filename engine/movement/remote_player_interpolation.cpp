@@ -104,6 +104,9 @@ RemotePlayerInterpolator::sample(std::uint64_t render_tick) const {
     result.pitch_centidegrees = static_cast<std::int16_t>(
         std::lround(static_cast<double>(lower->state.pitch_centidegrees) * (1.0 - alpha) +
                     static_cast<double>(upper->state.pitch_centidegrees) * alpha));
+    result.health_milli = static_cast<std::int32_t>(
+        std::lround(static_cast<double>(lower->state.health_milli) * (1.0 - alpha) +
+                    static_cast<double>(upper->state.health_milli) * alpha));
     result.stamina_milli = static_cast<std::int32_t>(
         std::lround(static_cast<double>(lower->state.stamina_milli) * (1.0 - alpha) +
                     static_cast<double>(upper->state.stamina_milli) * alpha));

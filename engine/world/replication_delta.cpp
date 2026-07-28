@@ -1458,6 +1458,35 @@ core::Result<WorldClientReplicationApplyReport> apply_client_replication_deltas(
         report.batches.push_back(std::move(batch_report));
     }
 
+    for (std::size_t index = 0; index < decoded_delta_snapshots.size(); ++index) {
+        if (used_delta_indices.contains(index)) {
+            continue;
+        }
+        const auto& snapshot = decoded_delta_snapshots[index];
+        if (snapshot.plan.command_type != "world.initial_snapshot") {
+            continue;
+        }
+        auto applied = apply_replication_delta(state, snapshot);
+        if (!applied) {
+            return core::Result<WorldClientReplicationApplyReport>::failure(
+                applied.error().code, applied.error().message);
+        }
+        WorldClientReplicationBatchApplyReport batch_report;
+        batch_report.command_sequence = snapshot.plan.command_sequence;
+        batch_report.replication_sequence = snapshot.plan.replication_sequence;
+        batch_report.command_type = snapshot.plan.command_type;
+        batch_report.event_count = snapshot.plan.event_count;
+        batch_report.has_delta_snapshot = true;
+        batch_report.applied_delta = true;
+        batch_report.state = "applied_standalone_snapshot";
+        batch_report.delta_apply_report = std::move(applied).value();
+        report.total_event_count += batch_report.event_count;
+        report.total_applied_record_count +=
+            batch_report.delta_apply_report.applied_record_count;
+        ++report.applied_delta_count;
+        used_delta_indices.insert(index);
+        report.batches.push_back(std::move(batch_report));
+    }
     report.unmatched_delta_count =
         static_cast<std::uint32_t>(decoded_delta_snapshots.size() - used_delta_indices.size());
     return core::Result<WorldClientReplicationApplyReport>::success(std::move(report));

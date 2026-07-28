@@ -1098,6 +1098,7 @@ core::Status ServerRuntime::replicate_players() {
             }
             movement::PlayerControllerSnapshot snapshot;
             snapshot.player_net_id = player->net_id;
+            snapshot.player_save_id = player->save_id;
             snapshot.state = player->state;
             snapshot.last_processed_input_sequence = player->state.last_input_sequence;
             snapshot.collision_world_revision = collision_revision;
@@ -1280,6 +1281,7 @@ core::Status ServerRuntime::send_initial_chunks(core::NetId client_id) {
     for (const auto* player : players_.records()) {
         movement::PlayerControllerSnapshot snapshot;
         snapshot.player_net_id = player->net_id;
+        snapshot.player_save_id = player->save_id;
         snapshot.state = player->state;
         snapshot.last_processed_input_sequence = player->state.last_input_sequence;
         snapshot.collision_world_revision = collision_world_revision();
@@ -1293,6 +1295,24 @@ core::Status ServerRuntime::send_initial_chunks(core::NetId client_id) {
         if (!status) {
             return status;
         }
+    }
+    auto inventory_sequence = reserve_custom_replication_sequence();
+    if (!inventory_sequence) {
+        return core::Status::failure(inventory_sequence.error().code,
+                                     inventory_sequence.error().message);
+    }
+    net::ReplicationBatch inventory_batch;
+    inventory_batch.command_sequence = inventory_sequence.value();
+    inventory_batch.replication_sequence = inventory_sequence.value();
+    inventory_batch.command_type = "world.initial_snapshot";
+    inventory_batch.events.push_back(
+        {"inventory.snapshot", local_player->save_id, "initial_private_inventory"});
+    auto inventory_snapshot = world::materialize_replication_delta(world_, inventory_batch);
+    auto status = host_.send_replication_message(
+        client_id,
+        world::make_replication_delta_transport_message(inventory_snapshot, current_time_ms_));
+    if (!status) {
+        return status;
     }
     return core::Status::ok();
 }

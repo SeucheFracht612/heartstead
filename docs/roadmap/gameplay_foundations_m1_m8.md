@@ -362,6 +362,27 @@ through M8 so each acceptance scene builds on already verified systems.
 - UI target: 2,000 widgets below `1.0 ms` p95 layout+paint, bounded allocations after warmup, and
   draw calls grouped by atlas/scissor.
 
+### M6 progress evidence
+
+- The retained widget tree now preserves focus, pointer capture, scroll, text-edit, and drag state
+  through stable IDs. Deterministic row/column/grid/overlay layout, clipping, hit testing,
+  tooltips, text input, and directional focus navigation are covered by unit tests.
+- UI consumes pointer, keyboard, text, and device-neutral navigation actions before the gameplay
+  action map. Pointer and keyboard adapters are live; the focus/navigation contract is ready for a
+  native gamepad adapter without changing screen behavior.
+- Base-mod `ui_panel` prototypes materialize carved panel, button, and slot nine-slices. Atlas and
+  scissor-compatible geometry is coalesced into one renderer submission.
+- The private initial player snapshot exposes only the joining player's owner inventory.
+  Inventory drag/drop uses the existing authoritative transfer command with optimistic feedback,
+  tracked command results, replicated-state reconciliation, rejection rollback, and right-button
+  split stacks.
+- The HUD binds health, stamina, carried mass, and hotbar data to replicated state. Opening the
+  inventory sends neutral movement and blocks movement, jump, interaction, and drop input.
+- Renderer statistics expose layout time, paint time, and widget count. The Release
+  `heartstead_ui_benchmark` run built 2,000 widgets in 0.186 ms median / 0.206 ms p95, with a
+  0.228 ms maximum and one draw call, below the 1.0 ms p95 target.
+- M6 verification is complete. M7 is the next delivery milestone.
+
 ## M7 — Actually remote multiplayer
 
 ### Architecture decisions

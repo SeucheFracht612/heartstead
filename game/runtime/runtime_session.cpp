@@ -1,9 +1,11 @@
 #include "game/runtime/runtime_session.hpp"
 
 #include "engine/scenarios/scenario_prototype.hpp"
+#include "engine/net/command_payload.hpp"
 #include "engine/world/world_snapshot.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <utility>
 
@@ -246,16 +248,61 @@ core::Result<RuntimeFrameStats> RuntimeSession::fault_frame(const core::Error& e
 
 core::Status RuntimeSession::submit_command(std::string type, std::string payload,
                                             std::int64_t now_ms) {
+    auto submitted = submit_tracked_command(std::move(type), std::move(payload), now_ms);
+    if (!submitted) {
+        return core::Status::failure(submitted.error().code, submitted.error().message);
+    }
+    return core::Status::ok();
+}
+
+core::Result<std::uint64_t>
+RuntimeSession::submit_tracked_command(std::string type, std::string payload,
+                                       std::int64_t now_ms) {
     if (!running_ || client_ == nullptr || server_ == nullptr) {
-        return core::Status::failure(
+        return core::Result<std::uint64_t>::failure(
             "runtime_session.command_path_unavailable",
             "commands require an active client and authoritative server connection");
     }
     auto command = client_->create_command(std::move(type), std::move(payload), now_ms);
     if (!command) {
-        return core::Status::failure(command.error().code, command.error().message);
+        return core::Result<std::uint64_t>::failure(command.error().code,
+                                                    command.error().message);
     }
-    return server_->submit_command(client_->client_id(), std::move(command).value());
+    const auto sequence = command.value().sequence;
+    auto status = server_->submit_command(client_->client_id(), std::move(command).value());
+    if (!status) {
+        return core::Result<std::uint64_t>::failure(status.error().code,
+                                                    status.error().message);
+    }
+    return core::Result<std::uint64_t>::success(sequence);
+}
+
+core::Result<std::uint64_t>
+RuntimeSession::submit_inventory_transfer(const world::InventoryTransferRequest& request,
+                                          std::int64_t now_ms) {
+    if (!request.source_owner_id.is_valid() || !request.destination_owner_id.is_valid() ||
+        request.count == 0) {
+        return core::Result<std::uint64_t>::failure(
+            "runtime_session.invalid_inventory_transfer",
+            "inventory transfer requires valid owners and a non-zero count");
+    }
+    net::CommandPayload payload;
+    const std::array fields{
+        std::pair{"source_owner", request.source_owner_id.to_string()},
+        std::pair{"destination_owner", request.destination_owner_id.to_string()},
+        std::pair{"source_slot", std::to_string(request.source_slot)},
+        std::pair{"destination_slot", std::to_string(request.destination_slot)},
+        std::pair{"count", std::to_string(request.count)},
+    };
+    for (const auto& [key, value] : fields) {
+        auto status = payload.set(key, value);
+        if (!status) {
+            return core::Result<std::uint64_t>::failure(status.error().code,
+                                                        status.error().message);
+        }
+    }
+    return submit_tracked_command("inventory.transfer_items",
+                                  net::CommandPayloadTextCodec::encode(payload), now_ms);
 }
 
 core::Status RuntimeSession::submit_player_input(const movement::PlayerInputFrame& input,

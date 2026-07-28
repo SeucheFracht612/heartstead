@@ -61,7 +61,9 @@ std::string format_renderer_stats(const RendererStats& stats) {
            << stats.debug_draw_calls << '/' << stats.debug_labels
            << " debug_overflow=" << stats.debug_overflow << " ui=" << stats.ui_vertices << '/'
            << stats.ui_draw_calls << '/' << stats.ui_clipped_draw_calls
-           << " glyphs=" << stats.ui_glyphs << " ui_overflow=" << stats.ui_overflow
+           << " glyphs=" << stats.ui_glyphs << " widgets=" << stats.ui_widgets
+           << " ui_cpu=" << stats.ui_layout_ms << '/' << stats.ui_paint_ms << "ms"
+           << " ui_overflow=" << stats.ui_overflow
            << " suppressed=" << stats.residency_suppressed_chunks
            << " evicted=" << stats.distance_evicted_meshes << '/'
            << stats.memory_pressure_evicted_meshes << " arena=" << stats.gpu_arena_used_bytes << '/'

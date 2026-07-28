@@ -97,6 +97,22 @@ struct X11OutgoingIncrementalClipboardTransfer {
         return KeyCode::tab;
     case XK_space:
         return KeyCode::space;
+    case XK_BackSpace:
+        return KeyCode::backspace;
+    case XK_Delete:
+        return KeyCode::delete_key;
+    case XK_Left:
+    case XK_KP_Left:
+        return KeyCode::arrow_left;
+    case XK_Right:
+    case XK_KP_Right:
+        return KeyCode::arrow_right;
+    case XK_Up:
+    case XK_KP_Up:
+        return KeyCode::arrow_up;
+    case XK_Down:
+    case XK_KP_Down:
+        return KeyCode::arrow_down;
     case XK_1:
     case XK_KP_1:
         return KeyCode::digit_1;
@@ -2139,6 +2155,18 @@ std::string_view key_code_name(KeyCode key) noexcept {
         return "tab";
     case KeyCode::space:
         return "space";
+    case KeyCode::backspace:
+        return "backspace";
+    case KeyCode::delete_key:
+        return "delete";
+    case KeyCode::arrow_left:
+        return "left";
+    case KeyCode::arrow_right:
+        return "right";
+    case KeyCode::arrow_up:
+        return "up";
+    case KeyCode::arrow_down:
+        return "down";
     case KeyCode::digit_1:
         return "1";
     case KeyCode::digit_2:

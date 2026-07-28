@@ -276,6 +276,7 @@ void test_snapshot_prediction_camera_and_load() {
     assert(state.locomotion_animation.transition_tick == 1);
     movement::PlayerControllerSnapshot snapshot;
     snapshot.player_net_id = core::NetId::from_value(42);
+    snapshot.player_save_id = core::SaveId::from_value(24);
     snapshot.state = state;
     snapshot.last_processed_input_sequence = state.last_input_sequence;
     snapshot.collision_world_revision = 9;

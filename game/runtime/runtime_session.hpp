@@ -74,6 +74,11 @@ class RuntimeSession final {
     [[nodiscard]] core::Result<RuntimeFrameStats> run_frame(RuntimeFrameInput input);
     [[nodiscard]] core::Status submit_command(std::string type, std::string payload,
                                               std::int64_t now_ms = 0);
+    [[nodiscard]] core::Result<std::uint64_t>
+    submit_tracked_command(std::string type, std::string payload, std::int64_t now_ms = 0);
+    [[nodiscard]] core::Result<std::uint64_t>
+    submit_inventory_transfer(const world::InventoryTransferRequest& request,
+                              std::int64_t now_ms = 0);
     [[nodiscard]] core::Status submit_player_input(const movement::PlayerInputFrame& input,
                                                    std::int64_t now_ms = 0);
     [[nodiscard]] core::Status submit_place_voxel(const interaction::PlaceVoxelCommand& command,

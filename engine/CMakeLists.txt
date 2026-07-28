@@ -44,6 +44,7 @@ target_sources(
     items/item_prototype.cpp
     input/input_action.cpp
     ui/widget_tree.cpp
+    ui/ui_skin_prototype.cpp
     jobs/job_system.cpp
     jobs/thread_pool/thread_pool_backend.cpp
     math/matrix.cpp
@@ -239,6 +240,7 @@ target_sources(
       entities/physical_resource.hpp
       input/input_action.hpp
       ui/widget_tree.hpp
+      ui/ui_skin_prototype.hpp
       items/item_stack.hpp
       items/item_prototype.hpp
       jobs/job_system.hpp

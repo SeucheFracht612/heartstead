@@ -10,6 +10,7 @@
 #include "engine/renderer/particles/particle_prototype.hpp"
 #include "engine/rooms/room_descriptor_prototype.hpp"
 #include "engine/scenarios/scenario_prototype.hpp"
+#include "engine/ui/ui_skin_prototype.hpp"
 #include "engine/workpieces/workpiece_prototype.hpp"
 
 #include <algorithm>
@@ -161,6 +162,15 @@ ContentValidation::validate(const std::filesystem::path& mods_root,
             continue;
         }
         report.particle_prototypes.push_back(std::move(definition).value());
+    }
+
+    const auto ui_panel_prototypes =
+        report.registry.prototypes_of_kind(modding::PrototypeKinds::ui_panel);
+    auto ui_skin = ui::ui_skin_from_panel_prototypes(ui_panel_prototypes);
+    if (!ui_skin) {
+        add_error(report, mods_root, ui_skin.error().code, ui_skin.error().message);
+    } else {
+        report.ui_skin = std::move(ui_skin).value();
     }
 
     auto voxel_palette = world::voxel_palette_from_prototypes(report.registry);

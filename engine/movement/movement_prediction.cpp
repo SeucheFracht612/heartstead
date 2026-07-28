@@ -121,6 +121,7 @@ core::Result<PlayerInputBundle> PlayerInputBundleTextCodec::decode(std::string_v
 
 core::Status PlayerControllerSnapshot::validate(const PlayerMovementConfig& config) const {
     if (version != player_controller_snapshot_version || !player_net_id.is_valid() ||
+        !player_save_id.is_valid() ||
         last_processed_input_sequence != state.last_input_sequence) {
         return core::Status::failure("movement_snapshot.invalid_identity",
                                      "movement snapshot identity or acknowledgement is invalid");
@@ -133,8 +134,9 @@ std::string PlayerControllerSnapshotTextCodec::encode(const PlayerControllerSnap
     std::ostringstream output;
     output.precision(17);
     output << snapshot.version << '|' << snapshot.player_net_id.value() << '|'
-           << snapshot.last_processed_input_sequence << '|' << snapshot.collision_world_revision
-           << '|' << state.position.anchor.x << '|' << state.position.anchor.y << '|'
+           << snapshot.player_save_id.value() << '|' << snapshot.last_processed_input_sequence
+           << '|' << snapshot.collision_world_revision << '|' << state.position.anchor.x << '|'
+           << state.position.anchor.y << '|'
            << state.position.anchor.z << '|' << state.position.local_offset.x << '|'
            << state.position.local_offset.y << '|' << state.position.local_offset.z << '|'
            << state.velocity.x << '|' << state.velocity.y << '|' << state.velocity.z << '|'
@@ -142,7 +144,8 @@ std::string PlayerControllerSnapshotTextCodec::encode(const PlayerControllerSnap
            << '|' << static_cast<unsigned>(state.encumbrance) << '|' << state.crouched << '|'
            << state.grounded << '|' << state.exhausted << '|' << state.invulnerable << '|'
            << state.yaw_centidegrees << '|' << state.pitch_centidegrees << '|'
-           << state.stamina_milli << '|' << static_cast<unsigned>(state.dash_charges) << '|'
+           << state.health_milli << '|' << state.stamina_milli << '|'
+           << static_cast<unsigned>(state.dash_charges) << '|'
            << state.air_dash_available << '|' << state.mode_ticks << '|'
            << state.mode_duration_ticks << '|' << state.jump_buffer_ticks << '|'
            << state.coyote_ticks << '|' << state.roll_buffer_ticks << '|'
@@ -177,9 +180,9 @@ PlayerControllerSnapshotTextCodec::decode(std::string_view payload,
             "movement_snapshot.invalid_payload_size", "movement snapshot payload size is invalid");
     }
     const auto fields = split(payload);
-    if (fields.size() != 63) {
+    if (fields.size() != 65) {
         return core::Result<PlayerControllerSnapshot>::failure(
-            "movement_snapshot.invalid_payload", "movement snapshot must contain 63 fields");
+            "movement_snapshot.invalid_payload", "movement snapshot must contain 65 fields");
     }
     std::size_t index = 0;
     const auto next_u64 = [&](std::string_view name) {
@@ -207,6 +210,7 @@ PlayerControllerSnapshotTextCodec::decode(std::string_view payload,
     // Decode into wide temporaries so every conversion remains checked by the parser.
     auto version = next_u16("version");
     auto net_id = next_u64("net_id");
+    auto save_id = next_u64("save_id");
     auto ack = next_u64("ack");
     auto revision = next_u64("revision");
     auto px = next_i64("position_x");
@@ -227,6 +231,7 @@ PlayerControllerSnapshotTextCodec::decode(std::string_view payload,
     auto invulnerable = next_u32("invulnerable");
     auto yaw = next_i16("yaw");
     auto pitch = next_i16("pitch");
+    auto health = next_i32("health");
     auto stamina = next_i32("stamina");
     auto charges = next_u32("dash_charges");
     auto air_dash = next_u32("air_dash");
@@ -270,9 +275,9 @@ PlayerControllerSnapshotTextCodec::decode(std::string_view payload,
     auto tick = next_u64("tick");
 
     const bool parsed =
-        version && net_id && ack && revision && px && py && pz && plx && ply && plz && vx && vy &&
-        vz && mode && scripted && encumbrance && crouched && grounded && exhausted &&
-        invulnerable && yaw && pitch && stamina && charges && air_dash && mode_ticks &&
+        version && net_id && save_id && ack && revision && px && py && pz && plx && ply && plz &&
+        vx && vy && vz && mode && scripted && encumbrance && crouched && grounded && exhausted &&
+        invulnerable && yaw && pitch && health && stamina && charges && air_dash && mode_ticks &&
         mode_duration && jump_buffer && coyote && roll_buffer && regen_delay && landing_window &&
         drain_remainder && regen_remainder && has_fall && fall_distance && fox && foy && foz &&
         folx && foly && folz && sdx && sdy && sdz && ssx && ssy && ssz && sslx && ssly && sslz &&
@@ -308,6 +313,7 @@ PlayerControllerSnapshotTextCodec::decode(std::string_view payload,
     PlayerControllerSnapshot snapshot;
     snapshot.version = version.value();
     snapshot.player_net_id = core::NetId::from_value(net_id.value());
+    snapshot.player_save_id = core::SaveId::from_value(save_id.value());
     snapshot.last_processed_input_sequence = ack.value();
     snapshot.collision_world_revision = revision.value();
     auto& state = snapshot.state;
@@ -322,6 +328,7 @@ PlayerControllerSnapshotTextCodec::decode(std::string_view payload,
     state.invulnerable = invulnerable.value() != 0;
     state.yaw_centidegrees = yaw.value();
     state.pitch_centidegrees = pitch.value();
+    state.health_milli = health.value();
     state.stamina_milli = stamina.value();
     state.dash_charges = static_cast<std::uint8_t>(charges.value());
     state.air_dash_available = air_dash.value() != 0;

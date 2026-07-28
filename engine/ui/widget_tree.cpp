@@ -190,7 +190,19 @@ UiInputFrame UiInputFrame::from_platform(const platform::WindowInputSnapshot& sn
         result.navigation = UiNavigation::activate;
     } else if (contains_key(snapshot.pressed_keys, platform::KeyCode::escape)) {
         result.navigation = UiNavigation::cancel;
+    } else if (contains_key(snapshot.pressed_keys, platform::KeyCode::arrow_left)) {
+        result.navigation = UiNavigation::left;
+    } else if (contains_key(snapshot.pressed_keys, platform::KeyCode::arrow_right)) {
+        result.navigation = UiNavigation::right;
+    } else if (contains_key(snapshot.pressed_keys, platform::KeyCode::arrow_up)) {
+        result.navigation = UiNavigation::up;
+    } else if (contains_key(snapshot.pressed_keys, platform::KeyCode::arrow_down)) {
+        result.navigation = UiNavigation::down;
     }
+    result.backspace_pressed =
+        contains_key(snapshot.pressed_keys, platform::KeyCode::backspace);
+    result.delete_pressed =
+        contains_key(snapshot.pressed_keys, platform::KeyCode::delete_key);
     for (const auto& text : snapshot.text) {
         result.text += text;
     }
@@ -422,9 +434,9 @@ math::Vec2f WidgetTree::measure(const Node& current) const noexcept {
 
 void WidgetTree::layout_node(Node& current, UiRect bounds, UiRect inherited_clip) {
     current.rect = bounds;
-    current.clip = intersection(inherited_clip, bounds);
+    current.clip = inherited_clip;
     ++layout_stats_.visible_widget_count;
-    if (!same_scissor(current.clip, bounds)) {
+    if (!same_scissor(intersection(current.clip, bounds), bounds)) {
         ++layout_stats_.clipped_widget_count;
     }
     if (current.desc.focusable && current.desc.enabled) {
@@ -434,7 +446,10 @@ void WidgetTree::layout_node(Node& current, UiRect bounds, UiRect inherited_clip
                                 current.desc.layout.padding.top * dpi_scale_,
                                 current.desc.layout.padding.right * dpi_scale_,
                                 current.desc.layout.padding.bottom * dpi_scale_);
-    const auto child_clip = current.desc.layout.clip_children ? current.clip : inherited_clip;
+    const auto child_clip =
+        current.desc.layout.clip_children || current.desc.kind == WidgetKind::scroll_area
+            ? intersection(current.clip, current.rect)
+            : current.clip;
     const auto gap = current.desc.layout.gap * dpi_scale_;
     if (current.children.empty()) {
         return;
@@ -466,7 +481,18 @@ void WidgetTree::layout_node(Node& current, UiRect bounds, UiRect inherited_clip
             }
         }
         const auto fill_space = std::max(0.0F, available_main - fixed_main);
-        float cursor = row ? content.x : content.y;
+        if (!row && current.desc.kind == WidgetKind::scroll_area) {
+            current.scroll_extent_y =
+                std::max(content.height, fixed_main +
+                                             gap * static_cast<float>(
+                                                       current.children.empty()
+                                                           ? 0
+                                                           : current.children.size() - 1));
+            current.scroll_offset_y =
+                std::clamp(current.scroll_offset_y, 0.0F,
+                           std::max(0.0F, current.scroll_extent_y - content.height));
+        }
+        float cursor = row ? content.x : content.y - current.scroll_offset_y;
         for (const auto child_id : current.children) {
             auto* child = node(child_id);
             if (child == nullptr || !child->desc.visible) {
@@ -514,6 +540,22 @@ void WidgetTree::layout_node(Node& current, UiRect bounds, UiRect inherited_clip
             std::max(0.0F, (content.width - gap * static_cast<float>(columns - 1)) /
                                static_cast<float>(columns));
         const auto cell_height = current.desc.layout.grid_cell_height * dpi_scale_;
+        const auto visible_count = static_cast<std::uint32_t>(std::ranges::count_if(
+            current.children, [this](WidgetId id) {
+                const auto* child = node(id);
+                return child != nullptr && child->desc.visible;
+            }));
+        const auto rows = (visible_count + columns - 1U) / columns;
+        current.scroll_extent_y =
+            rows == 0
+                ? content.height
+                : static_cast<float>(rows) * cell_height +
+                      static_cast<float>(rows - 1U) * gap;
+        if (current.desc.kind == WidgetKind::scroll_area) {
+            current.scroll_offset_y =
+                std::clamp(current.scroll_offset_y, 0.0F,
+                           std::max(0.0F, current.scroll_extent_y - content.height));
+        }
         std::uint32_t visible_index = 0;
         for (const auto child_id : current.children) {
             auto* child = node(child_id);
@@ -523,7 +565,9 @@ void WidgetTree::layout_node(Node& current, UiRect bounds, UiRect inherited_clip
             const auto column = visible_index % columns;
             const auto row = visible_index / columns;
             UiRect slot{content.x + static_cast<float>(column) * (cell_width + gap),
-                        content.y + static_cast<float>(row) * (cell_height + gap), cell_width,
+                        content.y + static_cast<float>(row) * (cell_height + gap) -
+                            current.scroll_offset_y,
+                        cell_width,
                         cell_height};
             const auto measured = measure(*child);
             const auto width = resolve_size(child->desc.layout.width, slot.width, measured.x,
@@ -684,6 +728,23 @@ UiRouteResult WidgetTree::route_input(const UiInputFrame& input) {
     if (hovered_.is_valid()) {
         result.consumed.pointer = true;
     }
+    if (input.pointer_inside && input.wheel_delta != 0.0F) {
+        for (auto iterator = paint_order_.rbegin(); iterator != paint_order_.rend(); ++iterator) {
+            auto* current = node(*iterator);
+            if (current == nullptr || !current->desc.visible ||
+                current->desc.kind != WidgetKind::scroll_area ||
+                !current->rect.contains(input.pointer)) {
+                continue;
+            }
+            current->scroll_offset_y =
+                std::clamp(current->scroll_offset_y - input.wheel_delta * 24.0F * dpi_scale_,
+                           0.0F,
+                           std::max(0.0F, current->scroll_extent_y - current->rect.height));
+            (void)layout(viewport_, dpi_scale_);
+            result.consumed.pointer = true;
+            break;
+        }
+    }
     if (input.primary_pressed && hovered_.is_valid()) {
         captured_ = hovered_;
         pressed_ = hovered_;
@@ -835,7 +896,7 @@ core::Result<UiPaintStats> WidgetTree::paint(renderer::UiRenderer& output) const
             current->clip.height <= 0.0F) {
             continue;
         }
-        if (!same_scissor(current->clip, current->rect)) {
+        if (!same_scissor(intersection(current->clip, current->rect), current->rect)) {
             ++stats.clipped_widgets;
         }
         if (!current->desc.nine_slice.empty()) {
@@ -1007,6 +1068,11 @@ bool WidgetTree::dragging() const noexcept {
 
 std::string_view WidgetTree::drag_payload() const noexcept {
     return drag_payload_;
+}
+
+float WidgetTree::scroll_offset(WidgetId id) const noexcept {
+    const auto* found = node(id);
+    return found == nullptr ? 0.0F : found->scroll_offset_y;
 }
 
 std::span<const WidgetId> WidgetTree::paint_order() const noexcept {

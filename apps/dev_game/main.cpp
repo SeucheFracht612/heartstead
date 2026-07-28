@@ -18,6 +18,7 @@
 #include "game/presentation/client_audio_presentation.hpp"
 #include "game/presentation/particle_presentation.hpp"
 #include "game/runtime/game_runtime.hpp"
+#include "game/ui/game_ui.hpp"
 
 #include <algorithm>
 #include <array>
@@ -320,44 +321,6 @@ core::Result<assets::ModelAsset> load_storybook_player_model() {
     return assets::decode_model_asset(payload.value().bytes);
 }
 
-core::Status submit_gameplay_ui(renderer::UiRenderer& ui, renderer::rhi::RenderExtent extent) {
-    const auto center_x = static_cast<float>(extent.width) * 0.5F;
-    const auto center_y = static_cast<float>(extent.height) * 0.5F;
-    auto status = ui.submit_quad({{center_x - 1.0F, center_y - 8.0F},
-                                  {center_x + 1.0F, center_y + 8.0F},
-                                  {},
-                                  {1.0F, 1.0F},
-                                  {1.0F, 1.0F, 1.0F, 0.9F}});
-    if (!status) {
-        return status;
-    }
-    status = ui.submit_quad({{center_x - 8.0F, center_y - 1.0F},
-                             {center_x + 8.0F, center_y + 1.0F},
-                             {},
-                             {1.0F, 1.0F},
-                             {1.0F, 1.0F, 1.0F, 0.9F}});
-    if (!status) {
-        return status;
-    }
-
-    constexpr float slot_size = 42.0F;
-    constexpr float slot_gap = 4.0F;
-    constexpr float slot_count = 9.0F;
-    const auto total_width = slot_count * slot_size + (slot_count - 1.0F) * slot_gap;
-    const auto start_x = center_x - total_width * 0.5F;
-    const auto y = static_cast<float>(extent.height) - slot_size - 18.0F;
-    for (std::uint32_t slot = 0; slot < 9; ++slot) {
-        const auto x = start_x + static_cast<float>(slot) * (slot_size + slot_gap);
-        const auto color = slot == 0 ? std::array{0.85F, 0.72F, 0.24F, 0.9F}
-                                     : std::array{0.08F, 0.10F, 0.13F, 0.78F};
-        status = ui.submit_quad({{x, y}, {x + slot_size, y + slot_size}, {}, {1.0F, 1.0F}, color});
-        if (!status) {
-            return status;
-        }
-    }
-    return core::Status::ok();
-}
-
 renderer::RenderCamera render_camera_from(const movement::PlayerCameraFrame& frame) {
     renderer::RenderCamera camera;
     camera.floating_origin = frame.floating_origin;
@@ -494,6 +457,16 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
     if (!status) {
         return fail(status.error());
     }
+    game::GameUiLayer game_ui(content_report.item_definitions,
+                              content_report.entity_definitions, content_report.ui_skin);
+    status = game_ui.initialize();
+    if (!status) {
+        return fail(status.error());
+    }
+    auto initial_ui = game_ui.synchronize(*runtime.session()->client());
+    if (!initial_ui) {
+        return fail(initial_ui.error());
+    }
 
     status = active_platform.value()->set_cursor_capture(window.value(), true);
     if (!status) {
@@ -542,11 +515,38 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
         if (!input_snapshot) {
             return fail("platform did not provide an input snapshot");
         }
+        auto ui_input = game_ui.process_input(*input_snapshot, *runtime.session(),
+                                              active_platform.value()->clock().now_ms());
+        if (!ui_input) {
+            return fail(ui_input.error());
+        }
+        if (ui_input.value().inventory_toggled) {
+            status = active_platform.value()->set_cursor_capture(window.value(),
+                                                                 !game_ui.inventory_open());
+            if (!status) {
+                return fail(status.error());
+            }
+        }
+        actions.set_context(game_ui.inventory_open() ? input::InputContext::inventory
+                                                     : input::InputContext::gameplay);
         const auto action_frame = actions.evaluate(*input_snapshot);
-        if (action_frame[input::InputAction::close_or_pause].pressed) {
+        if (!ui_input.value().consumed.keyboard &&
+            action_frame[input::InputAction::close_or_pause].pressed) {
             active_platform.value()->request_quit();
         }
         auto player_input = input_sampler.sample(*input_snapshot, ++input_tick);
+        if (ui_input.value().consumed.blocks_gameplay) {
+            const auto* previous_player = runtime.session()->client()->local_player_snapshot();
+            if (previous_player == nullptr) {
+                return fail("client has no assigned player snapshot");
+            }
+            player_input.move_x = 0;
+            player_input.move_z = 0;
+            player_input.yaw_centidegrees = previous_player->state.yaw_centidegrees;
+            player_input.pitch_centidegrees = previous_player->state.pitch_centidegrees;
+            player_input.held_buttons = 0;
+            player_input.pressed_buttons = 0;
+        }
         status = runtime.session()->submit_player_input(player_input,
                                                         active_platform.value()->clock().now_ms());
         if (!status) {
@@ -556,6 +556,10 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
             runtime.run_frame({frame_us, active_platform.value()->clock().now_ms()});
         if (!runtime_frame) {
             return fail(runtime_frame.error());
+        }
+        auto synchronized_ui = game_ui.synchronize(*runtime.session()->client());
+        if (!synchronized_ui) {
+            return fail(synchronized_ui.error());
         }
         renderer.set_voxel_fluid_stats(runtime.session()->server()->chunk_fluids().stats());
         renderer.set_voxel_lighting_stats(runtime.session()->server()->chunk_lighting().stats());
@@ -697,10 +701,13 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
                 particle_system.value().stats(), particle_stats.value().synchronize_ms,
                 particle_stats.value().material_groups, particle_stats.value().dropped_particles);
             if (auto* ui = renderer.ui_renderer(); ui != nullptr) {
-                status = submit_gameplay_ui(*ui, extent);
-                if (!status) {
-                    return fail(status.error());
+                auto painted_ui = game_ui.paint(*ui, extent);
+                if (!painted_ui) {
+                    return fail(painted_ui.error());
                 }
+                renderer.set_ui_widget_stats(
+                    game_ui.stats().layout_ms, game_ui.stats().paint_ms,
+                    game_ui.stats().layout.widget_count);
             }
             auto rendered = renderer.render_frame(
                 {camera, static_cast<float>(runtime_frame.value().fixed_step.interpolation_alpha),

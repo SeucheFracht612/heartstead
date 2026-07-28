@@ -38,6 +38,8 @@ struct ItemStack {
     [[nodiscard]] bool can_merge_with(const ItemStack& other) const noexcept;
     [[nodiscard]] core::Status add_from(ItemStack& source, std::uint32_t requested_count);
     [[nodiscard]] core::Result<ItemStack> split(std::uint32_t requested_count);
+
+    friend bool operator==(const ItemStack&, const ItemStack&) = default;
 };
 
 } // namespace heartstead::items

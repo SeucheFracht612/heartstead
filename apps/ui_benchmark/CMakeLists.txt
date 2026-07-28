@@ -1,0 +1,3 @@
+add_executable(heartstead_ui_benchmark main.cpp)
+target_link_libraries(heartstead_ui_benchmark PRIVATE Heartstead::Engine)
+heartstead_configure_target(heartstead_ui_benchmark)

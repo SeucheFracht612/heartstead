@@ -261,6 +261,7 @@ class WidgetTree {
     [[nodiscard]] WidgetId hovered_widget() const noexcept;
     [[nodiscard]] bool dragging() const noexcept;
     [[nodiscard]] std::string_view drag_payload() const noexcept;
+    [[nodiscard]] float scroll_offset(WidgetId id) const noexcept;
     [[nodiscard]] std::span<const WidgetId> paint_order() const noexcept;
     [[nodiscard]] const UiLayoutStats& layout_stats() const noexcept;
 
@@ -273,6 +274,8 @@ class WidgetTree {
         UiRect rect{};
         UiRect clip{};
         std::vector<WidgetId> children;
+        float scroll_offset_y = 0.0F;
+        float scroll_extent_y = 0.0F;
     };
 
     [[nodiscard]] Node* node(WidgetId id) noexcept;

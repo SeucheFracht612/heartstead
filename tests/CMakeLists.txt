@@ -136,6 +136,14 @@ target_link_libraries(heartstead_gameplay_input_tests PRIVATE Heartstead::GameRu
 heartstead_configure_test_target(heartstead_gameplay_input_tests)
 heartstead_register_unit_test(heartstead_gameplay_input_tests)
 
+add_executable(heartstead_game_ui_tests game_ui_tests.cpp)
+target_link_libraries(heartstead_game_ui_tests PRIVATE Heartstead::GameRuntime)
+target_compile_definitions(
+  heartstead_game_ui_tests PRIVATE HEARTSTEAD_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+heartstead_configure_test_target(heartstead_game_ui_tests)
+heartstead_register_unit_test(heartstead_game_ui_tests)
+
 add_executable(heartstead_particle_presentation_tests particle_presentation_tests.cpp)
 target_link_libraries(heartstead_particle_presentation_tests PRIVATE Heartstead::GameRuntime)
 heartstead_configure_test_target(heartstead_particle_presentation_tests)
@@ -205,6 +213,18 @@ heartstead_add_smoke_test(
   1
   --output
   ${CMAKE_CURRENT_BINARY_DIR}/smoke_render_benchmark_particles.json
+)
+heartstead_add_smoke_test(
+  smoke.ui_benchmark
+  heartstead_ui_benchmark
+  --widgets
+  100
+  --warmup
+  1
+  --frames
+  3
+  --output
+  ${CMAKE_CURRENT_BINARY_DIR}/smoke_ui_benchmark.json
 )
 heartstead_add_smoke_test(smoke.audio_benchmark heartstead_audio_benchmark --voices 16 --warmup 2
                           --blocks 3)

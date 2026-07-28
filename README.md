@@ -66,6 +66,9 @@ Implemented in this repository:
 - material prototype loading into renderer material definitions
 - typed particle prototypes, deterministic bounded CPU emitters, and instanced billboard
   presentation
+- retained game UI with deterministic layout, clipping, focus/navigation, text input, scrolling,
+  tooltips, drag/drop, data-driven atlas/nine-slice skins, authoritative inventory transfers with
+  reconciliation, and replicated health/stamina/weight HUD bindings
 - material asset-reference validation against active asset catalog records
 - scenario definition materialization plus authoritative new-world startup, saved-scenario
   recovery, spawn/loadout/cargo application, and mismatch rejection
@@ -270,7 +273,9 @@ window to exit. See [`docs/dev/build_instructions.md`](docs/dev/build_instructio
 rebuild commands and validation details.
 
 The interactive development game uses the same terrain renderer with Jolt-backed movement. Press
-F5 to throw a physical log from the camera and watch its authoritative body settle:
+F5 to throw a physical log from the camera and watch its authoritative body settle. Press `Tab`
+to open the inventory, drag with the left mouse button to move a full stack, and use the right
+mouse button to split a stack:
 
 ```bash
 ./build/default-debug/apps/dev_game/heartstead_dev_game

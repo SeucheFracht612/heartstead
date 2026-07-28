@@ -35,6 +35,8 @@ struct RendererStats {
     double voxel_fluid_apply_ms = 0.0;
     double particle_update_ms = 0.0;
     double particle_presentation_ms = 0.0;
+    double ui_layout_ms = 0.0;
+    double ui_paint_ms = 0.0;
 
     double gpu_opaque_terrain_ms = 0.0;
     double gpu_alpha_tested_terrain_ms = 0.0;
@@ -78,6 +80,7 @@ struct RendererStats {
     std::uint32_t ui_clipped_draw_calls = 0;
     std::uint32_t ui_vertices = 0;
     std::uint32_t ui_glyphs = 0;
+    std::uint32_t ui_widgets = 0;
     std::uint32_t voxel_relight_changed_chunks = 0;
     std::uint32_t voxel_fluid_changed_chunks = 0;
     std::uint32_t particle_active = 0;

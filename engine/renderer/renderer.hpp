@@ -111,6 +111,8 @@ class Renderer {
     void set_particle_stats(const ParticleSystemStats& particles, double presentation_ms,
                             std::uint32_t material_groups,
                             std::uint64_t presentation_dropped = 0) noexcept;
+    void set_ui_widget_stats(double layout_ms, double paint_ms,
+                             std::uint32_t widget_count) noexcept;
     [[nodiscard]] RenderObjectId reserve_object_id();
     [[nodiscard]] RenderLightId reserve_light_id();
     [[nodiscard]] RenderSkinPaletteId reserve_skin_palette_id();

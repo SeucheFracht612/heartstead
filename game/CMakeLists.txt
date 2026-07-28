@@ -22,6 +22,7 @@ target_sources(
     runtime/server_runtime.cpp
     runtime/script_host_commands.cpp
     testing/headless_session.cpp
+    ui/game_ui.cpp
   PUBLIC
     FILE_SET HEADERS
     BASE_DIRS ${PROJECT_SOURCE_DIR}
@@ -45,6 +46,7 @@ target_sources(
       runtime/server_runtime.hpp
       runtime/script_host_commands.hpp
       testing/headless_session.hpp
+      ui/game_ui.hpp
 )
 
 target_link_libraries(heartstead_game PUBLIC Heartstead::Engine)

@@ -14,9 +14,9 @@
 
 namespace heartstead::movement {
 
-inline constexpr std::uint16_t player_controller_snapshot_version = 2;
+inline constexpr std::uint16_t player_controller_snapshot_version = 3;
 inline constexpr std::string_view movement_input_payload_type = "movement.input.v1";
-inline constexpr std::string_view movement_snapshot_payload_type = "movement.snapshot.v2";
+inline constexpr std::string_view movement_snapshot_payload_type = "movement.snapshot.v3";
 inline constexpr std::string_view movement_input_bundle_payload_type = "movement.input_bundle.v1";
 inline constexpr std::string_view player_assignment_payload_type = "movement.player_assignment.v1";
 inline constexpr std::string_view player_removal_payload_type = "movement.player_removal.v1";
@@ -36,6 +36,7 @@ class PlayerInputBundleTextCodec {
 struct PlayerControllerSnapshot {
     std::uint16_t version = player_controller_snapshot_version;
     core::NetId player_net_id;
+    core::SaveId player_save_id;
     PlayerControllerState state;
     std::uint64_t last_processed_input_sequence = 0;
     std::uint64_t collision_world_revision = 0;
