@@ -2,6 +2,7 @@
 #include "engine/world/blocks/block_model.hpp"
 #include "engine/world/chunks/chunk_database.hpp"
 #include "engine/world/chunks/chunk_edit_delta_codec.hpp"
+#include "engine/world/fluids/fluid_state.hpp"
 #include "engine/world/meshing/chunk_mesh_snapshot.hpp"
 #include "engine/world/meshing/chunk_mesher.hpp"
 #include "engine/world/meshing/greedy_chunk_mesher.hpp"
@@ -107,7 +108,7 @@ void test_mesh_sections_separate_render_phases() {
     auto& chunk = chunks.get_or_create({7, -2, 5});
     assert(chunk.set({0, 0, 0}, {1, 255}));
     assert(chunk.set({2, 0, 0}, {3, 255}));
-    assert(chunk.set({4, 0, 0}, {4, 255}));
+    assert(chunk.set({4, 0, 0}, {4, 255, heartstead::world::full_fluid_state_bits()}));
     auto table = heartstead::world::build_block_render_table_snapshot(&palette);
     assert(table);
     auto snapshot = heartstead::world::build_chunk_neighborhood_snapshot(chunks, chunk.identity(),

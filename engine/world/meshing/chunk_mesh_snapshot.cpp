@@ -111,6 +111,11 @@ struct ResolvedCell {
         definition == nullptr || definition->occlusion == BlockOcclusionBehavior::full_cube;
     result.occlusion_mask = result.full_occluder ? 0x3FU : 0U;
     result.neighbor_dependency_radius = model.neighbor_dependency_radius;
+    if (definition != nullptr &&
+        definition->logical_occupancy == BlockLogicalOccupancy::fluid) {
+        result.neighbor_dependency_radius =
+            std::max<std::uint16_t>(result.neighbor_dependency_radius, 1);
+    }
     result.boxes = model.boxes;
     result.model_prototype_id = model.prototype_id;
     result.render_bounds = model.render_bounds;

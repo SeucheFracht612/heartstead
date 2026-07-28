@@ -384,11 +384,21 @@ const BlockModelDefinition* VoxelPalette::model_for_type(std::uint16_t type) con
 }
 
 std::uint16_t VoxelPalette::mesh_invalidation_radius(VoxelCell cell) const noexcept {
+    const auto* definition = find_by_type(cell.type);
+    if (definition != nullptr &&
+        definition->logical_occupancy == BlockLogicalOccupancy::fluid) {
+        return 1;
+    }
     const auto* model = model_for_type(cell.type);
     return model == nullptr ? 1 : model->mesh_invalidation_radius;
 }
 
 std::uint16_t VoxelPalette::neighbor_dependency_radius(VoxelCell cell) const noexcept {
+    const auto* definition = find_by_type(cell.type);
+    if (definition != nullptr &&
+        definition->logical_occupancy == BlockLogicalOccupancy::fluid) {
+        return 1;
+    }
     const auto* model = model_for_type(cell.type);
     return model == nullptr ? 1 : model->neighbor_dependency_radius;
 }

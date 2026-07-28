@@ -3,6 +3,8 @@
 #include "engine/world/fluids/chunk_fluid_system.hpp"
 #include "engine/world/fluids/fluid_simulation.hpp"
 #include "engine/world/fluids/fluid_state.hpp"
+#include "engine/world/meshing/chunk_mesh_snapshot.hpp"
+#include "engine/world/meshing/greedy_chunk_mesher.hpp"
 #include "engine/world/regions/region_graph.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
 #include "engine/world/worldgen/terrain_generator.hpp"
@@ -126,6 +128,82 @@ void test_worldgen_seeds_ocean_sources_below_sea_level() {
         {0, 0, 0}, config, fixture.regions, fixture.palette);
     assert(!invalid);
     assert(invalid.error().code == "terrain_generator.invalid_ocean_voxel");
+}
+
+[[nodiscard]] heartstead::world::ChunkMesh
+fluid_mesh(heartstead::world::ChunkDatabase& chunks,
+           const heartstead::world::VoxelPalette& palette,
+           heartstead::world::ChunkIdentity identity) {
+    auto table = heartstead::world::build_block_render_table_snapshot(&palette);
+    assert(table);
+    auto snapshot =
+        heartstead::world::build_chunk_neighborhood_snapshot(chunks, identity, table.value());
+    assert(snapshot);
+    auto mesh = heartstead::world::GreedyChunkMesher::build_surface_mesh(
+        snapshot.value(), table.value());
+    assert(mesh);
+    return std::move(mesh).value();
+}
+
+void test_fluid_mesher_uses_levels_and_flow_uvs() {
+    using namespace heartstead::world;
+    FluidFixture fixture;
+    ChunkDatabase chunks;
+    auto& chunk = chunks.get_or_create({0, 0, 0});
+    auto state =
+        encode_fluid_state({4, false, false, FluidFlowDirection::positive_x});
+    assert(state);
+    assert(chunk.set({5, 5, 5}, {2, 180, state.value()}));
+    const auto mesh = fluid_mesh(chunks, fixture.palette, chunk.identity());
+    assert(mesh.face_count == 6);
+    assert(mesh.sections.size() == 1);
+    assert(mesh.sections.front().render_phase == MeshingRenderPhase::fluid);
+    std::vector<ChunkMeshVertex> top;
+    std::ranges::copy_if(mesh.vertices, std::back_inserter(top),
+                         [](const auto& vertex) { return vertex.normal.y > 0.99F; });
+    assert(top.size() == 4);
+    assert(std::ranges::all_of(top, [](const auto& vertex) {
+        return std::abs(vertex.position.y - 5.5F) < 0.0001F;
+    }));
+    assert(top[0].u == 0.0F && top[0].v == 1.0F);
+    assert(top[1].u == 1.0F && top[1].v == 1.0F);
+
+    auto falling = encode_fluid_state({3, true, false, FluidFlowDirection::none});
+    assert(falling);
+    assert(chunk.set({5, 5, 5}, {2, 180, falling.value()}));
+    const auto falling_mesh = fluid_mesh(chunks, fixture.palette, chunk.identity());
+    assert(std::ranges::any_of(falling_mesh.vertices, [](const auto& vertex) {
+        return vertex.normal.y > 0.99F && std::abs(vertex.position.y - 6.0F) < 0.0001F;
+    }));
+}
+
+void test_fluid_mesher_matches_surface_at_chunk_border() {
+    using namespace heartstead::world;
+    FluidFixture fixture;
+    ChunkDatabase chunks;
+    auto& left = chunks.get_or_create({0, 0, 0});
+    auto& right = chunks.get_or_create({1, 0, 0});
+    auto full = encode_fluid_state({8, false, false, FluidFlowDirection::positive_x});
+    auto half = encode_fluid_state({4, false, false, FluidFlowDirection::positive_x});
+    assert(full && half);
+    assert(left.set({31, 5, 5}, {2, 200, full.value()}));
+    assert(right.set({0, 5, 5}, {2, 200, half.value()}));
+    const auto left_mesh = fluid_mesh(chunks, fixture.palette, left.identity());
+    const auto right_mesh = fluid_mesh(chunks, fixture.palette, right.identity());
+    assert(left_mesh.face_count == 5);
+    assert(right_mesh.face_count == 5);
+    assert(std::ranges::none_of(left_mesh.vertices,
+                                [](const auto& vertex) { return vertex.normal.x > 0.99F; }));
+    assert(std::ranges::none_of(right_mesh.vertices,
+                                [](const auto& vertex) { return vertex.normal.x < -0.99F; }));
+    assert(std::ranges::any_of(left_mesh.vertices, [](const auto& vertex) {
+        return vertex.normal.y > 0.5F && std::abs(vertex.position.x - 32.0F) < 0.0001F &&
+               std::abs(vertex.position.y - 5.75F) < 0.0001F;
+    }));
+    assert(std::ranges::any_of(right_mesh.vertices, [](const auto& vertex) {
+        return vertex.normal.y > 0.5F && std::abs(vertex.position.x) < 0.0001F &&
+               std::abs(vertex.position.y - 5.75F) < 0.0001F;
+    }));
 }
 
 [[nodiscard]] std::size_t cell_index(heartstead::world::VoxelCoord coordinate) {
@@ -359,6 +437,8 @@ int main() {
     test_fluid_state_round_trip_and_rejects_reserved_state();
     test_palette_creates_full_finite_fluid_cells();
     test_worldgen_seeds_ocean_sources_below_sea_level();
+    test_fluid_mesher_uses_levels_and_flow_uvs();
+    test_fluid_mesher_matches_surface_at_chunk_border();
     test_dam_break_crosses_chunk_border_and_is_load_order_independent();
     test_source_removal_cleans_up_and_budget_defers_work();
     test_stale_fluid_result_fails_before_application();

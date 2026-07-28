@@ -250,6 +250,9 @@ validate_and_count_cube_cells(const ChunkNeighborhoodSnapshot& neighborhood,
                 if (block->geometry != MeshingGeometryKind::full_cube) {
                     return core::Result<CubeCellSummary>::success({});
                 }
+                if (block->render_phase == MeshingRenderPhase::fluid) {
+                    return core::Result<CubeCellSummary>::success({});
+                }
             }
         }
     }

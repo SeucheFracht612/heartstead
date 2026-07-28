@@ -1,6 +1,7 @@
 #include "engine/world/meshing/chunk_mesher.hpp"
 
 #include "engine/world/chunks/chunk_database.hpp"
+#include "engine/world/fluids/fluid_state.hpp"
 #include "engine/world/meshing/chunk_mesh_snapshot.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
 
@@ -251,6 +252,201 @@ void add_quad(ChunkMesh& mesh, const std::array<math::Vec3f, 4>& positions, math
                                              base_index + 2, base_index + 3});
     append_section_indices(mesh, material_index, render_phase, first_index, 6);
     ++mesh.face_count;
+}
+
+void add_fluid_quad(ChunkMesh& mesh, const std::array<math::Vec3f, 4>& positions,
+                    const std::array<math::Vec2f, 4>& uvs, math::Vec3f normal, VoxelCell cell,
+                    std::uint16_t material_index) {
+    const auto base_index = static_cast<std::uint32_t>(mesh.vertices.size());
+    const auto first_index = static_cast<std::uint32_t>(mesh.indices.size());
+    for (std::size_t index = 0; index < positions.size(); ++index) {
+        include_point(mesh, positions[index]);
+        mesh.vertices.push_back({positions[index], normal, uvs[index].x, uvs[index].y, cell.type,
+                                 cell.light, cell.state_bits});
+    }
+    mesh.indices.insert(mesh.indices.end(), {base_index, base_index + 1U, base_index + 2U,
+                                             base_index, base_index + 2U, base_index + 3U});
+    append_section_indices(mesh, material_index, MeshingRenderPhase::fluid, first_index, 6);
+    ++mesh.face_count;
+}
+
+struct FluidMeshCell {
+    VoxelCell cell{};
+    bool full_occluder = false;
+};
+
+[[nodiscard]] math::Vec3f fluid_top_normal(const std::array<math::Vec3f, 4>& positions) noexcept {
+    auto normal = math::cross(positions[1] - positions[0], positions[3] - positions[0]);
+    const auto normal_length = static_cast<float>(math::length(normal));
+    return normal_length > 0.00001F ? normal / normal_length : math::Vec3f{0.0F, 1.0F, 0.0F};
+}
+
+[[nodiscard]] std::array<math::Vec2f, 4>
+fluid_top_uvs(FluidFlowDirection flow) noexcept {
+    constexpr std::array<math::Vec2f, 4> positive_x{{
+        {0.0F, 1.0F},
+        {1.0F, 1.0F},
+        {1.0F, 0.0F},
+        {0.0F, 0.0F},
+    }};
+    switch (flow) {
+    case FluidFlowDirection::negative_x:
+        return {{{1.0F, 1.0F}, {0.0F, 1.0F}, {0.0F, 0.0F}, {1.0F, 0.0F}}};
+    case FluidFlowDirection::positive_z:
+        return {{{1.0F, 0.0F}, {1.0F, 1.0F}, {0.0F, 1.0F}, {0.0F, 0.0F}}};
+    case FluidFlowDirection::negative_z:
+        return {{{0.0F, 1.0F}, {0.0F, 0.0F}, {1.0F, 0.0F}, {1.0F, 1.0F}}};
+    case FluidFlowDirection::none:
+    case FluidFlowDirection::positive_x:
+        return positive_x;
+    }
+    return positive_x;
+}
+
+template <typename Query>
+[[nodiscard]] core::Result<float>
+fluid_corner_height(Query&& query, std::int32_t x, std::int32_t y, std::int32_t z,
+                    std::uint16_t fluid_type, int corner_x, int corner_z) {
+    const std::array<int, 2> x_offsets = corner_x == 0 ? std::array{-1, 0} : std::array{0, 1};
+    const std::array<int, 2> z_offsets = corner_z == 0 ? std::array{-1, 0} : std::array{0, 1};
+    float total = 0.0F;
+    std::uint32_t samples = 0;
+    for (const auto dx : x_offsets) {
+        for (const auto dz : z_offsets) {
+            const auto sample = query(x + dx, y, z + dz);
+            if (sample.cell.type != fluid_type) {
+                continue;
+            }
+            auto state = decode_fluid_state(sample.cell.state_bits);
+            if (!state) {
+                return core::Result<float>::failure(state.error().code, state.error().message);
+            }
+            const auto above = query(x + dx, y + 1, z + dz);
+            const auto height = state.value().falling || above.cell.type == fluid_type
+                                    ? 1.0F
+                                    : fluid_surface_height(state.value().amount);
+            total += height;
+            ++samples;
+        }
+    }
+    if (samples == 0) {
+        return core::Result<float>::failure(
+            "chunk_mesh.missing_fluid_corner",
+            "fluid surface corner has no contributing fluid cell");
+    }
+    return core::Result<float>::success(total / static_cast<float>(samples));
+}
+
+template <typename Query>
+[[nodiscard]] core::Status add_fluid_cell(ChunkMesh& mesh, Query&& query, VoxelCoord coordinate,
+                                          VoxelCell cell, std::uint16_t material_index) {
+    auto state = decode_fluid_state(cell.state_bits);
+    if (!state) {
+        return core::Status::failure(state.error().code, state.error().message);
+    }
+    const auto x = static_cast<std::int32_t>(coordinate.x);
+    const auto y = static_cast<std::int32_t>(coordinate.y);
+    const auto z = static_cast<std::int32_t>(coordinate.z);
+    std::array<float, 4> heights{};
+    for (std::size_t index = 0; index < heights.size(); ++index) {
+        constexpr std::array<std::array<int, 2>, 4> corners{{
+            {{0, 1}},
+            {{1, 1}},
+            {{1, 0}},
+            {{0, 0}},
+        }};
+        auto height = fluid_corner_height(query, x, y, z, cell.type, corners[index][0],
+                                          corners[index][1]);
+        if (!height) {
+            return core::Status::failure(height.error().code, height.error().message);
+        }
+        heights[index] = height.value();
+    }
+    const math::Vec3f origin{static_cast<float>(coordinate.x),
+                             static_cast<float>(coordinate.y),
+                             static_cast<float>(coordinate.z)};
+    const std::array<math::Vec3f, 4> top{{
+        origin + math::Vec3f{0.0F, heights[0], 1.0F},
+        origin + math::Vec3f{1.0F, heights[1], 1.0F},
+        origin + math::Vec3f{1.0F, heights[2], 0.0F},
+        origin + math::Vec3f{0.0F, heights[3], 0.0F},
+    }};
+    const auto above = query(x, y + 1, z);
+    if (above.cell.type != cell.type && !above.full_occluder) {
+        auto face_cell = cell;
+        face_cell.light = std::max(face_cell.light, above.cell.light);
+        add_fluid_quad(mesh, top, fluid_top_uvs(state.value().flow), fluid_top_normal(top),
+                       face_cell, material_index);
+    }
+
+    constexpr std::array<math::Vec2f, 4> side_uvs{{
+        {0.0F, 0.0F},
+        {0.0F, 1.0F},
+        {1.0F, 1.0F},
+        {1.0F, 0.0F},
+    }};
+    struct Side {
+        int dx;
+        int dz;
+        ChunkMeshFaceDirection direction;
+        std::array<std::size_t, 2> top_indices;
+        std::array<math::Vec3f, 2> bottom;
+    };
+    const std::array sides{
+        Side{-1,
+             0,
+             ChunkMeshFaceDirection::negative_x,
+             {0, 3},
+             {origin + math::Vec3f{0.0F, 0.0F, 1.0F},
+              origin + math::Vec3f{0.0F, 0.0F, 0.0F}}},
+        Side{1,
+             0,
+             ChunkMeshFaceDirection::positive_x,
+             {2, 1},
+             {origin + math::Vec3f{1.0F, 0.0F, 0.0F},
+              origin + math::Vec3f{1.0F, 0.0F, 1.0F}}},
+        Side{0,
+             -1,
+             ChunkMeshFaceDirection::negative_z,
+             {3, 2},
+             {origin + math::Vec3f{0.0F, 0.0F, 0.0F},
+              origin + math::Vec3f{1.0F, 0.0F, 0.0F}}},
+        Side{0,
+             1,
+             ChunkMeshFaceDirection::positive_z,
+             {1, 0},
+             {origin + math::Vec3f{1.0F, 0.0F, 1.0F},
+              origin + math::Vec3f{0.0F, 0.0F, 1.0F}}},
+    };
+    for (const auto& side : sides) {
+        const auto neighbor = query(x + side.dx, y, z + side.dz);
+        if (neighbor.cell.type == cell.type || neighbor.full_occluder) {
+            continue;
+        }
+        auto face_cell = cell;
+        face_cell.light = std::max(face_cell.light, neighbor.cell.light);
+        const std::array<math::Vec3f, 4> positions{{
+            side.bottom[0],
+            top[side.top_indices[0]],
+            top[side.top_indices[1]],
+            side.bottom[1],
+        }};
+        add_fluid_quad(mesh, positions, side_uvs, chunk_mesh_face_normal(side.direction),
+                       face_cell, material_index);
+    }
+    const auto below = query(x, y - 1, z);
+    if (below.cell.type != cell.type && !below.full_occluder) {
+        const std::array<math::Vec3f, 4> bottom{{
+            origin + math::Vec3f{0.0F, 0.0F, 0.0F},
+            origin + math::Vec3f{1.0F, 0.0F, 0.0F},
+            origin + math::Vec3f{1.0F, 0.0F, 1.0F},
+            origin + math::Vec3f{0.0F, 0.0F, 1.0F},
+        }};
+        add_fluid_quad(mesh, bottom, side_uvs,
+                       chunk_mesh_face_normal(ChunkMeshFaceDirection::negative_y), cell,
+                       material_index);
+    }
+    return core::Status::ok();
 }
 
 [[nodiscard]] MeshingRenderPhase mesh_render_phase(const CellModelView& view) noexcept {
@@ -569,7 +765,21 @@ core::Result<ChunkMesh> ChunkMesher::build_surface_mesh(const ChunkMeshingContex
                 const auto& model = view.model == nullptr ? legacy_cube_block_model() : *view.model;
                 const auto material_index = cell.value().type;
                 const auto render_phase = mesh_render_phase(view);
-                if (model.kind == BlockModelKind::mesh) {
+                if (render_phase == MeshingRenderPhase::fluid) {
+                    const auto fluid_query = [&context](std::int32_t query_x,
+                                                        std::int32_t query_y,
+                                                        std::int32_t query_z) {
+                        const auto queried =
+                            query_cell(context, query_x, query_y, query_z);
+                        return FluidMeshCell{queried.cell, is_full_occluder(queried)};
+                    };
+                    auto fluid_status =
+                        add_fluid_cell(mesh, fluid_query, {x, y, z}, cell.value(), material_index);
+                    if (!fluid_status) {
+                        return core::Result<ChunkMesh>::failure(
+                            fluid_status.error().code, fluid_status.error().message);
+                    }
+                } else if (model.kind == BlockModelKind::mesh) {
                     add_rich_instance(mesh, {x, y, z}, cell.value(), model);
                 } else if (model.kind == BlockModelKind::cross_plane) {
                     add_cross_planes(mesh, {x, y, z}, cell.value(), material_index, render_phase);
@@ -623,7 +833,23 @@ ChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborhood,
                         "chunk_mesh.unknown_voxel_type",
                         "snapshot contains a voxel type missing from its block render table");
                 }
-                if (block->geometry == MeshingGeometryKind::rich_model) {
+                if (block->render_phase == MeshingRenderPhase::fluid) {
+                    const auto fluid_query = [&neighborhood, &render_table](
+                                                 std::int32_t query_x,
+                                                 std::int32_t query_y,
+                                                 std::int32_t query_z) {
+                        const auto queried = query_cell(neighborhood, render_table, query_x,
+                                                       query_y, query_z);
+                        return FluidMeshCell{queried.cell, is_full_occluder(queried)};
+                    };
+                    auto fluid_status = add_fluid_cell(
+                        mesh, fluid_query, {x, y, z}, cell,
+                        block->material_index == 0 ? cell.type : block->material_index);
+                    if (!fluid_status) {
+                        return core::Result<ChunkMesh>::failure(
+                            fluid_status.error().code, fluid_status.error().message);
+                    }
+                } else if (block->geometry == MeshingGeometryKind::rich_model) {
                     add_rich_instance(mesh, {x, y, z}, cell, *block);
                 } else if (block->geometry == MeshingGeometryKind::cross_plane) {
                     add_cross_planes(mesh, {x, y, z}, cell,
