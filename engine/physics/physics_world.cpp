@@ -34,6 +34,41 @@ constexpr std::uint32_t sleep_step_threshold = 3;
     return PhysicsAabb{bounds.min + offset, bounds.max + offset};
 }
 
+[[nodiscard]] Vec3 rotate_euler_xyz(Vec3 value, Vec3 rotation_degrees) noexcept {
+    constexpr float degrees_to_radians = 0.017453292519943295769F;
+    const auto x = rotation_degrees.x * degrees_to_radians;
+    const auto y = rotation_degrees.y * degrees_to_radians;
+    const auto z = rotation_degrees.z * degrees_to_radians;
+    const auto cx = std::cos(x);
+    const auto sx = std::sin(x);
+    const auto cy = std::cos(y);
+    const auto sy = std::sin(y);
+    const auto cz = std::cos(z);
+    const auto sz = std::sin(z);
+    return {
+        (cz * cy) * value.x + (cz * sy * sx - sz * cx) * value.y +
+            (cz * sy * cx + sz * sx) * value.z,
+        (sz * cy) * value.x + (sz * sy * sx + cz * cx) * value.y +
+            (sz * sy * cx - cz * sx) * value.z,
+        (-sy) * value.x + (cy * sx) * value.y + (cy * cx) * value.z,
+    };
+}
+
+[[nodiscard]] PhysicsAabb rotated_aabb(PhysicsAabb bounds, Vec3 rotation_degrees) noexcept {
+    const auto center = (bounds.min + bounds.max) * 0.5F;
+    const auto half = (bounds.max - bounds.min) * 0.5F;
+    const auto rotated_center = rotate_euler_xyz(center, rotation_degrees);
+    const auto basis_x = rotate_euler_xyz({half.x, 0.0F, 0.0F}, rotation_degrees);
+    const auto basis_y = rotate_euler_xyz({0.0F, half.y, 0.0F}, rotation_degrees);
+    const auto basis_z = rotate_euler_xyz({0.0F, 0.0F, half.z}, rotation_degrees);
+    const Vec3 rotated_half{
+        std::abs(basis_x.x) + std::abs(basis_y.x) + std::abs(basis_z.x),
+        std::abs(basis_x.y) + std::abs(basis_y.y) + std::abs(basis_z.y),
+        std::abs(basis_x.z) + std::abs(basis_y.z) + std::abs(basis_z.z),
+    };
+    return {rotated_center - rotated_half, rotated_center + rotated_half};
+}
+
 [[nodiscard]] PhysicsAabb shape_local_aabb(const PhysicsShapeDesc& shape);
 
 [[nodiscard]] PhysicsAabb child_local_aabb(const CompoundShapeChild& child) {
@@ -150,10 +185,11 @@ class HeadlessPhysicsWorld final : public IPhysicsWorld {
         }
 
         const auto id = next_body_id();
-        bodies_.emplace(id.value(),
-                        BodyRecord{desc, PhysicsBodyState{id, desc.motion_type, desc.position,
-                                                          desc.linear_velocity, desc.mass, false,
-                                                          desc.user_data}});
+        bodies_.emplace(
+            id.value(),
+            BodyRecord{desc,
+                       PhysicsBodyState{id, desc.motion_type, desc.position, desc.rotation_degrees,
+                                        desc.linear_velocity, desc.mass, false, desc.user_data}});
         return core::Result<PhysicsBodyId>::success(id);
     }
 
@@ -188,6 +224,20 @@ class HeadlessPhysicsWorld final : public IPhysicsWorld {
             return core::Status::failure("physics.body_not_found", "physics body was not found");
         }
         body->state.position = position;
+        body->state.sleeping = false;
+        return core::Status::ok();
+    }
+
+    [[nodiscard]] core::Status set_body_rotation(PhysicsBodyId id, Vec3 rotation_degrees) override {
+        if (!rotation_degrees.is_finite()) {
+            return core::Status::failure("physics.invalid_rotation",
+                                         "body rotation must be finite");
+        }
+        auto* body = find_body(id);
+        if (body == nullptr) {
+            return core::Status::failure("physics.body_not_found", "physics body was not found");
+        }
+        body->state.rotation_degrees = rotation_degrees;
         body->state.sleeping = false;
         return core::Status::ok();
     }
@@ -335,7 +385,9 @@ class HeadlessPhysicsWorld final : public IPhysicsWorld {
     }
 
     [[nodiscard]] PhysicsAabb body_aabb(const BodyRecord& body) const {
-        return offset_aabb(shape_local_aabb(body.desc.shape), body.state.position);
+        return offset_aabb(
+            rotated_aabb(shape_local_aabb(body.desc.shape), body.state.rotation_degrees),
+            body.state.position);
     }
 
     [[nodiscard]] std::vector<PhysicsContact> collect_contacts() const {
@@ -458,6 +510,18 @@ class HeadlessPhysicsWorld final : public IPhysicsWorld {
 
 } // namespace
 
+core::Result<std::unique_ptr<IPhysicsCharacter>>
+IPhysicsWorld::create_character(PhysicsCharacterDesc desc) {
+    auto status = validate_physics_character_desc(desc);
+    if (!status) {
+        return core::Result<std::unique_ptr<IPhysicsCharacter>>::failure(status.error().code,
+                                                                         status.error().message);
+    }
+    return core::Result<std::unique_ptr<IPhysicsCharacter>>::failure(
+        "physics.character_controllers_unsupported",
+        "selected physics backend does not support character controllers");
+}
+
 core::Result<std::unique_ptr<IPhysicsWorld>> create_physics_world(PhysicsWorldDesc desc) {
     auto status = validate_physics_world_desc(desc);
     if (!status) {
@@ -491,6 +555,9 @@ core::Status validate_physics_body_desc(const PhysicsBodyDesc& desc) {
     }
     if (!desc.position.is_finite()) {
         return core::Status::failure("physics.invalid_position", "body position must be finite");
+    }
+    if (!desc.rotation_degrees.is_finite()) {
+        return core::Status::failure("physics.invalid_rotation", "body rotation must be finite");
     }
     if (!desc.linear_velocity.is_finite()) {
         return core::Status::failure("physics.invalid_velocity",
@@ -553,6 +620,51 @@ core::Status validate_physics_aabb(const PhysicsAabb& bounds) {
     if (!bounds.is_valid()) {
         return core::Status::failure("physics.invalid_aabb",
                                      "physics AABB min/max values must be finite and ordered");
+    }
+    return core::Status::ok();
+}
+
+core::Status validate_physics_character_shape_desc(const PhysicsCharacterShapeDesc& desc) {
+    if (!is_positive_finite(desc.width) || !is_positive_finite(desc.height) || desc.width > 8.0F ||
+        desc.height > 16.0F || desc.height <= desc.width) {
+        return core::Status::failure(
+            "physics.invalid_character_shape",
+            "character width/height must be finite, bounded, and height must exceed width");
+    }
+    return core::Status::ok();
+}
+
+core::Status validate_physics_character_desc(const PhysicsCharacterDesc& desc) {
+    auto shape_status = validate_physics_character_shape_desc(desc.shape);
+    if (!shape_status) {
+        return shape_status;
+    }
+    if (!desc.position.is_finite()) {
+        return core::Status::failure("physics.invalid_character_position",
+                                     "character position must be finite");
+    }
+    if (!std::isfinite(desc.max_slope_angle_degrees) || desc.max_slope_angle_degrees <= 0.0F ||
+        desc.max_slope_angle_degrees >= 89.9F) {
+        return core::Status::failure("physics.invalid_character_slope",
+                                     "character slope angle must be in (0, 89.9) degrees");
+    }
+    if (!is_positive_finite(desc.mass) || !is_positive_finite(desc.max_strength) ||
+        !std::isfinite(desc.padding) || desc.padding < 0.0F ||
+        desc.padding >= desc.shape.width * 0.5F) {
+        return core::Status::failure("physics.invalid_character_dynamics",
+                                     "character mass, strength, and collision padding are invalid");
+    }
+    return core::Status::ok();
+}
+
+core::Status validate_physics_character_move_desc(const PhysicsCharacterMoveDesc& desc) {
+    if (!desc.desired_delta.is_finite() || !is_positive_finite(desc.delta_seconds) ||
+        !std::isfinite(desc.step_height) || desc.step_height < 0.0F || desc.step_height > 16.0F ||
+        !std::isfinite(desc.stick_to_floor_distance) || desc.stick_to_floor_distance < 0.0F ||
+        desc.stick_to_floor_distance > 2.0F) {
+        return core::Status::failure(
+            "physics.invalid_character_move",
+            "character movement delta, timestep, step, or floor-stick distance is invalid");
     }
     return core::Status::ok();
 }
@@ -645,6 +757,20 @@ std::string_view shape_kind_name(ShapeKind kind) noexcept {
         return "capsule";
     case ShapeKind::compound:
         return "compound";
+    }
+    return "unknown";
+}
+
+std::string_view physics_character_ground_state_name(PhysicsCharacterGroundState state) noexcept {
+    switch (state) {
+    case PhysicsCharacterGroundState::on_ground:
+        return "on_ground";
+    case PhysicsCharacterGroundState::on_steep_ground:
+        return "on_steep_ground";
+    case PhysicsCharacterGroundState::not_supported:
+        return "not_supported";
+    case PhysicsCharacterGroundState::in_air:
+        return "in_air";
     }
     return "unknown";
 }

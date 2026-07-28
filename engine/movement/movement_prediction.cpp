@@ -39,9 +39,8 @@ core::Result<double> parse_number<double>(std::string_view text, std::string_vie
     std::size_t first = 0;
     while (first <= text.size()) {
         const auto last = text.find('|', first);
-        result.push_back(text.substr(first, last == std::string_view::npos
-                                               ? text.size() - first
-                                               : last - first));
+        result.push_back(text.substr(first, last == std::string_view::npos ? text.size() - first
+                                                                           : last - first));
         if (last == std::string_view::npos) {
             break;
         }
@@ -139,9 +138,8 @@ std::string PlayerControllerSnapshotTextCodec::encode(const PlayerControllerSnap
            << state.position.anchor.z << '|' << state.position.local_offset.x << '|'
            << state.position.local_offset.y << '|' << state.position.local_offset.z << '|'
            << state.velocity.x << '|' << state.velocity.y << '|' << state.velocity.z << '|'
-           << static_cast<unsigned>(state.mode) << '|'
-           << static_cast<unsigned>(state.scripted_kind) << '|'
-           << static_cast<unsigned>(state.encumbrance) << '|' << state.crouched << '|'
+           << static_cast<unsigned>(state.mode) << '|' << static_cast<unsigned>(state.scripted_kind)
+           << '|' << static_cast<unsigned>(state.encumbrance) << '|' << state.crouched << '|'
            << state.grounded << '|' << state.exhausted << '|' << state.invulnerable << '|'
            << state.yaw_centidegrees << '|' << state.pitch_centidegrees << '|'
            << state.stamina_milli << '|' << static_cast<unsigned>(state.dash_charges) << '|'
@@ -262,14 +260,14 @@ PlayerControllerSnapshotTextCodec::decode(std::string_view payload,
     auto stlz = next_double("scripted_target_local_z");
     auto tick = next_u64("tick");
 
-    const bool parsed = version && net_id && ack && revision && px && py && pz && plx && ply && plz &&
-                        vx && vy && vz && mode && scripted && encumbrance && crouched && grounded &&
-                        exhausted && invulnerable && yaw && pitch && stamina && charges && air_dash &&
-                        mode_ticks && mode_duration && jump_buffer && coyote && roll_buffer &&
-                        regen_delay && landing_window && drain_remainder && regen_remainder &&
-                        has_fall && fall_distance && fox && foy && foz && folx && foly && folz && sdx &&
-                        sdy && sdz && ssx && ssy && ssz && sslx && ssly && sslz && stx && sty && stz &&
-                        stlx && stly && stlz && tick;
+    const bool parsed = version && net_id && ack && revision && px && py && pz && plx && ply &&
+                        plz && vx && vy && vz && mode && scripted && encumbrance && crouched &&
+                        grounded && exhausted && invulnerable && yaw && pitch && stamina &&
+                        charges && air_dash && mode_ticks && mode_duration && jump_buffer &&
+                        coyote && roll_buffer && regen_delay && landing_window && drain_remainder &&
+                        regen_remainder && has_fall && fall_distance && fox && foy && foz && folx &&
+                        foly && folz && sdx && sdy && sdz && ssx && ssy && ssz && sslx && ssly &&
+                        sslz && stx && sty && stz && stlx && stly && stlz && tick;
     if (!parsed || mode.value() > static_cast<std::uint32_t>(PlayerControllerMode::swimming) ||
         scripted.value() > static_cast<std::uint32_t>(ScriptedMovementKind::mantle) ||
         encumbrance.value() > static_cast<std::uint32_t>(EncumbranceTier::over_encumbered) ||
@@ -281,7 +279,7 @@ PlayerControllerSnapshotTextCodec::decode(std::string_view payload,
     }
 
     auto position = world::WorldPosition::from_anchor({px.value(), py.value(), pz.value()},
-                                                       {plx.value(), ply.value(), plz.value()});
+                                                      {plx.value(), ply.value(), plz.value()});
     auto fall_origin = world::WorldPosition::from_anchor(
         {fox.value(), foy.value(), foz.value()}, {folx.value(), foly.value(), folz.value()});
     auto scripted_start_position = world::WorldPosition::from_anchor(
@@ -344,9 +342,9 @@ MovementPredictionBuffer::MovementPredictionBuffer(std::size_t capacity) : capac
 
 core::Status MovementPredictionBuffer::record(PlayerInputFrame input) {
     auto status = input.validate();
-    if (!status || capacity_ == 0 || (!inputs_.empty() &&
-                                     (input.sequence <= inputs_.back().sequence ||
-                                      input.tick <= inputs_.back().tick))) {
+    if (!status || capacity_ == 0 ||
+        (!inputs_.empty() &&
+         (input.sequence <= inputs_.back().sequence || input.tick <= inputs_.back().tick))) {
         return core::Status::failure(
             !status ? status.error().code : "movement_prediction.invalid_input_order",
             !status ? status.error().message
@@ -366,14 +364,15 @@ void MovementPredictionBuffer::set_collision_world_revision(std::uint64_t revisi
 core::Result<ReconciliationResult> MovementPredictionBuffer::reconcile(
     const PlayerControllerState& predicted, const PlayerControllerSnapshot& authoritative,
     const PlayerController& controller, const PlayerMovementModifiers& modifiers,
-    const VoxelCharacterCollisionWorld& collision) {
+    ICharacterCollisionWorld& collision) {
     auto status = authoritative.validate(controller.config());
     if (!status) {
         return core::Result<ReconciliationResult>::failure(status.error().code,
                                                            status.error().message);
     }
     ReconciliationResult result;
-    result.correction_distance = position_distance(predicted.position, authoritative.state.position);
+    result.correction_distance =
+        position_distance(predicted.position, authoritative.state.position);
     result.hard_correction = result.correction_distance > 2.0;
     result.state = authoritative.state;
     while (!inputs_.empty() &&
@@ -433,8 +432,7 @@ core::Status ServerMovementInputQueue::push(PlayerInputFrame input) {
     return core::Status::ok();
 }
 
-core::Result<std::size_t> ServerMovementInputQueue::push_bundle(
-    const PlayerInputBundle& bundle) {
+core::Result<std::size_t> ServerMovementInputQueue::push_bundle(const PlayerInputBundle& bundle) {
     auto status = bundle.validate();
     if (!status) {
         return core::Result<std::size_t>::failure(status.error().code, status.error().message);
@@ -474,9 +472,12 @@ std::size_t ServerMovementInputQueue::size() const noexcept {
 }
 
 net::TransportMessage make_movement_input_message(const PlayerInputFrame& input,
-                                                   std::int64_t timestamp_ms) {
-    return {net::TransportMessageKind::control, net::TransportChannel::unreliable, input.sequence,
-            std::string(movement_input_payload_type), PlayerInputTextCodec::encode(input),
+                                                  std::int64_t timestamp_ms) {
+    return {net::TransportMessageKind::control,
+            net::TransportChannel::unreliable,
+            input.sequence,
+            std::string(movement_input_payload_type),
+            PlayerInputTextCodec::encode(input),
             timestamp_ms};
 }
 
@@ -499,11 +500,14 @@ movement_input_from_transport(const net::TransportEnvelope& envelope) {
 }
 
 net::TransportMessage make_movement_input_bundle_message(const PlayerInputBundle& bundle,
-                                                          std::int64_t timestamp_ms) {
+                                                         std::int64_t timestamp_ms) {
     const auto sequence = bundle.frames.empty() ? 0 : bundle.frames.back().sequence;
-    return {net::TransportMessageKind::control, net::TransportChannel::unreliable, sequence,
+    return {net::TransportMessageKind::control,
+            net::TransportChannel::unreliable,
+            sequence,
             std::string(movement_input_bundle_payload_type),
-            PlayerInputBundleTextCodec::encode(bundle), timestamp_ms};
+            PlayerInputBundleTextCodec::encode(bundle),
+            timestamp_ms};
 }
 
 core::Result<PlayerInputBundle>
@@ -526,13 +530,16 @@ movement_input_bundle_from_transport(const net::TransportEnvelope& envelope) {
 }
 
 net::TransportMessage make_movement_snapshot_message(const PlayerControllerSnapshot& snapshot,
-                                                      std::int64_t timestamp_ms,
-                                                      std::uint64_t transport_sequence) {
-    const auto sequence = transport_sequence == 0 ? snapshot.state.simulation_tick
-                                                   : transport_sequence;
-    return {net::TransportMessageKind::replication, net::TransportChannel::reliable,
-            sequence, std::string(movement_snapshot_payload_type),
-            PlayerControllerSnapshotTextCodec::encode(snapshot), timestamp_ms};
+                                                     std::int64_t timestamp_ms,
+                                                     std::uint64_t transport_sequence) {
+    const auto sequence =
+        transport_sequence == 0 ? snapshot.state.simulation_tick : transport_sequence;
+    return {net::TransportMessageKind::replication,
+            net::TransportChannel::reliable,
+            sequence,
+            std::string(movement_snapshot_payload_type),
+            PlayerControllerSnapshotTextCodec::encode(snapshot),
+            timestamp_ms};
 }
 
 core::Result<PlayerControllerSnapshot>
@@ -542,28 +549,28 @@ movement_snapshot_from_transport(const net::TransportEnvelope& envelope,
         envelope.message.channel != net::TransportChannel::reliable ||
         envelope.message.payload_type != movement_snapshot_payload_type) {
         return core::Result<PlayerControllerSnapshot>::failure(
-            "movement_snapshot.invalid_transport",
-            "transport envelope is not a movement snapshot");
+            "movement_snapshot.invalid_transport", "transport envelope is not a movement snapshot");
     }
     return PlayerControllerSnapshotTextCodec::decode(envelope.message.payload, config);
 }
 
 net::TransportMessage make_player_assignment_message(core::NetId player_net_id,
-                                                      std::uint64_t sequence,
-                                                      std::int64_t timestamp_ms) {
-    return {net::TransportMessageKind::replication, net::TransportChannel::reliable, sequence,
-            std::string(player_assignment_payload_type), std::to_string(player_net_id.value()),
+                                                     std::uint64_t sequence,
+                                                     std::int64_t timestamp_ms) {
+    return {net::TransportMessageKind::replication,
+            net::TransportChannel::reliable,
+            sequence,
+            std::string(player_assignment_payload_type),
+            std::to_string(player_net_id.value()),
             timestamp_ms};
 }
 
-core::Result<core::NetId>
-player_assignment_from_transport(const net::TransportEnvelope& envelope) {
+core::Result<core::NetId> player_assignment_from_transport(const net::TransportEnvelope& envelope) {
     if (envelope.message.kind != net::TransportMessageKind::replication ||
         envelope.message.channel != net::TransportChannel::reliable ||
         envelope.message.payload_type != player_assignment_payload_type) {
-        return core::Result<core::NetId>::failure(
-            "player_assignment.invalid_transport",
-            "transport envelope is not a player assignment");
+        return core::Result<core::NetId>::failure("player_assignment.invalid_transport",
+                                                  "transport envelope is not a player assignment");
     }
     auto value = parse_number<std::uint64_t>(envelope.message.payload, "player_net_id");
     if (!value || value.value() == 0) {
@@ -574,16 +581,17 @@ player_assignment_from_transport(const net::TransportEnvelope& envelope) {
     return core::Result<core::NetId>::success(core::NetId::from_value(value.value()));
 }
 
-net::TransportMessage make_player_removal_message(core::NetId player_net_id,
-                                                   std::uint64_t sequence,
-                                                   std::int64_t timestamp_ms) {
-    return {net::TransportMessageKind::replication, net::TransportChannel::reliable, sequence,
-            std::string(player_removal_payload_type), std::to_string(player_net_id.value()),
+net::TransportMessage make_player_removal_message(core::NetId player_net_id, std::uint64_t sequence,
+                                                  std::int64_t timestamp_ms) {
+    return {net::TransportMessageKind::replication,
+            net::TransportChannel::reliable,
+            sequence,
+            std::string(player_removal_payload_type),
+            std::to_string(player_net_id.value()),
             timestamp_ms};
 }
 
-core::Result<core::NetId>
-player_removal_from_transport(const net::TransportEnvelope& envelope) {
+core::Result<core::NetId> player_removal_from_transport(const net::TransportEnvelope& envelope) {
     if (envelope.message.kind != net::TransportMessageKind::replication ||
         envelope.message.channel != net::TransportChannel::reliable ||
         envelope.message.payload_type != player_removal_payload_type) {

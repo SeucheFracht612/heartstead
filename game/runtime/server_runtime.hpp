@@ -3,6 +3,7 @@
 #include "engine/entities/entity_world.hpp"
 #include "engine/modding/prototype_registry.hpp"
 #include "engine/movement/movement_prediction.hpp"
+#include "engine/movement/physics_character_collision.hpp"
 #include "engine/movement/player_controller_store.hpp"
 #include "engine/net/host_session.hpp"
 #include "engine/physics/chunk_collision_system.hpp"
@@ -101,6 +102,7 @@ class ServerRuntime final {
         entities::EntityId entity_id;
         movement::ServerMovementInputQueue pending_inputs;
         std::optional<movement::PlayerInputFrame> last_input;
+        std::unique_ptr<movement::PhysicsCharacterCollisionWorld> physics_collision;
     };
 
     explicit ServerRuntime(ServerRuntimeDesc desc);

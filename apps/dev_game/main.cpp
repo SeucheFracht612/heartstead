@@ -98,6 +98,8 @@ core::Status start_runtime(game::GameRuntime& runtime,
     config.create_renderer = !headless;
     config.use_in_memory_transport = true;
     config.headless = headless;
+    config.physics_backend =
+        headless ? physics::PhysicsBackend::headless : physics::PhysicsBackend::jolt;
     game::SessionRequest request;
     request.metadata = std::move(metadata).value();
     return runtime.start_session(config, std::move(request));

@@ -28,7 +28,8 @@ class PlayerControllerStore {
     [[nodiscard]] PlayerControllerRecord* find(core::RuntimeHandle handle) noexcept;
     [[nodiscard]] const PlayerControllerRecord* find(core::RuntimeHandle handle) const noexcept;
     [[nodiscard]] PlayerControllerRecord* find_by_net_id(core::NetId net_id) noexcept;
-    [[nodiscard]] const PlayerControllerRecord* find_by_save_id(core::SaveId save_id) const noexcept;
+    [[nodiscard]] const PlayerControllerRecord*
+    find_by_save_id(core::SaveId save_id) const noexcept;
     bool erase(core::RuntimeHandle handle) noexcept;
     void clear() noexcept;
     [[nodiscard]] std::vector<const PlayerControllerRecord*> records() const;
@@ -43,6 +44,6 @@ class PlayerControllerStore {
 [[nodiscard]] core::Result<PlayerControllerState>
 normalize_player_controller_after_load(const PlayerControllerState& saved,
                                        const PlayerController& controller,
-                                       const VoxelCharacterCollisionWorld& collision);
+                                       ICharacterCollisionWorld& collision);
 
 } // namespace heartstead::movement

@@ -5,8 +5,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <filesystem>
 #include <string>
+#include <thread>
 
 using namespace heartstead;
 
@@ -401,6 +403,50 @@ void test_dedicated_headless_runtime_uses_same_scheduler() {
     assert(names[1] == "runtime.chunk_collision");
     assert(names[2] == "runtime.character_movement");
     assert(names.back() == "runtime.replication");
+    assert(runtime.shutdown());
+}
+
+void test_jolt_runtime_moves_on_cooked_terrain() {
+    if (!physics::physics_backend_info(physics::PhysicsBackend::jolt).available) {
+        return;
+    }
+    const auto report = content::ContentValidation::validate(source_root());
+    assert(!report.has_errors());
+    auto runtime = make_runtime(report);
+    game::RuntimeConfiguration config;
+    config.physics_backend = physics::PhysicsBackend::jolt;
+    assert(runtime.start_session(config, make_session_request(report)));
+    auto* session = runtime.session();
+    assert(session != nullptr && session->server() != nullptr && session->client() != nullptr);
+
+    std::int64_t now_ms = 0;
+    for (std::uint32_t attempt = 0;
+         attempt < 100 && session->server()->chunk_collision().find({0, 0, 0}) == nullptr;
+         ++attempt) {
+        now_ms += 17;
+        assert(runtime.run_frame({16'667, now_ms}));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    assert(session->server()->chunk_collision().find({0, 0, 0}) != nullptr);
+    const auto client_id = session->client()->client_id();
+    const auto* before = session->server()->player_for_client(client_id);
+    assert(before != nullptr);
+    const auto start = before->state.position;
+
+    movement::PlayerInputFrame input;
+    input.tick = 1;
+    input.sequence = 1;
+    input.move_z = 32'767;
+    assert(session->submit_player_input(input, now_ms));
+    for (std::uint32_t frame_index = 0; frame_index < 60; ++frame_index) {
+        now_ms += 17;
+        auto frame = runtime.run_frame({16'667, now_ms});
+        assert(frame);
+    }
+    const auto* after = session->server()->player_for_client(client_id);
+    assert(after != nullptr);
+    assert(after->state.position.relative_to(start.anchor).z > start.local_offset.z + 4.0);
+    assert(std::abs(after->state.position.approximate_global().y - 1.0) < 0.06);
     assert(runtime.shutdown());
 }
 
@@ -855,6 +901,7 @@ int main() {
     test_selected_scenario_drives_authoritative_bootstrap();
     test_session_rejects_unknown_or_wrong_kind_scenarios();
     test_dedicated_headless_runtime_uses_same_scheduler();
+    test_jolt_runtime_moves_on_cooked_terrain();
     test_authoritative_player_input_moves_and_replicates();
     test_typed_voxel_commands_validate_and_replicate();
     test_session_save_and_reload_restores_authoritative_state();

@@ -3424,6 +3424,10 @@ void test_physics_world() {
     auto mover_state = world.value()->body_state(mover.value());
     assert(mover_state);
     assert(nearly_equal(mover_state->position.z, 6.0F));
+    assert(world.value()->set_body_rotation(mover.value(), {0.0F, 30.0F, 0.0F}));
+    mover_state = world.value()->body_state(mover.value());
+    assert(mover_state);
+    assert(mover_state->rotation_degrees == (Vec3{0.0F, 30.0F, 0.0F}));
 
     auto invalid_query =
         world.value()->query_aabb(PhysicsAabb{Vec3{1.0F, 0.0F, 0.0F}, Vec3{0.0F, 1.0F, 1.0F}});

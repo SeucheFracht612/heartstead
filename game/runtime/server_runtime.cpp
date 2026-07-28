@@ -760,6 +760,22 @@ core::Status ServerRuntime::spawn_player(core::NetId client_id) {
     controller_record.save_id = save_id;
     controller_record.state = controller_state;
     controller_record.persistent = definition.value().persistent;
+    std::unique_ptr<movement::PhysicsCharacterCollisionWorld> physics_collision;
+    if (physics_->capabilities().supports_character_controllers) {
+        movement::PhysicsCharacterCollisionConfig collision_config;
+        collision_config.physics_island = desc_.chunk_collision.physics_island;
+        collision_config.fixed_delta_seconds =
+            1.0 / static_cast<double>(desc_.simulation_ticks_per_second);
+        auto created_collision = movement::PhysicsCharacterCollisionWorld::create(
+            *physics_, world_.chunks(), *desc_.voxel_palette, controller_state.position,
+            player_controller_.shape_for(controller_state), collision_config);
+        if (!created_collision) {
+            cleanup_entity();
+            return core::Status::failure(created_collision.error().code,
+                                         created_collision.error().message);
+        }
+        physics_collision = std::move(created_collision).value();
+    }
     status = players_.insert(std::move(controller_record), player_controller_.config());
     if (!status) {
         cleanup_entity();
@@ -771,15 +787,16 @@ core::Status ServerRuntime::spawn_player(core::NetId client_id) {
         cleanup_entity();
         return status;
     }
-    player_connections_.emplace(
-        client_id.value(), PlayerConnection{runtime_handle, entity_id.value(),
-                                            movement::ServerMovementInputQueue{}, std::nullopt});
+    player_connections_.emplace(client_id.value(),
+                                PlayerConnection{runtime_handle, entity_id.value(),
+                                                 movement::ServerMovementInputQueue{}, std::nullopt,
+                                                 std::move(physics_collision)});
     grant_private_subject_access(host_, client_id, save_id);
     return core::Status::ok();
 }
 
 core::Status ServerRuntime::simulate_players(simulation::SimulationContext& context) {
-    movement::VoxelCharacterCollisionWorld collision(world_.chunks(), *desc_.voxel_palette);
+    movement::VoxelCharacterCollisionWorld voxel_collision(world_.chunks(), *desc_.voxel_palette);
     std::vector<std::uint64_t> client_ids;
     client_ids.reserve(player_connections_.size());
     for (const auto& [client_id, _] : player_connections_) {
@@ -807,7 +824,16 @@ core::Status ServerRuntime::simulate_players(simulation::SimulationContext& cont
         }
         input.tick = context.tick;
         const auto previous_position = player->state.position;
-        auto ticked = player_controller_.tick(player->state, input, player->modifiers, collision);
+        movement::ICharacterCollisionWorld* collision = &voxel_collision;
+        if (connection.physics_collision != nullptr) {
+            auto status =
+                connection.physics_collision->set_fixed_delta_seconds(context.fixed_delta_seconds);
+            if (!status) {
+                return status;
+            }
+            collision = connection.physics_collision.get();
+        }
+        auto ticked = player_controller_.tick(player->state, input, player->modifiers, *collision);
         if (!ticked) {
             return core::Status::failure(ticked.error().code, ticked.error().message);
         }

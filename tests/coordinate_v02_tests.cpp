@@ -169,6 +169,12 @@ void test_floating_origin_and_physics_island_adapters() {
     auto physics_local = heartstead::world::to_physics_local(
         position.value(), heartstead::world::PhysicsIslandFrame{{far, -far, 100}, 16.0F});
     assert(physics_local);
+    auto physics_round_trip = heartstead::world::from_physics_local(
+        physics_local.value(), heartstead::world::PhysicsIslandFrame{{far, -far, 100}, 16.0F});
+    assert(physics_round_trip);
+    assert(physics_round_trip.value() == position.value());
+    assert(!heartstead::world::from_physics_local(
+        {17.0F, 0.0F, 0.0F}, heartstead::world::PhysicsIslandFrame{{far, -far, 100}, 16.0F}));
     auto outside_island = heartstead::world::to_physics_local(
         position.value(), heartstead::world::PhysicsIslandFrame{{0, 0, 0}, 16.0F});
     assert(!outside_island);

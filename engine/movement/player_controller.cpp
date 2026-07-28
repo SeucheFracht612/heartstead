@@ -25,32 +25,23 @@ constexpr std::uint16_t mantle_duration = 24;
 constexpr double state_quantum = 1.0 / 65'536.0;
 
 const std::vector<PlayerControllerTransitionRule> transition_rules{
-    {PlayerControllerMode::grounded, PlayerControllerMode::airborne,
-     PlayerTransitionCause::jump},
-    {PlayerControllerMode::grounded, PlayerControllerMode::airborne,
-     PlayerTransitionCause::fall},
-    {PlayerControllerMode::grounded, PlayerControllerMode::dashing,
-     PlayerTransitionCause::dash},
-    {PlayerControllerMode::grounded, PlayerControllerMode::rolling,
-     PlayerTransitionCause::roll},
-    {PlayerControllerMode::grounded, PlayerControllerMode::mantling,
-     PlayerTransitionCause::vault},
+    {PlayerControllerMode::grounded, PlayerControllerMode::airborne, PlayerTransitionCause::jump},
+    {PlayerControllerMode::grounded, PlayerControllerMode::airborne, PlayerTransitionCause::fall},
+    {PlayerControllerMode::grounded, PlayerControllerMode::dashing, PlayerTransitionCause::dash},
+    {PlayerControllerMode::grounded, PlayerControllerMode::rolling, PlayerTransitionCause::roll},
+    {PlayerControllerMode::grounded, PlayerControllerMode::mantling, PlayerTransitionCause::vault},
     {PlayerControllerMode::grounded, PlayerControllerMode::climbing,
      PlayerTransitionCause::enter_ladder},
     {PlayerControllerMode::grounded, PlayerControllerMode::swimming,
      PlayerTransitionCause::enter_fluid},
-    {PlayerControllerMode::airborne, PlayerControllerMode::grounded,
-     PlayerTransitionCause::land},
-    {PlayerControllerMode::airborne, PlayerControllerMode::dashing,
-     PlayerTransitionCause::dash},
-    {PlayerControllerMode::airborne, PlayerControllerMode::mantling,
-     PlayerTransitionCause::mantle},
+    {PlayerControllerMode::airborne, PlayerControllerMode::grounded, PlayerTransitionCause::land},
+    {PlayerControllerMode::airborne, PlayerControllerMode::dashing, PlayerTransitionCause::dash},
+    {PlayerControllerMode::airborne, PlayerControllerMode::mantling, PlayerTransitionCause::mantle},
     {PlayerControllerMode::airborne, PlayerControllerMode::climbing,
      PlayerTransitionCause::enter_ladder},
     {PlayerControllerMode::airborne, PlayerControllerMode::swimming,
      PlayerTransitionCause::enter_fluid},
-    {PlayerControllerMode::dashing, PlayerControllerMode::dashing,
-     PlayerTransitionCause::dash},
+    {PlayerControllerMode::dashing, PlayerControllerMode::dashing, PlayerTransitionCause::dash},
     {PlayerControllerMode::dashing, PlayerControllerMode::grounded,
      PlayerTransitionCause::dash_complete},
     {PlayerControllerMode::dashing, PlayerControllerMode::airborne,
@@ -61,18 +52,15 @@ const std::vector<PlayerControllerTransitionRule> transition_rules{
      PlayerTransitionCause::roll_complete},
     {PlayerControllerMode::mantling, PlayerControllerMode::grounded,
      PlayerTransitionCause::mantle_complete},
-    {PlayerControllerMode::mantling, PlayerControllerMode::airborne,
-     PlayerTransitionCause::fall},
+    {PlayerControllerMode::mantling, PlayerControllerMode::airborne, PlayerTransitionCause::fall},
     {PlayerControllerMode::climbing, PlayerControllerMode::airborne,
      PlayerTransitionCause::leave_ladder},
-    {PlayerControllerMode::climbing, PlayerControllerMode::grounded,
-     PlayerTransitionCause::land},
+    {PlayerControllerMode::climbing, PlayerControllerMode::grounded, PlayerTransitionCause::land},
     {PlayerControllerMode::climbing, PlayerControllerMode::swimming,
      PlayerTransitionCause::enter_fluid},
     {PlayerControllerMode::swimming, PlayerControllerMode::airborne,
      PlayerTransitionCause::leave_fluid},
-    {PlayerControllerMode::swimming, PlayerControllerMode::grounded,
-     PlayerTransitionCause::land},
+    {PlayerControllerMode::swimming, PlayerControllerMode::grounded, PlayerTransitionCause::land},
     {PlayerControllerMode::swimming, PlayerControllerMode::climbing,
      PlayerTransitionCause::enter_ladder},
 };
@@ -238,8 +226,8 @@ void append_pending_fall(PlayerControllerState& state, std::vector<MovementEvent
     state.landing_roll_window_ticks = 0;
 }
 
-[[nodiscard]] core::Result<math::Vec3d>
-delta_to(const world::WorldPosition& from, const world::WorldPosition& to) {
+[[nodiscard]] core::Result<math::Vec3d> delta_to(const world::WorldPosition& from,
+                                                 const world::WorldPosition& to) {
     if (!from.is_valid() || !to.is_valid()) {
         return core::Result<math::Vec3d>::failure("player_controller.invalid_scripted_position",
                                                   "scripted positions must be valid");
@@ -250,8 +238,8 @@ delta_to(const world::WorldPosition& from, const world::WorldPosition& to) {
 } // namespace
 
 core::Status PlayerMovementConfig::validate() const {
-    const std::array dimensions{standing_width, standing_height, crouch_height, roll_height,
-                                eye_height, auto_step_height};
+    const std::array dimensions{standing_width, standing_height, crouch_height,
+                                roll_height,    eye_height,      auto_step_height};
     const std::array rates{walk_speed,
                            sprint_speed,
                            crouch_speed,
@@ -317,20 +305,20 @@ core::Status PlayerControllerState::validate(const PlayerMovementConfig& config)
 
 PlayerController::PlayerController(PlayerMovementConfig config) : config_(config) {}
 
-core::Result<PlayerControllerTickResult> PlayerController::tick(
-    const PlayerControllerState& previous, const PlayerInputFrame& input,
-    const PlayerMovementModifiers& modifiers,
-    const VoxelCharacterCollisionWorld& collision) const {
+core::Result<PlayerControllerTickResult>
+PlayerController::tick(const PlayerControllerState& previous, const PlayerInputFrame& input,
+                       const PlayerMovementModifiers& modifiers,
+                       ICharacterCollisionWorld& collision) const {
     auto config_status = config_.validate();
     auto input_status = input.validate();
     auto state_status = previous.validate(config_);
     if (!config_status || !input_status || !state_status ||
         input.sequence < previous.last_input_sequence || input.tick <= previous.simulation_tick ||
         modifiers.stamina_regen_per_mille > 10'000) {
-        const auto* error = !config_status ? &config_status.error()
+        const auto* error = !config_status  ? &config_status.error()
                             : !input_status ? &input_status.error()
                             : !state_status ? &state_status.error()
-                                           : nullptr;
+                                            : nullptr;
         return core::Result<PlayerControllerTickResult>::failure(
             error != nullptr ? error->code : "player_controller.invalid_tick",
             error != nullptr ? error->message
@@ -413,7 +401,8 @@ core::Result<PlayerControllerTickResult> PlayerController::tick(
     const auto start_dash = [&]() {
         const auto airborne = !state.grounded;
         if (state.dash_charges == 0 || !can_spend(state, config_.dash_cost_milli) ||
-            (airborne && (!state.air_dash_available || state.encumbrance != EncumbranceTier::light))) {
+            (airborne &&
+             (!state.air_dash_available || state.encumbrance != EncumbranceTier::light))) {
             return false;
         }
         spend_stamina(state, config_.dash_cost_milli, config_);
@@ -429,31 +418,30 @@ core::Result<PlayerControllerTickResult> PlayerController::tick(
     };
 
     if (state.mode != PlayerControllerMode::rolling &&
-        state.mode != PlayerControllerMode::mantling &&
-        input.pressed(PlayerInputButton::roll) && state.grounded) {
+        state.mode != PlayerControllerMode::mantling && input.pressed(PlayerInputButton::roll) &&
+        state.grounded) {
         (void)start_roll();
     }
     if (state.mode != PlayerControllerMode::rolling &&
-        state.mode != PlayerControllerMode::mantling &&
-        input.pressed(PlayerInputButton::dash)) {
+        state.mode != PlayerControllerMode::mantling && input.pressed(PlayerInputButton::dash)) {
         (void)start_dash();
     }
 
     if (state.mode == PlayerControllerMode::dashing) {
-        const auto delta = state.scripted_direction *
-                           (config_.dash_distance * movement_modifier / dash_duration);
+        const auto delta =
+            state.scripted_direction * (config_.dash_distance * movement_modifier / dash_duration);
         auto moved = collision.move(state.position, shape_for(state), delta);
         if (!moved) {
             return core::Result<PlayerControllerTickResult>::failure(moved.error().code,
-                                                                      moved.error().message);
+                                                                     moved.error().message);
         }
         state.position = moved.value().position;
         state.velocity = delta / tick_seconds;
         const auto blocked = moved.value().hit_x || moved.value().hit_z;
         if (state.mode_ticks + 1 >= state.mode_duration_ticks || blocked) {
             state.grounded = moved.value().grounded;
-            state.mode = state.grounded ? PlayerControllerMode::grounded
-                                        : PlayerControllerMode::airborne;
+            state.mode =
+                state.grounded ? PlayerControllerMode::grounded : PlayerControllerMode::airborne;
             state.scripted_kind = ScriptedMovementKind::none;
             state.mode_ticks = 0;
             state.velocity = {};
@@ -469,14 +457,14 @@ core::Result<PlayerControllerTickResult> PlayerController::tick(
         auto moved = collision.move(state.position, shape_for(state), delta, 0.0, false);
         if (!moved) {
             return core::Result<PlayerControllerTickResult>::failure(moved.error().code,
-                                                                      moved.error().message);
+                                                                     moved.error().message);
         }
         state.position = moved.value().position;
         state.velocity = delta / tick_seconds;
         state.grounded = moved.value().grounded;
         if (state.mode_ticks + 1 >= state.mode_duration_ticks) {
-            state.mode = state.grounded ? PlayerControllerMode::grounded
-                                        : PlayerControllerMode::airborne;
+            state.mode =
+                state.grounded ? PlayerControllerMode::grounded : PlayerControllerMode::airborne;
             state.scripted_kind = ScriptedMovementKind::none;
             state.mode_ticks = 0;
             state.velocity = {};
@@ -495,7 +483,7 @@ core::Result<PlayerControllerTickResult> PlayerController::tick(
         auto remaining = delta_to(state.position, state.scripted_target);
         if (!remaining) {
             return core::Result<PlayerControllerTickResult>::failure(remaining.error().code,
-                                                                      remaining.error().message);
+                                                                     remaining.error().message);
         }
         const auto ticks_left = std::max<std::uint16_t>(
             1, static_cast<std::uint16_t>(state.mode_duration_ticks - state.mode_ticks));
@@ -509,7 +497,7 @@ core::Result<PlayerControllerTickResult> PlayerController::tick(
         auto moved = collision.move(state.position, shape_for(state), delta);
         if (!moved) {
             return core::Result<PlayerControllerTickResult>::failure(moved.error().code,
-                                                                      moved.error().message);
+                                                                     moved.error().message);
         }
         state.position = moved.value().position;
         state.velocity = delta / tick_seconds;
@@ -543,7 +531,7 @@ core::Result<PlayerControllerTickResult> PlayerController::tick(
                                     config_.auto_step_height);
         if (!moved) {
             return core::Result<PlayerControllerTickResult>::failure(moved.error().code,
-                                                                      moved.error().message);
+                                                                     moved.error().message);
         }
         state.position = moved.value().position;
         if (horizontal_length(swim_direction) > 0.0 || vertical != 0.0) {
@@ -560,10 +548,11 @@ core::Result<PlayerControllerTickResult> PlayerController::tick(
             state.velocity = facing * -2.5;
             state.velocity.y = discrete_jump_impulse(config_.gravity, config_.jump_apex) * 0.75;
         }
-        auto moved = collision.move(state.position, shape_for(state), state.velocity * tick_seconds);
+        auto moved =
+            collision.move(state.position, shape_for(state), state.velocity * tick_seconds);
         if (!moved) {
             return core::Result<PlayerControllerTickResult>::failure(moved.error().code,
-                                                                      moved.error().message);
+                                                                     moved.error().message);
         }
         state.position = moved.value().position;
     } else {
@@ -583,14 +572,14 @@ core::Result<PlayerControllerTickResult> PlayerController::tick(
                                                config_.vault_max_height);
             if (!ledge) {
                 return core::Result<PlayerControllerTickResult>::failure(ledge.error().code,
-                                                                          ledge.error().message);
+                                                                         ledge.error().message);
             }
             if (ledge.value().has_value()) {
                 begin_mode(PlayerControllerMode::mantling, ScriptedMovementKind::vault,
                            vault_duration);
                 state.scripted_target = ledge.value()->target_feet;
-                result.events.push_back({MovementEventKind::vault_started, input.tick,
-                                         ledge.value()->ledge_height});
+                result.events.push_back(
+                    {MovementEventKind::vault_started, input.tick, ledge.value()->ledge_height});
             }
         }
 
@@ -600,7 +589,7 @@ core::Result<PlayerControllerTickResult> PlayerController::tick(
                                                config_.mantle_max_height);
             if (!ledge) {
                 return core::Result<PlayerControllerTickResult>::failure(ledge.error().code,
-                                                                          ledge.error().message);
+                                                                         ledge.error().message);
             }
             if (ledge.value().has_value()) {
                 spend_stamina(state, config_.mantle_cost_milli, config_);
@@ -608,8 +597,8 @@ core::Result<PlayerControllerTickResult> PlayerController::tick(
                            mantle_duration);
                 state.scripted_target = ledge.value()->target_feet;
                 state.velocity = {};
-                result.events.push_back({MovementEventKind::mantle_grabbed, input.tick,
-                                         ledge.value()->ledge_height});
+                result.events.push_back(
+                    {MovementEventKind::mantle_grabbed, input.tick, ledge.value()->ledge_height});
             }
         }
 
@@ -631,8 +620,8 @@ core::Result<PlayerControllerTickResult> PlayerController::tick(
                 auto blocked = collision.overlaps(
                     state.position, {config_.standing_width, config_.standing_height});
                 if (!blocked) {
-                    return core::Result<PlayerControllerTickResult>::failure(blocked.error().code,
-                                                                              blocked.error().message);
+                    return core::Result<PlayerControllerTickResult>::failure(
+                        blocked.error().code, blocked.error().message);
                 }
                 state.crouched = blocked.value();
             }
@@ -646,10 +635,9 @@ core::Result<PlayerControllerTickResult> PlayerController::tick(
                                movement_modifier;
             const auto target = direction * speed;
             const auto has_input = horizontal_length(direction) > 0.0;
-            const auto acceleration = state.grounded
-                                          ? (has_input ? config_.ground_acceleration
-                                                       : config_.ground_deceleration)
-                                          : config_.air_acceleration;
+            const auto acceleration = state.grounded ? (has_input ? config_.ground_acceleration
+                                                                  : config_.ground_deceleration)
+                                                     : config_.air_acceleration;
             state.velocity.x =
                 move_towards(state.velocity.x, target.x, acceleration * tick_seconds);
             state.velocity.z =
@@ -668,7 +656,7 @@ core::Result<PlayerControllerTickResult> PlayerController::tick(
                 state.grounded ? config_.auto_step_height : 0.0, state.crouched && state.grounded);
             if (!moved) {
                 return core::Result<PlayerControllerTickResult>::failure(moved.error().code,
-                                                                          moved.error().message);
+                                                                         moved.error().message);
             }
             state.position = moved.value().position;
             if (moved.value().hit_x) {
@@ -681,12 +669,12 @@ core::Result<PlayerControllerTickResult> PlayerController::tick(
                 state.velocity.y = 0.0;
             }
             state.grounded = moved.value().grounded;
-            state.mode = state.grounded ? PlayerControllerMode::grounded
-                                        : PlayerControllerMode::airborne;
+            state.mode =
+                state.grounded ? PlayerControllerMode::grounded : PlayerControllerMode::airborne;
 
             if (!was_grounded && state.grounded) {
-                const auto fall_distance = std::max(0.0, vertical_distance(state.fall_origin,
-                                                                           state.position));
+                const auto fall_distance =
+                    std::max(0.0, vertical_distance(state.fall_origin, state.position));
                 result.events.push_back({MovementEventKind::landed, input.tick, fall_distance});
                 if (fall_distance > 4.0) {
                     state.pending_fall_distance = fall_distance;
@@ -726,14 +714,14 @@ core::Result<PlayerControllerTickResult> PlayerController::tick(
     state.velocity = quantize(state.velocity);
     auto quantized_position = quantize_position(state.position);
     if (!quantized_position) {
-        return core::Result<PlayerControllerTickResult>::failure(quantized_position.error().code,
-                                                                  quantized_position.error().message);
+        return core::Result<PlayerControllerTickResult>::failure(
+            quantized_position.error().code, quantized_position.error().message);
     }
     state.position = quantized_position.value();
     auto final_status = state.validate(config_);
     if (!final_status) {
         return core::Result<PlayerControllerTickResult>::failure(final_status.error().code,
-                                                                  final_status.error().message);
+                                                                 final_status.error().message);
     }
     return core::Result<PlayerControllerTickResult>::success(std::move(result));
 }

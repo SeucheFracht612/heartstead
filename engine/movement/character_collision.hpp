@@ -46,33 +46,61 @@ struct LedgeProbeResult {
     world::BlockCoord ledge_block;
 };
 
-class VoxelCharacterCollisionWorld {
+class ICharacterCollisionWorld {
+  public:
+    virtual ~ICharacterCollisionWorld() = default;
+
+    [[nodiscard]] virtual core::Result<CharacterMoveResult>
+    move(const world::WorldPosition& position, const CharacterShape& shape,
+         math::Vec3d desired_delta, double step_height = 0.0, bool prevent_edge_drop = false) = 0;
+
+    [[nodiscard]] virtual core::Result<bool> overlaps(const world::WorldPosition& position,
+                                                      const CharacterShape& shape) = 0;
+    [[nodiscard]] virtual core::Result<world::WorldPosition>
+    depenetrate(const world::WorldPosition& position, const CharacterShape& shape,
+                std::uint32_t maximum_iterations = 8) = 0;
+    [[nodiscard]] virtual core::Result<bool> has_support(const world::WorldPosition& position,
+                                                         const CharacterShape& shape,
+                                                         double probe_distance = 0.05) = 0;
+    [[nodiscard]] virtual core::Result<std::optional<LedgeProbeResult>>
+    probe_ledge(const world::WorldPosition& position, const CharacterShape& shape,
+                math::Vec3d forward, double maximum_height, double reach = 0.7) = 0;
+    [[nodiscard]] virtual core::Result<bool>
+    touches_occupancy(const world::WorldPosition& position, const CharacterShape& shape,
+                      world::BlockLogicalOccupancy occupancy) = 0;
+    [[nodiscard]] virtual core::Result<bool> touches_tag(const world::WorldPosition& position,
+                                                         const CharacterShape& shape,
+                                                         std::string_view tag) = 0;
+};
+
+class VoxelCharacterCollisionWorld final : public ICharacterCollisionWorld {
   public:
     VoxelCharacterCollisionWorld(const world::ChunkDatabase& chunks,
                                  const world::VoxelPalette& palette) noexcept;
 
-    [[nodiscard]] core::Result<CharacterMoveResult>
-    move(const world::WorldPosition& position, const CharacterShape& shape,
-         math::Vec3d desired_delta, double step_height = 0.0,
-         bool prevent_edge_drop = false) const;
+    [[nodiscard]] core::Result<CharacterMoveResult> move(const world::WorldPosition& position,
+                                                         const CharacterShape& shape,
+                                                         math::Vec3d desired_delta,
+                                                         double step_height = 0.0,
+                                                         bool prevent_edge_drop = false) override;
 
     [[nodiscard]] core::Result<bool> overlaps(const world::WorldPosition& position,
-                                              const CharacterShape& shape) const;
+                                              const CharacterShape& shape) override;
     [[nodiscard]] core::Result<world::WorldPosition>
     depenetrate(const world::WorldPosition& position, const CharacterShape& shape,
-                std::uint32_t maximum_iterations = 8) const;
+                std::uint32_t maximum_iterations = 8) override;
     [[nodiscard]] core::Result<bool> has_support(const world::WorldPosition& position,
                                                  const CharacterShape& shape,
-                                                 double probe_distance = 0.05) const;
+                                                 double probe_distance = 0.05) override;
     [[nodiscard]] core::Result<std::optional<LedgeProbeResult>>
     probe_ledge(const world::WorldPosition& position, const CharacterShape& shape,
-                math::Vec3d forward, double maximum_height, double reach = 0.7) const;
-    [[nodiscard]] core::Result<bool> touches_occupancy(
-        const world::WorldPosition& position, const CharacterShape& shape,
-        world::BlockLogicalOccupancy occupancy) const;
+                math::Vec3d forward, double maximum_height, double reach = 0.7) override;
+    [[nodiscard]] core::Result<bool>
+    touches_occupancy(const world::WorldPosition& position, const CharacterShape& shape,
+                      world::BlockLogicalOccupancy occupancy) override;
     [[nodiscard]] core::Result<bool> touches_tag(const world::WorldPosition& position,
                                                  const CharacterShape& shape,
-                                                 std::string_view tag) const;
+                                                 std::string_view tag) override;
 
   private:
     [[nodiscard]] core::Result<std::vector<CharacterCollisionBox>>
@@ -86,7 +114,7 @@ class VoxelCharacterCollisionWorld {
 };
 
 [[nodiscard]] math::Bounds3d character_local_bounds(const world::WorldPosition& position,
-                                                     world::BlockCoord origin,
-                                                     const CharacterShape& shape) noexcept;
+                                                    world::BlockCoord origin,
+                                                    const CharacterShape& shape) noexcept;
 
 } // namespace heartstead::movement

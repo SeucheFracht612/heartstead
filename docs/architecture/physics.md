@@ -25,6 +25,8 @@ Implemented foundation:
   - steps the world through an explicit timestep
   - supports broad-phase AABB overlap queries
   - drains per-step contact records for debug, gameplay, and tests
+  - accepts engine-owned body rotations while keeping Jolt quaternions private
+  - creates backend-owned virtual character controllers when the backend advertises support
 
 - Shape descriptors
   - box
@@ -80,6 +82,20 @@ Implemented foundation:
   - exposes pending, in-flight, stale, box-count, cook-time, and apply-time statistics through the
     runtime inspection path
 
+- Character movement
+  - `ICharacterCollisionWorld` keeps the Souls-style player state machine independent of voxel and
+    Jolt implementations
+  - the deterministic voxel implementation remains the headless and prediction reference
+  - `PhysicsCharacterCollisionWorld` owns one backend virtual character per authoritative player
+    and converts exact world positions through the same bounded physics-island frame as terrain
+  - Jolt uses a foot-anchored capsule, a configured 50-degree slope limit, `ExtendedUpdate`
+    stair-walking/floor-stick behavior, penetration recovery, stance resize checks, and dynamic-body
+    impulses
+  - ladder, fluid, unloaded-chunk, and ledge queries deliberately remain voxel-semantic queries;
+    swimming movement is present while M3 will add buoyancy and currents
+  - `dev_game` selects Jolt for interactive sessions while deterministic headless smoke runs and
+    dedicated-server fixtures retain the reference backend
+
 This layer is deliberately separate from `engine/entities/`, `engine/world/`, and
 `engine/save/`. A saved entity, build piece, cargo object, or felled tree can reference
 its own stable save id while recreating physics bodies when loaded. Save files must not
@@ -91,6 +107,6 @@ correction, and sleeping state. `physics_sandbox` repeats the same settling scen
 backends and fails if either backend is internally nondeterministic or if their final position,
 velocity, contact, and sleeping results exceed the published tolerances.
 
-Jolt `CharacterVirtual` and authoritative physical-resource body synchronization are the next M1
-slices. Their detailed contracts and acceptance budgets live in
+Authoritative physical-resource body synchronization is the next M1 slice. Its detailed contract
+and acceptance budgets live in
 `docs/roadmap/gameplay_foundations_m1_m8.md`.

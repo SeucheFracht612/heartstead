@@ -65,10 +65,9 @@ class MovementPredictionBuffer {
     [[nodiscard]] core::Status record(PlayerInputFrame input);
     void set_collision_world_revision(std::uint64_t revision) noexcept;
     [[nodiscard]] core::Result<ReconciliationResult>
-    reconcile(const PlayerControllerState& predicted,
-              const PlayerControllerSnapshot& authoritative, const PlayerController& controller,
-              const PlayerMovementModifiers& modifiers,
-              const VoxelCharacterCollisionWorld& collision);
+    reconcile(const PlayerControllerState& predicted, const PlayerControllerSnapshot& authoritative,
+              const PlayerController& controller, const PlayerMovementModifiers& modifiers,
+              ICharacterCollisionWorld& collision);
     void clear() noexcept;
 
     [[nodiscard]] std::size_t size() const noexcept;
@@ -98,17 +97,15 @@ class ServerMovementInputQueue {
 };
 
 [[nodiscard]] net::TransportMessage make_movement_input_message(const PlayerInputFrame& input,
-                                                                 std::int64_t timestamp_ms);
+                                                                std::int64_t timestamp_ms);
 [[nodiscard]] core::Result<PlayerInputFrame>
 movement_input_from_transport(const net::TransportEnvelope& envelope);
 [[nodiscard]] net::TransportMessage
-make_movement_input_bundle_message(const PlayerInputBundle& bundle,
-                                   std::int64_t timestamp_ms);
+make_movement_input_bundle_message(const PlayerInputBundle& bundle, std::int64_t timestamp_ms);
 [[nodiscard]] core::Result<PlayerInputBundle>
 movement_input_bundle_from_transport(const net::TransportEnvelope& envelope);
 [[nodiscard]] net::TransportMessage
-make_movement_snapshot_message(const PlayerControllerSnapshot& snapshot,
-                               std::int64_t timestamp_ms,
+make_movement_snapshot_message(const PlayerControllerSnapshot& snapshot, std::int64_t timestamp_ms,
                                std::uint64_t transport_sequence = 0);
 [[nodiscard]] core::Result<PlayerControllerSnapshot>
 movement_snapshot_from_transport(const net::TransportEnvelope& envelope,

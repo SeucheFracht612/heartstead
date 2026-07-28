@@ -42,7 +42,8 @@ PlayerControllerRecord* PlayerControllerStore::find(core::RuntimeHandle handle) 
     return found == records_.end() ? nullptr : &found->second;
 }
 
-const PlayerControllerRecord* PlayerControllerStore::find(core::RuntimeHandle handle) const noexcept {
+const PlayerControllerRecord*
+PlayerControllerStore::find(core::RuntimeHandle handle) const noexcept {
     const auto found = records_.find(handle.value());
     return found == records_.end() ? nullptr : &found->second;
 }
@@ -98,7 +99,7 @@ std::size_t PlayerControllerStore::size() const noexcept {
 core::Result<PlayerControllerState>
 normalize_player_controller_after_load(const PlayerControllerState& saved,
                                        const PlayerController& controller,
-                                       const VoxelCharacterCollisionWorld& collision) {
+                                       ICharacterCollisionWorld& collision) {
     auto status = saved.validate(controller.config());
     if (!status) {
         return core::Result<PlayerControllerState>::failure(status.error().code,
@@ -119,8 +120,7 @@ normalize_player_controller_after_load(const PlayerControllerState& saved,
                                                             support.error().message);
     }
     result.grounded = support.value();
-    result.mode = result.grounded ? PlayerControllerMode::grounded
-                                  : PlayerControllerMode::airborne;
+    result.mode = result.grounded ? PlayerControllerMode::grounded : PlayerControllerMode::airborne;
     result.scripted_start = result.position;
     result.scripted_target = result.position;
     result.fall_origin = result.position;

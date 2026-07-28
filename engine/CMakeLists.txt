@@ -50,6 +50,7 @@ target_sources(
     movement/carried_load.cpp
     movement/movement_prediction.cpp
     movement/movement_playground.cpp
+    movement/physics_character_collision.cpp
     movement/player_camera.cpp
     movement/player_controller.cpp
     movement/player_controller_store.cpp
@@ -226,6 +227,7 @@ target_sources(
       movement/carried_load.hpp
       movement/movement_prediction.hpp
       movement/movement_playground.hpp
+      movement/physics_character_collision.hpp
       movement/player_camera.hpp
       movement/player_controller.hpp
       movement/player_controller_store.hpp

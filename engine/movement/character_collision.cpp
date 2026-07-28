@@ -11,13 +11,11 @@ namespace {
 
 constexpr double collision_epsilon = 1.0 / 1'048'576.0;
 
-[[nodiscard]] bool ranges_overlap(double a_min, double a_max, double b_min,
-                                  double b_max) noexcept {
+[[nodiscard]] bool ranges_overlap(double a_min, double a_max, double b_min, double b_max) noexcept {
     return a_max > b_min + collision_epsilon && a_min < b_max - collision_epsilon;
 }
 
-[[nodiscard]] bool bounds_overlap(const math::Bounds3d& lhs,
-                                  const math::Bounds3d& rhs) noexcept {
+[[nodiscard]] bool bounds_overlap(const math::Bounds3d& lhs, const math::Bounds3d& rhs) noexcept {
     return ranges_overlap(lhs.min.x, lhs.max.x, rhs.min.x, rhs.max.x) &&
            ranges_overlap(lhs.min.y, lhs.max.y, rhs.min.y, rhs.max.y) &&
            ranges_overlap(lhs.min.z, lhs.max.z, rhs.min.z, rhs.max.z);
@@ -33,8 +31,7 @@ constexpr double collision_epsilon = 1.0 / 1'048'576.0;
     return bounds.merged_with(translated(bounds, delta)).expanded(collision_epsilon);
 }
 
-[[nodiscard]] core::Result<std::int64_t> checked_floor(double local,
-                                                       std::int64_t origin_axis) {
+[[nodiscard]] core::Result<std::int64_t> checked_floor(double local, std::int64_t origin_axis) {
     if (!std::isfinite(local)) {
         return core::Result<std::int64_t>::failure("character_collision.non_finite_bounds",
                                                    "collision bounds must be finite");
@@ -86,13 +83,13 @@ VoxelCharacterCollisionWorld::VoxelCharacterCollisionWorld(
 
 core::Result<std::vector<CharacterCollisionBox>>
 VoxelCharacterCollisionWorld::collision_boxes(world::BlockCoord origin,
-                                               math::Bounds3d local_bounds) const {
+                                              math::Bounds3d local_bounds) const {
     return voxel_boxes(origin, local_bounds, false);
 }
 
 core::Result<std::vector<CharacterCollisionBox>>
 VoxelCharacterCollisionWorld::voxel_boxes(world::BlockCoord origin, math::Bounds3d local_bounds,
-                                           bool include_non_colliding) const {
+                                          bool include_non_colliding) const {
     if (!local_bounds.is_valid()) {
         return core::Result<std::vector<CharacterCollisionBox>>::failure(
             "character_collision.invalid_bounds", "character collision query bounds are invalid");
@@ -112,7 +109,7 @@ VoxelCharacterCollisionWorld::voxel_boxes(world::BlockCoord origin, math::Bounds
                             : !max_z ? &max_z.error()
                                      : nullptr;
         return core::Result<std::vector<CharacterCollisionBox>>::failure(error->code,
-                                                                          error->message);
+                                                                         error->message);
     }
     constexpr std::int64_t maximum_axis_span = 64;
     if (max_x.value() - min_x.value() > maximum_axis_span ||
@@ -129,14 +126,16 @@ VoxelCharacterCollisionWorld::voxel_boxes(world::BlockCoord origin, math::Bounds
                 const world::BlockCoord block{x, y, z};
                 const auto chunk_local = world::block_to_chunk_local(block);
                 const auto* chunk = chunks_->find(chunk_local.chunk);
-                const auto local_translation = math::Vec3d{
-                    static_cast<double>(static_cast<long double>(x) - origin.x),
-                    static_cast<double>(static_cast<long double>(y) - origin.y),
-                    static_cast<double>(static_cast<long double>(z) - origin.z)};
+                const auto local_translation =
+                    math::Vec3d{static_cast<double>(static_cast<long double>(x) - origin.x),
+                                static_cast<double>(static_cast<long double>(y) - origin.y),
+                                static_cast<double>(static_cast<long double>(z) - origin.z)};
                 if (chunk == nullptr) {
                     if (!include_non_colliding) {
                         result.push_back({{local_translation, local_translation + math::splat(1.0)},
-                                          block, nullptr, true});
+                                          block,
+                                          nullptr,
+                                          true});
                     }
                     if (z == max_z.value()) {
                         break;
@@ -155,7 +154,9 @@ VoxelCharacterCollisionWorld::voxel_boxes(world::BlockCoord origin, math::Bounds
                 const auto* voxel = palette_->find_by_type(cell.value().type);
                 if (voxel == nullptr) {
                     result.push_back({{local_translation, local_translation + math::splat(1.0)},
-                                      block, nullptr, false});
+                                      block,
+                                      nullptr,
+                                      false});
                     if (z == max_z.value()) {
                         break;
                     }
@@ -164,7 +165,9 @@ VoxelCharacterCollisionWorld::voxel_boxes(world::BlockCoord origin, math::Bounds
                 }
                 if (include_non_colliding) {
                     result.push_back({{local_translation, local_translation + math::splat(1.0)},
-                                      block, voxel, false});
+                                      block,
+                                      voxel,
+                                      false});
                     if (z == max_z.value()) {
                         break;
                     }
@@ -177,8 +180,7 @@ VoxelCharacterCollisionWorld::voxel_boxes(world::BlockCoord origin, math::Bounds
                          static_cast<double>(source.min.z)},
                         {static_cast<double>(source.max.x), static_cast<double>(source.max.y),
                          static_cast<double>(source.max.z)}};
-                    result.push_back(
-                        {translated(bounds, local_translation), block, voxel, false});
+                    result.push_back({translated(bounds, local_translation), block, voxel, false});
                 }
                 if (z == max_z.value()) {
                     break;
@@ -201,7 +203,7 @@ VoxelCharacterCollisionWorld::voxel_boxes(world::BlockCoord origin, math::Bounds
 core::Result<CharacterMoveResult>
 VoxelCharacterCollisionWorld::move(const world::WorldPosition& position,
                                    const CharacterShape& shape, math::Vec3d desired_delta,
-                                   double step_height, bool prevent_edge_drop) const {
+                                   double step_height, bool prevent_edge_drop) {
     auto shape_status = shape.validate();
     if (!shape_status || !position.is_valid() || !desired_delta.is_finite() ||
         !std::isfinite(step_height) || step_height < 0.0 || step_height > shape.height) {
@@ -247,43 +249,40 @@ VoxelCharacterCollisionWorld::move(const world::WorldPosition& position,
                 double far_face = 0.0;
                 switch (axis) {
                 case math::Axis3::x:
-                    cross_overlap = ranges_overlap(bounds.min.y, bounds.max.y, other.min.y,
-                                                   other.max.y) &&
-                                    ranges_overlap(bounds.min.z, bounds.max.z, other.min.z,
-                                                   other.max.z);
-                    near_face = amount > 0.0 ? other.min.x - bounds.max.x
-                                             : other.max.x - bounds.min.x;
-                    far_face = amount > 0.0 ? other.max.x - bounds.min.x
-                                            : other.min.x - bounds.max.x;
+                    cross_overlap =
+                        ranges_overlap(bounds.min.y, bounds.max.y, other.min.y, other.max.y) &&
+                        ranges_overlap(bounds.min.z, bounds.max.z, other.min.z, other.max.z);
+                    near_face =
+                        amount > 0.0 ? other.min.x - bounds.max.x : other.max.x - bounds.min.x;
+                    far_face =
+                        amount > 0.0 ? other.max.x - bounds.min.x : other.min.x - bounds.max.x;
                     break;
                 case math::Axis3::y:
-                    cross_overlap = ranges_overlap(bounds.min.x, bounds.max.x, other.min.x,
-                                                   other.max.x) &&
-                                    ranges_overlap(bounds.min.z, bounds.max.z, other.min.z,
-                                                   other.max.z);
-                    near_face = amount > 0.0 ? other.min.y - bounds.max.y
-                                             : other.max.y - bounds.min.y;
-                    far_face = amount > 0.0 ? other.max.y - bounds.min.y
-                                            : other.min.y - bounds.max.y;
+                    cross_overlap =
+                        ranges_overlap(bounds.min.x, bounds.max.x, other.min.x, other.max.x) &&
+                        ranges_overlap(bounds.min.z, bounds.max.z, other.min.z, other.max.z);
+                    near_face =
+                        amount > 0.0 ? other.min.y - bounds.max.y : other.max.y - bounds.min.y;
+                    far_face =
+                        amount > 0.0 ? other.max.y - bounds.min.y : other.min.y - bounds.max.y;
                     break;
                 case math::Axis3::z:
-                    cross_overlap = ranges_overlap(bounds.min.x, bounds.max.x, other.min.x,
-                                                   other.max.x) &&
-                                    ranges_overlap(bounds.min.y, bounds.max.y, other.min.y,
-                                                   other.max.y);
-                    near_face = amount > 0.0 ? other.min.z - bounds.max.z
-                                             : other.max.z - bounds.min.z;
-                    far_face = amount > 0.0 ? other.max.z - bounds.min.z
-                                            : other.min.z - bounds.max.z;
+                    cross_overlap =
+                        ranges_overlap(bounds.min.x, bounds.max.x, other.min.x, other.max.x) &&
+                        ranges_overlap(bounds.min.y, bounds.max.y, other.min.y, other.max.y);
+                    near_face =
+                        amount > 0.0 ? other.min.z - bounds.max.z : other.max.z - bounds.min.z;
+                    far_face =
+                        amount > 0.0 ? other.max.z - bounds.min.z : other.min.z - bounds.max.z;
                     break;
                 }
                 if (!cross_overlap) {
                     continue;
                 }
-                const auto crosses = amount > 0.0 ? near_face >= -collision_epsilon &&
-                                                       near_face < allowed && far_face > 0.0
-                                                 : near_face <= collision_epsilon &&
-                                                       near_face > allowed && far_face < 0.0;
+                const auto crosses =
+                    amount > 0.0
+                        ? near_face >= -collision_epsilon && near_face < allowed && far_face > 0.0
+                        : near_face <= collision_epsilon && near_face > allowed && far_face < 0.0;
                 if (crosses) {
                     allowed = near_face;
                     output.blocked_by_unloaded_chunk |= obstacle.unloaded;
@@ -312,11 +311,10 @@ VoxelCharacterCollisionWorld::move(const world::WorldPosition& position,
         auto raised = resolve(start, {0.0, step_height, 0.0}, stepped_result);
         if (raised.y >= step_height - collision_epsilon) {
             auto raised_bounds = translated(start, raised);
-            auto horizontal = resolve(raised_bounds, {desired_delta.x, 0.0, desired_delta.z},
-                                      stepped_result);
+            auto horizontal =
+                resolve(raised_bounds, {desired_delta.x, 0.0, desired_delta.z}, stepped_result);
             raised_bounds = translated(raised_bounds, horizontal);
-            auto lowered = resolve(raised_bounds, {0.0, -step_height - 0.05, 0.0},
-                                   stepped_result);
+            auto lowered = resolve(raised_bounds, {0.0, -step_height - 0.05, 0.0}, stepped_result);
             const auto stepped_horizontal = std::hypot(horizontal.x, horizontal.z);
             if (stepped_horizontal > std::hypot(applied.x, applied.z) + collision_epsilon &&
                 lowered.y > -step_height - 0.05 + collision_epsilon) {
@@ -328,8 +326,7 @@ VoxelCharacterCollisionWorld::move(const world::WorldPosition& position,
     }
 
     bool snapped_to_ground = false;
-    if (desired_delta.y <= 0.0 &&
-        std::abs(applied.y - desired_delta.y) <= collision_epsilon) {
+    if (desired_delta.y <= 0.0 && std::abs(applied.y - desired_delta.y) <= collision_epsilon) {
         CharacterMoveResult snap_result;
         const auto moved_bounds = translated(start, applied);
         const auto snap = resolve(moved_bounds, {0.0, -0.05, 0.0}, snap_result);
@@ -354,8 +351,8 @@ VoxelCharacterCollisionWorld::move(const world::WorldPosition& position,
         if (!supported.value()) {
             applied.x = 0.0;
             applied.z = 0.0;
-            next = world::WorldPosition::from_anchor(position.anchor,
-                                                     position.local_offset + applied);
+            next =
+                world::WorldPosition::from_anchor(position.anchor, position.local_offset + applied);
             edge_drop_prevented = true;
         }
     }
@@ -365,14 +362,14 @@ VoxelCharacterCollisionWorld::move(const world::WorldPosition& position,
     result.hit_x = std::abs(applied.x - desired_delta.x) > collision_epsilon;
     result.hit_y = std::abs(applied.y - desired_delta.y) > collision_epsilon;
     result.hit_z = std::abs(applied.z - desired_delta.z) > collision_epsilon;
-    result.grounded = desired_delta.y <= 0.0 &&
-                      (result.hit_y || snapped_to_ground || edge_drop_prevented);
+    result.grounded =
+        desired_delta.y <= 0.0 && (result.hit_y || snapped_to_ground || edge_drop_prevented);
     result.hit_ceiling = desired_delta.y > 0.0 && result.hit_y;
     return core::Result<CharacterMoveResult>::success(result);
 }
 
 core::Result<bool> VoxelCharacterCollisionWorld::overlaps(const world::WorldPosition& position,
-                                                           const CharacterShape& shape) const {
+                                                          const CharacterShape& shape) {
     if (!position.is_valid() || !shape.validate()) {
         return core::Result<bool>::failure("character_collision.invalid_overlap",
                                            "character overlap input is invalid");
@@ -389,7 +386,7 @@ core::Result<bool> VoxelCharacterCollisionWorld::overlaps(const world::WorldPosi
 core::Result<world::WorldPosition>
 VoxelCharacterCollisionWorld::depenetrate(const world::WorldPosition& position,
                                           const CharacterShape& shape,
-                                          std::uint32_t maximum_iterations) const {
+                                          std::uint32_t maximum_iterations) {
     if (!position.is_valid() || !shape.validate() || maximum_iterations == 0 ||
         maximum_iterations > 64) {
         return core::Result<world::WorldPosition>::failure(
@@ -432,8 +429,9 @@ VoxelCharacterCollisionWorld::depenetrate(const world::WorldPosition& position,
         const auto magnitude = [](math::Vec3d value) {
             return std::abs(value.x) + std::abs(value.y) + std::abs(value.z);
         };
-        const auto best = std::ranges::min_element(
-            pushes, [&](math::Vec3d lhs, math::Vec3d rhs) { return magnitude(lhs) < magnitude(rhs); });
+        const auto best = std::ranges::min_element(pushes, [&](math::Vec3d lhs, math::Vec3d rhs) {
+            return magnitude(lhs) < magnitude(rhs);
+        });
         bounds = translated(bounds, *best);
         total += *best;
     }
@@ -442,19 +440,18 @@ VoxelCharacterCollisionWorld::depenetrate(const world::WorldPosition& position,
         "character could not be separated from collision within the iteration limit");
 }
 
-core::Result<bool> VoxelCharacterCollisionWorld::has_support(
-    const world::WorldPosition& position, const CharacterShape& shape,
-    double probe_distance) const {
+core::Result<bool> VoxelCharacterCollisionWorld::has_support(const world::WorldPosition& position,
+                                                             const CharacterShape& shape,
+                                                             double probe_distance) {
     if (!std::isfinite(probe_distance) || probe_distance <= 0.0 || probe_distance > 1.0) {
         return core::Result<bool>::failure("character_collision.invalid_support_probe",
                                            "support probe distance must be in (0, 1]");
     }
     const auto bounds = character_local_bounds(position, position.anchor, shape);
     const auto inset = std::min(0.02, shape.width * 0.1);
-    const math::Bounds3d probe{{bounds.min.x + inset, bounds.min.y - probe_distance,
-                               bounds.min.z + inset},
-                              {bounds.max.x - inset, bounds.min.y + collision_epsilon,
-                               bounds.max.z - inset}};
+    const math::Bounds3d probe{
+        {bounds.min.x + inset, bounds.min.y - probe_distance, bounds.min.z + inset},
+        {bounds.max.x - inset, bounds.min.y + collision_epsilon, bounds.max.z - inset}};
     auto boxes = collision_boxes(position.anchor, probe);
     if (!boxes) {
         return core::Result<bool>::failure(boxes.error().code, boxes.error().message);
@@ -463,9 +460,10 @@ core::Result<bool> VoxelCharacterCollisionWorld::has_support(
         boxes.value(), [&probe](const auto& box) { return bounds_overlap(probe, box.bounds); }));
 }
 
-core::Result<std::optional<LedgeProbeResult>> VoxelCharacterCollisionWorld::probe_ledge(
-    const world::WorldPosition& position, const CharacterShape& shape, math::Vec3d forward,
-    double maximum_height, double reach) const {
+core::Result<std::optional<LedgeProbeResult>>
+VoxelCharacterCollisionWorld::probe_ledge(const world::WorldPosition& position,
+                                          const CharacterShape& shape, math::Vec3d forward,
+                                          double maximum_height, double reach) {
     if (!position.is_valid() || !shape.validate() || !forward.is_finite() ||
         !std::isfinite(maximum_height) || maximum_height <= 0.0 || maximum_height > 3.0 ||
         !std::isfinite(reach) || reach <= 0.0 || reach > 2.0) {
@@ -483,11 +481,11 @@ core::Result<std::optional<LedgeProbeResult>> VoxelCharacterCollisionWorld::prob
     const auto origin = position.anchor;
     const auto feet = position.relative_to(origin);
     const auto half = shape.width * 0.45;
-    const math::Bounds3d query{
-        {feet.x + std::min(0.0, forward.x * reach) - half, feet.y,
-         feet.z + std::min(0.0, forward.z * reach) - half},
-        {feet.x + std::max(0.0, forward.x * reach) + half, feet.y + maximum_height,
-         feet.z + std::max(0.0, forward.z * reach) + half}};
+    const math::Bounds3d query{{feet.x + std::min(0.0, forward.x * reach) - half, feet.y,
+                                feet.z + std::min(0.0, forward.z * reach) - half},
+                               {feet.x + std::max(0.0, forward.x * reach) + half,
+                                feet.y + maximum_height,
+                                feet.z + std::max(0.0, forward.z * reach) + half}};
     auto boxes = collision_boxes(origin, query);
     if (!boxes) {
         return core::Result<std::optional<LedgeProbeResult>>::failure(boxes.error().code,
@@ -533,9 +531,10 @@ core::Result<std::optional<LedgeProbeResult>> VoxelCharacterCollisionWorld::prob
         LedgeProbeResult{target.value(), best_top - feet.y, best->block});
 }
 
-core::Result<bool> VoxelCharacterCollisionWorld::touches_occupancy(
-    const world::WorldPosition& position, const CharacterShape& shape,
-    world::BlockLogicalOccupancy occupancy) const {
+core::Result<bool>
+VoxelCharacterCollisionWorld::touches_occupancy(const world::WorldPosition& position,
+                                                const CharacterShape& shape,
+                                                world::BlockLogicalOccupancy occupancy) {
     const auto bounds = character_local_bounds(position, position.anchor, shape);
     auto boxes = voxel_boxes(position.anchor, bounds, true);
     if (!boxes) {
@@ -547,8 +546,9 @@ core::Result<bool> VoxelCharacterCollisionWorld::touches_occupancy(
     }));
 }
 
-core::Result<bool> VoxelCharacterCollisionWorld::touches_tag(
-    const world::WorldPosition& position, const CharacterShape& shape, std::string_view tag) const {
+core::Result<bool> VoxelCharacterCollisionWorld::touches_tag(const world::WorldPosition& position,
+                                                             const CharacterShape& shape,
+                                                             std::string_view tag) {
     if (tag.empty()) {
         return core::Result<bool>::failure("character_collision.invalid_tag",
                                            "character collision tag must not be empty");

@@ -48,8 +48,8 @@ struct WorldPosition {
 
     [[nodiscard]] static core::Result<WorldPosition> from_legacy_global(math::Vec3d global) {
         if (!global.is_finite()) {
-            return core::Result<WorldPosition>::failure(
-                "world_position.non_finite_global", "legacy global position must be finite");
+            return core::Result<WorldPosition>::failure("world_position.non_finite_global",
+                                                        "legacy global position must be finite");
         }
         constexpr double min_inclusive = -9223372036854775808.0;
         constexpr double max_exclusive = 9223372036854775808.0;
@@ -62,8 +62,7 @@ struct WorldPosition {
 
         const math::Vec3d floors{std::floor(global.x), std::floor(global.y), std::floor(global.z)};
         WorldPosition result;
-        result.anchor = {static_cast<std::int64_t>(floors.x),
-                         static_cast<std::int64_t>(floors.y),
+        result.anchor = {static_cast<std::int64_t>(floors.x), static_cast<std::int64_t>(floors.y),
                          static_cast<std::int64_t>(floors.z)};
         result.local_offset = global - floors;
         return core::Result<WorldPosition>::success(result);
@@ -87,8 +86,7 @@ struct WorldPosition {
                                        static_cast<long double>(base) +
                                        static_cast<long double>(local));
         };
-        return {axis(anchor.x, origin.x, local_offset.x),
-                axis(anchor.y, origin.y, local_offset.y),
+        return {axis(anchor.x, origin.x, local_offset.x), axis(anchor.y, origin.y, local_offset.y),
                 axis(anchor.z, origin.z, local_offset.z)};
     }
 
@@ -100,8 +98,7 @@ struct WorldPosition {
                                  std::floor(local_offset.z)};
         constexpr auto min = std::numeric_limits<std::int64_t>::min();
         constexpr auto max = std::numeric_limits<std::int64_t>::max();
-        const auto add_axis = [](std::int64_t base,
-                                 double delta) -> core::Result<std::int64_t> {
+        const auto add_axis = [](std::int64_t base, double delta) -> core::Result<std::int64_t> {
             constexpr double min_inclusive = -9223372036854775808.0;
             constexpr double max_exclusive = 9223372036854775808.0;
             if (delta < min_inclusive || delta >= max_exclusive) {
@@ -169,8 +166,8 @@ struct PhysicsIslandFrame {
 to_camera_relative(const WorldPosition& position, FloatingOrigin origin,
                    float max_local_extent = 1'048'576.0F) {
     if (!position.is_valid() || !std::isfinite(max_local_extent) || max_local_extent <= 0.0F) {
-        return core::Result<math::Vec3f>::failure(
-            "floating_origin.invalid_input", "camera-relative conversion input is invalid");
+        return core::Result<math::Vec3f>::failure("floating_origin.invalid_input",
+                                                  "camera-relative conversion input is invalid");
     }
     const auto relative = position.relative_to(origin.block);
     if (std::abs(relative.x) > max_local_extent || std::abs(relative.y) > max_local_extent ||
@@ -179,14 +176,29 @@ to_camera_relative(const WorldPosition& position, FloatingOrigin origin,
             "floating_origin.outside_local_extent",
             "world position is outside the camera-relative rendering extent");
     }
-    return core::Result<math::Vec3f>::success(
-        {static_cast<float>(relative.x), static_cast<float>(relative.y),
-         static_cast<float>(relative.z)});
+    return core::Result<math::Vec3f>::success({static_cast<float>(relative.x),
+                                               static_cast<float>(relative.y),
+                                               static_cast<float>(relative.z)});
 }
 
-[[nodiscard]] inline core::Result<math::Vec3f>
-to_physics_local(const WorldPosition& position, const PhysicsIslandFrame& frame) {
+[[nodiscard]] inline core::Result<math::Vec3f> to_physics_local(const WorldPosition& position,
+                                                                const PhysicsIslandFrame& frame) {
     return to_camera_relative(position, FloatingOrigin{frame.block}, frame.max_local_extent);
+}
+
+[[nodiscard]] inline core::Result<WorldPosition>
+from_physics_local(math::Vec3f local_position, const PhysicsIslandFrame& frame) {
+    if (!local_position.is_finite() || !std::isfinite(frame.max_local_extent) ||
+        frame.max_local_extent <= 0.0F || std::abs(local_position.x) > frame.max_local_extent ||
+        std::abs(local_position.y) > frame.max_local_extent ||
+        std::abs(local_position.z) > frame.max_local_extent) {
+        return core::Result<WorldPosition>::failure(
+            "physics_island.invalid_local_position",
+            "physics-local position is non-finite or outside the island extent");
+    }
+    return WorldPosition::from_anchor(frame.block, {static_cast<double>(local_position.x),
+                                                    static_cast<double>(local_position.y),
+                                                    static_cast<double>(local_position.z)});
 }
 
 } // namespace heartstead::world

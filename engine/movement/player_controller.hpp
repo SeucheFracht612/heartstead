@@ -154,8 +154,7 @@ class PlayerController {
 
     [[nodiscard]] core::Result<PlayerControllerTickResult>
     tick(const PlayerControllerState& previous, const PlayerInputFrame& input,
-         const PlayerMovementModifiers& modifiers,
-         const VoxelCharacterCollisionWorld& collision) const;
+         const PlayerMovementModifiers& modifiers, ICharacterCollisionWorld& collision) const;
 
     [[nodiscard]] const PlayerMovementConfig& config() const noexcept;
     [[nodiscard]] static EncumbranceTier encumbrance_tier(std::uint32_t load_per_mille) noexcept;

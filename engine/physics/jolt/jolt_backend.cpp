@@ -14,11 +14,13 @@ JPH_SUPPRESS_WARNINGS
 #endif
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Collision/BroadPhase/BroadPhaseQuery.h>
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
 #include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/PhysicsSystem.h>
@@ -68,6 +70,11 @@ constexpr JPH::BroadPhaseLayer moving_broad_phase_layer{1};
 
 [[nodiscard]] JPH::RVec3 to_jolt_position(Vec3 value) noexcept {
     return JPH::RVec3{value.x, value.y, value.z};
+}
+
+[[nodiscard]] JPH::Quat to_jolt_rotation(Vec3 rotation_degrees) noexcept {
+    constexpr float degrees_to_radians = 0.017453292519943295769F;
+    return JPH::Quat::sEulerAngles(to_jolt(rotation_degrees * degrees_to_radians));
 }
 
 [[nodiscard]] Vec3 from_jolt(JPH::Vec3Arg value) noexcept {
@@ -163,6 +170,41 @@ constexpr JPH::BroadPhaseLayer moving_broad_phase_layer{1};
     return shape_result(settings.Create(), "compound");
 }
 
+[[nodiscard]] core::Result<JPH::ShapeRefC> make_character_shape(PhysicsCharacterShapeDesc desc) {
+    auto status = validate_physics_character_shape_desc(desc);
+    if (!status) {
+        return core::Result<JPH::ShapeRefC>::failure(status.error().code, status.error().message);
+    }
+    const auto radius = desc.width * 0.5F;
+    const auto cylinder_half_height = (desc.height - desc.width) * 0.5F;
+    JPH::CapsuleShapeSettings capsule(cylinder_half_height, radius);
+    capsule.SetEmbedded();
+    auto capsule_shape = shape_result(capsule.Create(), "character capsule");
+    if (!capsule_shape) {
+        return capsule_shape;
+    }
+    JPH::RotatedTranslatedShapeSettings translated(JPH::Vec3{0.0F, desc.height * 0.5F, 0.0F},
+                                                   JPH::Quat::sIdentity(),
+                                                   capsule_shape.value().GetPtr());
+    translated.SetEmbedded();
+    return shape_result(translated.Create(), "translated character capsule");
+}
+
+[[nodiscard]] PhysicsCharacterGroundState
+from_jolt(JPH::CharacterBase::EGroundState state) noexcept {
+    switch (state) {
+    case JPH::CharacterBase::EGroundState::OnGround:
+        return PhysicsCharacterGroundState::on_ground;
+    case JPH::CharacterBase::EGroundState::OnSteepGround:
+        return PhysicsCharacterGroundState::on_steep_ground;
+    case JPH::CharacterBase::EGroundState::NotSupported:
+        return PhysicsCharacterGroundState::not_supported;
+    case JPH::CharacterBase::EGroundState::InAir:
+        return PhysicsCharacterGroundState::in_air;
+    }
+    return PhysicsCharacterGroundState::in_air;
+}
+
 class BroadPhaseLayerInterface final : public JPH::BroadPhaseLayerInterface {
   public:
     BroadPhaseLayerInterface() noexcept {
@@ -239,6 +281,193 @@ class RuntimeRegistration {
     return runtime;
 }
 
+class JoltPhysicsCharacter final : public IPhysicsCharacter {
+  public:
+    [[nodiscard]] static core::Result<std::unique_ptr<IPhysicsCharacter>>
+    create(PhysicsCharacterDesc desc, JPH::PhysicsSystem& physics_system,
+           JPH::TempAllocator& temporary_allocator, Vec3 gravity) {
+        auto status = validate_physics_character_desc(desc);
+        if (!status) {
+            return core::Result<std::unique_ptr<IPhysicsCharacter>>::failure(
+                status.error().code, status.error().message);
+        }
+        auto shape = make_character_shape(desc.shape);
+        if (!shape) {
+            return core::Result<std::unique_ptr<IPhysicsCharacter>>::failure(shape.error().code,
+                                                                             shape.error().message);
+        }
+        JPH::CharacterVirtualSettings settings;
+        settings.mShape = shape.value();
+        settings.mMaxSlopeAngle = JPH::DegreesToRadians(desc.max_slope_angle_degrees);
+        settings.mMass = desc.mass;
+        settings.mMaxStrength = desc.max_strength;
+        settings.mCharacterPadding = desc.padding;
+        settings.mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisY(), -desc.shape.width * 0.5F);
+        settings.mEnhancedInternalEdgeRemoval = true;
+        auto character = JPH::Ref<JPH::CharacterVirtual>(
+            new JPH::CharacterVirtual(&settings, to_jolt_position(desc.position),
+                                      JPH::Quat::sIdentity(), 0, &physics_system));
+        return core::Result<std::unique_ptr<IPhysicsCharacter>>::success(
+            std::unique_ptr<IPhysicsCharacter>(new JoltPhysicsCharacter(
+                physics_system, temporary_allocator, gravity, desc.shape, std::move(character))));
+    }
+
+    [[nodiscard]] PhysicsBackend backend() const noexcept override {
+        return PhysicsBackend::jolt;
+    }
+
+    [[nodiscard]] Vec3 position() const noexcept override {
+        return from_jolt_position(character_->GetPosition());
+    }
+
+    [[nodiscard]] PhysicsCharacterShapeDesc shape() const noexcept override {
+        return shape_;
+    }
+
+    [[nodiscard]] core::Status set_position(Vec3 position) override {
+        if (!position.is_finite()) {
+            return core::Status::failure("physics.invalid_character_position",
+                                         "character position must be finite");
+        }
+        character_->SetPosition(to_jolt_position(position));
+        refresh_contacts();
+        return core::Status::ok();
+    }
+
+    [[nodiscard]] core::Result<bool> set_shape(PhysicsCharacterShapeDesc shape,
+                                               float maximum_penetration_depth) override {
+        auto status = validate_physics_character_shape_desc(shape);
+        if (!status || !std::isfinite(maximum_penetration_depth) ||
+            maximum_penetration_depth < 0.0F || maximum_penetration_depth > 2.0F) {
+            return core::Result<bool>::failure("physics.invalid_character_shape_switch",
+                                               "character shape switch input is invalid");
+        }
+        auto created = make_character_shape(shape);
+        if (!created) {
+            return core::Result<bool>::failure(created.error().code, created.error().message);
+        }
+        const auto accepted = character_->SetShape(
+            created.value().GetPtr(), maximum_penetration_depth,
+            physics_system_->GetDefaultBroadPhaseLayerFilter(moving_layer),
+            physics_system_->GetDefaultLayerFilter(moving_layer), {}, {}, *temporary_allocator_);
+        if (accepted) {
+            shape_ = shape;
+            character_->SetSupportingVolume(JPH::Plane(JPH::Vec3::sAxisY(), -shape.width * 0.5F));
+        }
+        return core::Result<bool>::success(accepted);
+    }
+
+    [[nodiscard]] core::Result<PhysicsCharacterMoveResult>
+    move(PhysicsCharacterMoveDesc desc) override {
+        auto status = validate_physics_character_move_desc(desc);
+        if (!status || desc.step_height > shape_.height) {
+            return core::Result<PhysicsCharacterMoveResult>::failure(
+                "physics.invalid_character_move",
+                "character movement input exceeds its shape or numeric limits");
+        }
+
+        const auto start = position();
+        auto desired_velocity = to_jolt(desc.desired_delta) / desc.delta_seconds;
+        desired_velocity = character_->CancelVelocityTowardsSteepSlopes(desired_velocity);
+        character_->SetLinearVelocity(desired_velocity);
+
+        JPH::CharacterVirtual::ExtendedUpdateSettings settings;
+        if (desc.desired_delta.y > 0.0F || desc.stick_to_floor_distance == 0.0F) {
+            settings.mStickToFloorStepDown = JPH::Vec3::sZero();
+        } else {
+            settings.mStickToFloorStepDown = JPH::Vec3{0.0F, -desc.stick_to_floor_distance, 0.0F};
+        }
+        if (desc.desired_delta.y > 0.0F || desc.step_height == 0.0F) {
+            settings.mWalkStairsStepUp = JPH::Vec3::sZero();
+        } else {
+            settings.mWalkStairsStepUp = JPH::Vec3{0.0F, desc.step_height, 0.0F};
+            settings.mWalkStairsStepDownExtra =
+                JPH::Vec3{0.0F, -desc.stick_to_floor_distance, 0.0F};
+        }
+        character_->ExtendedUpdate(desc.delta_seconds, to_jolt(gravity_), settings,
+                                   physics_system_->GetDefaultBroadPhaseLayerFilter(moving_layer),
+                                   physics_system_->GetDefaultLayerFilter(moving_layer), {}, {},
+                                   *temporary_allocator_);
+
+        PhysicsCharacterMoveResult result;
+        result.position = position();
+        result.requested_delta = desc.desired_delta;
+        result.applied_delta = result.position - start;
+        result.linear_velocity = from_jolt(character_->GetLinearVelocity());
+        result.ground_normal = from_jolt(character_->GetGroundNormal());
+        result.ground_velocity = from_jolt(character_->GetGroundVelocity());
+        result.ground_state = from_jolt(character_->GetGroundState());
+        result.stepped =
+            (std::abs(desc.desired_delta.x) > 0.0F || std::abs(desc.desired_delta.z) > 0.0F) &&
+            result.applied_delta.y > desc.desired_delta.y + 0.02F &&
+            result.applied_delta.y <= desc.step_height + desc.stick_to_floor_distance + 0.02F;
+        result.maximum_hits_exceeded = character_->GetMaxHitsExceeded();
+        return core::Result<PhysicsCharacterMoveResult>::success(result);
+    }
+
+    [[nodiscard]] core::Result<Vec3>
+    recover_from_penetration(std::uint32_t maximum_iterations) override {
+        if (maximum_iterations == 0 || maximum_iterations > 64) {
+            return core::Result<Vec3>::failure(
+                "physics.invalid_character_recovery",
+                "character penetration recovery iterations must be in [1, 64]");
+        }
+        for (std::uint32_t iteration = 0; iteration < maximum_iterations; ++iteration) {
+            const auto before = position();
+            character_->SetLinearVelocity(JPH::Vec3::sZero());
+            character_->Update(1.0F / 60.0F, JPH::Vec3::sZero(),
+                               physics_system_->GetDefaultBroadPhaseLayerFilter(moving_layer),
+                               physics_system_->GetDefaultLayerFilter(moving_layer), {}, {},
+                               *temporary_allocator_);
+            if (math::length_squared(position() - before) < 1.0e-8F) {
+                break;
+            }
+        }
+        return core::Result<Vec3>::success(position());
+    }
+
+    [[nodiscard]] core::Result<bool> has_support(float probe_distance) override {
+        if (!std::isfinite(probe_distance) || probe_distance <= 0.0F || probe_distance > 2.0F) {
+            return core::Result<bool>::failure(
+                "physics.invalid_character_support_probe",
+                "character support probe distance must be in (0, 2]");
+        }
+        refresh_contacts();
+        if (character_->IsSupported()) {
+            return core::Result<bool>::success(true);
+        }
+        const auto saved = character_->GetPosition();
+        const auto supported = character_->StickToFloor(
+            JPH::Vec3{0.0F, -probe_distance, 0.0F},
+            physics_system_->GetDefaultBroadPhaseLayerFilter(moving_layer),
+            physics_system_->GetDefaultLayerFilter(moving_layer), {}, {}, *temporary_allocator_);
+        character_->SetPosition(saved);
+        refresh_contacts();
+        return core::Result<bool>::success(supported);
+    }
+
+  private:
+    JoltPhysicsCharacter(JPH::PhysicsSystem& physics_system,
+                         JPH::TempAllocator& temporary_allocator, Vec3 gravity,
+                         PhysicsCharacterShapeDesc shape, JPH::Ref<JPH::CharacterVirtual> character)
+        : physics_system_(&physics_system), temporary_allocator_(&temporary_allocator),
+          gravity_(gravity), shape_(shape), character_(std::move(character)) {
+        refresh_contacts();
+    }
+
+    void refresh_contacts() {
+        character_->RefreshContacts(physics_system_->GetDefaultBroadPhaseLayerFilter(moving_layer),
+                                    physics_system_->GetDefaultLayerFilter(moving_layer), {}, {},
+                                    *temporary_allocator_);
+    }
+
+    JPH::PhysicsSystem* physics_system_ = nullptr;
+    JPH::TempAllocator* temporary_allocator_ = nullptr;
+    Vec3 gravity_{};
+    PhysicsCharacterShapeDesc shape_{};
+    JPH::Ref<JPH::CharacterVirtual> character_;
+};
+
 class JoltPhysicsWorld final : public IPhysicsWorld {
   public:
     explicit JoltPhysicsWorld(PhysicsWorldDesc desc)
@@ -291,6 +520,12 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
         return static_cast<std::uint32_t>(records_.size());
     }
 
+    [[nodiscard]] core::Result<std::unique_ptr<IPhysicsCharacter>>
+    create_character(PhysicsCharacterDesc desc) override {
+        return JoltPhysicsCharacter::create(desc, physics_system_, temporary_allocator_,
+                                            desc_.gravity);
+    }
+
     [[nodiscard]] core::Result<PhysicsBodyId> create_body(PhysicsBodyDesc desc) override {
         auto status = validate_physics_body_desc(desc);
         if (!status) {
@@ -305,8 +540,8 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
 
         const auto id = PhysicsBodyId::from_value(next_body_id_);
         JPH::BodyCreationSettings settings(shape.value().GetPtr(), to_jolt_position(desc.position),
-                                           JPH::Quat::sIdentity(), to_jolt(desc.motion_type),
-                                           layer_for(desc.motion_type));
+                                           to_jolt_rotation(desc.rotation_degrees),
+                                           to_jolt(desc.motion_type), layer_for(desc.motion_type));
         settings.mLinearVelocity = to_jolt(desc.linear_velocity);
         settings.mUserData = id.value();
         settings.mGravityFactor = desc.gravity_scale;
@@ -332,8 +567,8 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
         const auto jolt_id = body->GetID();
         bodies.AddBody(jolt_id, activation_for(desc.motion_type));
 
-        records_.emplace(id.value(),
-                         BodyRecord{jolt_id, desc.motion_type, desc.mass, desc.user_data});
+        records_.emplace(id.value(), BodyRecord{jolt_id, desc.motion_type, desc.rotation_degrees,
+                                                desc.mass, desc.user_data});
         ++next_body_id_;
         return core::Result<PhysicsBodyId>::success(id);
     }
@@ -369,6 +604,7 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
         state.id = id;
         state.motion_type = record.motion_type;
         state.position = from_jolt_position(bodies.GetPosition(record.jolt_id));
+        state.rotation_degrees = record.rotation_degrees;
         state.linear_velocity = record.motion_type == BodyMotionType::static_body
                                     ? Vec3{}
                                     : from_jolt(bodies.GetLinearVelocity(record.jolt_id));
@@ -390,6 +626,22 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
         }
         physics_system_.GetBodyInterface().SetPosition(record->jolt_id, to_jolt_position(position),
                                                        activation_for(record->motion_type));
+        return core::Status::ok();
+    }
+
+    [[nodiscard]] core::Status set_body_rotation(PhysicsBodyId id, Vec3 rotation_degrees) override {
+        if (!rotation_degrees.is_finite()) {
+            return core::Status::failure("physics.invalid_rotation",
+                                         "body rotation must be finite");
+        }
+        auto* record = find_record(id);
+        if (record == nullptr) {
+            return core::Status::failure("physics.body_not_found", "physics body was not found");
+        }
+        physics_system_.GetBodyInterface().SetRotation(record->jolt_id,
+                                                       to_jolt_rotation(rotation_degrees),
+                                                       activation_for(record->motion_type));
+        record->rotation_degrees = rotation_degrees;
         return core::Status::ok();
     }
 
@@ -484,7 +736,7 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
                 const auto velocity = bodies.GetLinearVelocity(record.jolt_id);
                 bodies.MoveKinematic(record.jolt_id,
                                      position + JPH::RVec3(velocity * desc.delta_seconds),
-                                     JPH::Quat::sIdentity(), desc.delta_seconds);
+                                     to_jolt_rotation(record.rotation_degrees), desc.delta_seconds);
                 ++stats.integrated_body_count;
             }
         }
@@ -517,6 +769,7 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
     struct BodyRecord {
         JPH::BodyID jolt_id;
         BodyMotionType motion_type = BodyMotionType::static_body;
+        Vec3 rotation_degrees{};
         float mass = 0.0F;
         std::uint64_t user_data = 0;
     };
