@@ -87,6 +87,51 @@ quantize_position(const world::WorldPosition& position) {
     return std::hypot(value.x, value.z);
 }
 
+[[nodiscard]] animation::LocomotionAnimationKind
+locomotion_kind(const PlayerControllerState& state) noexcept {
+    if (state.mode == PlayerControllerMode::swimming) {
+        return animation::LocomotionAnimationKind::swim;
+    }
+    if (state.grounded && horizontal_length(state.velocity) > 0.05) {
+        return animation::LocomotionAnimationKind::walk;
+    }
+    return animation::LocomotionAnimationKind::idle;
+}
+
+void update_locomotion_animation(const PlayerControllerState& previous,
+                                 PlayerControllerState& state) noexcept {
+    const auto kind = locomotion_kind(state);
+    auto& locomotion = state.locomotion_animation;
+    if (kind != previous.locomotion_animation.kind) {
+        locomotion.kind = kind;
+        locomotion.phase = 0;
+        locomotion.transition_from = previous.locomotion_animation.kind;
+        locomotion.transition_from_phase = previous.locomotion_animation.phase;
+        locomotion.transition_tick = state.simulation_tick;
+        return;
+    }
+    locomotion = previous.locomotion_animation;
+    locomotion.kind = kind;
+    if (kind == animation::LocomotionAnimationKind::idle) {
+        locomotion.phase = 0;
+        return;
+    }
+    const auto displacement =
+        state.position.relative_to(previous.position.anchor) - previous.position.local_offset;
+    const auto distance = kind == animation::LocomotionAnimationKind::swim
+                              ? math::length(displacement)
+                              : std::hypot(displacement.x, displacement.z);
+    constexpr double walk_cycles_per_meter = 0.55;
+    constexpr double swim_cycles_per_meter = 0.35;
+    const auto cycles_per_meter = kind == animation::LocomotionAnimationKind::walk
+                                      ? walk_cycles_per_meter
+                                      : swim_cycles_per_meter;
+    const auto advance =
+        static_cast<std::uint64_t>(std::llround(distance * cycles_per_meter * 65'536.0));
+    locomotion.phase = static_cast<std::uint16_t>(
+        (static_cast<std::uint64_t>(locomotion.phase) + advance) & 0xFFFFU);
+}
+
 [[nodiscard]] math::Vec3d normalized_horizontal(math::Vec3d value,
                                                 math::Vec3d fallback = {0.0, 0.0, 1.0}) noexcept {
     value.y = 0.0;
@@ -240,24 +285,15 @@ void append_pending_fall(PlayerControllerState& state, std::vector<MovementEvent
 core::Status PlayerMovementConfig::validate() const {
     const std::array dimensions{standing_width, standing_height, crouch_height,
                                 roll_height,    eye_height,      auto_step_height};
-    const std::array rates{walk_speed,
-                           sprint_speed,
-                           crouch_speed,
-                           swim_speed,
-                           ladder_speed,
-                           ground_acceleration,
-                           ground_deceleration,
-                           air_acceleration,
-                           swim_acceleration,
-                           swim_vertical_acceleration,
-                           swim_vertical_drag,
-                           gravity,
-                           jump_apex,
-                           dash_distance,
-                           light_roll_distance,
-                           medium_roll_distance,
-                           heavy_roll_distance,
-                           mantle_max_height,
+    const std::array rates{walk_speed,          sprint_speed,
+                           crouch_speed,        swim_speed,
+                           ladder_speed,        ground_acceleration,
+                           ground_deceleration, air_acceleration,
+                           swim_acceleration,   swim_vertical_acceleration,
+                           swim_vertical_drag,  gravity,
+                           jump_apex,           dash_distance,
+                           light_roll_distance, medium_roll_distance,
+                           heavy_roll_distance, mantle_max_height,
                            vault_max_height};
     if (!std::ranges::all_of(dimensions,
                              [](double value) { return std::isfinite(value) && value > 0.0; }) ||
@@ -266,11 +302,11 @@ core::Status PlayerMovementConfig::validate() const {
         return core::Status::failure("player_controller.invalid_config",
                                      "movement dimensions and rates must be finite and positive");
     }
-    if (!std::isfinite(swim_resting_submersion) ||
-        !std::isfinite(swim_enter_submersion) || !std::isfinite(swim_exit_submersion) ||
-        swim_resting_submersion <= 0.0 || swim_resting_submersion > 1.0 ||
-        swim_enter_submersion <= 0.0 || swim_enter_submersion > 1.0 ||
-        swim_exit_submersion < 0.0 || swim_exit_submersion >= swim_enter_submersion) {
+    if (!std::isfinite(swim_resting_submersion) || !std::isfinite(swim_enter_submersion) ||
+        !std::isfinite(swim_exit_submersion) || swim_resting_submersion <= 0.0 ||
+        swim_resting_submersion > 1.0 || swim_enter_submersion <= 0.0 ||
+        swim_enter_submersion > 1.0 || swim_exit_submersion < 0.0 ||
+        swim_exit_submersion >= swim_enter_submersion) {
         return core::Status::failure(
             "player_controller.invalid_swim_config",
             "swim submersion thresholds must be finite, normalized, and hysteretic");
@@ -311,6 +347,10 @@ core::Status PlayerControllerState::validate(const PlayerMovementConfig& config)
         (!std::isfinite(*pending_fall_distance) || *pending_fall_distance < 0.0)) {
         return core::Status::failure("player_controller.invalid_fall_distance",
                                      "pending fall distance must be finite and non-negative");
+    }
+    auto animation_status = locomotion_animation.validate(simulation_tick);
+    if (!animation_status) {
+        return animation_status;
     }
     return core::Status::ok();
 }
@@ -377,13 +417,12 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
     auto fluid_submersion = collision.fluid_submersion(state.position, current_shape);
     auto touching_ladder = collision.touches_tag(state.position, current_shape, "ladder");
     if (!fluid_submersion || !touching_ladder) {
-        const auto& error = !fluid_submersion ? fluid_submersion.error()
-                                              : touching_ladder.error();
+        const auto& error = !fluid_submersion ? fluid_submersion.error() : touching_ladder.error();
         return core::Result<PlayerControllerTickResult>::failure(error.code, error.message);
     }
     const auto was_swimming = previous.mode == PlayerControllerMode::swimming;
-    const auto swim_threshold = was_swimming ? config_.swim_exit_submersion
-                                             : config_.swim_enter_submersion;
+    const auto swim_threshold =
+        was_swimming ? config_.swim_exit_submersion : config_.swim_enter_submersion;
     const auto should_swim = fluid_submersion.value() > swim_threshold;
 
     const auto direction = input_direction(input);
@@ -538,25 +577,19 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
         state.grounded = false;
         const auto vertical = static_cast<double>(input.held(PlayerInputButton::jump)) -
                               static_cast<double>(input.held(PlayerInputButton::crouch));
-        const auto target =
-            direction * config_.swim_speed * movement_modifier;
+        const auto target = direction * config_.swim_speed * movement_modifier;
         state.velocity.x =
-            move_towards(state.velocity.x, target.x,
-                         config_.swim_acceleration * tick_seconds);
+            move_towards(state.velocity.x, target.x, config_.swim_acceleration * tick_seconds);
         state.velocity.z =
-            move_towards(state.velocity.z, target.z,
-                         config_.swim_acceleration * tick_seconds);
-        const auto drag =
-            std::max(0.0, 1.0 - config_.swim_vertical_drag *
-                                     fluid_submersion.value() * tick_seconds);
+            move_towards(state.velocity.z, target.z, config_.swim_acceleration * tick_seconds);
+        const auto drag = std::max(0.0, 1.0 - config_.swim_vertical_drag *
+                                                  fluid_submersion.value() * tick_seconds);
         state.velocity.y *= drag;
         const auto buoyancy =
-            config_.gravity *
-            (fluid_submersion.value() / config_.swim_resting_submersion - 1.0);
+            config_.gravity * (fluid_submersion.value() / config_.swim_resting_submersion - 1.0);
         state.velocity.y +=
             (buoyancy + vertical * config_.swim_vertical_acceleration) * tick_seconds;
-        state.velocity.y =
-            std::clamp(state.velocity.y, -config_.swim_speed, config_.swim_speed);
+        state.velocity.y = std::clamp(state.velocity.y, -config_.swim_speed, config_.swim_speed);
         const auto horizontal_speed = horizontal_length(state.velocity);
         if (horizontal_speed > config_.swim_speed) {
             const auto scale = config_.swim_speed / horizontal_speed;
@@ -757,11 +790,11 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
     }
     const auto is_swimming = state.mode == PlayerControllerMode::swimming;
     if (!was_swimming && is_swimming) {
-        result.events.push_back({MovementEventKind::entered_fluid, input.tick,
-                                 fluid_submersion.value()});
+        result.events.push_back(
+            {MovementEventKind::entered_fluid, input.tick, fluid_submersion.value()});
     } else if (was_swimming && !is_swimming) {
-        result.events.push_back({MovementEventKind::left_fluid, input.tick,
-                                 fluid_submersion.value()});
+        result.events.push_back(
+            {MovementEventKind::left_fluid, input.tick, fluid_submersion.value()});
     }
 
     state.velocity = quantize(state.velocity);
@@ -771,6 +804,7 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
             quantized_position.error().code, quantized_position.error().message);
     }
     state.position = quantized_position.value();
+    update_locomotion_animation(previous, state);
     auto final_status = state.validate(config_);
     if (!final_status) {
         return core::Result<PlayerControllerTickResult>::failure(final_status.error().code,

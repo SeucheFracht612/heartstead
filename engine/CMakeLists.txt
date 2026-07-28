@@ -4,6 +4,7 @@ add_library(Heartstead::Engine ALIAS heartstead_engine)
 target_sources(
   heartstead_engine
   PRIVATE
+    animation/locomotion_animation.cpp
     animation/skeletal_animation.cpp
     assets/asset_catalog.cpp
     assets/asset_cooker.cpp
@@ -193,6 +194,7 @@ target_sources(
     FILE_SET HEADERS
     BASE_DIRS ${PROJECT_SOURCE_DIR}
     FILES
+      animation/locomotion_animation.hpp
       animation/skeletal_animation.hpp
       assets/asset_catalog.hpp
       assets/asset_cooker.hpp

@@ -12,18 +12,20 @@ namespace heartstead::game {
 namespace {
 
 [[nodiscard]] bool finite_color(const std::array<float, 4>& color) noexcept {
-    return std::ranges::all_of(color, [](float value) {
-        return std::isfinite(value) && value >= 0.0F && value <= 1.0F;
-    });
+    return std::ranges::all_of(
+        color, [](float value) { return std::isfinite(value) && value >= 0.0F && value <= 1.0F; });
 }
 
 } // namespace
 
 core::Status validate_presentation_object_update(const PresentationObjectUpdate& update) {
+    const auto simulation_tick = update.source_revision == std::numeric_limits<std::uint64_t>::max()
+                                     ? update.source_revision
+                                     : update.source_revision - 1U;
     if (!update.source_net_id.is_valid() || !update.visual_prototype.is_valid() ||
         !update.transform.is_finite() || !update.transform.has_non_zero_scale() ||
         !update.local_bounds.is_valid() || !finite_color(update.color) ||
-        update.source_revision == 0) {
+        update.source_revision == 0 || !update.locomotion.validate(simulation_tick)) {
         return core::Status::failure(
             "presentation_world.invalid_object",
             "presentation object requires valid identity, visual, transform, bounds, and revision");
@@ -93,6 +95,9 @@ PresentationWorld::upsert_object(const PresentationObjectUpdate& update) {
         slot->object.previous_transform =
             update.teleport ? update.transform : slot->object.current_transform;
         slot->object.current_transform = update.transform;
+        slot->object.previous_locomotion =
+            update.teleport ? update.locomotion : slot->object.current_locomotion;
+        slot->object.current_locomotion = update.locomotion;
         slot->object.visual_prototype = update.visual_prototype;
         slot->object.local_bounds = update.local_bounds;
         slot->object.color = update.color;
@@ -113,6 +118,8 @@ PresentationWorld::upsert_object(const PresentationObjectUpdate& update) {
     slot->object.visual_prototype = update.visual_prototype;
     slot->object.previous_transform = update.transform;
     slot->object.current_transform = update.transform;
+    slot->object.previous_locomotion = update.locomotion;
+    slot->object.current_locomotion = update.locomotion;
     slot->object.local_bounds = update.local_bounds;
     slot->object.color = update.color;
     slot->object.source_revision = update.source_revision;

@@ -18,10 +18,28 @@ namespace {
     return from + delta * alpha;
 }
 
+[[nodiscard]] std::uint16_t interpolate_phase(std::uint16_t from, std::uint16_t to,
+                                              double alpha) noexcept {
+    constexpr std::int32_t period = 65'536;
+    constexpr std::int32_t half_period = period / 2;
+    auto delta = static_cast<std::int32_t>(to) - static_cast<std::int32_t>(from);
+    if (delta > half_period) {
+        delta -= period;
+    } else if (delta < -half_period) {
+        delta += period;
+    }
+    auto result = static_cast<std::int64_t>(
+        std::llround(static_cast<double>(from) + static_cast<double>(delta) * alpha));
+    result %= period;
+    if (result < 0) {
+        result += period;
+    }
+    return static_cast<std::uint16_t>(result);
+}
+
 } // namespace
 
-RemotePlayerInterpolator::RemotePlayerInterpolator(std::uint32_t delay_ticks,
-                                                   std::size_t capacity)
+RemotePlayerInterpolator::RemotePlayerInterpolator(std::uint32_t delay_ticks, std::size_t capacity)
     : delay_ticks_(delay_ticks), capacity_(capacity) {}
 
 core::Status RemotePlayerInterpolator::push(PlayerControllerSnapshot snapshot,
@@ -68,9 +86,8 @@ RemotePlayerInterpolator::sample(std::uint64_t render_tick) const {
     const auto alpha = static_cast<double>(target_tick - lower->state.simulation_tick) /
                        static_cast<double>(tick_span);
     auto result = lower->state;
-    const auto relative =
-        upper->state.position.relative_to(lower->state.position.anchor) -
-        lower->state.position.local_offset;
+    const auto relative = upper->state.position.relative_to(lower->state.position.anchor) -
+                          lower->state.position.local_offset;
     if (math::length(relative) > 32.0) {
         return core::Result<PlayerControllerState>::success(upper->state);
     }
@@ -82,14 +99,21 @@ RemotePlayerInterpolator::sample(std::uint64_t render_tick) const {
     }
     result.position = position.value();
     result.velocity = lower->state.velocity * (1.0 - alpha) + upper->state.velocity * alpha;
-    result.yaw_centidegrees = static_cast<std::int16_t>(std::lround(interpolate_angle(
-        lower->state.yaw_centidegrees, upper->state.yaw_centidegrees, alpha)));
-    result.pitch_centidegrees = static_cast<std::int16_t>(std::lround(
-        static_cast<double>(lower->state.pitch_centidegrees) * (1.0 - alpha) +
-        static_cast<double>(upper->state.pitch_centidegrees) * alpha));
-    result.stamina_milli = static_cast<std::int32_t>(std::lround(
-        static_cast<double>(lower->state.stamina_milli) * (1.0 - alpha) +
-        static_cast<double>(upper->state.stamina_milli) * alpha));
+    result.yaw_centidegrees = static_cast<std::int16_t>(std::lround(
+        interpolate_angle(lower->state.yaw_centidegrees, upper->state.yaw_centidegrees, alpha)));
+    result.pitch_centidegrees = static_cast<std::int16_t>(
+        std::lround(static_cast<double>(lower->state.pitch_centidegrees) * (1.0 - alpha) +
+                    static_cast<double>(upper->state.pitch_centidegrees) * alpha));
+    result.stamina_milli = static_cast<std::int32_t>(
+        std::lround(static_cast<double>(lower->state.stamina_milli) * (1.0 - alpha) +
+                    static_cast<double>(upper->state.stamina_milli) * alpha));
+    if (lower->state.locomotion_animation.kind == upper->state.locomotion_animation.kind) {
+        result.locomotion_animation.phase =
+            interpolate_phase(lower->state.locomotion_animation.phase,
+                              upper->state.locomotion_animation.phase, alpha);
+    } else if (alpha >= 0.5) {
+        result.locomotion_animation = upper->state.locomotion_animation;
+    }
     result.simulation_tick = target_tick;
     return core::Result<PlayerControllerState>::success(std::move(result));
 }

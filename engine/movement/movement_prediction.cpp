@@ -161,7 +161,11 @@ std::string PlayerControllerSnapshotTextCodec::encode(const PlayerControllerSnap
            << '|' << state.scripted_target.anchor.x << '|' << state.scripted_target.anchor.y << '|'
            << state.scripted_target.anchor.z << '|' << state.scripted_target.local_offset.x << '|'
            << state.scripted_target.local_offset.y << '|' << state.scripted_target.local_offset.z
-           << '|' << state.simulation_tick;
+           << '|' << static_cast<unsigned>(state.locomotion_animation.kind) << '|'
+           << state.locomotion_animation.phase << '|'
+           << static_cast<unsigned>(state.locomotion_animation.transition_from) << '|'
+           << state.locomotion_animation.transition_from_phase << '|'
+           << state.locomotion_animation.transition_tick << '|' << state.simulation_tick;
     return output.str();
 }
 
@@ -173,9 +177,9 @@ PlayerControllerSnapshotTextCodec::decode(std::string_view payload,
             "movement_snapshot.invalid_payload_size", "movement snapshot payload size is invalid");
     }
     const auto fields = split(payload);
-    if (fields.size() != 58) {
+    if (fields.size() != 63) {
         return core::Result<PlayerControllerSnapshot>::failure(
-            "movement_snapshot.invalid_payload", "movement snapshot must contain 58 fields");
+            "movement_snapshot.invalid_payload", "movement snapshot must contain 63 fields");
     }
     std::size_t index = 0;
     const auto next_u64 = [&](std::string_view name) {
@@ -258,22 +262,32 @@ PlayerControllerSnapshotTextCodec::decode(std::string_view payload,
     auto stlx = next_double("scripted_target_local_x");
     auto stly = next_double("scripted_target_local_y");
     auto stlz = next_double("scripted_target_local_z");
+    auto locomotion_kind = next_u32("locomotion_kind");
+    auto locomotion_phase = next_u16("locomotion_phase");
+    auto locomotion_from = next_u32("locomotion_transition_from");
+    auto locomotion_from_phase = next_u16("locomotion_transition_from_phase");
+    auto locomotion_transition_tick = next_u64("locomotion_transition_tick");
     auto tick = next_u64("tick");
 
-    const bool parsed = version && net_id && ack && revision && px && py && pz && plx && ply &&
-                        plz && vx && vy && vz && mode && scripted && encumbrance && crouched &&
-                        grounded && exhausted && invulnerable && yaw && pitch && stamina &&
-                        charges && air_dash && mode_ticks && mode_duration && jump_buffer &&
-                        coyote && roll_buffer && regen_delay && landing_window && drain_remainder &&
-                        regen_remainder && has_fall && fall_distance && fox && foy && foz && folx &&
-                        foly && folz && sdx && sdy && sdz && ssx && ssy && ssz && sslx && ssly &&
-                        sslz && stx && sty && stz && stlx && stly && stlz && tick;
+    const bool parsed =
+        version && net_id && ack && revision && px && py && pz && plx && ply && plz && vx && vy &&
+        vz && mode && scripted && encumbrance && crouched && grounded && exhausted &&
+        invulnerable && yaw && pitch && stamina && charges && air_dash && mode_ticks &&
+        mode_duration && jump_buffer && coyote && roll_buffer && regen_delay && landing_window &&
+        drain_remainder && regen_remainder && has_fall && fall_distance && fox && foy && foz &&
+        folx && foly && folz && sdx && sdy && sdz && ssx && ssy && ssz && sslx && ssly && sslz &&
+        stx && sty && stz && stlx && stly && stlz && locomotion_kind && locomotion_phase &&
+        locomotion_from && locomotion_from_phase && locomotion_transition_tick && tick;
     if (!parsed || mode.value() > static_cast<std::uint32_t>(PlayerControllerMode::swimming) ||
         scripted.value() > static_cast<std::uint32_t>(ScriptedMovementKind::mantle) ||
         encumbrance.value() > static_cast<std::uint32_t>(EncumbranceTier::over_encumbered) ||
         crouched.value() > 1 || grounded.value() > 1 || exhausted.value() > 1 ||
         invulnerable.value() > 1 || air_dash.value() > 1 || has_fall.value() > 1 ||
-        charges.value() > 2 || drain_remainder.value() >= 60 || regen_remainder.value() >= 60) {
+        charges.value() > 2 || drain_remainder.value() >= 60 || regen_remainder.value() >= 60 ||
+        locomotion_kind.value() >
+            static_cast<std::uint32_t>(animation::LocomotionAnimationKind::swim) ||
+        locomotion_from.value() >
+            static_cast<std::uint32_t>(animation::LocomotionAnimationKind::swim)) {
         return core::Result<PlayerControllerSnapshot>::failure(
             "movement_snapshot.invalid_payload", "movement snapshot fields are invalid");
     }
@@ -327,6 +341,13 @@ PlayerControllerSnapshotTextCodec::decode(std::string_view payload,
     state.scripted_direction = {sdx.value(), sdy.value(), sdz.value()};
     state.scripted_start = scripted_start_position.value();
     state.scripted_target = scripted_target_position.value();
+    state.locomotion_animation.kind =
+        static_cast<animation::LocomotionAnimationKind>(locomotion_kind.value());
+    state.locomotion_animation.phase = locomotion_phase.value();
+    state.locomotion_animation.transition_from =
+        static_cast<animation::LocomotionAnimationKind>(locomotion_from.value());
+    state.locomotion_animation.transition_from_phase = locomotion_from_phase.value();
+    state.locomotion_animation.transition_tick = locomotion_transition_tick.value();
     state.last_input_sequence = ack.value();
     state.simulation_tick = tick.value();
 

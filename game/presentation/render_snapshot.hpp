@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/animation/locomotion_animation.hpp"
 #include "engine/core/ids.hpp"
 #include "engine/math/vector.hpp"
 #include "engine/world/coords/world_position.hpp"
@@ -19,6 +20,8 @@ struct RenderObjectSnapshot {
     core::PrototypeId visual_prototype;
     world::WorldTransform previous_transform;
     world::WorldTransform current_transform;
+    animation::ReplicatedLocomotionAnimation previous_locomotion;
+    animation::ReplicatedLocomotionAnimation current_locomotion;
     math::Bounds3f local_bounds{};
     std::array<float, 4> color{1.0F, 1.0F, 1.0F, 1.0F};
     std::uint64_t source_revision = 0;

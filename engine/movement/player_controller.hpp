@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/animation/locomotion_animation.hpp"
 #include "engine/core/result.hpp"
 #include "engine/math/vector.hpp"
 #include "engine/movement/character_collision.hpp"
@@ -145,6 +146,7 @@ struct PlayerControllerState {
     math::Vec3d scripted_direction{};
     world::WorldPosition scripted_start;
     world::WorldPosition scripted_target;
+    animation::ReplicatedLocomotionAnimation locomotion_animation;
     std::uint64_t last_input_sequence = 0;
     std::uint64_t simulation_tick = 0;
 

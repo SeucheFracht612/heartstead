@@ -25,9 +25,10 @@ ClientPresentationSynchronizer::synchronize(const ClientRuntime& client,
         update.source_net_id = snapshot->player_net_id;
         update.visual_prototype = *player_prototype;
         update.transform.position = snapshot->state.position;
-        update.transform.rotation_degrees =
-            {static_cast<double>(snapshot->state.pitch_centidegrees) * 0.01,
-             static_cast<double>(snapshot->state.yaw_centidegrees) * 0.01, 0.0};
+        update.transform.rotation_degrees = {
+            static_cast<double>(snapshot->state.pitch_centidegrees) * 0.01,
+            static_cast<double>(snapshot->state.yaw_centidegrees) * 0.01, 0.0};
+        update.locomotion = snapshot->state.locomotion_animation;
         update.local_bounds = {{-0.3F, 0.0F, -0.3F}, {0.3F, 1.8F, 0.3F}};
         update.source_revision =
             snapshot->state.simulation_tick == std::numeric_limits<std::uint64_t>::max()
@@ -54,8 +55,8 @@ ClientPresentationSynchronizer::synchronize(const ClientRuntime& client,
         }
         auto status = presentation.remove_object(core::NetId::from_value(retained));
         if (!status) {
-            return core::Result<PresentationSynchronizationStats>::failure(
-                status.error().code, status.error().message);
+            return core::Result<PresentationSynchronizationStats>::failure(status.error().code,
+                                                                           status.error().message);
         }
         ++stats.removed_objects;
     }

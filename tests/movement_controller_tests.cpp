@@ -272,6 +272,8 @@ void test_snapshot_prediction_camera_and_load() {
     auto first = controller.tick(state, input(1, 0, 0, 0, 32'767), {}, collision);
     assert(first);
     state = first.value().state;
+    assert(state.locomotion_animation.kind == animation::LocomotionAnimationKind::walk);
+    assert(state.locomotion_animation.transition_tick == 1);
     movement::PlayerControllerSnapshot snapshot;
     snapshot.player_net_id = core::NetId::from_value(42);
     snapshot.state = state;
@@ -282,12 +284,14 @@ void test_snapshot_prediction_camera_and_load() {
     assert(decoded);
     assert(decoded.value().state.position == snapshot.state.position);
     assert(decoded.value().collision_world_revision == 9);
+    assert(decoded.value().state.locomotion_animation == snapshot.state.locomotion_animation);
 
     movement::MovementPredictionBuffer prediction;
     auto second_input = input(2, 0, 0, 0, 32'767);
     assert(prediction.record(second_input));
     auto predicted = controller.tick(state, second_input, {}, collision);
     assert(predicted);
+    assert(predicted.value().state.locomotion_animation.phase > 0);
     auto reconciled =
         prediction.reconcile(predicted.value().state, snapshot, controller, {}, collision);
     assert(reconciled);
@@ -309,16 +313,23 @@ void test_snapshot_prediction_camera_and_load() {
     remote_a.state.last_input_sequence = 10;
     remote_a.last_processed_input_sequence = 10;
     remote_a.state.position = world::WorldPosition{0.5, 1.0, 0.5};
+    remote_a.state.locomotion_animation.kind = animation::LocomotionAnimationKind::walk;
+    remote_a.state.locomotion_animation.phase = 60'000;
+    remote_a.state.locomotion_animation.transition_from = animation::LocomotionAnimationKind::idle;
+    remote_a.state.locomotion_animation.transition_tick = 10;
     auto remote_b = remote_a;
     remote_b.state.simulation_tick = 20;
     remote_b.state.last_input_sequence = 20;
     remote_b.last_processed_input_sequence = 20;
     remote_b.state.position = world::WorldPosition{10.5, 1.0, 0.5};
+    remote_b.state.locomotion_animation.phase = 5'000;
     assert(interpolator.push(remote_a));
     assert(interpolator.push(remote_b));
     auto interpolated = interpolator.sample(21); // target tick 15
     assert(interpolated);
     assert(std::abs(interpolated.value().position.approximate_global().x - 5.5) < 0.001);
+    assert(interpolated.value().locomotion_animation.phase > 64'000 ||
+           interpolated.value().locomotion_animation.phase < 2'000);
 
     const auto clay_id = core::PrototypeId::parse("test:items/clay").value();
     const std::vector<items::ItemDefinition> definitions{{clay_id, 64, {}, 1000}};
@@ -333,8 +344,7 @@ void test_environment_fall_and_verb_boundaries() {
     movement::VoxelCharacterCollisionWorld collision(yard.chunks, yard.palette);
     movement::PlayerController controller;
 
-    auto submersion =
-        collision.fluid_submersion(world::WorldPosition{20.5, 1.0, 2.5}, {0.6, 1.8});
+    auto submersion = collision.fluid_submersion(world::WorldPosition{20.5, 1.0, 2.5}, {0.6, 1.8});
     assert(submersion);
     assert(std::abs(submersion.value() - (1.0 / 1.8)) < 0.0001);
 
@@ -350,8 +360,7 @@ void test_environment_fall_and_verb_boundaries() {
 
     const auto crouch = movement::input_button_bit(movement::PlayerInputButton::crouch);
     auto& fluid_chunk = *yard.chunks.find({0, 0, 0});
-    assert(fluid_chunk.set({20, 2, 2},
-                           {3, 0, world::full_fluid_state_bits(), 0}));
+    assert(fluid_chunk.set({20, 2, 2}, {3, 0, world::full_fluid_state_bits(), 0}));
     auto deep_state = initial_state(20.5, 1.2, 2.5);
     deep_state.grounded = false;
     deep_state.mode = movement::PlayerControllerMode::airborne;
@@ -363,12 +372,11 @@ void test_environment_fall_and_verb_boundaries() {
     assert(diving.value().state.velocity.y < 0.0);
 
     assert(fluid_chunk.set({20, 2, 2}, world::VoxelCell::air()));
-    auto thin_state = world::encode_fluid_state(
-        {1, false, false, world::FluidFlowDirection::positive_x});
+    auto thin_state =
+        world::encode_fluid_state({1, false, false, world::FluidFlowDirection::positive_x});
     assert(thin_state);
     assert(fluid_chunk.set({20, 1, 2}, {3, 0, thin_state.value(), 0}));
-    auto shallow = collision.fluid_submersion(
-        world::WorldPosition{20.5, 1.0, 2.5}, {0.6, 1.8});
+    auto shallow = collision.fluid_submersion(world::WorldPosition{20.5, 1.0, 2.5}, {0.6, 1.8});
     assert(shallow);
     assert(std::abs(shallow.value() - (0.125 / 1.8)) < 0.0001);
     auto wading = controller.tick(initial_state(20.5, 1.0, 2.5), input(1), {}, collision);

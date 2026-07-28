@@ -1,3 +1,4 @@
+#include "engine/animation/locomotion_animation.hpp"
 #include "engine/animation/skeletal_animation.hpp"
 
 #include <cassert>
@@ -157,6 +158,26 @@ int main() {
     assert(mesh_local_vertex);
     assert(nearly_equal(mesh_local_vertex.value().position.x, 0.0F));
     assert(nearly_equal(mesh_local_vertex.value().position.y, 2.0F));
+
+    animation::ReplicatedLocomotionAnimation locomotion;
+    locomotion.kind = animation::LocomotionAnimationKind::walk;
+    locomotion.phase = 32'768;
+    locomotion.transition_from = animation::LocomotionAnimationKind::idle;
+    locomotion.transition_tick = 10;
+    const animation::LocomotionClipSet locomotion_clips{2, 0, 1, 5};
+    auto transition_start =
+        animation::sample_locomotion_animation(model, locomotion_clips, locomotion, 10);
+    auto transition_middle =
+        animation::sample_locomotion_animation(model, locomotion_clips, locomotion, 12);
+    auto transition_end =
+        animation::sample_locomotion_animation(model, locomotion_clips, locomotion, 15);
+    auto second_client_pose =
+        animation::sample_locomotion_animation(model, locomotion_clips, locomotion, 12);
+    assert(transition_start && transition_middle && transition_end && second_client_pose);
+    assert(transition_middle.value() == second_client_pose.value());
+    assert(nearly_equal(transition_start.value().local_transforms[1].translation.y, 0.0F));
+    assert(nearly_equal(transition_middle.value().local_transforms[1].translation.y, 0.4F));
+    assert(nearly_equal(transition_end.value().local_transforms[1].translation.y, 1.0F));
 
     return 0;
 }

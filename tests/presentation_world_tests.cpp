@@ -19,8 +19,8 @@ game::PresentationObjectUpdate make_update(core::NetId source, std::uint64_t rev
 
 void test_retained_presentation_and_immutable_snapshot_extraction() {
     constexpr std::int64_t coordinate = 8'000'000'000'000'000LL;
-    auto first_position = world::WorldPosition::from_anchor({coordinate, 4, -coordinate},
-                                                            {0.25, 0.5, 0.75});
+    auto first_position =
+        world::WorldPosition::from_anchor({coordinate, 4, -coordinate}, {0.25, 0.5, 0.75});
     assert(first_position);
     game::PresentationWorld presentation;
     const auto source = core::NetId::from_value(77);
@@ -32,16 +32,27 @@ void test_retained_presentation_and_immutable_snapshot_extraction() {
     assert(snapshot.objects.size() == 1);
     assert(snapshot.objects.front().current_transform.position == first_position.value());
     assert(snapshot.objects.front().previous_transform.position == first_position.value());
+    assert(snapshot.objects.front().current_locomotion.kind ==
+           animation::LocomotionAnimationKind::idle);
 
-    auto second_position = world::WorldPosition::from_anchor({coordinate, 4, -coordinate},
-                                                             {0.25, 0.5, 1.75});
+    auto second_position =
+        world::WorldPosition::from_anchor({coordinate, 4, -coordinate}, {0.25, 0.5, 1.75});
     assert(second_position);
-    auto updated = presentation.upsert_object(make_update(source, 2, second_position.value()));
+    auto second_update = make_update(source, 2, second_position.value());
+    second_update.locomotion.kind = animation::LocomotionAnimationKind::walk;
+    second_update.locomotion.transition_from = animation::LocomotionAnimationKind::idle;
+    second_update.locomotion.transition_tick = 1;
+    second_update.locomotion.phase = 16'384;
+    auto updated = presentation.upsert_object(second_update);
     assert(updated && updated.value() == inserted.value());
     snapshot = presentation.extract(11);
     assert(snapshot.objects.front().previous_transform.position == first_position.value());
     assert(snapshot.objects.front().current_transform.position == second_position.value());
     assert(snapshot.objects.front().source_revision == 2);
+    assert(snapshot.objects.front().previous_locomotion.kind ==
+           animation::LocomotionAnimationKind::idle);
+    assert(snapshot.objects.front().current_locomotion.kind ==
+           animation::LocomotionAnimationKind::walk);
     const auto unchanged_revision = snapshot.presentation_revision;
     assert(presentation.upsert_object(make_update(source, 2, second_position.value())));
     assert(presentation.extract(11).presentation_revision == unchanged_revision);
