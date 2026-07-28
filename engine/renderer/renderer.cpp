@@ -123,6 +123,8 @@ make_static_mesh_shader_program(std::span<const std::uint32_t> vertex_spirv,
     shader_program.interface.descriptors = {
         {"object_instances", rhi::RenderDescriptorKind::storage_buffer, 0, true,
          rhi::RenderShaderStageFlags::vertex},
+        {"skin_matrices", rhi::RenderDescriptorKind::storage_buffer, 1, true,
+         rhi::RenderShaderStageFlags::vertex},
     };
     shader_program.interface.push_constant_ranges.push_back(
         {rhi::RenderShaderStageFlags::vertex | rhi::RenderShaderStageFlags::fragment, 0,
@@ -940,6 +942,10 @@ RenderLightId Renderer::reserve_light_id() {
     return scene_.reserve_light_id();
 }
 
+RenderSkinPaletteId Renderer::reserve_skin_palette_id() {
+    return scene_.reserve_skin_palette_id();
+}
+
 core::Result<RenderObjectId> Renderer::create_object(RenderObjectProxy object) {
     if (!is_initialized()) {
         return core::Result<RenderObjectId>::failure("renderer.not_initialized",
@@ -954,6 +960,14 @@ core::Result<RenderLightId> Renderer::create_light(RenderLightProxy light) {
                                                     "renderer must be initialized first");
     }
     return scene_.create_light(std::move(light));
+}
+
+core::Result<RenderSkinPaletteId> Renderer::create_skin_palette(RenderSkinPaletteProxy palette) {
+    if (!is_initialized()) {
+        return core::Result<RenderSkinPaletteId>::failure("renderer.not_initialized",
+                                                          "renderer must be initialized first");
+    }
+    return scene_.create_skin_palette(std::move(palette));
 }
 
 core::Status Renderer::apply_scene_updates(std::span<const RenderSceneUpdate> updates) {
@@ -1089,6 +1103,7 @@ void Renderer::update_frontend_stats(std::size_t loaded_chunk_count) noexcept {
     if (scene_render_system_ != nullptr) {
         const auto& scene = scene_render_system_->stats();
         stats_.retained_objects = scene.scene.retained_objects;
+        stats_.retained_skin_palettes = scene.scene.retained_skin_palettes;
         stats_.visible_objects = scene.scene.visible_objects;
         stats_.culled_objects = scene.scene.culled_objects;
         stats_.instance_batches = scene.scene.instance_batches;
@@ -1096,6 +1111,10 @@ void Renderer::update_frontend_stats(std::size_t loaded_chunk_count) noexcept {
         stats_.instance_draw_calls = scene.draw_calls;
         stats_.dropped_instances = scene.dropped_instances;
         stats_.uploaded_instance_bytes = scene.uploaded_instance_bytes;
+        stats_.submitted_skin_palettes = scene.submitted_skin_palettes;
+        stats_.submitted_skin_matrices = scene.submitted_skin_matrices;
+        stats_.dropped_skinned_instances = scene.dropped_skinned_instances;
+        stats_.uploaded_skin_matrix_bytes = scene.uploaded_skin_matrix_bytes;
     }
     if (mesh_manager_ != nullptr) {
         const auto meshes = mesh_manager_->stats();
@@ -1481,6 +1500,8 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
     layout.shader_template = {"base", "shaders/static_mesh.vert"};
     layout.descriptors = {
         {"object_instances", rhi::RenderDescriptorKind::storage_buffer, 0, true,
+         rhi::RenderShaderStageFlags::vertex},
+        {"skin_matrices", rhi::RenderDescriptorKind::storage_buffer, 1, true,
          rhi::RenderShaderStageFlags::vertex},
     };
     layout.push_constant_ranges.push_back(

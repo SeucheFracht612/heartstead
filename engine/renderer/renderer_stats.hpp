@@ -58,12 +58,16 @@ struct RendererStats {
     std::uint32_t runtime_materials = 0;
     std::uint32_t resident_pipelines = 0;
     std::uint32_t retained_objects = 0;
+    std::uint32_t retained_skin_palettes = 0;
     std::uint32_t visible_objects = 0;
     std::uint32_t culled_objects = 0;
     std::uint32_t instance_batches = 0;
     std::uint32_t submitted_instances = 0;
     std::uint32_t instance_draw_calls = 0;
     std::uint32_t dropped_instances = 0;
+    std::uint32_t submitted_skin_palettes = 0;
+    std::uint32_t submitted_skin_matrices = 0;
+    std::uint32_t dropped_skinned_instances = 0;
     std::uint32_t resident_static_meshes = 0;
     std::uint32_t debug_lines = 0;
     std::uint32_t debug_draw_calls = 0;
@@ -81,6 +85,7 @@ struct RendererStats {
     std::uint64_t resident_mesh_bytes = 0;
     std::uint64_t resident_static_mesh_bytes = 0;
     std::uint64_t uploaded_instance_bytes = 0;
+    std::uint64_t uploaded_skin_matrix_bytes = 0;
     std::uint64_t debug_overflow = 0;
     std::uint64_t debug_uploaded_bytes = 0;
     std::uint64_t ui_uploaded_bytes = 0;

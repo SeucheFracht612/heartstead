@@ -33,8 +33,8 @@ std::string format_renderer_stats(const RendererStats& stats) {
            << " relight_changed=" << stats.voxel_relight_changed_chunks
            << " relight_stale=" << stats.voxel_relight_stale_results
            << " relight_budget_overruns=" << stats.voxel_relight_apply_budget_overruns
-           << " fluid=" << stats.voxel_fluid_snapshot_ms << '/'
-           << stats.voxel_fluid_simulation_ms << '/' << stats.voxel_fluid_apply_ms << "ms"
+           << " fluid=" << stats.voxel_fluid_snapshot_ms << '/' << stats.voxel_fluid_simulation_ms
+           << '/' << stats.voxel_fluid_apply_ms << "ms"
            << " fluid_cells=" << stats.voxel_fluid_processed_cells << '/'
            << stats.voxel_fluid_active_cells
            << " fluid_changed=" << stats.voxel_fluid_changed_chunks
@@ -49,7 +49,9 @@ std::string format_renderer_stats(const RendererStats& stats) {
            << " resident_bytes=" << stats.resident_mesh_bytes << '/'
            << stats.gpu_terrain_budget_bytes << " objects=" << stats.visible_objects << '/'
            << stats.retained_objects << " instances=" << stats.submitted_instances << '/'
-           << stats.instance_draw_calls << " static_meshes=" << stats.resident_static_meshes << '/'
+           << stats.instance_draw_calls << " skins=" << stats.submitted_skin_palettes << '/'
+           << stats.submitted_skin_matrices << " skin_bytes=" << stats.uploaded_skin_matrix_bytes
+           << " static_meshes=" << stats.resident_static_meshes << '/'
            << stats.resident_static_mesh_bytes << " debug=" << stats.debug_lines << '/'
            << stats.debug_draw_calls << '/' << stats.debug_labels
            << " debug_overflow=" << stats.debug_overflow << " ui=" << stats.ui_vertices << '/'

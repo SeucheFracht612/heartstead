@@ -25,7 +25,14 @@ are presentation data. Replication carries a bounded locomotion state and phase;
 blend their local copy of the cooked clips.
 
 `skin_model_vertex` is the CPU reference implementation for position and normal linear-blend
-skinning. The renderer's GPU path must remain within tolerance of this reference on golden inputs.
-GPU skinning is the default direction because the renderer already batches static instances and
-uploads storage-buffer data each frame; CPU skinning remains a correctness oracle and a fallback
-for tests/headless tools rather than a per-frame vertex rewrite.
+skinning. The renderer uses GPU skinning through the existing static-instance path: its unified
+vertex contract adds four 16-bit joint indices and four floating-point weights, while each
+`GpuObjectInstance` identifies a range in a buffered skin-matrix storage ring. Static instances
+take the zero-palette branch, so static and animated objects remain batch-compatible.
+
+The retained `RenderScene` owns generation-safe skin palettes. A frame uploads each visible palette
+once even when several instances share it, then references the absolute buffered-ring offset from
+instance metadata. Palette and instance capacities are explicit configuration budgets; missing,
+mismatched, or over-budget skinned instances fail closed and are visible in renderer statistics.
+The CPU implementation remains the golden correctness oracle for tests/headless tools rather than
+a per-frame vertex rewrite.

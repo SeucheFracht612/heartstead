@@ -246,8 +246,10 @@ core::Status synchronize_demo_resources(const game::GameRuntime& runtime,
         if (!proxy) {
             return core::Status::failure(proxy.error().code, proxy.error().message);
         }
-        updates.push_back(
-            {renderer::RenderSceneUpdateKind::upsert_object, proxy.value(), {}, {}, {}});
+        renderer::RenderSceneUpdate update;
+        update.kind = renderer::RenderSceneUpdateKind::upsert_object;
+        update.object = proxy.value();
+        updates.push_back(std::move(update));
         visual.transform = proxy.value().current_transform;
     }
     return renderer.apply_scene_updates(updates);

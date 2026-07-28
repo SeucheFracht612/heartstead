@@ -37,8 +37,7 @@ void test_transform_matrix_and_bounds() {
     assert(std::abs(point.y - 4.0F) < 0.0001F);
     assert(std::abs(point.z + 3.0F) < 0.0001F);
 
-    const auto bounds = math::transform_bounds(matrix, {{-1.0F, -1.0F, -1.0F},
-                                                         {1.0F, 1.0F, 1.0F}});
+    const auto bounds = math::transform_bounds(matrix, {{-1.0F, -1.0F, -1.0F}, {1.0F, 1.0F, 1.0F}});
     assert(bounds.is_valid());
     assert(std::abs(bounds.min.x - 3.0F) < 0.0001F);
     assert(std::abs(bounds.max.x - 5.0F) < 0.0001F);
@@ -63,8 +62,8 @@ void test_generation_safe_retained_scene_and_interpolation() {
     assert(extracted.value().stats.visible_objects == 1);
     assert(extracted.value().stats.instance_batches == 1);
     assert(extracted.value().batches.front().instances.size() == 1);
-    const auto& transform = extracted.value().batches.front().instances.front()
-                                .camera_relative_transform;
+    const auto& transform =
+        extracted.value().batches.front().instances.front().camera_relative_transform;
     assert(std::abs(transform.at(0, 3) - 1.0F) < 0.0001F);
     assert(std::abs(transform.at(2, 3) + 10.0F) < 0.0001F);
 
@@ -176,6 +175,53 @@ void test_teleport_rotation_light_and_batched_updates() {
     assert(scene.stats().retained_lights == 0);
 }
 
+void test_generation_safe_skin_palettes() {
+    renderer::RenderScene scene;
+    renderer::RenderSkinPaletteProxy palette;
+    palette.joint_matrices = {math::Mat4f::identity(),
+                              math::translation_matrix({0.0F, 1.0F, 0.0F})};
+    auto palette_id = scene.create_skin_palette(palette);
+    assert(palette_id);
+    assert(scene.find_skin_palette(palette_id.value()) != nullptr);
+    assert(scene.stats().retained_skin_palettes == 1);
+
+    auto object = make_object(anchored({0, 0, 0}));
+    object.skin_palette = palette_id.value();
+    auto object_id = scene.create_object(object);
+    assert(object_id);
+    assert(!scene.remove_skin_palette(palette_id.value()));
+
+    renderer::RenderCamera camera;
+    assert(camera.update_matrices());
+    auto extracted = scene.extract(camera, 1.0F);
+    assert(extracted);
+    assert(extracted.value().batches.front().instances.front().skin_palette == palette_id.value());
+
+    auto updated = *scene.find_skin_palette(palette_id.value());
+    updated.joint_matrices[1] = math::translation_matrix({0.0F, 2.0F, 0.0F});
+    assert(scene.upsert_skin_palette(updated));
+    assert(scene.find_skin_palette(palette_id.value())->joint_matrices[1] ==
+           updated.joint_matrices[1]);
+
+    assert(scene.remove_object(object_id.value()));
+    assert(scene.remove_skin_palette(palette_id.value()));
+    assert(scene.find_skin_palette(palette_id.value()) == nullptr);
+    auto replacement = scene.create_skin_palette(palette);
+    assert(replacement);
+    assert(replacement.value().index == palette_id.value().index);
+    assert(replacement.value().generation != palette_id.value().generation);
+
+    auto stale_object = make_object(anchored({0, 0, 0}));
+    stale_object.skin_palette = palette_id.value();
+    assert(!scene.create_object(stale_object));
+
+    auto invalid_palette = palette;
+    invalid_palette.joint_matrices.clear();
+    assert(!scene.create_skin_palette(invalid_palette));
+    scene.clear();
+    assert(scene.stats().retained_skin_palettes == 0);
+}
+
 } // namespace
 
 int main() {
@@ -183,5 +229,6 @@ int main() {
     test_generation_safe_retained_scene_and_interpolation();
     test_parent_transforms_batching_culling_and_hidden_objects();
     test_teleport_rotation_light_and_batched_updates();
+    test_generation_safe_skin_palettes();
     return 0;
 }

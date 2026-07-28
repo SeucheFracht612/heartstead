@@ -15,9 +15,8 @@ namespace heartstead::renderer {
 namespace {
 
 [[nodiscard]] bool finite_color(const std::array<float, 4>& color) noexcept {
-    return std::ranges::all_of(color, [](float value) {
-        return std::isfinite(value) && value >= 0.0F && value <= 1.0F;
-    });
+    return std::ranges::all_of(
+        color, [](float value) { return std::isfinite(value) && value >= 0.0F && value <= 1.0F; });
 }
 
 [[nodiscard]] float lerp(float left, float right, float alpha) noexcept {
@@ -104,13 +103,25 @@ core::Status validate_render_object_proxy(const RenderObjectProxy& object) {
 
 core::Status validate_render_light_proxy(const RenderLightProxy& light) {
     if (!light.id.is_valid() || !light.anchor.is_valid() || !light.direction.is_finite() ||
-        !light.color.is_finite() || !std::isfinite(light.intensity) || !std::isfinite(light.radius) ||
-        light.intensity < 0.0F || light.radius <= 0.0F || light.color.x < 0.0F ||
-        light.color.y < 0.0F || light.color.z < 0.0F ||
+        !light.color.is_finite() || !std::isfinite(light.intensity) ||
+        !std::isfinite(light.radius) || light.intensity < 0.0F || light.radius <= 0.0F ||
+        light.color.x < 0.0F || light.color.y < 0.0F || light.color.z < 0.0F ||
         (light.kind == RenderLightKind::directional &&
          math::length_squared(light.direction) <= 0.0F)) {
         return core::Status::failure("render_scene.invalid_light",
                                      "render light proxy contains invalid retained render data");
+    }
+    return core::Status::ok();
+}
+
+core::Status validate_render_skin_palette_proxy(const RenderSkinPaletteProxy& palette) {
+    if (!palette.id.is_valid() || palette.joint_matrices.empty() ||
+        palette.joint_matrices.size() > maximum_render_skin_joints ||
+        !std::ranges::all_of(palette.joint_matrices,
+                             [](const math::Mat4f& matrix) { return matrix.is_finite(); })) {
+        return core::Status::failure(
+            "render_scene.invalid_skin_palette",
+            "render skin palette must contain one to 256 finite joint matrices");
     }
     return core::Status::ok();
 }
@@ -151,11 +162,15 @@ RenderLightId RenderScene::reserve_light_id() {
     return reserve_id<LightSlot, RenderLightId>(lights_, free_lights_);
 }
 
+RenderSkinPaletteId RenderScene::reserve_skin_palette_id() {
+    return reserve_id<SkinPaletteSlot, RenderSkinPaletteId>(skin_palettes_, free_skin_palettes_);
+}
+
 core::Result<RenderObjectId> RenderScene::create_object(RenderObjectProxy object) {
     object.id = reserve_object_id();
     if (!object.id.is_valid()) {
         return core::Result<RenderObjectId>::failure("render_scene.object_capacity_exhausted",
-                                                    "render object id capacity is exhausted");
+                                                     "render object id capacity is exhausted");
     }
     const auto id = object.id;
     auto status = upsert_object(object);
@@ -170,7 +185,7 @@ core::Result<RenderLightId> RenderScene::create_light(RenderLightProxy light) {
     light.id = reserve_light_id();
     if (!light.id.is_valid()) {
         return core::Result<RenderLightId>::failure("render_scene.light_capacity_exhausted",
-                                                   "render light id capacity is exhausted");
+                                                    "render light id capacity is exhausted");
     }
     const auto id = light.id;
     auto status = upsert_light(light);
@@ -179,6 +194,23 @@ core::Result<RenderLightId> RenderScene::create_light(RenderLightProxy light) {
         return core::Result<RenderLightId>::failure(status.error().code, status.error().message);
     }
     return core::Result<RenderLightId>::success(id);
+}
+
+core::Result<RenderSkinPaletteId> RenderScene::create_skin_palette(RenderSkinPaletteProxy palette) {
+    palette.id = reserve_skin_palette_id();
+    if (!palette.id.is_valid()) {
+        return core::Result<RenderSkinPaletteId>::failure(
+            "render_scene.skin_palette_capacity_exhausted",
+            "render skin palette id capacity is exhausted");
+    }
+    const auto id = palette.id;
+    auto status = upsert_skin_palette(palette);
+    if (!status) {
+        release_slot(skin_palettes_, free_skin_palettes_, id);
+        return core::Result<RenderSkinPaletteId>::failure(status.error().code,
+                                                          status.error().message);
+    }
+    return core::Result<RenderSkinPaletteId>::success(id);
 }
 
 core::Status RenderScene::upsert_object(const RenderObjectProxy& object) {
@@ -194,6 +226,10 @@ core::Status RenderScene::upsert_object(const RenderObjectProxy& object) {
     if (object.parent.is_valid() && find_object(object.parent) == nullptr) {
         return core::Status::failure("render_scene.missing_parent",
                                      "render object parent is not retained in this scene");
+    }
+    if (object.skin_palette.is_valid() && find_skin_palette(object.skin_palette) == nullptr) {
+        return core::Status::failure("render_scene.missing_skin_palette",
+                                     "render object references an unknown or stale skin palette");
     }
     auto parent = object.parent;
     for (std::size_t depth = 0; parent.is_valid(); ++depth) {
@@ -252,6 +288,39 @@ core::Status RenderScene::remove_light(RenderLightId id) {
     return core::Status::ok();
 }
 
+core::Status RenderScene::upsert_skin_palette(const RenderSkinPaletteProxy& palette) {
+    auto status = validate_render_skin_palette_proxy(palette);
+    if (!status) {
+        return status;
+    }
+    auto* slot = find_reserved_slot(skin_palettes_, palette.id);
+    if (slot == nullptr) {
+        return core::Status::failure(
+            "render_scene.stale_skin_palette_id",
+            "render skin palette update uses an unknown or stale generation");
+    }
+    slot->proxy = palette;
+    slot->occupied = true;
+    return core::Status::ok();
+}
+
+core::Status RenderScene::remove_skin_palette(RenderSkinPaletteId id) {
+    if (find_skin_palette(id) == nullptr) {
+        return core::Status::failure(
+            "render_scene.stale_skin_palette_id",
+            "render skin palette removal uses an unknown or stale generation");
+    }
+    if (std::ranges::any_of(objects_, [id](const ObjectSlot& slot) {
+            return slot.occupied && slot.proxy.skin_palette == id;
+        })) {
+        return core::Status::failure(
+            "render_scene.skin_palette_in_use",
+            "render skin palette must not be retained by an object when removed");
+    }
+    release_slot(skin_palettes_, free_skin_palettes_, id);
+    return core::Status::ok();
+}
+
 core::Status RenderScene::apply(std::span<const RenderSceneUpdate> updates) {
     for (const auto& update : updates) {
         auto status = core::Status::ok();
@@ -268,6 +337,12 @@ core::Status RenderScene::apply(std::span<const RenderSceneUpdate> updates) {
         case RenderSceneUpdateKind::remove_light:
             status = remove_light(update.light_id);
             break;
+        case RenderSceneUpdateKind::upsert_skin_palette:
+            status = upsert_skin_palette(update.skin_palette);
+            break;
+        case RenderSceneUpdateKind::remove_skin_palette:
+            status = remove_skin_palette(update.skin_palette_id);
+            break;
         }
         if (!status) {
             return status;
@@ -277,10 +352,10 @@ core::Status RenderScene::apply(std::span<const RenderSceneUpdate> updates) {
 }
 
 core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
-                                                   float simulation_alpha) const {
+                                                    float simulation_alpha) const {
     if (!std::isfinite(simulation_alpha)) {
-        return core::Result<RenderSceneFrame>::failure(
-            "render_scene.invalid_simulation_alpha", "render interpolation alpha must be finite");
+        return core::Result<RenderSceneFrame>::failure("render_scene.invalid_simulation_alpha",
+                                                       "render interpolation alpha must be finite");
     }
     RenderSceneFrame frame;
     frame.stats = stats();
@@ -298,14 +373,14 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
         if (resolved[index]) {
             return core::Result<math::Mat4f>::success(transforms[index]);
         }
-        const auto local = math::transform_matrix(
-            interpolate_render_transform(object, simulation_alpha));
+        const auto local =
+            math::transform_matrix(interpolate_render_transform(object, simulation_alpha));
         math::Mat4f model;
         if (object.parent.is_valid()) {
             const auto* parent = find_object(object.parent);
             if (parent == nullptr) {
-                return core::Result<math::Mat4f>::failure(
-                    "render_scene.missing_parent", "render object parent became stale");
+                return core::Result<math::Mat4f>::failure("render_scene.missing_parent",
+                                                          "render object parent became stale");
             }
             auto parent_transform = self(self, *parent, depth + 1U);
             if (!parent_transform) {
@@ -344,12 +419,14 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
             ++frame.stats.culled_objects;
             continue;
         }
-        RenderObjectInstance instance{object.id, object.mesh, object.material, object.layer,
-                                      transform.value(), bounds, object.color};
-        auto batch = std::ranges::find_if(frame.batches, [&object](const RenderInstanceBatch& value) {
-            return value.mesh == object.mesh && value.material == object.material &&
-                   value.layer == object.layer;
-        });
+        RenderObjectInstance instance{
+            object.id,    object.mesh,       object.material, object.skin_palette,
+            object.layer, transform.value(), bounds,          object.color};
+        auto batch =
+            std::ranges::find_if(frame.batches, [&object](const RenderInstanceBatch& value) {
+                return value.mesh == object.mesh && value.material == object.material &&
+                       value.layer == object.layer;
+            });
         if (batch == frame.batches.end()) {
             frame.batches.push_back({object.mesh, object.material, object.layer, {}});
             batch = std::prev(frame.batches.end());
@@ -357,16 +434,16 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
         batch->instances.push_back(std::move(instance));
         ++frame.stats.visible_objects;
     }
-    std::ranges::sort(frame.batches, [](const RenderInstanceBatch& left,
-                                       const RenderInstanceBatch& right) {
-        if (left.layer != right.layer) {
-            return left.layer < right.layer;
-        }
-        if (left.material != right.material) {
-            return left.material < right.material;
-        }
-        return left.mesh < right.mesh;
-    });
+    std::ranges::sort(frame.batches,
+                      [](const RenderInstanceBatch& left, const RenderInstanceBatch& right) {
+                          if (left.layer != right.layer) {
+                              return left.layer < right.layer;
+                          }
+                          if (left.material != right.material) {
+                              return left.material < right.material;
+                          }
+                          return left.mesh < right.mesh;
+                      });
     frame.stats.instance_batches = static_cast<std::uint32_t>(frame.batches.size());
 
     frame.lights.reserve(frame.stats.retained_lights);
@@ -388,6 +465,7 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
 void RenderScene::clear() noexcept {
     free_objects_.clear();
     free_lights_.clear();
+    free_skin_palettes_.clear();
     free_objects_.reserve(objects_.size());
     for (std::size_t index = 0; index < objects_.size(); ++index) {
         auto& slot = objects_[index];
@@ -416,6 +494,21 @@ void RenderScene::clear() noexcept {
         slot.proxy = {};
         free_lights_.push_back(static_cast<std::uint32_t>(lights_.size() - index - 1U));
     }
+    free_skin_palettes_.reserve(skin_palettes_.size());
+    for (std::size_t index = 0; index < skin_palettes_.size(); ++index) {
+        auto& slot = skin_palettes_[index];
+        if (slot.reserved || slot.occupied) {
+            ++slot.generation;
+            if (slot.generation == 0) {
+                std::terminate();
+            }
+        }
+        slot.reserved = false;
+        slot.occupied = false;
+        slot.proxy = {};
+        free_skin_palettes_.push_back(
+            static_cast<std::uint32_t>(skin_palettes_.size() - index - 1U));
+    }
 }
 
 const RenderObjectProxy* RenderScene::find_object(RenderObjectId id) const noexcept {
@@ -428,12 +521,20 @@ const RenderLightProxy* RenderScene::find_light(RenderLightId id) const noexcept
     return slot == nullptr ? nullptr : &slot->proxy;
 }
 
+const RenderSkinPaletteProxy*
+RenderScene::find_skin_palette(RenderSkinPaletteId id) const noexcept {
+    const auto* slot = find_slot(skin_palettes_, id);
+    return slot == nullptr ? nullptr : &slot->proxy;
+}
+
 RenderSceneStats RenderScene::stats() const noexcept {
     RenderSceneStats result;
-    result.retained_objects = static_cast<std::uint32_t>(std::ranges::count_if(
-        objects_, [](const ObjectSlot& slot) { return slot.occupied; }));
+    result.retained_objects = static_cast<std::uint32_t>(
+        std::ranges::count_if(objects_, [](const ObjectSlot& slot) { return slot.occupied; }));
     result.retained_lights = static_cast<std::uint32_t>(
         std::ranges::count_if(lights_, [](const LightSlot& slot) { return slot.occupied; }));
+    result.retained_skin_palettes = static_cast<std::uint32_t>(std::ranges::count_if(
+        skin_palettes_, [](const SkinPaletteSlot& slot) { return slot.occupied; }));
     return result;
 }
 

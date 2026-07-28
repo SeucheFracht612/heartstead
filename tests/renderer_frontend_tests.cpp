@@ -643,6 +643,7 @@ void test_renderer_frontend_submits_headless_frames() {
     init.chunk_config.max_chunks_meshed_per_frame = 2;
     init.chunk_config.max_bytes_uploaded_per_frame = 1024 * 1024;
     init.scene_render_config.maximum_instances_per_frame = 2;
+    init.scene_render_config.maximum_skin_matrices_per_frame = 4;
 
     renderer::Renderer retained_renderer;
     assert(retained_renderer.initialize(std::move(init)));
@@ -657,8 +658,8 @@ void test_renderer_frontend_submits_headless_frames() {
     const auto initialized_resource_count = retained_renderer.device()->live_resource_count();
     // Ten shader modules, eleven prewarmed pipelines, sky geometry, four fallback textures,
     // terrain/UI arrays, one shared sampler, one material-table buffer, static arenas/instances,
-    // and buffered debug/UI geometry.
-    assert(initialized_resource_count == 38);
+    // a skin-matrix ring, and buffered debug/UI geometry.
+    assert(initialized_resource_count == 39);
 
     renderer::rhi::RenderEnvironmentData invalid_environment;
     invalid_environment.fog_end = invalid_environment.fog_start;
@@ -864,6 +865,65 @@ void test_renderer_frontend_submits_headless_frames() {
     auto terrain_only_frame = retained_renderer.render(camera);
     assert(terrain_only_frame);
     assert(terrain_only_frame.value().draw_count == 2);
+
+    assets::ModelAsset animated_model;
+    animated_model.vertices = {
+        {{-0.5F, -0.5F, 0.0F}, {0.0F, 0.0F, 1.0F}, {}, {0, 0, 0, 0}, {1.0F, 0.0F, 0.0F, 0.0F}},
+        {{0.5F, -0.5F, 0.0F}, {0.0F, 0.0F, 1.0F}, {}, {0, 0, 0, 0}, {1.0F, 0.0F, 0.0F, 0.0F}},
+        {{0.0F, 0.5F, 0.0F}, {0.0F, 0.0F, 1.0F}, {}, {0, 0, 0, 0}, {1.0F, 0.0F, 0.0F, 0.0F}},
+    };
+    animated_model.indices = {0, 1, 2};
+    animated_model.nodes = {
+        {"mesh", assets::no_model_index, {}},
+        {"joint", 0, {}},
+    };
+    animated_model.primitives = {{"animated_body", 0, 3, 0, 3, 0, 0}};
+    animated_model.skins = {{"animated_skin", 1, {1}, {math::Mat4f::identity()}}};
+    animated_model.bounds = {{-0.5F, -0.5F, 0.0F}, {0.5F, 0.5F, 0.0F}};
+    assert(assets::validate_model_asset(animated_model));
+    auto animated_mesh =
+        retained_renderer.create_model_primitive("frontend_animated_body", animated_model, 0);
+    assert(animated_mesh);
+    renderer::RenderSkinPaletteProxy skin_palette;
+    skin_palette.joint_matrices = {math::translation_matrix({0.0F, 0.25F, 0.0F})};
+    auto skin_palette_id = retained_renderer.create_skin_palette(std::move(skin_palette));
+    assert(skin_palette_id);
+    renderer::RenderObjectProxy animated_object;
+    animated_object.anchor = object_anchor.value();
+    animated_object.previous_transform.position = {0.0F, 0.0F, -5.0F};
+    animated_object.current_transform = animated_object.previous_transform;
+    animated_object.mesh = animated_mesh.value();
+    animated_object.material = {1, 1};
+    animated_object.local_bounds = animated_model.bounds;
+    animated_object.skin_palette = skin_palette_id.value();
+    auto animated_object_id = retained_renderer.create_object(animated_object);
+    assert(animated_object_id);
+    animated_object.previous_transform.position.x = 1.0F;
+    animated_object.current_transform = animated_object.previous_transform;
+    auto second_animated_object_id = retained_renderer.create_object(animated_object);
+    assert(second_animated_object_id);
+    auto animated_frame = retained_renderer.render(camera);
+    assert(animated_frame);
+    assert(animated_frame.value().draw_count == 3);
+    assert(retained_renderer.scene_stats().submitted_instances == 2);
+    assert(retained_renderer.scene_stats().submitted_skin_palettes == 1);
+    assert(retained_renderer.scene_stats().submitted_skin_matrices == 1);
+    assert(retained_renderer.scene_stats().uploaded_skin_matrix_bytes == sizeof(math::Mat4f));
+    assert(retained_renderer.stats().retained_skin_palettes == 1);
+    assert(retained_renderer.stats().submitted_skin_matrices == 1);
+
+    renderer::RenderSceneUpdate remove_animated_object;
+    remove_animated_object.kind = renderer::RenderSceneUpdateKind::remove_object;
+    remove_animated_object.object_id = animated_object_id.value();
+    auto remove_second_animated_object = remove_animated_object;
+    remove_second_animated_object.object_id = second_animated_object_id.value();
+    renderer::RenderSceneUpdate remove_skin_palette;
+    remove_skin_palette.kind = renderer::RenderSceneUpdateKind::remove_skin_palette;
+    remove_skin_palette.skin_palette_id = skin_palette_id.value();
+    const std::array animated_removals{remove_animated_object, remove_second_animated_object,
+                                       remove_skin_palette};
+    assert(retained_renderer.apply_scene_updates(animated_removals));
+    assert(retained_renderer.release_static_mesh(animated_mesh.value()));
 
     const auto uploaded_before_resize = retained_renderer.chunk_stats().cache.uploaded_chunk_count;
     assert(retained_renderer.resize({800, 400}));

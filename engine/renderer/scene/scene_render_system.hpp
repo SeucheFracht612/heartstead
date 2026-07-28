@@ -34,6 +34,7 @@ struct ScenePipelineSet {
 
 struct SceneRenderConfig {
     std::uint32_t maximum_instances_per_frame = 65'536;
+    std::uint32_t maximum_skin_matrices_per_frame = 65'536;
     std::uint32_t buffered_frames = 3;
 
     [[nodiscard]] core::Status validate() const;
@@ -44,8 +45,13 @@ struct SceneRenderStats {
     std::uint32_t submitted_instances = 0;
     std::uint32_t draw_calls = 0;
     std::uint32_t dropped_instances = 0;
+    std::uint32_t dropped_skinned_instances = 0;
+    std::uint32_t submitted_skin_palettes = 0;
+    std::uint32_t submitted_skin_matrices = 0;
     std::uint64_t uploaded_instance_bytes = 0;
+    std::uint64_t uploaded_skin_matrix_bytes = 0;
     std::uint64_t instance_buffer_bytes = 0;
+    std::uint64_t skin_matrix_buffer_bytes = 0;
 };
 
 struct SceneDrawCommands {
@@ -56,30 +62,40 @@ struct SceneDrawCommands {
 
 class SceneRenderSystem {
   public:
-    SceneRenderSystem(rhi::IRenderDevice& device, MeshManager& meshes,
-                      ScenePipelineSet pipelines, core::PrototypeId pipeline_material);
+    SceneRenderSystem(rhi::IRenderDevice& device, MeshManager& meshes, ScenePipelineSet pipelines,
+                      core::PrototypeId pipeline_material);
     ~SceneRenderSystem();
 
     SceneRenderSystem(const SceneRenderSystem&) = delete;
     SceneRenderSystem& operator=(const SceneRenderSystem&) = delete;
 
     [[nodiscard]] core::Status initialize(SceneRenderConfig config = {});
-    [[nodiscard]] core::Result<SceneDrawCommands> build_draw_commands(
-        const RenderScene& scene, const RenderCamera& camera, float simulation_alpha,
-        SceneDrawCommands scratch = {});
+    [[nodiscard]] core::Result<SceneDrawCommands>
+    build_draw_commands(const RenderScene& scene, const RenderCamera& camera,
+                        float simulation_alpha, SceneDrawCommands scratch = {});
     [[nodiscard]] core::Status set_pipelines(ScenePipelineSet pipelines) noexcept;
     [[nodiscard]] core::Status shutdown();
     [[nodiscard]] const SceneRenderStats& stats() const noexcept;
     [[nodiscard]] rhi::RenderResourceHandle instance_buffer() const noexcept;
+    [[nodiscard]] rhi::RenderResourceHandle skin_matrix_buffer() const noexcept;
 
   private:
+    struct UploadedSkinPalette {
+        RenderSkinPaletteId id;
+        std::uint32_t offset = 0;
+        std::uint32_t count = 0;
+    };
+
     rhi::IRenderDevice* device_ = nullptr;
     MeshManager* meshes_ = nullptr;
     ScenePipelineSet pipelines_{};
     core::PrototypeId pipeline_material_;
     SceneRenderConfig config_{};
     rhi::RenderResourceHandle instance_buffer_;
+    rhi::RenderResourceHandle skin_matrix_buffer_;
     std::vector<GpuObjectInstance> instance_scratch_;
+    std::vector<math::Mat4f> skin_matrix_scratch_;
+    std::vector<UploadedSkinPalette> uploaded_skin_palettes_;
     std::uint64_t frame_number_ = 0;
     SceneRenderStats stats_{};
 };

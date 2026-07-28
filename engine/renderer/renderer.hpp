@@ -109,8 +109,11 @@ class Renderer {
     void set_voxel_lighting_stats(const world::ChunkLightSystemStats& lighting) noexcept;
     [[nodiscard]] RenderObjectId reserve_object_id();
     [[nodiscard]] RenderLightId reserve_light_id();
+    [[nodiscard]] RenderSkinPaletteId reserve_skin_palette_id();
     [[nodiscard]] core::Result<RenderObjectId> create_object(RenderObjectProxy object);
     [[nodiscard]] core::Result<RenderLightId> create_light(RenderLightProxy light);
+    [[nodiscard]] core::Result<RenderSkinPaletteId>
+    create_skin_palette(RenderSkinPaletteProxy palette);
     [[nodiscard]] core::Status apply_scene_updates(std::span<const RenderSceneUpdate> updates);
     [[nodiscard]] core::Result<RenderMeshHandle>
     create_static_mesh(const StaticMeshUploadDesc& desc);
