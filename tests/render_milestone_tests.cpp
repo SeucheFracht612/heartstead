@@ -88,6 +88,8 @@ void test_gpu_chunk_vertex_contract() {
     assert(gpu_vertex.state_bits == 0x1234);
     assert(renderer::terrain::gpu_chunk_vertex_attributes[0].format ==
            renderer::rhi::RenderVertexAttributeFormat::sint16x4);
+    assert(renderer::rhi::RenderVertexAttributeFormat::uint16x4 !=
+           renderer::rhi::RenderVertexAttributeFormat::sint16x4);
     assert(renderer::terrain::gpu_chunk_vertex_attributes[2].format ==
            renderer::rhi::RenderVertexAttributeFormat::uint16);
     assert(renderer::terrain::gpu_chunk_vertex_attributes[5].format ==

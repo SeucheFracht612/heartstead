@@ -20,29 +20,29 @@ namespace {
 
 constexpr std::array<GpuStaticMeshVertex, 24> fallback_vertices{{
     {{-0.5F, -0.5F, 0.5F}, {0.0F, 0.0F, 1.0F}, {0.0F, 0.0F}},
-     {{0.5F, -0.5F, 0.5F}, {0.0F, 0.0F, 1.0F}, {1.0F, 0.0F}},
-     {{0.5F, 0.5F, 0.5F}, {0.0F, 0.0F, 1.0F}, {1.0F, 1.0F}},
-     {{-0.5F, 0.5F, 0.5F}, {0.0F, 0.0F, 1.0F}, {0.0F, 1.0F}},
-     {{0.5F, -0.5F, -0.5F}, {0.0F, 0.0F, -1.0F}, {0.0F, 0.0F}},
-     {{-0.5F, -0.5F, -0.5F}, {0.0F, 0.0F, -1.0F}, {1.0F, 0.0F}},
-     {{-0.5F, 0.5F, -0.5F}, {0.0F, 0.0F, -1.0F}, {1.0F, 1.0F}},
-     {{0.5F, 0.5F, -0.5F}, {0.0F, 0.0F, -1.0F}, {0.0F, 1.0F}},
-     {{-0.5F, -0.5F, -0.5F}, {-1.0F, 0.0F, 0.0F}, {0.0F, 0.0F}},
-     {{-0.5F, -0.5F, 0.5F}, {-1.0F, 0.0F, 0.0F}, {1.0F, 0.0F}},
-     {{-0.5F, 0.5F, 0.5F}, {-1.0F, 0.0F, 0.0F}, {1.0F, 1.0F}},
-     {{-0.5F, 0.5F, -0.5F}, {-1.0F, 0.0F, 0.0F}, {0.0F, 1.0F}},
-     {{0.5F, -0.5F, 0.5F}, {1.0F, 0.0F, 0.0F}, {0.0F, 0.0F}},
-     {{0.5F, -0.5F, -0.5F}, {1.0F, 0.0F, 0.0F}, {1.0F, 0.0F}},
-     {{0.5F, 0.5F, -0.5F}, {1.0F, 0.0F, 0.0F}, {1.0F, 1.0F}},
-     {{0.5F, 0.5F, 0.5F}, {1.0F, 0.0F, 0.0F}, {0.0F, 1.0F}},
-     {{-0.5F, 0.5F, 0.5F}, {0.0F, 1.0F, 0.0F}, {0.0F, 0.0F}},
-     {{0.5F, 0.5F, 0.5F}, {0.0F, 1.0F, 0.0F}, {1.0F, 0.0F}},
-     {{0.5F, 0.5F, -0.5F}, {0.0F, 1.0F, 0.0F}, {1.0F, 1.0F}},
-     {{-0.5F, 0.5F, -0.5F}, {0.0F, 1.0F, 0.0F}, {0.0F, 1.0F}},
-     {{-0.5F, -0.5F, -0.5F}, {0.0F, -1.0F, 0.0F}, {0.0F, 0.0F}},
-     {{0.5F, -0.5F, -0.5F}, {0.0F, -1.0F, 0.0F}, {1.0F, 0.0F}},
-     {{0.5F, -0.5F, 0.5F}, {0.0F, -1.0F, 0.0F}, {1.0F, 1.0F}},
-     {{-0.5F, -0.5F, 0.5F}, {0.0F, -1.0F, 0.0F}, {0.0F, 1.0F}},
+    {{0.5F, -0.5F, 0.5F}, {0.0F, 0.0F, 1.0F}, {1.0F, 0.0F}},
+    {{0.5F, 0.5F, 0.5F}, {0.0F, 0.0F, 1.0F}, {1.0F, 1.0F}},
+    {{-0.5F, 0.5F, 0.5F}, {0.0F, 0.0F, 1.0F}, {0.0F, 1.0F}},
+    {{0.5F, -0.5F, -0.5F}, {0.0F, 0.0F, -1.0F}, {0.0F, 0.0F}},
+    {{-0.5F, -0.5F, -0.5F}, {0.0F, 0.0F, -1.0F}, {1.0F, 0.0F}},
+    {{-0.5F, 0.5F, -0.5F}, {0.0F, 0.0F, -1.0F}, {1.0F, 1.0F}},
+    {{0.5F, 0.5F, -0.5F}, {0.0F, 0.0F, -1.0F}, {0.0F, 1.0F}},
+    {{-0.5F, -0.5F, -0.5F}, {-1.0F, 0.0F, 0.0F}, {0.0F, 0.0F}},
+    {{-0.5F, -0.5F, 0.5F}, {-1.0F, 0.0F, 0.0F}, {1.0F, 0.0F}},
+    {{-0.5F, 0.5F, 0.5F}, {-1.0F, 0.0F, 0.0F}, {1.0F, 1.0F}},
+    {{-0.5F, 0.5F, -0.5F}, {-1.0F, 0.0F, 0.0F}, {0.0F, 1.0F}},
+    {{0.5F, -0.5F, 0.5F}, {1.0F, 0.0F, 0.0F}, {0.0F, 0.0F}},
+    {{0.5F, -0.5F, -0.5F}, {1.0F, 0.0F, 0.0F}, {1.0F, 0.0F}},
+    {{0.5F, 0.5F, -0.5F}, {1.0F, 0.0F, 0.0F}, {1.0F, 1.0F}},
+    {{0.5F, 0.5F, 0.5F}, {1.0F, 0.0F, 0.0F}, {0.0F, 1.0F}},
+    {{-0.5F, 0.5F, 0.5F}, {0.0F, 1.0F, 0.0F}, {0.0F, 0.0F}},
+    {{0.5F, 0.5F, 0.5F}, {0.0F, 1.0F, 0.0F}, {1.0F, 0.0F}},
+    {{0.5F, 0.5F, -0.5F}, {0.0F, 1.0F, 0.0F}, {1.0F, 1.0F}},
+    {{-0.5F, 0.5F, -0.5F}, {0.0F, 1.0F, 0.0F}, {0.0F, 1.0F}},
+    {{-0.5F, -0.5F, -0.5F}, {0.0F, -1.0F, 0.0F}, {0.0F, 0.0F}},
+    {{0.5F, -0.5F, -0.5F}, {0.0F, -1.0F, 0.0F}, {1.0F, 0.0F}},
+    {{0.5F, -0.5F, 0.5F}, {0.0F, -1.0F, 0.0F}, {1.0F, 1.0F}},
+    {{-0.5F, -0.5F, 0.5F}, {0.0F, -1.0F, 0.0F}, {0.0F, 1.0F}},
 }};
 
 constexpr std::array<std::uint32_t, 36> fallback_indices{
@@ -72,7 +72,8 @@ core::Status MeshManagerConfig::validate() const {
 
 core::Status validate_static_mesh_upload(const StaticMeshUploadDesc& desc) {
     if (desc.id.empty() || desc.vertices.empty() || desc.indices.empty() ||
-        !desc.local_bounds.is_valid() || desc.vertices.size() > std::numeric_limits<std::uint32_t>::max() ||
+        !desc.local_bounds.is_valid() ||
+        desc.vertices.size() > std::numeric_limits<std::uint32_t>::max() ||
         desc.indices.size() > std::numeric_limits<std::uint32_t>::max()) {
         return core::Status::failure("mesh_manager.invalid_mesh",
                                      "static mesh upload metadata or geometry is invalid");
@@ -101,6 +102,18 @@ core::Status validate_static_mesh_upload(const StaticMeshUploadDesc& desc) {
                 return core::Status::failure("mesh_manager.non_finite_vertex",
                                              "static mesh UV must be finite");
             }
+        }
+        float weight_sum = 0.0F;
+        for (const auto weight : vertex.weights) {
+            if (!std::isfinite(weight) || weight < 0.0F || weight > 1.0F) {
+                return core::Status::failure("mesh_manager.invalid_skin_weight",
+                                             "mesh skin weights must be finite and normalized");
+            }
+            weight_sum += weight;
+        }
+        if (std::abs(weight_sum - 1.0F) > 0.01F) {
+            return core::Status::failure("mesh_manager.invalid_skin_weight",
+                                         "mesh skin weights must sum to one");
         }
     }
     return core::Status::ok();
@@ -141,7 +154,9 @@ core::Status MeshManager::initialize(MeshManagerConfig config) {
     }
     vertex_arena_ = std::move(vertices).value();
     index_arena_ = std::move(indices).value();
-    auto fallback = upload_mesh({"__error_cube", fallback_vertices, fallback_indices,
+    auto fallback = upload_mesh({"__error_cube",
+                                 fallback_vertices,
+                                 fallback_indices,
                                  {{-0.5F, -0.5F, -0.5F}, {0.5F, 0.5F, 0.5F}}},
                                 true);
     if (!fallback) {
@@ -160,8 +175,73 @@ core::Result<RenderMeshHandle> MeshManager::create_mesh(const StaticMeshUploadDe
     return upload_mesh(desc, false);
 }
 
+core::Result<RenderMeshHandle> MeshManager::create_model_primitive(std::string id,
+                                                                   const assets::ModelAsset& model,
+                                                                   std::uint32_t primitive_index) {
+    if (const auto* existing = find(id); existing != nullptr) {
+        return core::Result<RenderMeshHandle>::success(existing->handle);
+    }
+    auto status = assets::validate_model_asset(model);
+    if (!status) {
+        return core::Result<RenderMeshHandle>::failure(status.error().code, status.error().message);
+    }
+    if (id.empty() || primitive_index >= model.primitives.size()) {
+        return core::Result<RenderMeshHandle>::failure(
+            "mesh_manager.invalid_model_primitive",
+            "model primitive upload requires a non-empty id and valid primitive index");
+    }
+    const auto& primitive = model.primitives[primitive_index];
+    const auto first_vertex = static_cast<std::size_t>(primitive.first_vertex);
+    const auto first_index = static_cast<std::size_t>(primitive.first_index);
+    std::vector<GpuStaticMeshVertex> vertices;
+    vertices.reserve(primitive.vertex_count);
+    math::Bounds3f bounds;
+    bool has_bounds = false;
+    for (std::size_t index = 0; index < primitive.vertex_count; ++index) {
+        const auto& source = model.vertices[first_vertex + index];
+        GpuStaticMeshVertex vertex;
+        vertex.position[0] = source.position.x;
+        vertex.position[1] = source.position.y;
+        vertex.position[2] = source.position.z;
+        vertex.normal[0] = source.normal.x;
+        vertex.normal[1] = source.normal.y;
+        vertex.normal[2] = source.normal.z;
+        vertex.uv[0] = source.uv.x;
+        vertex.uv[1] = source.uv.y;
+        std::ranges::copy(source.joints, vertex.joints);
+        std::ranges::copy(source.weights, vertex.weights);
+        vertices.push_back(vertex);
+        if (!has_bounds) {
+            bounds = {source.position, source.position};
+            has_bounds = true;
+        } else {
+            bounds.min = math::component_min(bounds.min, source.position);
+            bounds.max = math::component_max(bounds.max, source.position);
+        }
+    }
+    std::vector<std::uint32_t> indices;
+    indices.reserve(primitive.index_count);
+    for (std::size_t index = 0; index < primitive.index_count; ++index) {
+        const auto source = model.indices[first_index + index];
+        if (source < primitive.first_vertex ||
+            source >= primitive.first_vertex + primitive.vertex_count) {
+            return core::Result<RenderMeshHandle>::failure(
+                "mesh_manager.model_index_out_of_bounds",
+                "model primitive index references geometry outside its primitive");
+        }
+        indices.push_back(source - primitive.first_vertex);
+    }
+    const auto joint_count =
+        primitive.skin == assets::no_model_index
+            ? 0U
+            : static_cast<std::uint32_t>(model.skins[primitive.skin].joints.size());
+    const StaticMeshUploadDesc upload{id, vertices, indices, bounds};
+    return upload_mesh(upload, false, joint_count);
+}
+
 core::Result<RenderMeshHandle> MeshManager::upload_mesh(const StaticMeshUploadDesc& desc,
-                                                       bool fallback) {
+                                                        bool fallback,
+                                                        std::uint32_t skin_joint_count) {
     if (vertex_arena_ == nullptr || index_arena_ == nullptr) {
         return core::Result<RenderMeshHandle>::failure("mesh_manager.not_initialized",
                                                        "mesh manager must be initialized first");
@@ -181,7 +261,8 @@ core::Result<RenderMeshHandle> MeshManager::upload_mesh(const StaticMeshUploadDe
     if (!indices) {
         (void)vertex_arena_->retire(vertices.value(), device_->completed_submission_serial());
         collect();
-        return core::Result<RenderMeshHandle>::failure(indices.error().code, indices.error().message);
+        return core::Result<RenderMeshHandle>::failure(indices.error().code,
+                                                       indices.error().message);
     }
     const std::array writes{
         rhi::RenderBufferWrite{vertices.value().buffer,
@@ -216,6 +297,7 @@ core::Result<RenderMeshHandle> MeshManager::upload_mesh(const StaticMeshUploadDe
                    indices.value(),
                    static_cast<std::uint32_t>(desc.vertices.size()),
                    static_cast<std::uint32_t>(desc.indices.size()),
+                   skin_joint_count,
                    rhi::RenderIndexType::uint32,
                    desc.local_bounds,
                    fallback};
@@ -240,7 +322,8 @@ core::Status MeshManager::release(RenderMeshHandle handle) {
 
 core::Status MeshManager::retire_record(Record& record) {
     auto status = vertex_arena_->retire(record.view.vertices, device_->last_submission_serial());
-    auto index_status = index_arena_->retire(record.view.indices, device_->last_submission_serial());
+    auto index_status =
+        index_arena_->retire(record.view.indices, device_->last_submission_serial());
     record.occupied = false;
     record.id.clear();
     record.view = {};
@@ -269,9 +352,8 @@ const RenderMeshView* MeshManager::find_exact(RenderMeshHandle handle) const noe
 }
 
 const RenderMeshView* MeshManager::find(std::string_view id) const noexcept {
-    const auto found = std::ranges::find_if(records_, [id](const Record& record) {
-        return record.occupied && record.id == id;
-    });
+    const auto found = std::ranges::find_if(
+        records_, [id](const Record& record) { return record.occupied && record.id == id; });
     return found == records_.end() ? nullptr : &found->view;
 }
 
@@ -339,13 +421,13 @@ core::Status MeshManager::shutdown() {
             if (!record.occupied) {
                 continue;
             }
-            auto status = vertex_arena_->retire(record.view.vertices,
-                                                device_->completed_submission_serial());
+            auto status =
+                vertex_arena_->retire(record.view.vertices, device_->completed_submission_serial());
             if (!status && first_failure) {
                 first_failure = status;
             }
-            status = index_arena_->retire(record.view.indices,
-                                          device_->completed_submission_serial());
+            status =
+                index_arena_->retire(record.view.indices, device_->completed_submission_serial());
             if (!status && first_failure) {
                 first_failure = status;
             }

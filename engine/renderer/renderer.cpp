@@ -127,7 +127,7 @@ make_static_mesh_shader_program(std::span<const std::uint32_t> vertex_spirv,
     shader_program.interface.push_constant_ranges.push_back(
         {rhi::RenderShaderStageFlags::vertex | rhi::RenderShaderStageFlags::fragment, 0,
          sizeof(rhi::ChunkPushConstants)});
-    shader_program.dependencies = {"gpu_static_mesh_vertex_v1", "gpu_object_instance_v1",
+    shader_program.dependencies = {"gpu_static_mesh_vertex_v2", "gpu_object_instance_v1",
                                    "chunk_push_constants_v2"};
     return shader_program;
 }
@@ -970,6 +970,16 @@ core::Result<RenderMeshHandle> Renderer::create_static_mesh(const StaticMeshUplo
                                                        "renderer must be initialized first");
     }
     return mesh_manager_->create_mesh(desc);
+}
+
+core::Result<RenderMeshHandle> Renderer::create_model_primitive(std::string id,
+                                                                const assets::ModelAsset& model,
+                                                                std::uint32_t primitive_index) {
+    if (mesh_manager_ == nullptr) {
+        return core::Result<RenderMeshHandle>::failure("renderer.not_initialized",
+                                                       "renderer must be initialized first");
+    }
+    return mesh_manager_->create_model_primitive(std::move(id), model, primitive_index);
 }
 
 core::Status Renderer::release_static_mesh(RenderMeshHandle handle) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/assets/model_asset.hpp"
 #include "engine/core/result.hpp"
 #include "engine/math/vector.hpp"
 #include "engine/renderer/assets/render_asset_handles.hpp"
@@ -20,17 +21,23 @@ struct GpuStaticMeshVertex {
     float position[3]{};
     float normal[3]{};
     float uv[2]{};
+    std::uint16_t joints[4]{};
+    float weights[4]{1.0F, 0.0F, 0.0F, 0.0F};
 };
 
-static_assert(sizeof(GpuStaticMeshVertex) == 32);
+static_assert(sizeof(GpuStaticMeshVertex) == 56);
 static_assert(offsetof(GpuStaticMeshVertex, position) == 0);
 static_assert(offsetof(GpuStaticMeshVertex, normal) == 12);
 static_assert(offsetof(GpuStaticMeshVertex, uv) == 24);
+static_assert(offsetof(GpuStaticMeshVertex, joints) == 32);
+static_assert(offsetof(GpuStaticMeshVertex, weights) == 40);
 
 inline constexpr rhi::RenderVertexAttributeDesc gpu_static_mesh_vertex_attributes[]{
     {0, offsetof(GpuStaticMeshVertex, position), rhi::RenderVertexAttributeFormat::float3},
     {1, offsetof(GpuStaticMeshVertex, normal), rhi::RenderVertexAttributeFormat::float3},
     {2, offsetof(GpuStaticMeshVertex, uv), rhi::RenderVertexAttributeFormat::float2},
+    {3, offsetof(GpuStaticMeshVertex, joints), rhi::RenderVertexAttributeFormat::uint16x4},
+    {4, offsetof(GpuStaticMeshVertex, weights), rhi::RenderVertexAttributeFormat::float4},
 };
 
 struct StaticMeshUploadDesc {
@@ -47,6 +54,7 @@ struct RenderMeshView {
     GpuAllocation indices;
     std::uint32_t vertex_count = 0;
     std::uint32_t index_count = 0;
+    std::uint32_t skin_joint_count = 0;
     rhi::RenderIndexType index_type = rhi::RenderIndexType::uint32;
     math::Bounds3f local_bounds{};
     bool fallback = false;
@@ -81,6 +89,9 @@ class MeshManager {
 
     [[nodiscard]] core::Status initialize(MeshManagerConfig config = {});
     [[nodiscard]] core::Result<RenderMeshHandle> create_mesh(const StaticMeshUploadDesc& desc);
+    [[nodiscard]] core::Result<RenderMeshHandle>
+    create_model_primitive(std::string id, const assets::ModelAsset& model,
+                           std::uint32_t primitive_index);
     [[nodiscard]] core::Status release(RenderMeshHandle handle);
     [[nodiscard]] core::Status shutdown();
 
@@ -95,7 +106,8 @@ class MeshManager {
     struct Record;
 
     [[nodiscard]] core::Result<RenderMeshHandle> upload_mesh(const StaticMeshUploadDesc& desc,
-                                                             bool fallback);
+                                                             bool fallback,
+                                                             std::uint32_t skin_joint_count = 0);
     [[nodiscard]] Record* find_record(RenderMeshHandle handle) noexcept;
     [[nodiscard]] const Record* find_record(RenderMeshHandle handle) const noexcept;
     [[nodiscard]] core::Status retire_record(Record& record);

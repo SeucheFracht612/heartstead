@@ -212,8 +212,7 @@ class HeadlessRenderDevice final : public IRenderDevice {
                             "renderer.unbound_graphics_pipeline_layout",
                             "render draw graphics pipeline layout is no longer bound");
                     }
-                    const auto descriptor_status =
-                        validate_required_descriptors(layout->second);
+                    const auto descriptor_status = validate_required_descriptors(layout->second);
                     if (!descriptor_status) {
                         return core::Result<RenderFrameStats>::failure(
                             descriptor_status.error().code, descriptor_status.error().message);
@@ -761,9 +760,9 @@ class HeadlessRenderDevice final : public IRenderDevice {
             }
             const auto key = layout.material_id.value() + "|" + binding.name;
             if (!descriptor_writes_.contains(key)) {
-                return core::Status::failure(
-                    "renderer.required_descriptor_unbound",
-                    "required descriptor binding has not been written: " + binding.name);
+                return core::Status::failure("renderer.required_descriptor_unbound",
+                                             "required descriptor binding has not been written: " +
+                                                 binding.name);
             }
         }
         return core::Status::ok();
@@ -893,8 +892,7 @@ class OwnerThreadRenderDevice final : public IRenderDevice {
 
     [[nodiscard]] core::Result<RenderFrameStats>
     execute_frame_plan(const RenderFramePlan& plan) override {
-        return invoke<RenderFrameStats>(
-            [&] { return implementation_->execute_frame_plan(plan); });
+        return invoke<RenderFrameStats>([&] { return implementation_->execute_frame_plan(plan); });
     }
 
     [[nodiscard]] core::Result<RenderFrameStats>
@@ -935,9 +933,8 @@ class OwnerThreadRenderDevice final : public IRenderDevice {
     [[nodiscard]] core::Result<RenderShaderModuleStats>
     create_shader_module(RenderShaderModuleDesc desc,
                          std::span<const std::uint32_t> spirv_words) override {
-        return invoke<RenderShaderModuleStats>([&] {
-            return implementation_->create_shader_module(std::move(desc), spirv_words);
-        });
+        return invoke<RenderShaderModuleStats>(
+            [&] { return implementation_->create_shader_module(std::move(desc), spirv_words); });
     }
 
     [[nodiscard]] core::Result<RenderPipelineLayoutStats>
@@ -983,8 +980,7 @@ class OwnerThreadRenderDevice final : public IRenderDevice {
         return core::Status::ok();
     }
 
-    template <typename Callback>
-    [[nodiscard]] core::Status invoke_status(Callback&& callback) {
+    template <typename Callback> [[nodiscard]] core::Status invoke_status(Callback&& callback) {
         auto status = require_owner_thread();
         if (!status) {
             return status;
@@ -1357,6 +1353,7 @@ core::Status validate_render_graphics_pipeline_shape(const RenderGraphicsPipelin
             byte_size = 16;
             break;
         case RenderVertexAttributeFormat::sint16x4:
+        case RenderVertexAttributeFormat::uint16x4:
             byte_size = 8;
             break;
         case RenderVertexAttributeFormat::uint16x2:

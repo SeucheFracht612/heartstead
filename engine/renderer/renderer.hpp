@@ -114,6 +114,9 @@ class Renderer {
     [[nodiscard]] core::Status apply_scene_updates(std::span<const RenderSceneUpdate> updates);
     [[nodiscard]] core::Result<RenderMeshHandle>
     create_static_mesh(const StaticMeshUploadDesc& desc);
+    [[nodiscard]] core::Result<RenderMeshHandle>
+    create_model_primitive(std::string id, const assets::ModelAsset& model,
+                           std::uint32_t primitive_index);
     [[nodiscard]] core::Status release_static_mesh(RenderMeshHandle handle);
     [[nodiscard]] core::Status
     reload_terrain_shaders(std::span<const std::uint32_t> vertex_spirv,

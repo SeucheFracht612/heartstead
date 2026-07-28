@@ -132,11 +132,54 @@ void test_mesh_views_stay_valid_across_growth() {
     assert(manager.shutdown());
 }
 
+void test_skinned_model_primitive_upload() {
+    using namespace heartstead;
+    assets::ModelAsset model;
+    model.vertices = {
+        {{-1.0F, -1.0F, 0.0F}, {0.0F, 0.0F, 1.0F}, {}, {0, 0, 0, 0}, {1.0F, 0.0F, 0.0F, 0.0F}},
+        {{1.0F, -1.0F, 0.0F}, {0.0F, 0.0F, 1.0F}, {}, {1, 0, 0, 0}, {1.0F, 0.0F, 0.0F, 0.0F}},
+        {{0.0F, 1.0F, 0.0F}, {0.0F, 0.0F, 1.0F}, {}, {0, 1, 0, 0}, {0.5F, 0.5F, 0.0F, 0.0F}},
+    };
+    model.indices = {0, 1, 2};
+    model.nodes = {
+        {"mesh", assets::no_model_index, {}},
+        {"joint_0", 0, {}},
+        {"joint_1", 1, {}},
+    };
+    model.primitives = {{"body", 0, 3, 0, 3, 0, 0}};
+    model.skins = {{"body_skin", 1, {1, 2}, {math::Mat4f::identity(), math::Mat4f::identity()}}};
+    model.bounds = {{-1.0F, -1.0F, 0.0F}, {1.0F, 1.0F, 0.0F}};
+    assert(assets::validate_model_asset(model));
+
+    renderer::rhi::RenderDeviceDesc desc;
+    auto device = renderer::rhi::create_render_device(desc);
+    assert(device);
+    renderer::MeshManager manager(*device.value());
+    renderer::MeshManagerConfig config;
+    config.vertex_initial_bytes = 4096;
+    config.vertex_maximum_bytes = 8192;
+    config.index_initial_bytes = 4096;
+    config.index_maximum_bytes = 8192;
+    assert(manager.initialize(config));
+    auto mesh = manager.create_model_primitive("animated_body", model, 0);
+    assert(mesh);
+    const auto* view = manager.find_exact(mesh.value());
+    assert(view != nullptr);
+    assert(view->vertex_count == 3);
+    assert(view->index_count == 3);
+    assert(view->skin_joint_count == 2);
+    assert(view->vertices.size == sizeof(renderer::GpuStaticMeshVertex) * 3);
+    assert(manager.create_model_primitive("animated_body", model, 0).value() == mesh.value());
+    assert(!manager.create_model_primitive("missing", model, 1));
+    assert(manager.shutdown());
+}
+
 } // namespace
 
 int main() {
     test_mesh_upload_cache_fallback_and_release();
     test_invalid_mesh_rejected_without_allocating();
     test_mesh_views_stay_valid_across_growth();
+    test_skinned_model_primitive_upload();
     return 0;
 }
