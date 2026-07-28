@@ -33,6 +33,8 @@ struct RendererStats {
     double voxel_fluid_snapshot_ms = 0.0;
     double voxel_fluid_simulation_ms = 0.0;
     double voxel_fluid_apply_ms = 0.0;
+    double particle_update_ms = 0.0;
+    double particle_presentation_ms = 0.0;
 
     double gpu_opaque_terrain_ms = 0.0;
     double gpu_alpha_tested_terrain_ms = 0.0;
@@ -78,6 +80,10 @@ struct RendererStats {
     std::uint32_t ui_glyphs = 0;
     std::uint32_t voxel_relight_changed_chunks = 0;
     std::uint32_t voxel_fluid_changed_chunks = 0;
+    std::uint32_t particle_active = 0;
+    std::uint32_t particle_emitters = 0;
+    std::uint32_t particle_spawned = 0;
+    std::uint32_t particle_material_groups = 0;
 
     std::uint64_t vertices = 0;
     std::uint64_t triangles = 0;
@@ -107,6 +113,7 @@ struct RendererStats {
     std::uint64_t voxel_fluid_processed_cells = 0;
     std::uint64_t voxel_fluid_budget_exhaustions = 0;
     std::uint64_t voxel_fluid_apply_budget_overruns = 0;
+    std::uint64_t particle_dropped = 0;
 };
 
 [[nodiscard]] std::string format_renderer_stats(const RendererStats& stats);

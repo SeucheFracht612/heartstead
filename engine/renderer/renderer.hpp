@@ -12,6 +12,7 @@
 #include "engine/renderer/frame/frame_builder.hpp"
 #include "engine/renderer/materials/material_runtime_cache.hpp"
 #include "engine/renderer/materials/pipeline_cache.hpp"
+#include "engine/renderer/particles/particle_system.hpp"
 #include "engine/renderer/render_camera.hpp"
 #include "engine/renderer/renderer_stats.hpp"
 #include "engine/renderer/rhi/render_device.hpp"
@@ -107,6 +108,9 @@ class Renderer {
     [[nodiscard]] core::Status set_environment(rhi::RenderEnvironmentData environment);
     void set_voxel_fluid_stats(const world::ChunkFluidSystemStats& fluids) noexcept;
     void set_voxel_lighting_stats(const world::ChunkLightSystemStats& lighting) noexcept;
+    void set_particle_stats(const ParticleSystemStats& particles, double presentation_ms,
+                            std::uint32_t material_groups,
+                            std::uint64_t presentation_dropped = 0) noexcept;
     [[nodiscard]] RenderObjectId reserve_object_id();
     [[nodiscard]] RenderLightId reserve_light_id();
     [[nodiscard]] RenderSkinPaletteId reserve_skin_palette_id();

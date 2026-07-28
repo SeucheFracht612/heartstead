@@ -64,6 +64,8 @@ Implemented in this repository:
 - generic prototype patch data-update and final-fix stages
 - deterministic mod prototype fingerprints for save compatibility metadata, including patches
 - material prototype loading into renderer material definitions
+- typed particle prototypes, deterministic bounded CPU emitters, and instanced billboard
+  presentation
 - material asset-reference validation against active asset catalog records
 - scenario definition materialization plus authoritative new-world startup, saved-scenario
   recovery, spawn/loadout/cargo application, and mismatch rejection

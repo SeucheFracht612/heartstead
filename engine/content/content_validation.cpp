@@ -7,6 +7,7 @@
 #include "engine/modding/mod_validation.hpp"
 #include "engine/processes/process_prototype.hpp"
 #include "engine/renderer/materials/material_prototype_loader.hpp"
+#include "engine/renderer/particles/particle_prototype.hpp"
 #include "engine/rooms/room_descriptor_prototype.hpp"
 #include "engine/scenarios/scenario_prototype.hpp"
 #include "engine/workpieces/workpiece_prototype.hpp"
@@ -149,6 +150,17 @@ ContentValidation::validate(const std::filesystem::path& mods_root,
             continue;
         }
         report.entity_definitions.push_back(std::move(definition).value());
+    }
+
+    for (const auto* prototype :
+         report.registry.prototypes_of_kind(modding::PrototypeKinds::particle)) {
+        auto definition = renderer::particle_prototype_from_generic(*prototype);
+        if (!definition) {
+            add_error(report, prototype->source, definition.error().code,
+                      definition.error().message);
+            continue;
+        }
+        report.particle_prototypes.push_back(std::move(definition).value());
     }
 
     auto voxel_palette = world::voxel_palette_from_prototypes(report.registry);

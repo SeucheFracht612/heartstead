@@ -316,7 +316,14 @@ through M8 so each acceptance scene builds on already verified systems.
   person.
 - The base wandering-animal gameplay module produces identical authoritative, transported, and
   presented trajectories across independent headless sessions, including walk-to-idle blending.
-- Remaining M5 work is the pooled CPU particle/event path and its published stress benchmark.
+- Typed particle prototypes now feed a bounded dense CPU pool with seeded event bursts,
+  generation-safe lifetime/rate emitters, exact-world movement, deterministic overflow, age-driven
+  color/size/atlas frames, and camera-facing retained instance presentation. `dev_game` wires fire
+  embers, block-break puffs, and swim-entry splashes.
+- The `particles` benchmark submits 50,000 active instances in one particle draw with zero drops.
+  The Release reference run measured 0.495 ms median / 0.655 ms p95 simulation update, below the
+  2.0 ms target; retained presentation measured 4.086 ms median / 4.234 ms p95.
+- M5 verification is complete. M6 is the next delivery milestone.
 
 ## M6 — Game UI layer
 

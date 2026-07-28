@@ -79,6 +79,13 @@ struct BenchmarkSummary {
     std::uint64_t total_voxel_fluid_changed_chunks = 0;
     std::uint64_t final_voxel_fluid_budget_exhaustions = 0;
     std::uint64_t final_voxel_fluid_apply_budget_overruns = 0;
+    double median_particle_update_ms = 0.0;
+    double p95_particle_update_ms = 0.0;
+    double median_particle_presentation_ms = 0.0;
+    double p95_particle_presentation_ms = 0.0;
+    std::uint32_t maximum_particle_active = 0;
+    std::uint32_t maximum_particle_material_groups = 0;
+    std::uint64_t final_particle_dropped = 0;
     std::uint64_t total_uploaded_bytes = 0;
     RendererStats slowest_frame{};
 };

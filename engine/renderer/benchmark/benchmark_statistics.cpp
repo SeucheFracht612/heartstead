@@ -139,12 +139,16 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
     std::vector<double> fluid_snapshot_times;
     std::vector<double> fluid_simulation_times;
     std::vector<double> fluid_apply_times;
+    std::vector<double> particle_update_times;
+    std::vector<double> particle_presentation_times;
     frame_times.reserve(samples_.size());
     relight_solve_times.reserve(samples_.size());
     relight_apply_times.reserve(samples_.size());
     fluid_snapshot_times.reserve(samples_.size());
     fluid_simulation_times.reserve(samples_.size());
     fluid_apply_times.reserve(samples_.size());
+    particle_update_times.reserve(samples_.size());
+    particle_presentation_times.reserve(samples_.size());
     double cpu_total = 0.0;
     double gpu_total = 0.0;
     double gpu_upload_total = 0.0;
@@ -171,6 +175,8 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
         fluid_snapshot_times.push_back(sample.voxel_fluid_snapshot_ms);
         fluid_simulation_times.push_back(sample.voxel_fluid_simulation_ms);
         fluid_apply_times.push_back(sample.voxel_fluid_apply_ms);
+        particle_update_times.push_back(sample.particle_update_ms);
+        particle_presentation_times.push_back(sample.particle_presentation_ms);
         cpu_total += sample.cpu_frame_ms;
         extraction_total += sample.render_extraction_ms;
         synchronization_total += sample.chunk_synchronization_ms;
@@ -207,6 +213,12 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
         summary.final_voxel_fluid_apply_budget_overruns =
             std::max(summary.final_voxel_fluid_apply_budget_overruns,
                      sample.voxel_fluid_apply_budget_overruns);
+        summary.maximum_particle_active =
+            std::max(summary.maximum_particle_active, sample.particle_active);
+        summary.maximum_particle_material_groups = std::max(
+            summary.maximum_particle_material_groups, sample.particle_material_groups);
+        summary.final_particle_dropped =
+            std::max(summary.final_particle_dropped, sample.particle_dropped);
         if (sample.gpu_timing_valid) {
             gpu_total += sample.gpu_frame_ms;
             gpu_opaque_total += sample.gpu_opaque_terrain_ms;
@@ -227,6 +239,8 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
     std::ranges::sort(fluid_snapshot_times);
     std::ranges::sort(fluid_simulation_times);
     std::ranges::sort(fluid_apply_times);
+    std::ranges::sort(particle_update_times);
+    std::ranges::sort(particle_presentation_times);
     summary.median_frame_ms = percentile(frame_times, 0.50);
     summary.p95_frame_ms = percentile(frame_times, 0.95);
     summary.p99_frame_ms = percentile(frame_times, 0.99);
@@ -243,6 +257,10 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
     summary.p95_voxel_fluid_simulation_ms = percentile(fluid_simulation_times, 0.95);
     summary.median_voxel_fluid_apply_ms = percentile(fluid_apply_times, 0.50);
     summary.p95_voxel_fluid_apply_ms = percentile(fluid_apply_times, 0.95);
+    summary.median_particle_update_ms = percentile(particle_update_times, 0.50);
+    summary.p95_particle_update_ms = percentile(particle_update_times, 0.95);
+    summary.median_particle_presentation_ms = percentile(particle_presentation_times, 0.50);
+    summary.p95_particle_presentation_ms = percentile(particle_presentation_times, 0.95);
     summary.slowest_frame = *std::ranges::max_element(
         samples_, {}, [](const RendererStats& sample) { return sample.cpu_frame_ms; });
     const auto sample_count = static_cast<double>(samples_.size());
@@ -367,6 +385,16 @@ std::string BenchmarkRecorder::to_json() const {
            << summary.final_voxel_fluid_budget_exhaustions << ",\n"
            << "    \"final_voxel_fluid_apply_budget_overruns\": "
            << summary.final_voxel_fluid_apply_budget_overruns << ",\n"
+           << "    \"median_particle_update_ms\": " << summary.median_particle_update_ms << ",\n"
+           << "    \"p95_particle_update_ms\": " << summary.p95_particle_update_ms << ",\n"
+           << "    \"median_particle_presentation_ms\": "
+           << summary.median_particle_presentation_ms << ",\n"
+           << "    \"p95_particle_presentation_ms\": "
+           << summary.p95_particle_presentation_ms << ",\n"
+           << "    \"maximum_particle_active\": " << summary.maximum_particle_active << ",\n"
+           << "    \"maximum_particle_material_groups\": "
+           << summary.maximum_particle_material_groups << ",\n"
+           << "    \"final_particle_dropped\": " << summary.final_particle_dropped << ",\n"
            << "    \"total_uploaded_bytes\": " << summary.total_uploaded_bytes << ",\n"
            << "    \"slowest_frame\": {\"frame\": " << summary.slowest_frame.frame_index
            << ", \"cpu_frame_ms\": " << summary.slowest_frame.cpu_frame_ms
@@ -429,6 +457,13 @@ std::string BenchmarkRecorder::to_json() const {
                << sample.voxel_fluid_budget_exhaustions
                << ", \"voxel_fluid_apply_budget_overruns\": "
                << sample.voxel_fluid_apply_budget_overruns
+               << ", \"particle_update_ms\": " << sample.particle_update_ms
+               << ", \"particle_presentation_ms\": " << sample.particle_presentation_ms
+               << ", \"particle_active\": " << sample.particle_active
+               << ", \"particle_emitters\": " << sample.particle_emitters
+               << ", \"particle_spawned\": " << sample.particle_spawned
+               << ", \"particle_material_groups\": " << sample.particle_material_groups
+               << ", \"particle_dropped\": " << sample.particle_dropped
                << ", \"loaded_chunks\": " << sample.loaded_chunks
                << ", \"mesh_pending_chunks\": " << sample.mesh_pending_chunks
                << ", \"upload_pending_chunks\": " << sample.upload_pending_chunks
@@ -597,6 +632,13 @@ std::string format_benchmark_summary(const BenchmarkSummary& summary) {
            << "ms apply fluid_cells=" << summary.maximum_voxel_fluid_processed_cells << '/'
            << summary.maximum_voxel_fluid_active_cells
            << " fluid_budget_exhaustions=" << summary.final_voxel_fluid_budget_exhaustions;
+    output << " particles=" << summary.maximum_particle_active
+           << " update=" << summary.median_particle_update_ms << '/'
+           << summary.p95_particle_update_ms << "ms present="
+           << summary.median_particle_presentation_ms << '/'
+           << summary.p95_particle_presentation_ms << "ms groups="
+           << summary.maximum_particle_material_groups
+           << " dropped=" << summary.final_particle_dropped;
     output << " sync=" << summary.mean_chunk_synchronization_ms
            << "ms cull=" << summary.mean_culling_ms << "ms build=" << summary.mean_command_build_ms
            << "ms record=" << summary.mean_command_recording_ms

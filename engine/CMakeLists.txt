@@ -103,6 +103,8 @@ target_sources(
     renderer/materials/material_pipeline_layout.cpp
     renderer/materials/pipeline_cache.cpp
     renderer/materials/material_prototype_loader.cpp
+    renderer/particles/particle_prototype.cpp
+    renderer/particles/particle_system.cpp
     renderer/camera/frustum.cpp
     renderer/chunks/chunk_gpu_cache.cpp
     renderer/chunks/chunk_mesh_scheduler.cpp
@@ -301,6 +303,8 @@ target_sources(
       renderer/materials/material_pipeline_layout.hpp
       renderer/materials/pipeline_cache.hpp
       renderer/materials/material_prototype_loader.hpp
+      renderer/particles/particle_prototype.hpp
+      renderer/particles/particle_system.hpp
       renderer/camera/frustum.hpp
       renderer/chunks/chunk_gpu_cache.hpp
       renderer/chunks/chunk_mesh_scheduler.hpp

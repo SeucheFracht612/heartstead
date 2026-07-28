@@ -68,6 +68,7 @@ constexpr std::uint16_t water_type = 5;
     case BenchmarkSceneKind::large_coordinates:
     case BenchmarkSceneKind::resize_minimize_stress:
     case BenchmarkSceneKind::active_water:
+    case BenchmarkSceneKind::particle_stress:
         return BenchmarkSceneKind::flat_terrain;
     }
     return BenchmarkSceneKind::flat_terrain;
@@ -99,6 +100,8 @@ std::string_view benchmark_scene_name(BenchmarkSceneKind kind) noexcept {
         return "resize-minimize";
     case BenchmarkSceneKind::active_water:
         return "active-water";
+    case BenchmarkSceneKind::particle_stress:
+        return "particles";
     }
     return "unknown";
 }
@@ -110,7 +113,7 @@ std::optional<BenchmarkSceneKind> parse_benchmark_scene(std::string_view name) n
         BenchmarkSceneKind::forest_cross_planes,   BenchmarkSceneKind::rapid_voxel_edits,
         BenchmarkSceneKind::high_speed_flythrough, BenchmarkSceneKind::chunk_load_unload_churn,
         BenchmarkSceneKind::large_coordinates,     BenchmarkSceneKind::resize_minimize_stress,
-        BenchmarkSceneKind::active_water,
+        BenchmarkSceneKind::active_water,          BenchmarkSceneKind::particle_stress,
     };
     const auto found = std::ranges::find_if(
         kinds, [name](BenchmarkSceneKind kind) { return benchmark_scene_name(kind) == name; });
@@ -354,6 +357,7 @@ std::vector<world::VoxelCell> BenchmarkScene::generate_cells(world::ChunkCoord c
                 case BenchmarkSceneKind::large_coordinates:
                 case BenchmarkSceneKind::resize_minimize_stress:
                 case BenchmarkSceneKind::active_water:
+                case BenchmarkSceneKind::particle_stress:
                     break;
                 }
                 if (type != 0) {
@@ -399,6 +403,7 @@ core::Result<BenchmarkSceneStep> BenchmarkScene::advance(std::uint64_t frame_ind
     case BenchmarkSceneKind::checkerboard_geometry:
     case BenchmarkSceneKind::forest_cross_planes:
     case BenchmarkSceneKind::active_water:
+    case BenchmarkSceneKind::particle_stress:
         break;
     }
     if (!status) {

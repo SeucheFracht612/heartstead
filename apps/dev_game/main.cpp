@@ -16,12 +16,14 @@
 #include "game/features/interaction/voxel_raycast.hpp"
 #include "game/presentation/animated_model_presentation.hpp"
 #include "game/presentation/client_audio_presentation.hpp"
+#include "game/presentation/particle_presentation.hpp"
 #include "game/runtime/game_runtime.hpp"
 
 #include <algorithm>
 #include <array>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -365,6 +367,10 @@ renderer::RenderCamera render_camera_from(const movement::PlayerCameraFrame& fra
     camera.view = frame.view;
     camera.projection = frame.projection;
     camera.view_projection = frame.view_projection;
+    camera.yaw_radians =
+        std::atan2(static_cast<float>(frame.forward.x), static_cast<float>(frame.forward.z));
+    camera.pitch_radians = std::asin(
+        std::clamp(static_cast<float>(frame.forward.y), -1.0F, 1.0F));
     return camera;
 }
 
@@ -454,6 +460,31 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
     if (!status) {
         return fail(status.error());
     }
+    renderer::ParticleSystemConfig particle_config;
+    particle_config.maximum_particles = 8'192;
+    particle_config.maximum_emitters = 64;
+    particle_config.maximum_queued_events = 1'024;
+    particle_config.maximum_spawns_per_update = 2'048;
+    auto particle_system =
+        renderer::CpuParticleSystem::create(particle_config, content_report.particle_prototypes);
+    if (!particle_system) {
+        return fail(particle_system.error());
+    }
+    game::ParticlePresentation particle_presentation;
+    status = particle_presentation.initialize(
+        renderer, {.maximum_presented_particles = particle_config.maximum_particles});
+    if (!status) {
+        return fail(status.error());
+    }
+    const auto fire_ember = core::PrototypeId::parse("base:particles/fire_ember");
+    const auto block_break_puff = core::PrototypeId::parse("base:particles/block_break_puff");
+    const auto splash = core::PrototypeId::parse("base:particles/splash");
+    if (!fire_ember || !block_break_puff || !splash) {
+        return fail("base particle prototype ids are invalid");
+    }
+    renderer::ParticleEmitterId fire_emitter;
+    std::uint64_t particle_seed = 1;
+    bool was_swimming = false;
     auto audio_system = runtime.create_audio_system(audio::AudioBackend::miniaudio);
     if (!audio_system) {
         return fail(audio_system.error());
@@ -554,6 +585,40 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
             if (!status) {
                 return fail(status.error());
             }
+            if (!fire_emitter.is_valid()) {
+                auto fire_position = world::WorldPosition::from_anchor(
+                    player->state.position.anchor,
+                    player->state.position.local_offset + math::Vec3d{2.0, 0.35, 2.0});
+                if (!fire_position) {
+                    return fail(fire_position.error());
+                }
+                renderer::ParticleEmitterDesc emitter;
+                emitter.prototype_id = *fire_ember;
+                emitter.position = fire_position.value();
+                emitter.lifetime_seconds = 3'600.0F;
+                emitter.rate_per_second = 18.0F;
+                emitter.burst_count = 8;
+                emitter.seed = particle_seed++;
+                auto created_emitter = particle_system.value().create_emitter(emitter);
+                if (!created_emitter) {
+                    return fail(created_emitter.error());
+                }
+                fire_emitter = created_emitter.value();
+            }
+            const auto swimming =
+                player->state.mode == movement::PlayerControllerMode::swimming;
+            if (swimming && !was_swimming) {
+                status = particle_system.value().queue_event(
+                    {*splash, player->state.position, {0.0F, 1.0F, 0.0F},
+                     {static_cast<float>(player->state.velocity.x),
+                      static_cast<float>(player->state.velocity.y),
+                      static_cast<float>(player->state.velocity.z)},
+                     24, particle_seed++});
+                if (!status) {
+                    return fail(status.error());
+                }
+            }
+            was_swimming = swimming;
             if (action_frame[input::InputAction::primary_action].pressed ||
                 action_frame[input::InputAction::secondary_action].pressed) {
                 auto selection = game::interaction::raycast_voxels(
@@ -575,6 +640,19 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
                     if (!status) {
                         return fail(status.error());
                     }
+                    if (action_frame[input::InputAction::primary_action].pressed) {
+                        auto puff_position = world::WorldPosition::from_anchor(
+                            hit->block, {0.5, 0.5, 0.5});
+                        if (!puff_position) {
+                            return fail(puff_position.error());
+                        }
+                        status = particle_system.value().queue_event(
+                            {*block_break_puff, puff_position.value(), {0.0F, 1.0F, 0.0F}, {},
+                             18, particle_seed++});
+                        if (!status) {
+                            return fail(status.error());
+                        }
+                    }
                 }
             }
             if (action_frame[input::InputAction::drop_item].pressed) {
@@ -585,6 +663,11 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
                 }
             }
             auto camera = render_camera_from(camera_frame.value());
+            status = particle_system.value().update(
+                static_cast<float>(frame_us) / 1'000'000.0F);
+            if (!status) {
+                return fail(status.error());
+            }
             status = renderer.synchronize_chunks(runtime.session()->client()->world(), camera);
             if (!status) {
                 return fail(status.error());
@@ -605,6 +688,14 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
             if (!animated_stats) {
                 return fail(animated_stats.error());
             }
+            auto particle_stats =
+                particle_presentation.synchronize(renderer, particle_system.value(), camera);
+            if (!particle_stats) {
+                return fail(particle_stats.error());
+            }
+            renderer.set_particle_stats(
+                particle_system.value().stats(), particle_stats.value().synchronize_ms,
+                particle_stats.value().material_groups, particle_stats.value().dropped_particles);
             if (auto* ui = renderer.ui_renderer(); ui != nullptr) {
                 status = submit_gameplay_ui(*ui, extent);
                 if (!status) {
@@ -628,6 +719,10 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
         return fail(status.error());
     }
     audio_system.value().reset();
+    status = particle_presentation.shutdown(renderer);
+    if (!status) {
+        return fail(status.error());
+    }
     status = animated_models.shutdown(renderer);
     if (!status) {
         return fail(status.error());

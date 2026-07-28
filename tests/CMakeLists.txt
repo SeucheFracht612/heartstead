@@ -125,6 +125,7 @@ heartstead_add_foundation_test(heartstead_simulation_runtime_tests simulation_ru
 heartstead_add_foundation_test(heartstead_entity_world_tests entity_world_tests.cpp)
 heartstead_add_foundation_test(heartstead_entity_motion_snapshot_tests
                                entity_motion_snapshot_tests.cpp)
+heartstead_add_foundation_test(heartstead_particle_system_tests particle_system_tests.cpp)
 heartstead_add_foundation_test(heartstead_movement_controller_tests movement_controller_tests.cpp)
 heartstead_add_foundation_test(heartstead_file_io_tests file_io_tests.cpp)
 heartstead_add_foundation_test(heartstead_process_entry_tests process_entry_tests.cpp)
@@ -133,6 +134,11 @@ add_executable(heartstead_gameplay_input_tests gameplay_input_tests.cpp)
 target_link_libraries(heartstead_gameplay_input_tests PRIVATE Heartstead::GameRuntime)
 heartstead_configure_test_target(heartstead_gameplay_input_tests)
 heartstead_register_unit_test(heartstead_gameplay_input_tests)
+
+add_executable(heartstead_particle_presentation_tests particle_presentation_tests.cpp)
+target_link_libraries(heartstead_particle_presentation_tests PRIVATE Heartstead::GameRuntime)
+heartstead_configure_test_target(heartstead_particle_presentation_tests)
+heartstead_register_unit_test(heartstead_particle_presentation_tests)
 
 function(heartstead_add_smoke_test test_name target_name)
   if(TARGET ${target_name})
@@ -184,6 +190,20 @@ heartstead_add_smoke_test(
   3
   --output
   ${CMAKE_CURRENT_BINARY_DIR}/smoke_render_benchmark_fluids.json
+)
+heartstead_add_smoke_test(
+  smoke.render_benchmark_particles
+  heartstead_render_benchmark
+  --scene
+  particles
+  --radius
+  0
+  --warmup
+  0
+  --frames
+  1
+  --output
+  ${CMAKE_CURRENT_BINARY_DIR}/smoke_render_benchmark_particles.json
 )
 heartstead_add_smoke_test(smoke.audio_benchmark heartstead_audio_benchmark --voices 16 --warmup 2
                           --blocks 3)

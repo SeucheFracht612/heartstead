@@ -934,6 +934,18 @@ void Renderer::set_voxel_fluid_stats(const world::ChunkFluidSystemStats& fluids)
     stats_.voxel_fluid_apply_budget_overruns = fluids.apply_budget_overruns;
 }
 
+void Renderer::set_particle_stats(const ParticleSystemStats& particles, double presentation_ms,
+                                  std::uint32_t material_groups,
+                                  std::uint64_t presentation_dropped) noexcept {
+    stats_.particle_update_ms = particles.update_ms;
+    stats_.particle_presentation_ms = presentation_ms;
+    stats_.particle_active = particles.active_particles;
+    stats_.particle_emitters = particles.active_emitters;
+    stats_.particle_spawned = particles.spawned_this_update;
+    stats_.particle_material_groups = material_groups;
+    stats_.particle_dropped = particles.dropped_particles + presentation_dropped;
+}
+
 RenderObjectId Renderer::reserve_object_id() {
     return scene_.reserve_object_id();
 }

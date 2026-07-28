@@ -3,10 +3,12 @@
 #include "engine/platform/platform.hpp"
 #include "engine/renderer/benchmark/benchmark_scene.hpp"
 #include "engine/renderer/benchmark/benchmark_statistics.hpp"
+#include "engine/renderer/particles/particle_system.hpp"
 #include "engine/renderer/renderer.hpp"
 #include "engine/renderer/shaders/spirv_loader.hpp"
 #include "engine/world/fluids/chunk_fluid_system.hpp"
 #include "engine/world/lighting/chunk_light_system.hpp"
+#include "game/presentation/particle_presentation.hpp"
 
 #include <charconv>
 #include <chrono>
@@ -133,11 +135,29 @@ struct Options {
                             {12, 12, 300, 54}});
 }
 
+[[nodiscard]] renderer::ParticlePrototype particle_stress_prototype() {
+    renderer::ParticlePrototype prototype;
+    prototype.id = *core::PrototypeId::parse("benchmark:particles/stress");
+    prototype.lifetime_min_seconds = 600.0F;
+    prototype.lifetime_max_seconds = 600.0F;
+    prototype.speed_min = 0.0F;
+    prototype.speed_max = 0.0F;
+    prototype.direction_spread = 0.0F;
+    prototype.gravity = 0.0F;
+    prototype.drag = 0.0F;
+    prototype.size_min = 0.08F;
+    prototype.size_max = 0.08F;
+    prototype.end_size_multiplier = 1.0F;
+    prototype.start_color = {1.0F, 0.32F, 0.04F, 0.9F};
+    prototype.end_color = prototype.start_color;
+    return prototype;
+}
+
 void print_usage(std::ostream& output) {
     output << "Usage: heartstead_render_benchmark [options]\n"
               "  --scene NAME       flat, mountains, caves, checkerboard, forest, rapid-edits,\n"
               "                     flythrough, churn, large-coordinates, resize-minimize,\n"
-              "                     active-water\n"
+              "                     active-water, particles\n"
               "  --vulkan           Use a native Vulkan window (headless is the default)\n"
               "  --headless         Use the deterministic validation backend\n"
               "  --frames N         Measured frames (default 300)\n"
@@ -161,7 +181,7 @@ void print_scenes() {
         Kind::flat_terrain,           Kind::mountainous_terrain,     Kind::dense_caves,
         Kind::checkerboard_geometry,  Kind::forest_cross_planes,     Kind::rapid_voxel_edits,
         Kind::high_speed_flythrough,  Kind::chunk_load_unload_churn, Kind::large_coordinates,
-        Kind::resize_minimize_stress, Kind::active_water,
+        Kind::resize_minimize_stress, Kind::active_water, Kind::particle_stress,
     };
     for (const auto kind : kinds) {
         std::cout << renderer::benchmark::benchmark_scene_name(kind) << '\n';
@@ -544,6 +564,55 @@ int main(int argc, char** argv) {
         if (!chunk_fluids) {
             return fail(chunk_fluids.error().message);
         }
+        std::optional<renderer::CpuParticleSystem> particle_system;
+        game::ParticlePresentation particle_presentation;
+        if (options.scene == renderer::benchmark::BenchmarkSceneKind::particle_stress) {
+            renderer::ParticleSystemConfig particle_config;
+            particle_config.maximum_particles = 50'000;
+            particle_config.maximum_emitters = 1;
+            particle_config.maximum_queued_events = 1;
+            particle_config.maximum_spawns_per_update = 50'000;
+            const std::array prototypes{particle_stress_prototype()};
+            auto created_particles =
+                renderer::CpuParticleSystem::create(particle_config, prototypes);
+            if (!created_particles) {
+                return fail(created_particles.error().message);
+            }
+            particle_system.emplace(std::move(created_particles).value());
+            auto particle_origin = world::WorldPosition::from_anchor(
+                scene.value()->camera().floating_origin.block,
+                math::Vec3d{0.0, 24.0, 0.0} +
+                    math::Vec3d{
+                        static_cast<double>(scene.value()->camera().forward().x),
+                        static_cast<double>(scene.value()->camera().forward().y),
+                        static_cast<double>(scene.value()->camera().forward().z)} *
+                        24.0);
+            if (!particle_origin) {
+                return fail(particle_origin.error().message);
+            }
+            status = particle_system->queue_event(
+                {prototypes.front().id, particle_origin.value(), {0.0F, 1.0F, 0.0F}, {},
+                 50'000, options.seed == 0 ? 1 : options.seed});
+            if (!status) {
+                return fail(status.error().message);
+            }
+            status = particle_system->update(1.0F / 60.0F);
+            if (!status) {
+                return fail(status.error().message);
+            }
+            status = particle_presentation.initialize(active_renderer);
+            if (!status) {
+                return fail(status.error().message);
+            }
+            auto presented = particle_presentation.synchronize(
+                active_renderer, *particle_system, scene.value()->camera());
+            if (!presented) {
+                return fail(presented.error().message);
+            }
+            active_renderer.set_particle_stats(
+                particle_system->stats(), presented.value().synchronize_ms,
+                presented.value().material_groups, presented.value().dropped_particles);
+        }
         if (options.scene == renderer::benchmark::BenchmarkSceneKind::forest_cross_planes) {
             status = populate_instanced_forest_props(active_renderer, scene.value()->camera());
             if (!status) {
@@ -646,6 +715,20 @@ int main(int argc, char** argv) {
                 return fail(status.error().message);
             }
             active_renderer.set_voxel_fluid_stats(chunk_fluids.value()->stats());
+            if (particle_system.has_value()) {
+                status = particle_system->update(1.0F / 60.0F);
+                if (!status) {
+                    return fail(status.error().message);
+                }
+                auto presented = particle_presentation.synchronize(
+                    active_renderer, *particle_system, scene.value()->camera());
+                if (!presented) {
+                    return fail(presented.error().message);
+                }
+                active_renderer.set_particle_stats(
+                    particle_system->stats(), presented.value().synchronize_ms,
+                    presented.value().material_groups, presented.value().dropped_particles);
+            }
             auto lighting = settle_chunk_lighting(*chunk_lighting.value(), scene.value()->world(),
                                                   scene.value()->palette());
             if (!lighting) {
@@ -700,6 +783,12 @@ int main(int argc, char** argv) {
         }
 
         chunk_lighting.value()->shutdown();
+        if (particle_presentation.is_initialized()) {
+            status = particle_presentation.shutdown(active_renderer);
+            if (!status) {
+                return fail(status.error().message);
+            }
+        }
         status = active_renderer.shutdown();
         if (!status) {
             return fail(status.error().message);

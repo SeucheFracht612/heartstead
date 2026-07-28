@@ -29,6 +29,7 @@ enum class BenchmarkSceneKind {
     large_coordinates,
     resize_minimize_stress,
     active_water,
+    particle_stress,
 };
 
 [[nodiscard]] std::string_view benchmark_scene_name(BenchmarkSceneKind kind) noexcept;

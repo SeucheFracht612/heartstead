@@ -39,6 +39,7 @@ struct PrototypeKinds {
     static constexpr std::string_view ward = "ward";
     static constexpr std::string_view admin_command = "admin_command";
     static constexpr std::string_view sound_event = "sound_event";
+    static constexpr std::string_view particle = "particle";
 };
 
 struct PrototypeRegistryBuildResult {

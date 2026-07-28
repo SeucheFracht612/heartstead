@@ -153,7 +153,8 @@ Implemented foundation:
   - gameplay submits generation-safe object and light proxies through `RenderScene`; removal is
     explicit and stale update/removal handles are rejected
   - object proxies retain exact integer world anchors, previous/current local transforms, mesh and
-    material asset handles, conservative local bounds, render layer, color, and optional parent
+    material asset handles, conservative local bounds, render layer, color, sprite/atlas frame,
+    and optional parent
   - extraction interpolates only local floating-point transforms, resolves parent/assembly
     hierarchies from an exact root anchor, converts roots relative to the camera floating origin,
     and frustum-culls transformed bounds
@@ -161,7 +162,8 @@ Implemented foundation:
     batches; hidden, visible, culled, retained, and batch counts are reported
   - directional and point lights are retained independently and extracted into camera-relative
     frame data without searching gameplay/entity databases
-  - `MeshManager` validates an explicit 32-byte static-mesh vertex ABI, caches shared assets by id,
+  - `MeshManager` validates an explicit 56-byte unified static/skinned-mesh vertex ABI, caches
+    shared assets by id,
     suballocates device-local vertex/index arenas, retires released ranges by submission serial, and
     resolves stale/missing handles to a visible manager-owned error cube
   - `SceneRenderSystem` flattens batches into a 96-byte instance ABI (camera-relative matrix,
@@ -173,6 +175,9 @@ Implemented foundation:
     concatenated, so there is not yet one global cross-category transparency sort
   - instance capacity is a fixed configuration budget: overflow is delayed/dropped visibly in
     statistics instead of growing frame memory without bound
+  - the bounded CPU particle system and retained billboard bridge are described in
+    [particles.md](particles.md); their stress scene uses the same instance ABI and publishes
+    simulation/presentation timings separately
 
 - Gameplay rendering tools
   - `DebugRenderer` accepts thread-safe one-frame or timed lines, rays, axes, AABBs, oriented

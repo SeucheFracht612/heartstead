@@ -224,6 +224,7 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
             gpu.metadata[0] = static_cast<std::uint32_t>(instance.layer);
             gpu.metadata[1] = skin_matrix_offset;
             gpu.metadata[2] = skin_matrix_count;
+            gpu.metadata[3] = instance.sprite_frame;
             instance_scratch_.push_back(gpu);
         }
         const auto accepted = instance_scratch_.size() - first_instance_in_segment;

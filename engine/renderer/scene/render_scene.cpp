@@ -244,6 +244,21 @@ core::Status RenderScene::upsert_object(const RenderObjectProxy& object) {
         }
         parent = parent_proxy->parent;
     }
+    const auto previous_parent = slot->occupied ? slot->proxy.parent : RenderObjectId{};
+    if (previous_parent != object.parent) {
+        if (previous_parent.is_valid()) {
+            auto& previous_parent_slot = objects_[previous_parent.index - 1U];
+            if (previous_parent_slot.child_count == 0) {
+                return core::Status::failure(
+                    "render_scene.invalid_child_count",
+                    "render object hierarchy child count is inconsistent");
+            }
+            --previous_parent_slot.child_count;
+        }
+        if (object.parent.is_valid()) {
+            ++objects_[object.parent.index - 1U].child_count;
+        }
+    }
     slot->proxy = object;
     slot->occupied = true;
     return core::Status::ok();
@@ -254,12 +269,21 @@ core::Status RenderScene::remove_object(RenderObjectId id) {
         return core::Status::failure("render_scene.stale_object_id",
                                      "render object removal uses an unknown or stale generation");
     }
-    if (std::ranges::any_of(objects_, [id](const ObjectSlot& slot) {
-            return slot.occupied && slot.proxy.parent == id;
-        })) {
+    auto& slot = objects_[id.index - 1U];
+    if (slot.child_count != 0) {
         return core::Status::failure("render_scene.object_has_children",
                                      "render object must have its children removed first");
     }
+    if (slot.proxy.parent.is_valid()) {
+        auto& parent_slot = objects_[slot.proxy.parent.index - 1U];
+        if (parent_slot.child_count == 0) {
+            return core::Status::failure(
+                "render_scene.invalid_child_count",
+                "render object hierarchy child count is inconsistent");
+        }
+        --parent_slot.child_count;
+    }
+    slot.child_count = 0;
     release_slot(objects_, free_objects_, id);
     return core::Status::ok();
 }
@@ -421,7 +445,8 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
         }
         RenderObjectInstance instance{
             object.id,    object.mesh,       object.material, object.skin_palette,
-            object.layer, transform.value(), bounds,          object.color};
+            object.layer, transform.value(), bounds,          object.color,
+            object.sprite_frame};
         auto batch =
             std::ranges::find_if(frame.batches, [&object](const RenderInstanceBatch& value) {
                 return value.mesh == object.mesh && value.material == object.material &&
@@ -477,6 +502,7 @@ void RenderScene::clear() noexcept {
         }
         slot.reserved = false;
         slot.occupied = false;
+        slot.child_count = 0;
         slot.proxy = {};
         free_objects_.push_back(static_cast<std::uint32_t>(objects_.size() - index - 1U));
     }

@@ -1,5 +1,5 @@
 add_executable(heartstead_render_benchmark main.cpp)
-target_link_libraries(heartstead_render_benchmark PRIVATE Heartstead::Engine)
+target_link_libraries(heartstead_render_benchmark PRIVATE Heartstead::GameRuntime)
 target_compile_definitions(
   heartstead_render_benchmark
   PRIVATE

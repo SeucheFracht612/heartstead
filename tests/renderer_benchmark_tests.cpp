@@ -153,7 +153,7 @@ void test_all_deterministic_scenes_construct() {
         BenchmarkSceneKind::forest_cross_planes,   BenchmarkSceneKind::rapid_voxel_edits,
         BenchmarkSceneKind::high_speed_flythrough, BenchmarkSceneKind::chunk_load_unload_churn,
         BenchmarkSceneKind::large_coordinates,     BenchmarkSceneKind::resize_minimize_stress,
-        BenchmarkSceneKind::active_water,
+        BenchmarkSceneKind::active_water,          BenchmarkSceneKind::particle_stress,
     };
     for (const auto kind : kinds) {
         BenchmarkSceneConfig config;
