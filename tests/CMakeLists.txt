@@ -84,6 +84,7 @@ heartstead_add_foundation_test(heartstead_chunk_collision_tests chunk_collision_
 heartstead_add_foundation_test(heartstead_physics_character_tests physics_character_tests.cpp)
 heartstead_add_foundation_test(heartstead_physical_resource_physics_tests
                                physical_resource_physics_tests.cpp)
+heartstead_add_foundation_test(heartstead_audio_system_tests audio_system_tests.cpp)
 heartstead_add_foundation_test(heartstead_voxel_light_tests voxel_light_tests.cpp)
 heartstead_add_foundation_test(heartstead_voxel_fluid_tests voxel_fluid_tests.cpp)
 heartstead_add_foundation_test(heartstead_chunk_light_system_tests

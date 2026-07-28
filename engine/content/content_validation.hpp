@@ -3,6 +3,7 @@
 #include "engine/assemblies/assembly.hpp"
 #include "engine/assets/asset_catalog.hpp"
 #include "engine/assets/resource_pack.hpp"
+#include "engine/audio/sound_event.hpp"
 #include "engine/cargo/cargo.hpp"
 #include "engine/core/result.hpp"
 #include "engine/entities/entity.hpp"
@@ -44,6 +45,7 @@ struct ContentValidationReport {
     std::vector<scripting::ScriptModuleDesc> script_modules;
     modding::PrototypeRegistry registry;
     assets::AssetCatalog asset_catalog;
+    audio::SoundEventRegistry sound_events;
     std::vector<items::ItemDefinition> item_definitions;
     std::vector<cargo::CargoDefinition> cargo_definitions;
     std::vector<entities::EntityDefinition> entity_definitions;

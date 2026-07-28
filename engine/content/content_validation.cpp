@@ -224,6 +224,14 @@ ContentValidation::validate(const std::filesystem::path& mods_root,
         report.material_registry, report.asset_catalog);
     append_diagnostics_copy(report.diagnostics, report.material_assets.diagnostics);
 
+    auto sound_events =
+        audio::sound_event_registry_from_prototypes(report.registry, report.asset_catalog);
+    if (!sound_events) {
+        add_error(report, mods_root, sound_events.error().code, sound_events.error().message);
+        return report;
+    }
+    report.sound_events = std::move(sound_events).value();
+
     return report;
 }
 

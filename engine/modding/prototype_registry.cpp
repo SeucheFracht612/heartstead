@@ -19,7 +19,8 @@ namespace {
            kind == PrototypeKinds::world_feature || kind == PrototypeKinds::crop ||
            kind == PrototypeKinds::animal || kind == PrototypeKinds::map_layer ||
            kind == PrototypeKinds::ui_panel || kind == PrototypeKinds::network ||
-           kind == PrototypeKinds::ward || kind == PrototypeKinds::admin_command;
+           kind == PrototypeKinds::ward || kind == PrototypeKinds::admin_command ||
+           kind == PrototypeKinds::sound_event;
 }
 
 } // namespace

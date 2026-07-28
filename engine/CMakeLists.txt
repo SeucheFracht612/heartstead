@@ -10,6 +10,9 @@ target_sources(
     assets/cooked_asset_store.cpp
     assets/resource_pack.cpp
     assets/virtual_file_system.cpp
+    audio/audio_mixer.cpp
+    audio/audio_system.cpp
+    audio/sound_event.cpp
     assemblies/assembly.cpp
     assemblies/assembly_prototype.cpp
     build/build_piece.cpp
@@ -191,6 +194,10 @@ target_sources(
       assets/cooked_asset_store.hpp
       assets/resource_pack.hpp
       assets/virtual_file_system.hpp
+      audio/audio_mixer.hpp
+      audio/audio_system.hpp
+      audio/audio_types.hpp
+      audio/sound_event.hpp
       assemblies/assembly.hpp
       assemblies/assembly_prototype.hpp
       build/build_piece.hpp
