@@ -54,6 +54,10 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize() {
                             std::make_move_iterator(results.end()));
     auto movement_messages =
         session_.drain_replication_messages(movement::movement_snapshot_payload_type);
+    auto entity_motion_messages =
+        session_.drain_replication_messages(entities::entity_motion_snapshot_payload_type);
+    auto entity_motion_removals =
+        session_.drain_replication_messages(entities::entity_motion_removal_payload_type);
     auto assignments =
         session_.drain_replication_messages(movement::player_assignment_payload_type);
     auto removals = session_.drain_replication_messages(movement::player_removal_payload_type);
@@ -95,10 +99,36 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize() {
         movement_snapshots_.insert_or_assign(player_key, std::move(snapshot).value());
         ++movement_snapshot_count;
     }
+    for (const auto& message : entity_motion_removals) {
+        auto removal = entities::entity_motion_removal_from_transport(message);
+        if (!removal) {
+            return core::Result<ClientRuntimeStats>::failure(removal.error().code,
+                                                             removal.error().message);
+        }
+        entity_motion_snapshots_.erase(removal.value().value());
+    }
+    std::uint32_t entity_motion_snapshot_count = 0;
+    for (const auto& message : entity_motion_messages) {
+        auto snapshot = entities::entity_motion_snapshot_from_transport(message);
+        if (!snapshot) {
+            return core::Result<ClientRuntimeStats>::failure(snapshot.error().code,
+                                                             snapshot.error().message);
+        }
+        const auto key = snapshot.value().entity_net_id.value();
+        const auto found = entity_motion_snapshots_.find(key);
+        if (found != entity_motion_snapshots_.end() &&
+            found->second.simulation_tick >= snapshot.value().simulation_tick) {
+            continue;
+        }
+        entity_motion_snapshots_.insert_or_assign(key, std::move(snapshot).value());
+        ++entity_motion_snapshot_count;
+    }
     ClientRuntimeStats stats;
     stats.received_message_count = messages_since_sync_;
     stats.command_result_count = result_count;
     stats.movement_snapshot_count = movement_snapshot_count;
+    stats.entity_motion_snapshot_count = entity_motion_snapshot_count;
+    stats.entity_motion_tombstone_count = static_cast<std::uint32_t>(entity_motion_removals.size());
     stats.player_tombstone_count = static_cast<std::uint32_t>(player_tombstones_.size());
     stats.chunk_snapshot_slice_count = completed_chunks.value().slice_count;
     stats.completed_chunk_snapshot_count = completed_chunks.value().completed_chunk_count;
@@ -163,6 +193,18 @@ std::vector<const movement::PlayerControllerSnapshot*> ClientRuntime::movement_s
     }
     std::ranges::sort(result, [](const auto* lhs, const auto* rhs) {
         return lhs->player_net_id.value() < rhs->player_net_id.value();
+    });
+    return result;
+}
+
+std::vector<const entities::EntityMotionSnapshot*> ClientRuntime::entity_motion_snapshots() const {
+    std::vector<const entities::EntityMotionSnapshot*> result;
+    result.reserve(entity_motion_snapshots_.size());
+    for (const auto& [_, snapshot] : entity_motion_snapshots_) {
+        result.push_back(&snapshot);
+    }
+    std::ranges::sort(result, [](const auto* lhs, const auto* rhs) {
+        return lhs->entity_net_id.value() < rhs->entity_net_id.value();
     });
     return result;
 }

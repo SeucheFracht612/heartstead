@@ -7,6 +7,7 @@ target_sources(
     features/interaction/voxel_raycast.cpp
     features/interaction/voxel_commands.cpp
     features/interaction/voxel_interaction_module.cpp
+    features/animals/wandering_animal_module.cpp
     framework/gameplay_module.cpp
     framework/domain_service_registry.cpp
     presentation/animated_model_presentation.cpp
@@ -27,6 +28,7 @@ target_sources(
       features/interaction/voxel_raycast.hpp
       features/interaction/voxel_commands.hpp
       features/interaction/voxel_interaction_module.hpp
+      features/animals/wandering_animal_module.hpp
       framework/gameplay_module.hpp
       framework/domain_service_registry.hpp
       presentation/animated_model_presentation.hpp

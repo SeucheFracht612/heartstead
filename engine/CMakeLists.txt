@@ -36,6 +36,7 @@ target_sources(
     debug/debug_overlay.cpp
     dirty/dirty_region.cpp
     entities/entity.cpp
+    entities/entity_motion_snapshot.cpp
     entities/entity_prototype.cpp
     entities/entity_world.cpp
     entities/physical_resource.cpp
@@ -228,6 +229,7 @@ target_sources(
       debug/debug_overlay.hpp
       dirty/dirty_region.hpp
       entities/entity.hpp
+      entities/entity_motion_snapshot.hpp
       entities/entity_id.hpp
       entities/entity_prototype.hpp
       entities/entity_world.hpp

@@ -151,6 +151,8 @@ struct WorldTransform {
     [[nodiscard]] bool has_non_zero_scale() const noexcept {
         return !scale.any_zero();
     }
+
+    friend bool operator==(const WorldTransform&, const WorldTransform&) = default;
 };
 
 struct FloatingOrigin {

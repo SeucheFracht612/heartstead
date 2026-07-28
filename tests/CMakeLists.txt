@@ -98,6 +98,9 @@ heartstead_add_foundation_test(heartstead_physical_resource_physics_tests
                                physical_resource_physics_tests.cpp)
 heartstead_add_foundation_test(heartstead_audio_system_tests audio_system_tests.cpp)
 heartstead_add_foundation_test(heartstead_model_asset_tests model_asset_tests.cpp)
+target_compile_definitions(
+  heartstead_model_asset_tests PRIVATE HEARTSTEAD_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
 heartstead_add_foundation_test(heartstead_skeletal_animation_tests skeletal_animation_tests.cpp)
 heartstead_add_foundation_test(heartstead_voxel_light_tests voxel_light_tests.cpp)
 heartstead_add_foundation_test(heartstead_voxel_fluid_tests voxel_fluid_tests.cpp)
@@ -120,6 +123,8 @@ heartstead_add_foundation_test(heartstead_platform_input_edge_tests platform_inp
 heartstead_add_foundation_test(heartstead_render_device_state_tests render_device_state_tests.cpp)
 heartstead_add_foundation_test(heartstead_simulation_runtime_tests simulation_runtime_tests.cpp)
 heartstead_add_foundation_test(heartstead_entity_world_tests entity_world_tests.cpp)
+heartstead_add_foundation_test(heartstead_entity_motion_snapshot_tests
+                               entity_motion_snapshot_tests.cpp)
 heartstead_add_foundation_test(heartstead_movement_controller_tests movement_controller_tests.cpp)
 heartstead_add_foundation_test(heartstead_file_io_tests file_io_tests.cpp)
 heartstead_add_foundation_test(heartstead_process_entry_tests process_entry_tests.cpp)

@@ -90,6 +90,13 @@ Print cooked asset store inspection data while cooking, or inspect an existing c
 ./build/default-debug/tools/asset_cooker/heartstead_asset_cooker --inspect-store build/cooked_assets
 ```
 
+Cook one active logical asset with the production converter, which is useful for staging a focused
+runtime or tool fixture without requiring unrelated partial production converters:
+
+```bash
+./build/default-debug/tools/asset_cooker/heartstead_asset_cooker . build/cooked_model/asset_manifest.txt production --only base:models/entities/storybook_player.gltf
+```
+
 Print shader compile inspection data:
 
 ```bash

@@ -122,6 +122,8 @@ Implemented foundation:
   - discovers mods and resource packs
   - indexes raw assets through the same catalog rules as runtime
   - accepts `development` or `production` as an optional cook backend argument
+  - accepts `--only <logical_id>` to cook one active catalog record through the same validated
+    pipeline
   - accepts `--inspect` to print cooked asset store inspection data after a successful cook
   - accepts `--inspect-store <cooked_root> [manifest]` to inspect an existing cooked asset store
   - writes cooked payload files and `build/cooked_assets/asset_manifest.txt` by default

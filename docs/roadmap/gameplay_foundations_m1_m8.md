@@ -305,6 +305,19 @@ through M8 so each acceptance scene builds on already verified systems.
 - Particle target: 50,000 active particles below `2.0 ms` CPU update and no more than four draw
   calls per material/atlas benchmark grouping.
 
+### M5 progress evidence
+
+- The bounded glTF cooker, `heartstead.model.v1` codec, clip interpolation/blending, CPU skinning
+  oracle, unified GPU-skinned vertex path, palette ring, and retained palette ownership are live.
+- Controller snapshot v2 replicates idle/walk/swim phase and transition state. Generic animated
+  entities use bounded motion snapshots plus tombstones; clients retain and present both paths.
+- `AnimatedModelPresentation` is covered against the real headless renderer. `dev_game`
+  production-cooks and loads the authored storybook character and renders the player in third
+  person.
+- The base wandering-animal gameplay module produces identical authoritative, transported, and
+  presented trajectories across independent headless sessions, including walk-to-idle blending.
+- Remaining M5 work is the pooled CPU particle/event path and its published stress benchmark.
+
 ## M6 — Game UI layer
 
 ### Architecture decisions

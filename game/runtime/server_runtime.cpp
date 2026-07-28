@@ -197,11 +197,9 @@ core::Status ServerRuntime::initialize() {
                                      physical_resources.error().message);
     }
     physical_resource_physics_ = std::move(physical_resources).value();
-    auto chunk_fluids =
-        world::ChunkFluidSystem::create(*desc_.voxel_palette, desc_.chunk_fluids);
+    auto chunk_fluids = world::ChunkFluidSystem::create(*desc_.voxel_palette, desc_.chunk_fluids);
     if (!chunk_fluids) {
-        return core::Status::failure(chunk_fluids.error().code,
-                                     chunk_fluids.error().message);
+        return core::Status::failure(chunk_fluids.error().code, chunk_fluids.error().message);
     }
     chunk_fluids_ = std::move(chunk_fluids).value();
     auto chunk_lighting =
@@ -211,7 +209,19 @@ core::Status ServerRuntime::initialize() {
     }
     chunk_lighting_ = std::move(chunk_lighting).value();
 
-    auto status = world::WorldCommandRegistry::register_engine_commands(commands_);
+    auto status = entities_.register_cleanup(
+        "runtime.entity_motion_replication",
+        [this](entities::EntityId id, const entities::EntityWorldRecord&) {
+            const auto* identity = entities_.find_component<entities::NetworkIdentityComponent>(id);
+            if (identity != nullptr && identity->net_id.is_valid()) {
+                pending_entity_motion_removals_.push_back(identity->net_id);
+            }
+            return core::Status::ok();
+        });
+    if (!status) {
+        return status;
+    }
+    status = world::WorldCommandRegistry::register_engine_commands(commands_);
     if (!status) {
         return status;
     }
@@ -320,8 +330,7 @@ core::Status ServerRuntime::initialize() {
         {"runtime.character_movement"},
         [this](simulation::SimulationContext& context) {
             return physical_resource_physics_->prepare(
-                world_, *desc_.voxel_palette,
-                static_cast<float>(context.fixed_delta_seconds));
+                world_, *desc_.voxel_palette, static_cast<float>(context.fixed_delta_seconds));
         },
     });
     if (!status) {
@@ -403,7 +412,7 @@ core::Status ServerRuntime::initialize() {
         "runtime.replication",
         simulation::SimulationPhase::replication,
         {"runtime.entity_finalize"},
-        [this](simulation::SimulationContext&) {
+        [this](simulation::SimulationContext& context) {
             const auto deltas =
                 world::materialize_replication_deltas_for_tick(world_, current_commands_);
             auto delivery = world::send_replication_delta_snapshots_for_tick(
@@ -416,7 +425,8 @@ core::Status ServerRuntime::initialize() {
             if (!chunk_status) {
                 return chunk_status;
             }
-            return replicate_players();
+            auto player_status = replicate_players();
+            return player_status ? replicate_entity_motion(context.tick) : player_status;
         },
     });
     if (!status) {
@@ -482,6 +492,8 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     current_repeated_input_count_ = 0;
     current_movement_event_count_ = 0;
     current_movement_snapshot_count_ = 0;
+    current_entity_motion_snapshot_count_ = 0;
+    current_entity_motion_tombstone_count_ = 0;
     current_player_tombstone_count_ = 0;
     auto simulation =
         scheduler_.run_tick({tick, fixed_delta_seconds, &world_, physics_.get(), &events_});
@@ -502,6 +514,8 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     stats.repeated_input_count = current_repeated_input_count_;
     stats.movement_event_count = current_movement_event_count_;
     stats.movement_snapshot_count = current_movement_snapshot_count_;
+    stats.entity_motion_snapshot_count = current_entity_motion_snapshot_count_;
+    stats.entity_motion_tombstone_count = current_entity_motion_tombstone_count_;
     stats.player_tombstone_count = current_player_tombstone_count_;
     return core::Result<ServerRuntimeTickStats>::success(std::move(stats));
 }
@@ -1102,6 +1116,80 @@ core::Status ServerRuntime::replicate_players() {
         }
     }
     pending_player_removals_.clear();
+    return core::Status::ok();
+}
+
+core::Status ServerRuntime::replicate_entity_motion(std::uint64_t simulation_tick) {
+    if (player_connections_.empty()) {
+        pending_entity_motion_removals_.clear();
+        return core::Status::ok();
+    }
+    std::vector<entities::EntityMotionSnapshot> snapshots;
+    for (const auto& record : entities_.records()) {
+        if (record.lifecycle != entities::EntityLifecycle::active) {
+            continue;
+        }
+        const auto* identity =
+            entities_.find_component<entities::NetworkIdentityComponent>(record.id);
+        const auto* transform = entities_.find_component<entities::TransformComponent>(record.id);
+        const auto* locomotion =
+            entities_.find_component<entities::LocomotionAnimationComponent>(record.id);
+        if (identity == nullptr || transform == nullptr || locomotion == nullptr) {
+            continue;
+        }
+        entities::EntityMotionSnapshot snapshot;
+        snapshot.entity_net_id = identity->net_id;
+        snapshot.prototype_id = record.prototype;
+        snapshot.previous_transform = transform->previous;
+        snapshot.current_transform = transform->current;
+        snapshot.locomotion = locomotion->state;
+        snapshot.simulation_tick = simulation_tick;
+        auto status = snapshot.validate();
+        if (!status) {
+            return status;
+        }
+        snapshots.push_back(std::move(snapshot));
+    }
+    std::ranges::sort(snapshots, {}, [](const entities::EntityMotionSnapshot& snapshot) {
+        return snapshot.entity_net_id.value();
+    });
+    std::vector<std::uint64_t> recipients;
+    recipients.reserve(player_connections_.size());
+    for (const auto& [client_id, _] : player_connections_) {
+        recipients.push_back(client_id);
+    }
+    std::ranges::sort(recipients);
+    for (const auto recipient : recipients) {
+        for (const auto removed : pending_entity_motion_removals_) {
+            auto sequence = reserve_custom_replication_sequence();
+            if (!sequence) {
+                return core::Status::failure(sequence.error().code, sequence.error().message);
+            }
+            auto status =
+                host_.send_replication_message(core::NetId::from_value(recipient),
+                                               entities::make_entity_motion_removal_message(
+                                                   removed, sequence.value(), current_time_ms_));
+            if (!status) {
+                return status;
+            }
+            ++current_entity_motion_tombstone_count_;
+        }
+        for (const auto& snapshot : snapshots) {
+            auto sequence = reserve_custom_replication_sequence();
+            if (!sequence) {
+                return core::Status::failure(sequence.error().code, sequence.error().message);
+            }
+            auto status =
+                host_.send_replication_message(core::NetId::from_value(recipient),
+                                               entities::make_entity_motion_snapshot_message(
+                                                   snapshot, sequence.value(), current_time_ms_));
+            if (!status) {
+                return status;
+            }
+            ++current_entity_motion_snapshot_count_;
+        }
+    }
+    pending_entity_motion_removals_.clear();
     return core::Status::ok();
 }
 

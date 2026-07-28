@@ -1,7 +1,12 @@
+#include "game/features/animals/wandering_animal_module.hpp"
 #include "game/testing/headless_session.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <filesystem>
+#include <memory>
+#include <ranges>
+#include <vector>
 
 using namespace heartstead;
 
@@ -41,10 +46,61 @@ void test_dedicated_headless_session_uses_same_harness_without_client_services()
     assert(harness.value()->shutdown());
 }
 
+struct AnimalFrame {
+    world::WorldTransform transform;
+    animation::ReplicatedLocomotionAnimation locomotion;
+
+    friend bool operator==(const AnimalFrame&, const AnimalFrame&) = default;
+};
+
+std::vector<AnimalFrame> run_wandering_animal_trajectory() {
+    game::HeadlessSessionDesc desc;
+    desc.source_root = source_root();
+    game::animals::WanderingAnimalConfig animal_config;
+    animal_config.seed = 1;
+    animal_config.segment_ticks = 30;
+    desc.runtime.gameplay_modules.push_back(
+        std::make_shared<game::animals::WanderingAnimalModule>(animal_config));
+    auto harness = game::HeadlessSessionHarness::create(std::move(desc));
+    assert(harness);
+    const auto animal_prototype = *core::PrototypeId::parse("base:entities/test_animal");
+    std::vector<AnimalFrame> trajectory;
+    trajectory.reserve(70);
+    for (std::uint32_t tick = 0; tick < 70; ++tick) {
+        auto report = harness.value()->run_ticks(1);
+        assert(report);
+        assert(report.value().last_frame.server_ticks.back().entity_motion_snapshot_count == 1);
+        assert(report.value().last_frame.client.entity_motion_snapshot_count == 1);
+        auto snapshot = harness.value()->runtime().capture_render_snapshot();
+        assert(snapshot);
+        const auto found = std::ranges::find(snapshot.value().objects, animal_prototype,
+                                             &game::RenderObjectSnapshot::visual_prototype);
+        assert(found != snapshot.value().objects.end());
+        trajectory.push_back({found->current_transform, found->current_locomotion});
+    }
+    assert(harness.value()->shutdown());
+    return trajectory;
+}
+
+void test_wandering_animal_is_replicated_and_deterministic() {
+    const auto first = run_wandering_animal_trajectory();
+    const auto second = run_wandering_animal_trajectory();
+    assert(first == second);
+    assert(first.front().transform.position != first[29].transform.position);
+    assert(std::ranges::any_of(first, [](const AnimalFrame& frame) {
+        return frame.locomotion.kind == animation::LocomotionAnimationKind::walk;
+    }));
+    assert(std::ranges::any_of(first, [](const AnimalFrame& frame) {
+        return frame.locomotion.kind == animation::LocomotionAnimationKind::idle &&
+               frame.locomotion.transition_from == animation::LocomotionAnimationKind::walk;
+    }));
+}
+
 } // namespace
 
 int main() {
     test_local_headless_session_advances_shared_runtime();
     test_dedicated_headless_session_uses_same_harness_without_client_services();
+    test_wandering_animal_is_replicated_and_deterministic();
     return 0;
 }

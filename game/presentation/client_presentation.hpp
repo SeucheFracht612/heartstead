@@ -1,8 +1,8 @@
 #pragma once
 
 #include "engine/core/result.hpp"
-#include "game/presentation/presentation_world.hpp"
 #include "game/framework/gameplay_module.hpp"
+#include "game/presentation/presentation_world.hpp"
 
 #include <cstdint>
 #include <unordered_set>
@@ -20,7 +20,7 @@ class ClientPresentationSynchronizer final {
     void clear() noexcept;
 
   private:
-    std::unordered_set<std::uint64_t> retained_players_;
+    std::unordered_set<std::uint64_t> retained_entities_;
 };
 
 } // namespace heartstead::game

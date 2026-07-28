@@ -313,8 +313,7 @@ core::Status RuntimeSession::save_to(const save::FileSaveDatabase& database) con
 }
 
 RenderSnapshot RuntimeSession::capture_render_snapshot() const {
-    const auto tick = server_ == nullptr ? 0 : server_->world().world_time();
-    return presentation_.extract(tick);
+    return presentation_.extract(fixed_step_.tick());
 }
 
 core::Status RuntimeSession::pump_client_messages() {

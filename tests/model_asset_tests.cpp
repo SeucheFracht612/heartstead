@@ -196,9 +196,30 @@ void test_typed_gltf_import_and_codec() {
     assert(!cleanup_error);
 }
 
+void test_base_storybook_player_asset() {
+    const auto model_path = std::filesystem::path{HEARTSTEAD_TEST_SOURCE_DIR} /
+                            "mods/base/assets/models/entities/storybook_player.gltf";
+    auto imported = heartstead::assets::import_gltf_model(model_path);
+    assert(imported);
+    assert(imported.value().vertices.size() == 4);
+    assert(imported.value().indices.size() == 6);
+    assert(imported.value().skins.size() == 1);
+    assert(imported.value().skins.front().joints.size() == 2);
+    assert(imported.value().animations.size() == 3);
+    assert(imported.value().animations[0].name == "idle");
+    assert(imported.value().animations[1].name == "walk");
+    assert(imported.value().animations[2].name == "swim");
+    auto encoded = heartstead::assets::encode_model_asset(imported.value());
+    assert(encoded);
+    auto runtime_model = heartstead::assets::decode_model_asset(encoded.value());
+    assert(runtime_model);
+    assert(runtime_model.value() == imported.value());
+}
+
 } // namespace
 
 int main() {
     test_typed_gltf_import_and_codec();
+    test_base_storybook_player_asset();
     return 0;
 }

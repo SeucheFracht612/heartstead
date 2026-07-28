@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/entities/entity_motion_snapshot.hpp"
 #include "engine/entities/entity_world.hpp"
 #include "engine/modding/prototype_registry.hpp"
 #include "engine/movement/movement_prediction.hpp"
@@ -57,6 +58,8 @@ struct ServerRuntimeTickStats {
     std::uint32_t repeated_input_count = 0;
     std::uint32_t movement_event_count = 0;
     std::uint32_t movement_snapshot_count = 0;
+    std::uint32_t entity_motion_snapshot_count = 0;
+    std::uint32_t entity_motion_tombstone_count = 0;
     std::uint32_t player_tombstone_count = 0;
 };
 
@@ -133,6 +136,7 @@ class ServerRuntime final {
     [[nodiscard]] core::Status spawn_player(core::NetId client_id);
     [[nodiscard]] core::Status simulate_players(simulation::SimulationContext& context);
     [[nodiscard]] core::Status replicate_players();
+    [[nodiscard]] core::Status replicate_entity_motion(std::uint64_t simulation_tick);
     [[nodiscard]] core::Status replicate_changed_chunks();
     [[nodiscard]] core::Status send_initial_chunks(core::NetId client_id);
     [[nodiscard]] core::Result<std::uint64_t> reserve_custom_replication_sequence();
@@ -162,6 +166,7 @@ class ServerRuntime final {
     std::unordered_map<std::uint64_t, PlayerConnection> player_connections_;
     std::vector<world::VoxelEditRecord> pending_saved_voxel_edits_;
     std::vector<core::NetId> pending_player_removals_;
+    std::vector<core::NetId> pending_entity_motion_removals_;
     net::HostSessionTickResult current_commands_;
     world::WorldReplicationDeltaDeliveryReport current_replication_;
     physics::PhysicsStepStats current_physics_;
@@ -169,6 +174,8 @@ class ServerRuntime final {
     std::uint32_t current_repeated_input_count_ = 0;
     std::uint32_t current_movement_event_count_ = 0;
     std::uint32_t current_movement_snapshot_count_ = 0;
+    std::uint32_t current_entity_motion_snapshot_count_ = 0;
+    std::uint32_t current_entity_motion_tombstone_count_ = 0;
     std::uint32_t current_player_tombstone_count_ = 0;
     std::int64_t current_time_ms_ = 0;
     std::uint64_t pending_world_time_numerator_ = 0;

@@ -49,3 +49,19 @@ primitive once, retains one render object and (for skinned primitives) one palet
 entity, skips unchanged authoritative revisions, and removes objects before their referenced
 palettes. Creation rolls back partial renderer ownership on failure. A headless renderer integration
 test covers insertion, locomotion-driven palette replacement, rendering, removal, and shutdown.
+
+Player locomotion travels in the authoritative controller snapshot. Non-player animated entities
+use the bounded `entity.motion_snapshot.v1` boundary: network identity, prototype, previous/current
+world transform, locomotion state, and simulation tick. Reliable tombstones remove retained client
+state. `ClientPresentationSynchronizer` maps both snapshot families into the same presentation
+world, so the renderer does not know whether an animated object is a player or an animal. M7 will
+replace the current bounded text payloads with the planned binary replication codec without
+changing this semantic boundary.
+
+The base test animal is a normal gameplay module and entity prototype. Its server-side wander
+system uses a seeded, fixed-step state machine, mirrors transforms into the generic replicated
+components, and alternates walking and idle segments so the same transition blending is exercised
+outside player control. Two independent headless sessions produce byte-for-byte equal transform
+and locomotion trajectories. `dev_game` production-cooks the authored storybook glTF at build time,
+loads only `heartstead.model.v1` at runtime, and renders both the third-person player and test animal
+through `AnimatedModelPresentation`.

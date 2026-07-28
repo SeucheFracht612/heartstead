@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/animation/locomotion_animation.hpp"
 #include "engine/core/ids.hpp"
 #include "engine/core/result.hpp"
 #include "engine/entities/entity_id.hpp"
@@ -40,6 +41,14 @@ struct TransformComponent {
 struct CharacterComponent {
     core::NetId owner;
     float movement_speed = 4.5F;
+};
+
+struct NetworkIdentityComponent {
+    core::NetId net_id;
+};
+
+struct LocomotionAnimationComponent {
+    animation::ReplicatedLocomotionAnimation state;
 };
 
 struct HealthComponent {
@@ -228,15 +237,13 @@ class EntityWorld {
         const auto key = std::type_index(typeid(Component));
         auto found = component_stores_.find(key);
         if (found == component_stores_.end()) {
-            found = component_stores_
-                        .emplace(key, std::make_unique<ComponentStore<Component>>())
-                        .first;
+            found =
+                component_stores_.emplace(key, std::make_unique<ComponentStore<Component>>()).first;
         }
         return *static_cast<ComponentStore<Component>*>(found->second.get());
     }
 
-    [[nodiscard]] core::Status register_cleanup(std::string name,
-                                                EntityCleanupCallback callback);
+    [[nodiscard]] core::Status register_cleanup(std::string name, EntityCleanupCallback callback);
     [[nodiscard]] std::span<const EntityTombstone> tombstones() const noexcept;
     void clear_tombstones() noexcept;
     [[nodiscard]] EntityWorldStats stats() const noexcept;

@@ -1,3 +1,5 @@
+#include "engine/assets/cooked_asset_store.hpp"
+#include "engine/assets/model_asset.hpp"
 #include "engine/audio/audio_system.hpp"
 #include "engine/content/content_validation.hpp"
 #include "engine/core/logging.hpp"
@@ -10,7 +12,9 @@
 #include "engine/renderer/environment/day_night.hpp"
 #include "engine/renderer/renderer.hpp"
 #include "engine/renderer/shaders/spirv_loader.hpp"
+#include "game/features/animals/wandering_animal_module.hpp"
 #include "game/features/interaction/voxel_raycast.hpp"
+#include "game/presentation/animated_model_presentation.hpp"
 #include "game/presentation/client_audio_presentation.hpp"
 #include "game/runtime/game_runtime.hpp"
 
@@ -21,6 +25,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -105,6 +110,7 @@ core::Status start_runtime(game::GameRuntime& runtime,
     config.headless = headless;
     config.physics_backend =
         headless ? physics::PhysicsBackend::headless : physics::PhysicsBackend::jolt;
+    config.gameplay_modules.push_back(std::make_shared<game::animals::WanderingAnimalModule>());
     game::SessionRequest request;
     request.metadata = std::move(metadata).value();
     return runtime.start_session(config, std::move(request));
@@ -291,6 +297,27 @@ core::Result<ShaderSet> load_shaders() {
     return core::Result<ShaderSet>::success(std::move(result));
 }
 
+core::Result<assets::ModelAsset> load_storybook_player_model() {
+    constexpr std::string_view logical_id = "base:models/entities/storybook_player.gltf";
+    auto store =
+        assets::CookedAssetStore::load(std::filesystem::path{HEARTSTEAD_DEV_GAME_COOKED_ASSET_DIR});
+    if (!store) {
+        return core::Result<assets::ModelAsset>::failure(store.error().code, store.error().message);
+    }
+    auto payload = store.value().load_payload(logical_id);
+    if (!payload) {
+        return core::Result<assets::ModelAsset>::failure(payload.error().code,
+                                                         payload.error().message);
+    }
+    if (payload.value().kind != assets::AssetKind::model ||
+        payload.value().backend != "production_converters") {
+        return core::Result<assets::ModelAsset>::failure(
+            "dev_game.invalid_character_asset",
+            "storybook player must be a production-cooked model asset");
+    }
+    return assets::decode_model_asset(payload.value().bytes);
+}
+
 core::Status submit_gameplay_ui(renderer::UiRenderer& ui, renderer::rhi::RenderExtent extent) {
     const auto center_x = static_cast<float>(extent.width) * 0.5F;
     const auto center_y = static_cast<float>(extent.height) * 0.5F;
@@ -391,6 +418,42 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
     if (!status) {
         return fail(status.error());
     }
+    auto character_model = load_storybook_player_model();
+    if (!character_model) {
+        return fail(character_model.error());
+    }
+    game::AnimatedModelPresentationConfig animated_model_config;
+    animated_model_config.asset_id = "base:models/entities/storybook_player.gltf";
+    animated_model_config.visual_prototype = *core::PrototypeId::parse("base:entities/player");
+    animated_model_config.model = std::move(character_model).value();
+    animated_model_config.locomotion_clips = {0, 1, 2, 9};
+    animated_model_config.animated_bounds = animated_model_config.model.bounds.expanded(0.4F);
+    animated_model_config.flags =
+        renderer::RenderObjectFlags::cast_shadow | renderer::RenderObjectFlags::two_sided;
+    animated_model_config.color = {0.76F, 0.39F, 0.20F, 1.0F};
+    game::AnimatedModelPresentation animated_models;
+    status = animated_models.initialize(renderer, std::move(animated_model_config));
+    if (!status) {
+        return fail(status.error());
+    }
+    auto animal_model = load_storybook_player_model();
+    if (!animal_model) {
+        return fail(animal_model.error());
+    }
+    game::AnimatedModelPresentationConfig animal_model_config;
+    animal_model_config.asset_id = "base:models/entities/storybook_player.gltf#test_animal";
+    animal_model_config.visual_prototype = *core::PrototypeId::parse("base:entities/test_animal");
+    animal_model_config.model = std::move(animal_model).value();
+    animal_model_config.locomotion_clips = {0, 1, 2, 9};
+    animal_model_config.animated_bounds = animal_model_config.model.bounds.expanded(0.4F);
+    animal_model_config.flags =
+        renderer::RenderObjectFlags::cast_shadow | renderer::RenderObjectFlags::two_sided;
+    animal_model_config.color = {0.83F, 0.70F, 0.42F, 1.0F};
+    game::AnimatedModelPresentation animated_animals;
+    status = animated_animals.initialize(renderer, std::move(animal_model_config));
+    if (!status) {
+        return fail(status.error());
+    }
     auto audio_system = runtime.create_audio_system(audio::AudioBackend::miniaudio);
     if (!audio_system) {
         return fail(audio_system.error());
@@ -480,7 +543,7 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
         }
         if (extent.is_valid()) {
             auto camera_frame =
-                camera_rig.evaluate(player->state, movement::PlayerCameraPerspective::first_person,
+                camera_rig.evaluate(player->state, movement::PlayerCameraPerspective::third_person,
                                     extent.width, extent.height);
             if (!camera_frame) {
                 return fail(camera_frame.error());
@@ -530,6 +593,18 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
             if (!status) {
                 return fail(status.error());
             }
+            auto render_snapshot = runtime.capture_render_snapshot();
+            if (!render_snapshot) {
+                return fail(render_snapshot.error());
+            }
+            auto animated_stats = animated_models.synchronize(renderer, render_snapshot.value());
+            if (!animated_stats) {
+                return fail(animated_stats.error());
+            }
+            animated_stats = animated_animals.synchronize(renderer, render_snapshot.value());
+            if (!animated_stats) {
+                return fail(animated_stats.error());
+            }
             if (auto* ui = renderer.ui_renderer(); ui != nullptr) {
                 status = submit_gameplay_ui(*ui, extent);
                 if (!status) {
@@ -553,6 +628,14 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
         return fail(status.error());
     }
     audio_system.value().reset();
+    status = animated_models.shutdown(renderer);
+    if (!status) {
+        return fail(status.error());
+    }
+    status = animated_animals.shutdown(renderer);
+    if (!status) {
+        return fail(status.error());
+    }
     status = renderer.shutdown();
     if (!status) {
         return fail(status.error());

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/entities/entity_motion_snapshot.hpp"
 #include "engine/movement/movement_prediction.hpp"
 #include "engine/net/client_session.hpp"
 #include "engine/world/chunks/chunk_replication.hpp"
@@ -20,6 +21,8 @@ struct ClientRuntimeStats {
     std::uint32_t received_message_count = 0;
     std::uint32_t command_result_count = 0;
     std::uint32_t movement_snapshot_count = 0;
+    std::uint32_t entity_motion_snapshot_count = 0;
+    std::uint32_t entity_motion_tombstone_count = 0;
     std::uint32_t player_tombstone_count = 0;
     std::uint32_t chunk_snapshot_slice_count = 0;
     std::uint32_t completed_chunk_snapshot_count = 0;
@@ -49,6 +52,8 @@ class ClientRuntime final {
     [[nodiscard]] core::NetId local_player_net_id() const noexcept;
     [[nodiscard]] const movement::PlayerControllerSnapshot* local_player_snapshot() const noexcept;
     [[nodiscard]] std::vector<const movement::PlayerControllerSnapshot*> movement_snapshots() const;
+    [[nodiscard]] std::vector<const entities::EntityMotionSnapshot*>
+    entity_motion_snapshots() const;
     [[nodiscard]] std::span<const core::NetId> player_tombstones() const noexcept;
     void clear_command_results() noexcept;
 
@@ -72,6 +77,7 @@ class ClientRuntime final {
     net::ClientSession session_;
     std::vector<net::HostSessionCommandResult> command_results_;
     std::unordered_map<std::uint64_t, movement::PlayerControllerSnapshot> movement_snapshots_;
+    std::unordered_map<std::uint64_t, entities::EntityMotionSnapshot> entity_motion_snapshots_;
     std::vector<core::NetId> player_tombstones_;
     core::NetId local_player_net_id_;
     std::map<world::ChunkCoord, ChunkSnapshotAssembly> chunk_snapshot_assemblies_;

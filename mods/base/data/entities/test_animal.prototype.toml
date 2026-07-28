@@ -1,0 +1,5 @@
+kind = "entity"
+id = "base:entities/test_animal"
+display_name = "Test Animal"
+persistent = "false"
+entity_kind = "animal"

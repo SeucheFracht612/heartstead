@@ -11,6 +11,7 @@
 
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -42,7 +43,8 @@ bool parse_backend(std::string_view value, heartstead::assets::AssetCookBackend&
 
 void print_usage(const char* executable, std::ostream& output) {
     output << "usage: " << executable
-           << " [source_root] [asset_manifest_path] [development|production] [--inspect]\n"
+           << " [source_root] [asset_manifest_path] [development|production]"
+              " [--only LOGICAL_ID] [--inspect]\n"
            << "       " << executable << " --inspect-store <cooked_root> [asset_manifest.txt]\n";
 }
 
@@ -85,11 +87,20 @@ int main(int argc, char** argv) {
         std::filesystem::path output_path;
         assets::AssetCookBackend cook_backend = assets::AssetCookBackend::development_passthrough;
         bool inspect_after_cook = false;
+        std::optional<std::string> only_logical_id;
         auto positional_count = 0;
         for (int index = 1; index < argc; ++index) {
             const auto argument = std::string_view(argv[index]);
             if (argument == "--inspect") {
                 inspect_after_cook = true;
+                continue;
+            }
+            if (argument == "--only") {
+                if (index + 1 >= argc || std::string_view(argv[index + 1]).starts_with("--")) {
+                    print_usage(argv[0], std::cerr);
+                    return 2;
+                }
+                only_logical_id = argv[++index];
                 continue;
             }
             if (argument.starts_with("--")) {
@@ -172,6 +183,23 @@ int main(int argc, char** argv) {
             if (indexed.has_errors()) {
                 return 1;
             }
+        }
+
+        if (only_logical_id.has_value()) {
+            const auto* selected = catalog.find_active(*only_logical_id);
+            if (selected == nullptr) {
+                core::log(core::LogLevel::error,
+                          "selected asset is not active: " + *only_logical_id);
+                return 1;
+            }
+            const auto selected_record = *selected;
+            assets::AssetCatalog filtered;
+            auto status = filtered.add(selected_record);
+            if (!status) {
+                core::log(core::LogLevel::error, status.error().message);
+                return 1;
+            }
+            catalog = std::move(filtered);
         }
 
         assets::AssetCookConfig cook_config;
