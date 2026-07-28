@@ -1,3 +1,4 @@
+#include "engine/audio/audio_system.hpp"
 #include "engine/content/content_validation.hpp"
 #include "engine/core/logging.hpp"
 #include "engine/core/process_entry.hpp"
@@ -10,6 +11,7 @@
 #include "engine/renderer/renderer.hpp"
 #include "engine/renderer/shaders/spirv_loader.hpp"
 #include "game/features/interaction/voxel_raycast.hpp"
+#include "game/presentation/client_audio_presentation.hpp"
 #include "game/runtime/game_runtime.hpp"
 
 #include <algorithm>
@@ -98,6 +100,7 @@ core::Status start_runtime(game::GameRuntime& runtime,
     config.create_server = true;
     config.create_client = true;
     config.create_renderer = !headless;
+    config.create_audio = !headless;
     config.use_in_memory_transport = true;
     config.headless = headless;
     config.physics_backend =
@@ -386,6 +389,15 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
     if (!status) {
         return fail(status.error());
     }
+    auto audio_system = runtime.create_audio_system(audio::AudioBackend::miniaudio);
+    if (!audio_system) {
+        return fail(audio_system.error());
+    }
+    game::ClientAudioPresentation audio_presentation;
+    status = audio_presentation.initialize(*audio_system.value());
+    if (!status) {
+        return fail(status.error());
+    }
 
     status = active_platform.value()->set_cursor_capture(window.value(), true);
     if (!status) {
@@ -471,6 +483,12 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
             if (!camera_frame) {
                 return fail(camera_frame.error());
             }
+            status = audio_presentation.update(*audio_system.value(), player->state,
+                                               camera_frame.value(),
+                                               static_cast<float>(frame_us) / 1'000'000.0F);
+            if (!status) {
+                return fail(status.error());
+            }
             if (action_frame[input::InputAction::primary_action].pressed ||
                 action_frame[input::InputAction::secondary_action].pressed) {
                 auto selection = game::interaction::raycast_voxels(
@@ -528,6 +546,11 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
         ++frame_count;
     }
 
+    status = audio_presentation.shutdown(*audio_system.value());
+    if (!status) {
+        return fail(status.error());
+    }
+    audio_system.value().reset();
     status = renderer.shutdown();
     if (!status) {
         return fail(status.error());

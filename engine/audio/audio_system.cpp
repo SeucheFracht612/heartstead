@@ -2,6 +2,7 @@
 
 #include "engine/audio/miniaudio/miniaudio_backend.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 
@@ -11,7 +12,8 @@ namespace {
 
 class NullAudioSystem final : public IAudioSystem {
   public:
-    explicit NullAudioSystem(const AudioSystemDesc& desc) : mixer_(*desc.events, desc.mixer) {}
+    explicit NullAudioSystem(const AudioSystemDesc& desc)
+        : mixer_(*desc.events, desc.mixer), output_channels_(desc.output_channels) {}
 
     [[nodiscard]] AudioBackend backend() const noexcept override {
         return AudioBackend::null_backend;
@@ -49,6 +51,18 @@ class NullAudioSystem final : public IAudioSystem {
         return mixer_.advance(delta_seconds);
     }
 
+    [[nodiscard]] core::Status render_offline(std::span<float> interleaved_output,
+                                              std::uint32_t frame_count) override {
+        const auto required = static_cast<std::size_t>(frame_count) * output_channels_;
+        if (frame_count == 0 || interleaved_output.size() != required) {
+            return core::Status::failure(
+                "audio.invalid_offline_buffer",
+                "offline audio output must exactly match frame count times channel count");
+        }
+        std::ranges::fill(interleaved_output, 0.0F);
+        return core::Status::ok();
+    }
+
     [[nodiscard]] bool is_active(AudioVoiceId voice) const noexcept override {
         return mixer_.is_active(voice);
     }
@@ -68,6 +82,7 @@ class NullAudioSystem final : public IAudioSystem {
 
   private:
     AudioMixer mixer_;
+    std::uint32_t output_channels_ = 2;
 };
 
 } // namespace
@@ -134,6 +149,11 @@ core::Status AudioSystemDesc::validate() const {
     if (period_frames == 0 || period_frames > 16'384) {
         return core::Status::failure("audio.invalid_period",
                                      "audio output period must be between one and 16384 frames");
+    }
+    if (!open_output_device && use_null_output_device) {
+        return core::Status::failure(
+            "audio.invalid_output_configuration",
+            "null output device selection requires output device creation");
     }
     return core::Status::ok();
 }

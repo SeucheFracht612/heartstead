@@ -253,6 +253,21 @@ through M8 so each acceptance scene builds on already verified systems.
 - Mixer target: 128 active mono SFX voices, 48 kHz stereo, 256-frame blocks below `1.0 ms` p95 on
   the published reference machine.
 
+### M4 completion evidence
+
+- `AudioMixer` and both `IAudioSystem` implementations share the same event, voice, bus, listener,
+  emitter, gain-ramp, attenuation, and priority boundary. Dedicated/headless compositions open no
+  device; tests can exercise either the logical null backend or miniaudio's real callback graph
+  through its null output device.
+- The miniaudio 0.11.25 backend decodes short assets, streams authored long-form assets, generates
+  bounded `.tone` manifests into deterministic PCM, mirrors buses with sound groups, and performs
+  device recovery only from the owner thread. Base sound events provide positional earth
+  footsteps and a looping homestead ambient bed in `dev_game`.
+- Audio inspection exposes resolved event policy and runtime voice/device counters.
+  `heartstead_audio_benchmark` renders the production graph offline; the Release reference result
+  on an Intel Core Ultra 7 258V is 0.125 ms average / 0.178 ms p95 for 128 looping mono voices,
+  48 kHz stereo, 256-frame blocks, and 1,000 measured blocks.
+
 ## M5 — Skeletal animation and particles
 
 ### Architecture decisions

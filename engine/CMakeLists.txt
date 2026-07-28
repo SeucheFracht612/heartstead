@@ -13,6 +13,7 @@ target_sources(
     audio/audio_mixer.cpp
     audio/audio_system.cpp
     audio/miniaudio/miniaudio_backend.cpp
+    audio/procedural_tone.cpp
     audio/sound_event.cpp
     assemblies/assembly.cpp
     assemblies/assembly_prototype.cpp
@@ -199,6 +200,7 @@ target_sources(
       audio/audio_system.hpp
       audio/audio_types.hpp
       audio/miniaudio/miniaudio_backend.hpp
+      audio/procedural_tone.hpp
       audio/sound_event.hpp
       assemblies/assembly.hpp
       assemblies/assembly_prototype.hpp

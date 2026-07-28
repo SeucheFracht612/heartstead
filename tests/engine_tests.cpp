@@ -1177,6 +1177,12 @@ void test_resource_pack_discovery_and_asset_catalog() {
     const auto production_audio_assets = root / "production_audio_assets";
     write_bytes(production_audio_assets / "sounds/tools/hammer.wav", minimal_wav_bytes());
     write_bytes(production_audio_assets / "sounds/tools/impact.ogg", minimal_ogg_bytes());
+    write_text(production_audio_assets / "sounds/tools/knap.tone", "wave = \"noise\"\n"
+                                                                   "amplitude = 0.2\n"
+                                                                   "duration_ms = 125\n"
+                                                                   "attack_ms = 5\n"
+                                                                   "release_ms = 20\n"
+                                                                   "seed = 42\n");
     write_bytes(production_audio_assets / "music/theme.wav", minimal_wav_bytes());
     write_bytes(production_audio_assets / "music/ambient.flac", minimal_flac_bytes());
     heartstead::assets::AssetCatalog production_audio_catalog;
@@ -1184,8 +1190,8 @@ void test_resource_pack_discovery_and_asset_catalog() {
         production_audio_catalog, production_audio_assets, "base",
         heartstead::assets::AssetSourceKind::mod, "base", 0);
     assert(!production_audio_indexed.has_errors());
-    assert(production_audio_catalog.active_count() == 4);
-    assert(production_audio_catalog.count_kind(heartstead::assets::AssetKind::sound) == 2);
+    assert(production_audio_catalog.active_count() == 5);
+    assert(production_audio_catalog.count_kind(heartstead::assets::AssetKind::sound) == 3);
     assert(production_audio_catalog.count_kind(heartstead::assets::AssetKind::music) == 2);
 
     heartstead::assets::AssetCookConfig production_audio_cook_config;
@@ -1196,21 +1202,25 @@ void test_resource_pack_discovery_and_asset_catalog() {
         production_audio_catalog, production_audio_cook_config);
     assert(production_audio_cook);
     assert(production_audio_cook.value().manifest.profile == "production");
-    assert(production_audio_cook.value().cooked_file_count == 4);
+    assert(production_audio_cook.value().cooked_file_count == 5);
     const auto* production_sound_record =
         production_audio_cook.value().manifest.find("base:sounds/tools/hammer.wav");
     const auto* production_ogg_record =
         production_audio_cook.value().manifest.find("base:sounds/tools/impact.ogg");
+    const auto* production_tone_record =
+        production_audio_cook.value().manifest.find("base:sounds/tools/knap.tone");
     const auto* production_music_record =
         production_audio_cook.value().manifest.find("base:music/theme.wav");
     const auto* production_flac_record =
         production_audio_cook.value().manifest.find("base:music/ambient.flac");
     assert(production_sound_record != nullptr);
     assert(production_ogg_record != nullptr);
+    assert(production_tone_record != nullptr);
     assert(production_music_record != nullptr);
     assert(production_flac_record != nullptr);
     assert(production_sound_record->kind == heartstead::assets::AssetKind::sound);
     assert(production_ogg_record->kind == heartstead::assets::AssetKind::sound);
+    assert(production_tone_record->kind == heartstead::assets::AssetKind::sound);
     assert(production_music_record->kind == heartstead::assets::AssetKind::music);
     assert(production_flac_record->kind == heartstead::assets::AssetKind::music);
     assert(read_text(production_audio_cook_config.output_root /
@@ -1239,6 +1249,15 @@ void test_resource_pack_discovery_and_asset_catalog() {
     assert(production_ogg_payload.value().metadata.at("audio.container") == "ogg");
     assert(production_ogg_payload.value().metadata.at("audio.first_page_payload_bytes") == "4");
     assert(production_ogg_payload.value().bytes.size() == minimal_ogg_bytes().size());
+    auto production_tone_payload =
+        production_audio_store.value().load_payload("base:sounds/tools/knap.tone");
+    assert(production_tone_payload);
+    assert(production_tone_payload.value().kind == heartstead::assets::AssetKind::sound);
+    assert(production_tone_payload.value().backend == "audio_runtime_converter_v1");
+    assert(production_tone_payload.value().metadata.at("audio.container") == "tone");
+    assert(production_tone_payload.value().metadata.at("audio.channels") == "1");
+    assert(production_tone_payload.value().metadata.at("audio.sample_rate") == "48000");
+    assert(production_tone_payload.value().metadata.at("audio.frames") == "6000");
     auto production_music_payload =
         production_audio_store.value().load_payload("base:music/theme.wav");
     assert(production_music_payload);

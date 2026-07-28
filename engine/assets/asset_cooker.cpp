@@ -1,5 +1,6 @@
 #include "engine/assets/asset_cooker.hpp"
 
+#include "engine/audio/procedural_tone.hpp"
 #include "engine/core/file_io.hpp"
 #include "engine/core/hash.hpp"
 #include "engine/renderer/shaders/shader_compiler.hpp"
@@ -675,8 +676,15 @@ read_file_bytes(const std::filesystem::path& path, std::size_t maximum_bytes) {
     if (extension == ".flac") {
         return validate_flac_audio(bytes, source);
     }
+    if (extension == ".tone") {
+        auto tone = audio::load_procedural_tone_asset(source.source_path, 48'000);
+        if (!tone) {
+            return core::Status::failure(tone.error().code, tone.error().message);
+        }
+        return core::Status::ok();
+    }
     return core::Status::failure("asset_cooker.invalid_audio",
-                                 "production audio assets must be WAV, OGG, or FLAC: " +
+                                 "production audio assets must be WAV, OGG, FLAC, or TONE: " +
                                      source.logical_id);
 }
 
@@ -939,6 +947,17 @@ validate_production_source_payload(const AssetRecord& source,
         add_metadata(metadata, "audio.container", "flac");
         add_metadata(metadata, "audio.first_block_type", bytes[4] & 0x7FU);
         add_metadata(metadata, "audio.first_block_bytes", read_be_u24(bytes, 5));
+        return metadata;
+    }
+
+    if (extension == ".tone") {
+        auto tone = audio::load_procedural_tone_asset(source.source_path, 48'000);
+        if (tone) {
+            add_metadata(metadata, "audio.container", "tone");
+            add_metadata(metadata, "audio.channels", 1);
+            add_metadata(metadata, "audio.sample_rate", tone.value().sample_rate);
+            add_metadata(metadata, "audio.frames", tone.value().mono_samples.size());
+        }
         return metadata;
     }
 
@@ -1205,7 +1224,7 @@ AssetCookBackendInfo asset_cook_backend_info(AssetCookBackend backend) noexcept 
             asset_cook_backend_name(AssetCookBackend::production_converters),
             true,
             "partial production converters available for data-like, material, glTF/GLB model, "
-            "PNG/KTX2/JPEG texture, SPIR-V shader, WAV/OGG/FLAC audio, and SFNT font assets",
+            "PNG/KTX2/JPEG texture, SPIR-V shader, WAV/OGG/FLAC/TONE audio, and SFNT font assets",
         };
     }
     return AssetCookBackendInfo{backend, "unknown", false, "unknown asset cook backend"};

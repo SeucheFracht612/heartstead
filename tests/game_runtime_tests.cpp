@@ -241,6 +241,25 @@ void test_game_runtime_starts_from_aggregate_content() {
            report.material_registry.size());
     assert(runtime.value().startup_report().material_asset_reference_count ==
            report.material_assets.references.size());
+    assert(runtime.value().startup_report().sound_event_count == report.sound_events.size());
+    assert(runtime.value().startup_report().sound_event_count == 2);
+    auto audio = runtime.value().create_audio_system(heartstead::audio::AudioBackend::null_backend);
+    assert(audio);
+    assert(audio.value()->backend() == heartstead::audio::AudioBackend::null_backend);
+    auto playback =
+        runtime.value().create_audio_system(heartstead::audio::AudioBackend::miniaudio, {}, true);
+    assert(playback);
+    assert(playback.value()->device_state() == heartstead::audio::AudioDeviceState::running);
+    auto ambient_id = heartstead::core::PrototypeId::parse("base:audio/homestead_ambient").value();
+    auto ambient = playback.value()->play({ambient_id, std::nullopt, 1.0F, 1.0F});
+    assert(ambient);
+    auto footstep_id = heartstead::core::PrototypeId::parse("base:audio/earth_footstep").value();
+    heartstead::audio::AudioEmitterState emitter;
+    auto footstep = playback.value()->play({footstep_id, emitter, 1.0F, 1.0F});
+    assert(footstep);
+    assert(playback.value()->update(0.01F));
+    assert(playback.value()->stop(footstep.value()));
+    assert(playback.value()->stop(ambient.value()));
     assert(runtime.value().require_prototype_kind(heartstead::modding::PrototypeKinds::material));
     assert(runtime.value().require_prototype_kind(heartstead::modding::PrototypeKinds::scenario));
     assert(runtime.value().startup_report().selected_scenario_id == "base:scenarios/homestead");

@@ -1,0 +1,13 @@
+kind = "sound_event"
+id = "base:audio/homestead_ambient"
+display_name = "Homestead ambient"
+asset = "base:sounds/ambient/homestead_night.tone"
+bus = "ambient"
+gain = 1.0
+minimum_distance = 1.0
+maximum_distance = 2.0
+priority = 80
+maximum_instances = 1
+spatialized = false
+looping = true
+streaming = false

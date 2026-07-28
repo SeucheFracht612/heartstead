@@ -31,6 +31,11 @@ heartstead_configure_test_target(heartstead_game_runtime_tests)
 
 heartstead_register_unit_test(heartstead_game_runtime_tests)
 
+add_executable(heartstead_client_audio_presentation_tests client_audio_presentation_tests.cpp)
+target_link_libraries(heartstead_client_audio_presentation_tests PRIVATE Heartstead::GameRuntime)
+heartstead_configure_test_target(heartstead_client_audio_presentation_tests)
+heartstead_register_unit_test(heartstead_client_audio_presentation_tests)
+
 add_executable(heartstead_runtime_spine_tests runtime_spine_tests.cpp)
 target_link_libraries(heartstead_runtime_spine_tests PRIVATE Heartstead::GameRuntime)
 target_compile_definitions(
@@ -166,6 +171,8 @@ heartstead_add_smoke_test(
   --output
   ${CMAKE_CURRENT_BINARY_DIR}/smoke_render_benchmark_fluids.json
 )
+heartstead_add_smoke_test(smoke.audio_benchmark heartstead_audio_benchmark --voices 16 --warmup 2
+                          --blocks 3)
 heartstead_add_smoke_test(smoke.dev_game heartstead_dev_game --frames 3)
 heartstead_add_smoke_test(smoke.dedicated_server heartstead_dedicated_server --ticks 3)
 heartstead_add_smoke_test(smoke.physics heartstead_physics_sandbox)

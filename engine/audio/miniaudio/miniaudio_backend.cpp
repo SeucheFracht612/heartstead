@@ -1,5 +1,7 @@
 #include "engine/audio/miniaudio/miniaudio_backend.hpp"
 
+#include "engine/audio/procedural_tone.hpp"
+
 #if HEARTSTEAD_HAS_MINIAUDIO
 #include <miniaudio.h>
 #endif
@@ -36,7 +38,7 @@ class MiniaudioSystem final : public IAudioSystem {
         uninitialize_device();
         for (auto& [id, voice] : voices_) {
             (void)id;
-            ma_sound_uninit(&voice->sound);
+            uninitialize_voice(*voice);
         }
         voices_.clear();
         uninitialize_groups();
@@ -83,9 +85,11 @@ class MiniaudioSystem final : public IAudioSystem {
             return status;
         }
 
-        if (!initialize_device()) {
-            device_state_ = AudioDeviceState::silent_fallback;
-            ++device_failures_;
+        if (desc_.open_output_device) {
+            if (!initialize_device()) {
+                device_state_ = AudioDeviceState::silent_fallback;
+                ++device_failures_;
+            }
         }
         return core::Status::ok();
     }
@@ -120,14 +124,38 @@ class MiniaudioSystem final : public IAudioSystem {
 
         auto backend_voice = std::make_unique<BackendVoice>();
         ma_uint32 flags = MA_SOUND_FLAG_NO_SPATIALIZATION;
-        flags |= event->streaming ? MA_SOUND_FLAG_STREAM : MA_SOUND_FLAG_DECODE;
         if (event->looping) {
             flags |= MA_SOUND_FLAG_LOOPING;
         }
         const auto path = asset->source_path.string();
-        auto result = ma_sound_init_from_file(&engine_, path.c_str(), flags, group(event->bus),
-                                              nullptr, &backend_voice->sound);
+        ma_result result = MA_ERROR;
+        if (is_procedural_tone_asset(asset->source_path)) {
+            auto tone = load_procedural_tone_asset(asset->source_path, desc_.sample_rate);
+            if (!tone) {
+                (void)mixer_.stop(logical_voice.value());
+                return core::Result<AudioVoiceId>::failure(tone.error().code, tone.error().message);
+            }
+            backend_voice->pcm = std::move(tone).value().mono_samples;
+            auto buffer_config = ma_audio_buffer_config_init(
+                ma_format_f32, 1, static_cast<ma_uint64>(backend_voice->pcm.size()),
+                backend_voice->pcm.data(), nullptr);
+            buffer_config.sampleRate = desc_.sample_rate;
+            result = ma_audio_buffer_init(&buffer_config, &backend_voice->buffer);
+            if (result == MA_SUCCESS) {
+                backend_voice->buffer_initialized = true;
+                result = ma_sound_init_from_data_source(
+                    &engine_, reinterpret_cast<ma_data_source*>(&backend_voice->buffer), flags,
+                    group(event->bus), &backend_voice->sound);
+                backend_voice->sound_initialized = result == MA_SUCCESS;
+            }
+        } else {
+            flags |= event->streaming ? MA_SOUND_FLAG_STREAM : MA_SOUND_FLAG_DECODE;
+            result = ma_sound_init_from_file(&engine_, path.c_str(), flags, group(event->bus),
+                                             nullptr, &backend_voice->sound);
+            backend_voice->sound_initialized = result == MA_SUCCESS;
+        }
         if (result != MA_SUCCESS) {
+            uninitialize_voice(*backend_voice);
             (void)mixer_.stop(logical_voice.value());
             const auto error = miniaudio_error(
                 "audio.sound_init_failed",
@@ -137,7 +165,7 @@ class MiniaudioSystem final : public IAudioSystem {
         apply_voice_parameters(logical_voice.value(), backend_voice->sound);
         result = ma_sound_start(&backend_voice->sound);
         if (result != MA_SUCCESS) {
-            ma_sound_uninit(&backend_voice->sound);
+            uninitialize_voice(*backend_voice);
             (void)mixer_.stop(logical_voice.value());
             const auto error = miniaudio_error("audio.sound_start_failed",
                                                "miniaudio could not start the audio voice", result);
@@ -152,7 +180,7 @@ class MiniaudioSystem final : public IAudioSystem {
         if (found == voices_.end()) {
             return core::Status::failure("audio.voice_missing", "audio voice is not active");
         }
-        ma_sound_uninit(&found->second->sound);
+        uninitialize_voice(*found->second);
         voices_.erase(found);
         return mixer_.stop(voice);
     }
@@ -188,7 +216,7 @@ class MiniaudioSystem final : public IAudioSystem {
 
         retry_elapsed_seconds_ += delta_seconds;
         if (device_reinitialize_requested_.exchange(false, std::memory_order_acq_rel) ||
-            (device_state_ == AudioDeviceState::silent_fallback &&
+            (desc_.open_output_device && device_state_ == AudioDeviceState::silent_fallback &&
              retry_elapsed_seconds_ >= device_retry_seconds_)) {
             retry_elapsed_seconds_ = 0.0F;
             rebuild_device();
@@ -212,12 +240,36 @@ class MiniaudioSystem final : public IAudioSystem {
         for (const auto voice : finished) {
             const auto found = voices_.find(voice.value());
             if (found != voices_.end()) {
-                ma_sound_uninit(&found->second->sound);
+                uninitialize_voice(*found->second);
                 voices_.erase(found);
             }
             if (mixer_.is_active(voice)) {
                 (void)mixer_.mark_finished(voice);
             }
+        }
+        return core::Status::ok();
+    }
+
+    [[nodiscard]] core::Status render_offline(std::span<float> interleaved_output,
+                                              std::uint32_t frame_count) override {
+        const auto required = static_cast<std::size_t>(frame_count) * desc_.output_channels;
+        if (frame_count == 0 || interleaved_output.size() != required) {
+            return core::Status::failure(
+                "audio.invalid_offline_buffer",
+                "offline audio output must exactly match frame count times channel count");
+        }
+        if (device_initialized_) {
+            return core::Status::failure(
+                "audio.offline_with_device",
+                "offline rendering requires an audio system without an output device");
+        }
+        const auto result =
+            ma_engine_read_pcm_frames(&engine_, interleaved_output.data(), frame_count, nullptr);
+        if (result != MA_SUCCESS) {
+            const auto error =
+                miniaudio_error("audio.offline_render_failed",
+                                "miniaudio could not render the offline audio block", result);
+            return core::Status::failure(error.code, error.message);
         }
         return core::Status::ok();
     }
@@ -239,6 +291,10 @@ class MiniaudioSystem final : public IAudioSystem {
     }
 
     [[nodiscard]] core::Status request_device_reinitialize() override {
+        if (!desc_.open_output_device) {
+            return core::Status::failure("audio.output_device_disabled",
+                                         "audio system was configured without an output device");
+        }
         device_reinitialize_requested_.store(true, std::memory_order_release);
         return core::Status::ok();
     }
@@ -246,6 +302,10 @@ class MiniaudioSystem final : public IAudioSystem {
   private:
     struct BackendVoice {
         ma_sound sound{};
+        ma_audio_buffer buffer{};
+        std::vector<float> pcm;
+        bool sound_initialized = false;
+        bool buffer_initialized = false;
     };
 
     static void data_callback(ma_device* device, void* output, const void* input,
@@ -408,8 +468,19 @@ class MiniaudioSystem final : public IAudioSystem {
                 ++iterator;
                 continue;
             }
-            ma_sound_uninit(&iterator->second->sound);
+            uninitialize_voice(*iterator->second);
             iterator = voices_.erase(iterator);
+        }
+    }
+
+    static void uninitialize_voice(BackendVoice& voice) {
+        if (voice.sound_initialized) {
+            ma_sound_uninit(&voice.sound);
+            voice.sound_initialized = false;
+        }
+        if (voice.buffer_initialized) {
+            ma_audio_buffer_uninit(&voice.buffer);
+            voice.buffer_initialized = false;
         }
     }
 

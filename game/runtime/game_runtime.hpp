@@ -1,5 +1,8 @@
 #pragma once
 
+#include "engine/assets/asset_catalog.hpp"
+#include "engine/audio/audio_system.hpp"
+#include "engine/audio/sound_event.hpp"
 #include "engine/core/result.hpp"
 #include "engine/debug/inspection.hpp"
 #include "engine/modding/mod_validation.hpp"
@@ -68,6 +71,7 @@ struct GameRuntimeStartupReport {
     std::size_t voxel_palette_entry_count = 0;
     std::size_t material_definition_count = 0;
     std::size_t material_asset_reference_count = 0;
+    std::size_t sound_event_count = 0;
     bool aggregate_content_validated = false;
     std::string selected_scenario_id;
     std::string selected_scenario_start_region;
@@ -108,15 +112,17 @@ class GameRuntime {
     [[nodiscard]] scripting::ScriptRuntimeDesc
     make_script_runtime_desc(scripting::ScriptBackend backend) const;
     [[nodiscard]] ScriptHostCommandRouter make_script_host_command_router() const;
+    [[nodiscard]] core::Result<std::unique_ptr<audio::IAudioSystem>>
+    create_audio_system(audio::AudioBackend backend, audio::AudioMixerConfig mixer = {},
+                        bool use_null_output_device = false) const;
 
     [[nodiscard]] const GameSystemDescriptor* find_system(GameSystemKind kind) const noexcept;
     [[nodiscard]] core::Status require_system(GameSystemKind kind) const;
     [[nodiscard]] core::Status require_prototype_kind(std::string_view kind) const;
-    [[nodiscard]] core::Status start_session(RuntimeConfiguration config,
-                                             SessionRequest request);
-    [[nodiscard]] core::Status
-    start_session_from_save(RuntimeConfiguration config, const save::FileSaveDatabase& database,
-                            std::string scenario_id = {});
+    [[nodiscard]] core::Status start_session(RuntimeConfiguration config, SessionRequest request);
+    [[nodiscard]] core::Status start_session_from_save(RuntimeConfiguration config,
+                                                       const save::FileSaveDatabase& database,
+                                                       std::string scenario_id = {});
     [[nodiscard]] core::Result<RuntimeFrameStats> run_frame(RuntimeFrameInput input);
     [[nodiscard]] core::Status submit_command(std::string type, std::string payload,
                                               std::int64_t now_ms = 0);
@@ -124,8 +130,7 @@ class GameRuntime {
     [[nodiscard]] core::Status save_to(const save::FileSaveDatabase& database) const;
     [[nodiscard]] core::Result<RenderSnapshot> capture_render_snapshot() const;
     [[nodiscard]] core::Result<debug::InspectionData> inspect_session() const;
-    [[nodiscard]] core::Result<std::vector<debug::InspectionData>>
-    inspect_system_timings() const;
+    [[nodiscard]] core::Result<std::vector<debug::InspectionData>> inspect_system_timings() const;
     [[nodiscard]] core::Status shutdown();
     [[nodiscard]] RuntimeSession* session() noexcept;
     [[nodiscard]] const RuntimeSession* session() const noexcept;
@@ -135,6 +140,8 @@ class GameRuntime {
     GameRuntimeStartupReport startup_report_;
     std::shared_ptr<const modding::PrototypeRegistry> prototypes_;
     std::shared_ptr<const world::VoxelPalette> voxel_palette_;
+    std::shared_ptr<const assets::AssetCatalog> assets_;
+    std::shared_ptr<const audio::SoundEventRegistry> sound_events_;
     std::unique_ptr<RuntimeSession> session_;
 };
 

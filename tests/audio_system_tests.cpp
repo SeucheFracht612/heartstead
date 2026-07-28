@@ -2,6 +2,7 @@
 #include "engine/audio/audio_mixer.hpp"
 #include "engine/audio/audio_system.hpp"
 #include "engine/audio/sound_event.hpp"
+#include "engine/debug/inspection.hpp"
 #include "engine/modding/generic_prototype.hpp"
 
 #include <array>
@@ -169,12 +170,23 @@ void test_null_backend_owns_logical_voices() {
     assert(voice);
     assert(system.value()->is_active(voice.value()));
     assert(system.value()->update(1.0F / 60.0F));
+    std::array<float, 8> offline{};
+    offline.fill(1.0F);
+    assert(system.value()->render_offline(offline, 4));
+    for (const auto sample : offline) {
+        assert(sample == 0.0F);
+    }
     auto snapshot = system.value()->voice_snapshot(voice.value());
     assert(snapshot.has_value());
     assert(snapshot->looping);
     assert(snapshot->streaming);
     assert(system.value()->stop(voice.value()));
     assert(!system.value()->is_active(voice.value()));
+    const auto inspection = debug::Inspector::inspect(system.value()->stats());
+    assert(inspection.object_type == "audio_system_stats");
+    assert(inspection.find_field("active_voices")->value == "0");
+    assert(inspection.find_field("played_voices")->value == "1");
+    assert(inspection.issues.empty());
 }
 
 void append_u16(std::vector<std::uint8_t>& bytes, std::uint16_t value) {

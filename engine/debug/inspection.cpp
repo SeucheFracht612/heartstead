@@ -882,6 +882,79 @@ InspectionData Inspector::inspect(const assets::ResourcePackLoadPlan& plan) {
     return data;
 }
 
+InspectionData Inspector::inspect(const audio::SoundEventDefinition& event) {
+    InspectionData data;
+    data.object_type = "sound_event";
+    data.display_name = "Sound Event";
+    data.prototype_id = prototype_text(event.prototype_id);
+    data.state = "valid";
+    add_field(data, "asset_id", event.asset_id);
+    add_field(data, "bus", std::string(audio::audio_bus_name(event.bus)));
+    add_field(data, "gain", std::to_string(event.gain));
+    add_field(data, "minimum_distance", std::to_string(event.minimum_distance));
+    add_field(data, "maximum_distance", std::to_string(event.maximum_distance));
+    add_field(data, "priority", std::to_string(event.priority));
+    add_field(data, "maximum_instances", std::to_string(event.maximum_instances));
+    add_field(data, "spatialized", bool_text(event.spatialized));
+    add_field(data, "looping", bool_text(event.looping));
+    add_field(data, "streaming", bool_text(event.streaming));
+    auto status = event.validate();
+    add_status_issue(data, status);
+    if (!status) {
+        data.state = "invalid";
+    }
+    return data;
+}
+
+InspectionData Inspector::inspect(const audio::SoundEventRegistry& registry) {
+    InspectionData data;
+    data.object_type = "sound_event_registry";
+    data.display_name = "Sound Event Registry";
+    data.state = "ready";
+    std::size_t invalid_count = 0;
+    std::size_t looping_count = 0;
+    std::size_t streaming_count = 0;
+    for (const auto& event : registry.definitions()) {
+        if (!event.validate()) {
+            ++invalid_count;
+        }
+        looping_count += event.looping ? 1U : 0U;
+        streaming_count += event.streaming ? 1U : 0U;
+    }
+    add_field(data, "event_count", std::to_string(registry.size()));
+    add_field(data, "looping_event_count", std::to_string(looping_count));
+    add_field(data, "streaming_event_count", std::to_string(streaming_count));
+    add_field(data, "invalid_event_count", std::to_string(invalid_count));
+    if (invalid_count > 0) {
+        data.state = "invalid";
+        add_issue(data, InspectionSeverity::error, "sound_event_registry.invalid_events",
+                  "sound event registry contains invalid definitions");
+    }
+    return data;
+}
+
+InspectionData Inspector::inspect(const audio::AudioSystemStats& stats) {
+    InspectionData data;
+    data.object_type = "audio_system_stats";
+    data.display_name = "Audio System Stats";
+    data.state = stats.active_voices == 0 ? "idle" : "active";
+    add_field(data, "active_voices", std::to_string(stats.active_voices));
+    add_field(data, "maximum_voices", std::to_string(stats.maximum_voices));
+    add_field(data, "played_voices", std::to_string(stats.played_voices));
+    add_field(data, "stopped_voices", std::to_string(stats.stopped_voices));
+    add_field(data, "stolen_voices", std::to_string(stats.stolen_voices));
+    add_field(data, "rejected_voices", std::to_string(stats.rejected_voices));
+    add_field(data, "device_reinitializations", std::to_string(stats.device_reinitializations));
+    add_field(data, "device_failures", std::to_string(stats.device_failures));
+    add_field(data, "master_gain", std::to_string(stats.master_gain));
+    if (stats.active_voices > stats.maximum_voices) {
+        data.state = "invalid";
+        add_issue(data, InspectionSeverity::error, "audio_stats.voice_limit_exceeded",
+                  "active audio voices exceed the configured maximum");
+    }
+    return data;
+}
+
 InspectionData Inspector::inspect(const content::ContentValidationReport& report) {
     InspectionData data;
     data.object_type = "content_validation_report";
@@ -923,6 +996,8 @@ InspectionData Inspector::inspect(const content::ContentValidationReport& report
               std::to_string(report.count_kind(modding::PrototypeKinds::material)));
     add_field(data, "scenario_prototype_count",
               std::to_string(report.count_kind(modding::PrototypeKinds::scenario)));
+    add_field(data, "sound_event_prototype_count",
+              std::to_string(report.count_kind(modding::PrototypeKinds::sound_event)));
     add_field(data, "item_definition_count", std::to_string(report.item_definitions.size()));
     add_field(data, "cargo_definition_count", std::to_string(report.cargo_definitions.size()));
     add_field(data, "entity_definition_count", std::to_string(report.entity_definitions.size()));
@@ -941,6 +1016,7 @@ InspectionData Inspector::inspect(const content::ContentValidationReport& report
               std::to_string(report.material_assets.references.size()));
     add_field(data, "material_asset_override_count",
               std::to_string(report.material_assets.override_count()));
+    add_field(data, "sound_event_count", std::to_string(report.sound_events.size()));
     add_field(data, "warning_count", std::to_string(warning_count));
     add_field(data, "error_count", std::to_string(error_count));
 

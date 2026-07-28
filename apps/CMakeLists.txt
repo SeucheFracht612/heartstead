@@ -126,5 +126,6 @@ endfunction()
 
 add_subdirectory(render_smoke)
 add_subdirectory(render_benchmark)
+add_subdirectory(audio_benchmark)
 add_subdirectory(dev_game)
 add_subdirectory(dedicated_server)

@@ -332,14 +332,14 @@ GameRuntime::initialize(GameRuntimeConfig config,
 
     GameRuntime runtime;
     runtime.config_ = std::move(config);
-    runtime.prototypes_ =
-        std::make_shared<modding::PrototypeRegistry>(content_report.registry);
+    runtime.prototypes_ = std::make_shared<modding::PrototypeRegistry>(content_report.registry);
     auto palette = world::voxel_palette_from_prototypes(content_report.registry);
     if (!palette) {
         return core::Result<GameRuntime>::failure(palette.error().code, palette.error().message);
     }
-    runtime.voxel_palette_ =
-        std::make_shared<world::VoxelPalette>(std::move(palette).value());
+    runtime.voxel_palette_ = std::make_shared<world::VoxelPalette>(std::move(palette).value());
+    runtime.assets_ = std::make_shared<assets::AssetCatalog>();
+    runtime.sound_events_ = std::make_shared<audio::SoundEventRegistry>();
     auto startup_status =
         populate_startup_report(runtime.startup_report_, runtime.config_, content_report.mods,
                                 content_report.registry, 0, 0, 0, 0, 0, false);
@@ -366,10 +366,12 @@ GameRuntime::initialize(GameRuntimeConfig config,
 
     GameRuntime runtime;
     runtime.config_ = std::move(config);
-    runtime.prototypes_ =
-        std::make_shared<modding::PrototypeRegistry>(content_report.registry);
-    runtime.voxel_palette_ =
-        std::make_shared<world::VoxelPalette>(content_report.voxel_palette);
+    runtime.prototypes_ = std::make_shared<modding::PrototypeRegistry>(content_report.registry);
+    runtime.voxel_palette_ = std::make_shared<world::VoxelPalette>(content_report.voxel_palette);
+    runtime.assets_ = std::make_shared<assets::AssetCatalog>(content_report.asset_catalog);
+    runtime.sound_events_ =
+        std::make_shared<audio::SoundEventRegistry>(content_report.sound_events);
+    runtime.startup_report_.sound_event_count = content_report.sound_events.size();
     auto startup_status = populate_startup_report(
         runtime.startup_report_, runtime.config_, content_report.mods, content_report.registry,
         content_report.resource_packs.size(), content_report.asset_catalog.active_count(),
@@ -424,6 +426,23 @@ GameRuntime::make_script_runtime_desc(scripting::ScriptBackend backend) const {
 
 ScriptHostCommandRouter GameRuntime::make_script_host_command_router() const {
     return ScriptHostCommandRouter(startup_report_.script_host_command_routes);
+}
+
+core::Result<std::unique_ptr<audio::IAudioSystem>>
+GameRuntime::create_audio_system(audio::AudioBackend backend, audio::AudioMixerConfig mixer,
+                                 bool use_null_output_device) const {
+    if (!is_initialized() || assets_ == nullptr || sound_events_ == nullptr) {
+        return core::Result<std::unique_ptr<audio::IAudioSystem>>::failure(
+            "game_runtime.audio_content_unavailable",
+            "game runtime audio content must be initialized before creating audio");
+    }
+    audio::AudioSystemDesc desc;
+    desc.backend = backend;
+    desc.events = sound_events_.get();
+    desc.assets = assets_.get();
+    desc.mixer = mixer;
+    desc.use_null_output_device = use_null_output_device;
+    return audio::create_audio_system(desc);
 }
 
 const GameSystemDescriptor* GameRuntime::find_system(GameSystemKind kind) const noexcept {

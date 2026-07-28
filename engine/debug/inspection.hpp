@@ -5,6 +5,8 @@
 #include "engine/assets/asset_cooker.hpp"
 #include "engine/assets/cooked_asset_store.hpp"
 #include "engine/assets/resource_pack.hpp"
+#include "engine/audio/audio_types.hpp"
+#include "engine/audio/sound_event.hpp"
 #include "engine/build/build_piece.hpp"
 #include "engine/cargo/cargo.hpp"
 #include "engine/content/content_validation.hpp"
@@ -95,6 +97,9 @@ class Inspector {
     [[nodiscard]] static InspectionData inspect(const assets::VirtualFileSystem& vfs);
     [[nodiscard]] static InspectionData inspect(const assets::AssetRecord& record);
     [[nodiscard]] static InspectionData inspect(const assets::AssetCatalog& catalog);
+    [[nodiscard]] static InspectionData inspect(const audio::SoundEventDefinition& event);
+    [[nodiscard]] static InspectionData inspect(const audio::SoundEventRegistry& registry);
+    [[nodiscard]] static InspectionData inspect(const audio::AudioSystemStats& stats);
     [[nodiscard]] static InspectionData inspect(const assets::CookedAssetRecord& record);
     [[nodiscard]] static InspectionData inspect(const assets::CookedAssetManifest& manifest);
     [[nodiscard]] static InspectionData inspect(const assets::CookedAssetStore& store);

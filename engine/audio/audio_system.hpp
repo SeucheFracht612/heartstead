@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 #include <string_view>
 
 namespace heartstead::audio {
@@ -20,6 +21,7 @@ struct AudioSystemDesc {
     std::uint32_t sample_rate = 48'000;
     std::uint32_t output_channels = 2;
     std::uint32_t period_frames = 256;
+    bool open_output_device = true;
     bool use_null_output_device = false;
 
     [[nodiscard]] core::Status validate() const;
@@ -39,6 +41,8 @@ class IAudioSystem {
     [[nodiscard]] virtual core::Status set_listener(AudioListenerState listener) = 0;
     [[nodiscard]] virtual core::Status set_bus_gain(AudioBus bus, float gain) = 0;
     [[nodiscard]] virtual core::Status update(float delta_seconds) = 0;
+    [[nodiscard]] virtual core::Status render_offline(std::span<float> interleaved_output,
+                                                      std::uint32_t frame_count) = 0;
     [[nodiscard]] virtual bool is_active(AudioVoiceId voice) const noexcept = 0;
     [[nodiscard]] virtual std::optional<AudioVoiceSnapshot>
     voice_snapshot(AudioVoiceId voice) const = 0;
