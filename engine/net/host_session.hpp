@@ -10,6 +10,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -76,6 +77,8 @@ struct HostSessionTickResult {
     std::uint32_t command_message_count = 0;
     std::uint32_t response_message_count = 0;
     std::uint32_t replication_message_count = 0;
+    std::vector<core::NetId> connected_clients;
+    std::vector<core::NetId> disconnected_clients;
     HostSessionOutboundDeliveryReport outbound_delivery;
     std::vector<HostSessionCommandReport> command_reports;
     std::vector<ReplicationRelevanceReport> replication_relevance_reports;
@@ -92,6 +95,7 @@ class HostSession {
     [[nodiscard]] HostSessionState state() const noexcept;
     [[nodiscard]] bool is_running() const noexcept;
     [[nodiscard]] core::NetId server_id() const noexcept;
+    [[nodiscard]] std::optional<TransportEndpoint> local_endpoint() const;
     [[nodiscard]] std::size_t connected_client_count() const noexcept;
     [[nodiscard]] std::size_t pending_outbound_message_count() const noexcept;
     [[nodiscard]] const ReplicationRelevancePolicy& replication_relevance_policy() const noexcept;
@@ -118,6 +122,8 @@ class HostSession {
     };
 
     [[nodiscard]] core::Status require_running() const;
+    [[nodiscard]] core::Status send_welcome(core::NetId client_id,
+                                            std::int64_t server_time_ms);
     [[nodiscard]] core::Status assign_replication_sequence(HostSessionCommandReport& report);
     void queue_command_response(const HostSessionCommandReport& report);
     [[nodiscard]] ReplicationRelevanceReport

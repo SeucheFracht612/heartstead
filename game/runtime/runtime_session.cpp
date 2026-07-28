@@ -1,5 +1,6 @@
 #include "game/runtime/runtime_session.hpp"
 
+#include "engine/core/hash.hpp"
 #include "engine/scenarios/scenario_prototype.hpp"
 #include "engine/net/command_payload.hpp"
 #include "engine/world/world_snapshot.hpp"
@@ -10,6 +11,26 @@
 #include <utility>
 
 namespace heartstead::game {
+
+namespace {
+
+[[nodiscard]] std::string
+content_session_fingerprint(const save::SaveMetadata& metadata) {
+    core::StableHash64 hash;
+    hash.add_string(metadata.game_version);
+    hash.add_u64_le(metadata.schema_version);
+    for (const auto& mod : metadata.enabled_mods) {
+        hash.add_string(mod.id);
+        hash.add_byte(0);
+        hash.add_string(mod.version);
+        hash.add_byte(0);
+        hash.add_string(mod.prototype_hash);
+        hash.add_byte(0xffU);
+    }
+    return "content-" + hash.hex();
+}
+
+} // namespace
 
 core::Status RuntimeConfiguration::validate() const {
     auto status = fixed_step.validate();
@@ -36,6 +57,29 @@ core::Status RuntimeConfiguration::validate() const {
         return core::Status::failure(
             "runtime_configuration.loopback_without_server",
             "an in-memory client requires an authoritative server in the same process");
+    }
+    if (!use_in_memory_transport) {
+        if (create_server) {
+            status = net::validate_transport_endpoint(server_bind_endpoint);
+            if (!status) {
+                return status;
+            }
+        }
+        if (create_client && !create_server && !remote_server_endpoint.has_value()) {
+            return core::Status::failure(
+                "runtime_configuration.remote_endpoint_missing",
+                "remote-client-only runtime requires a server endpoint");
+        }
+        if (remote_server_endpoint.has_value()) {
+            status = net::validate_transport_endpoint(*remote_server_endpoint);
+            if (!status || remote_server_endpoint->port == 0) {
+                return !status
+                           ? status
+                           : core::Status::failure(
+                                 "runtime_configuration.remote_endpoint_port",
+                                 "remote server endpoint port must be non-zero");
+            }
+        }
     }
     if (create_renderer && (!create_client || headless)) {
         return core::Status::failure("runtime_configuration.invalid_renderer",
@@ -125,6 +169,9 @@ core::Status RuntimeSession::initialize() {
         server_desc.host.transport.backend = config_.use_in_memory_transport
                                                  ? net::TransportBackend::in_memory
                                                  : net::TransportBackend::external_library;
+        server_desc.host.transport.external.bind_endpoint = config_.server_bind_endpoint;
+        server_desc.host.transport.external.content_fingerprint =
+            content_session_fingerprint(request_.metadata);
         server_desc.physics.backend = config_.physics_backend;
         server_desc.chunk_fluids = config_.chunk_fluids;
         server_desc.chunk_lighting = config_.chunk_lighting;
@@ -147,27 +194,63 @@ core::Status RuntimeSession::initialize() {
     }
 
     if (config_.create_client) {
-        if (server_ == nullptr) {
-            return core::Status::failure(
-                "runtime_session.remote_client_unavailable",
-                "remote client transport is not configured for this runtime session");
-        }
-        auto connected = server_->connect_client();
-        if (!connected) {
-            return core::Status::failure(connected.error().code, connected.error().message);
-        }
         world::WorldStateDesc client_world;
         client_world.metadata = request_.metadata;
         client_world.voxel_palette = voxel_palette_->manifest();
-        client_ = std::make_unique<ClientRuntime>(connected.value(), std::move(client_world),
-                                                  &server_->replication_registry());
-        auto status = pump_client_messages();
+        if (config_.use_in_memory_transport) {
+            if (server_ == nullptr) {
+                return core::Status::failure(
+                    "runtime_session.local_server_missing",
+                    "in-memory client requires a local authoritative server");
+            }
+            auto connected = server_->connect_client();
+            if (!connected) {
+                return core::Status::failure(connected.error().code,
+                                             connected.error().message);
+            }
+            client_ = std::make_unique<ClientRuntime>(
+                connected.value(), std::move(client_world),
+                &server_->replication_registry());
+        } else {
+            auto endpoint = config_.remote_server_endpoint;
+            if (!endpoint.has_value() && server_ != nullptr) {
+                endpoint = server_->host().local_endpoint();
+                if (endpoint.has_value() &&
+                    (endpoint->address == "0.0.0.0" || endpoint->address.empty())) {
+                    endpoint->address = "127.0.0.1";
+                }
+            }
+            if (!endpoint.has_value() || endpoint->port == 0) {
+                return core::Status::failure(
+                    "runtime_session.remote_endpoint_unavailable",
+                    "remote client could not resolve the server bind endpoint");
+            }
+            net::ExternalTransportClientConfig transport_config;
+            transport_config.server_endpoint = *endpoint;
+            transport_config.content_fingerprint =
+                content_session_fingerprint(request_.metadata);
+            auto remote =
+                net::create_external_transport_client(std::move(transport_config));
+            if (!remote) {
+                return core::Status::failure(remote.error().code, remote.error().message);
+            }
+            remote_transport_ = std::move(remote).value();
+            auto status = remote_transport_->connect(0);
+            if (!status) {
+                return status;
+            }
+            client_ = std::make_unique<ClientRuntime>(
+                core::NetId{}, std::move(client_world),
+                server_ == nullptr ? nullptr : &server_->replication_registry());
+        }
+        auto status = pump_client_messages(0);
         if (!status) {
             return status;
         }
-        if (!client_->is_connected()) {
-            return core::Status::failure("runtime_session.client_handshake_failed",
-                                         "local client did not accept the server welcome");
+        if (config_.use_in_memory_transport && !client_->is_connected()) {
+            return core::Status::failure(
+                "runtime_session.client_handshake_failed",
+                "local client did not accept the server welcome");
         }
         auto synchronized = client_->synchronize();
         if (!synchronized) {
@@ -214,7 +297,7 @@ core::Result<RuntimeFrameStats> RuntimeSession::run_frame(RuntimeFrameInput inpu
             stats.server_ticks.push_back(std::move(tick_result).value());
             stats.authoritative_world_tick = server_->world().world_time();
         }
-        auto status = pump_client_messages();
+        auto status = pump_client_messages(input.now_ms);
         if (!status) {
             return fault_frame(status.error());
         }
@@ -258,7 +341,8 @@ core::Status RuntimeSession::submit_command(std::string type, std::string payloa
 core::Result<std::uint64_t>
 RuntimeSession::submit_tracked_command(std::string type, std::string payload,
                                        std::int64_t now_ms) {
-    if (!running_ || client_ == nullptr || server_ == nullptr) {
+    if (!running_ || client_ == nullptr ||
+        (server_ == nullptr && remote_transport_ == nullptr)) {
         return core::Result<std::uint64_t>::failure(
             "runtime_session.command_path_unavailable",
             "commands require an active client and authoritative server connection");
@@ -269,7 +353,11 @@ RuntimeSession::submit_tracked_command(std::string type, std::string payload,
                                                     command.error().message);
     }
     const auto sequence = command.value().sequence;
-    auto status = server_->submit_command(client_->client_id(), std::move(command).value());
+    auto status = remote_transport_ != nullptr
+                      ? remote_transport_->send_to_server(net::make_command_transport_message(
+                            command.value()))
+                      : server_->submit_command(client_->client_id(),
+                                                std::move(command).value());
     if (!status) {
         return core::Result<std::uint64_t>::failure(status.error().code,
                                                     status.error().message);
@@ -363,15 +451,26 @@ RenderSnapshot RuntimeSession::capture_render_snapshot() const {
     return presentation_.extract(fixed_step_.tick());
 }
 
-core::Status RuntimeSession::pump_client_messages() {
-    if (server_ == nullptr || client_ == nullptr) {
+core::Status RuntimeSession::pump_client_messages(std::int64_t now_ms) {
+    if (client_ == nullptr) {
+        return core::Status::ok();
+    }
+    if (remote_transport_ != nullptr) {
+        auto maintenance = remote_transport_->poll_maintenance(now_ms);
+        if (!maintenance) {
+            return core::Status::failure(maintenance.error().code,
+                                         maintenance.error().message);
+        }
+        const auto messages = remote_transport_->drain_server_messages();
+        return client_->receive(messages);
+    }
+    if (server_ == nullptr) {
         return core::Status::ok();
     }
     auto messages = server_->drain_client_messages(client_->client_id());
-    if (!messages) {
-        return core::Status::failure(messages.error().code, messages.error().message);
-    }
-    return client_->receive(messages.value());
+    return !messages
+               ? core::Status::failure(messages.error().code, messages.error().message)
+               : client_->receive(messages.value());
 }
 
 core::Result<PresentationSynchronizationStats> RuntimeSession::synchronize_presentation() {
@@ -400,7 +499,12 @@ core::Status RuntimeSession::shutdown() {
         return core::Status::ok();
     }
     auto result = core::Status::ok();
-    if (server_ != nullptr && client_ != nullptr && server_->is_running()) {
+    if (remote_transport_ != nullptr) {
+        auto status = remote_transport_->disconnect(0);
+        if (!status) {
+            result = status;
+        }
+    } else if (server_ != nullptr && client_ != nullptr && server_->is_running()) {
         auto status = server_->disconnect_client(client_->client_id());
         if (!status) {
             result = status;
@@ -409,6 +513,7 @@ core::Status RuntimeSession::shutdown() {
     presentation_synchronizer_.clear();
     presentation_.clear();
     client_.reset();
+    remote_transport_.reset();
     if (server_ != nullptr) {
         auto status = server_->stop();
         if (!status && result) {

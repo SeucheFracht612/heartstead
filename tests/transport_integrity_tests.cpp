@@ -1,6 +1,8 @@
 #include "engine/debug/inspection.hpp"
 #include "engine/net/host_session.hpp"
 #include "engine/net/transport.hpp"
+#include "engine/net/transport_client.hpp"
+#include "engine/net/transport_handshake.hpp"
 #include "engine/net/transport_packet.hpp"
 #include "engine/net/transport_reliability.hpp"
 
@@ -220,6 +222,99 @@ void test_external_capacity_failure_does_not_leak_untracked_datagram() {
     client_messages = transport.value()->drain_client_messages(client.value());
     assert(client_messages && client_messages.value().size() == 1);
     assert(client_messages.value().front().message.sequence == 2);
+}
+
+void test_remote_endpoint_challenge_token_and_timeout() {
+    if (!net::transport_backend_info(net::TransportBackend::external_library).available) {
+        return;
+    }
+
+    net::TransportHostDesc desc;
+    desc.backend = net::TransportBackend::external_library;
+    desc.external.server_id = core::NetId::from_value(71);
+    desc.external.bind_endpoint = {"127.0.0.1", 0};
+    desc.external.max_payload_bytes = 4096;
+    desc.external.max_clients = 2;
+    desc.external.content_fingerprint = "base@remote-test";
+    desc.external.idle_timeout_ms = 1'000;
+    desc.external.keepalive_interval_ms = 100;
+    auto host = net::create_transport_host(desc);
+    assert(host);
+    assert(host.value()->local_endpoint().has_value());
+
+    net::ExternalTransportClientConfig client_config;
+    client_config.server_endpoint = *host.value()->local_endpoint();
+    client_config.max_payload_bytes = 4096;
+    client_config.content_fingerprint = desc.external.content_fingerprint;
+    client_config.idle_timeout_ms = 1'000;
+    client_config.keepalive_interval_ms = 100;
+    auto client = net::create_external_transport_client(client_config);
+    assert(client);
+    assert(client.value()->connect(0));
+
+    auto host_hello = host.value()->poll_maintenance(0);
+    assert(host_hello && host_hello.value().connected_clients.empty());
+    auto client_challenge = client.value()->poll_maintenance(0);
+    assert(client_challenge && !client_challenge.value().connected);
+    auto host_response = host.value()->poll_maintenance(1);
+    assert(host_response && host_response.value().connected_clients.size() == 1);
+    const auto client_id = host_response.value().connected_clients.front();
+    auto client_accept = client.value()->poll_maintenance(1);
+    assert(client_accept && client_accept.value().connected);
+    assert(client.value()->state() == net::TransportClientState::connected);
+    assert(client.value()->client_id() == client_id);
+    assert(client.value()->server_id() == desc.external.server_id);
+    assert(client.value()->session_token().is_valid());
+
+    assert(client.value()->send_to_server(
+        reliable_message(net::TransportMessageKind::command, 1, "remote")));
+    assert(host.value()->poll_maintenance(2));
+    auto received = host.value()->drain_server_messages();
+    assert(received.size() == 1);
+    assert(received.front().sender == client_id);
+    assert(received.front().message.payload == "remote");
+    assert(received.front().session_token == client.value()->session_token());
+    assert(client.value()->poll_maintenance(2));
+
+    assert(host.value()->send_server_to_client(
+        client_id,
+        reliable_message(net::TransportMessageKind::command_result, 1, "accepted")));
+    assert(client.value()->poll_maintenance(3));
+    auto delivered = client.value()->drain_server_messages();
+    assert(delivered.size() == 1);
+    assert(delivered.front().message.payload == "accepted");
+    assert(host.value()->poll_maintenance(3));
+
+    auto timed_out = host.value()->poll_maintenance(1'004);
+    assert(timed_out && timed_out.value().disconnected_clients == std::vector{client_id});
+    assert(!host.value()->is_client_connected(client_id));
+}
+
+void test_remote_endpoint_rejects_content_mismatch() {
+    if (!net::transport_backend_info(net::TransportBackend::external_library).available) {
+        return;
+    }
+    net::TransportHostDesc desc;
+    desc.backend = net::TransportBackend::external_library;
+    desc.external.bind_endpoint = {"127.0.0.1", 0};
+    desc.external.content_fingerprint = "server-content";
+    auto host = net::create_transport_host(desc);
+    assert(host && host.value()->local_endpoint().has_value());
+
+    net::ExternalTransportClientConfig config;
+    config.server_endpoint = *host.value()->local_endpoint();
+    config.content_fingerprint = "different-content";
+    auto client = net::create_external_transport_client(config);
+    assert(client && client.value()->connect(0));
+    assert(host.value()->poll_maintenance(0));
+    assert(client.value()->poll_maintenance(0));
+    auto response = host.value()->poll_maintenance(1);
+    assert(response && response.value().connected_clients.empty());
+    auto rejected = client.value()->poll_maintenance(1);
+    assert(rejected && rejected.value().disconnected);
+    assert(rejected.value().disconnect_reason_code ==
+           "transport_handshake.content_mismatch");
+    assert(client.value()->state() == net::TransportClientState::disconnected);
 }
 
 void test_fragment_reassembly_is_scoped_and_expires() {
@@ -512,6 +607,8 @@ void test_host_disconnects_when_the_final_notice_cannot_be_delivered() {
 int main() {
     test_tracking_can_be_rolled_back_before_retry();
     test_external_capacity_failure_does_not_leak_untracked_datagram();
+    test_remote_endpoint_challenge_token_and_timeout();
+    test_remote_endpoint_rejects_content_mismatch();
     test_fragment_reassembly_is_scoped_and_expires();
     test_reliable_commands_are_delivered_only_after_gaps_close();
     test_host_retries_responses_without_redispatching_drained_commands();

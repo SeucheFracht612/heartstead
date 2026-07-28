@@ -263,6 +263,22 @@ core::Status ServerRuntime::initialize() {
                 return core::Status::failure(result.error().code, result.error().message);
             }
             current_commands_ = std::move(result).value();
+            for (const auto client_id : current_commands_.connected_clients) {
+                auto connection_status = spawn_player(client_id);
+                if (connection_status) {
+                    connection_status = send_initial_chunks(client_id);
+                }
+                if (!connection_status) {
+                    (void)host_.disconnect_client(client_id);
+                    return connection_status;
+                }
+            }
+            for (const auto client_id : current_commands_.disconnected_clients) {
+                auto connection_status = remove_player_connection(client_id);
+                if (!connection_status) {
+                    return connection_status;
+                }
+            }
             for (const auto& report : current_commands_.command_reports) {
                 if (!report.success) {
                     continue;
@@ -543,6 +559,10 @@ core::Status ServerRuntime::disconnect_client(core::NetId client_id) {
     if (!status) {
         return status;
     }
+    return remove_player_connection(client_id);
+}
+
+core::Status ServerRuntime::remove_player_connection(core::NetId client_id) {
     const auto found = player_connections_.find(client_id.value());
     if (found == player_connections_.end()) {
         return core::Status::ok();
@@ -562,7 +582,7 @@ core::Status ServerRuntime::disconnect_client(core::NetId client_id) {
         (void)world_.entities().erase(runtime_handle);
     }
     if (entities_.is_alive(entity_id)) {
-        status = entities_.destroy_entity(entity_id);
+        auto status = entities_.destroy_entity(entity_id);
         if (!status) {
             return status;
         }

@@ -112,6 +112,10 @@ core::NetId HostSession::server_id() const noexcept {
     return transport_host_server_id(config_.transport);
 }
 
+std::optional<TransportEndpoint> HostSession::local_endpoint() const {
+    return transport_ ? transport_->local_endpoint() : std::nullopt;
+}
+
 std::size_t HostSession::connected_client_count() const noexcept {
     return transport_ ? transport_->connected_client_count() : 0;
 }
@@ -179,18 +183,7 @@ core::Result<core::NetId> HostSession::connect_client() {
         return client;
     }
 
-    const auto capabilities = transport_->capabilities();
-    const TransportServerWelcome welcome{
-        transport_control_protocol_version,
-        transport_->server_id(),
-        client.value(),
-        capabilities.max_payload_bytes,
-        capabilities.max_clients,
-        capabilities.supports_unreliable,
-        capabilities.enforces_reliable_command_order,
-    };
-    auto status = transport_->send_server_to_client(
-        client.value(), make_server_welcome_transport_message(welcome, 0));
+    auto status = send_welcome(client.value(), 0);
     if (!status) {
         (void)transport_->disconnect_client(client.value());
         return core::Result<core::NetId>::failure(status.error().code, status.error().message);
@@ -306,6 +299,19 @@ core::Result<HostSessionTickResult> HostSession::tick(const ServerCommandDispatc
     tick_result.transport_retransmission_count = maintenance.value().retransmission_count;
     tick_result.transport_dropped_reliable_message_count =
         maintenance.value().dropped_reliable_message_count;
+    for (const auto client_id : maintenance.value().connected_clients) {
+        auto status = send_welcome(client_id, context.server_time_ms);
+        if (!status) {
+            (void)transport_->disconnect_client(client_id);
+            return core::Result<HostSessionTickResult>::failure(status.error().code,
+                                                                status.error().message);
+        }
+        tick_result.connected_clients.push_back(client_id);
+    }
+    tick_result.disconnected_clients = maintenance.value().disconnected_clients;
+    for (const auto client_id : tick_result.disconnected_clients) {
+        pending_outbound_.erase(client_id);
+    }
 
     // A committed command must never be dispatched again, and a later command must not make an
     // already-behind recipient fall farther out of sync. Give deferred reliable output the first
@@ -370,6 +376,22 @@ core::Status HostSession::require_running() const {
         return core::Status::failure("host_session.not_running", "host session is not running");
     }
     return core::Status::ok();
+}
+
+core::Status HostSession::send_welcome(core::NetId client_id,
+                                       std::int64_t server_time_ms) {
+    const auto capabilities = transport_->capabilities();
+    const TransportServerWelcome welcome{
+        transport_control_protocol_version,
+        transport_->server_id(),
+        client_id,
+        capabilities.max_payload_bytes,
+        capabilities.max_clients,
+        capabilities.supports_unreliable,
+        capabilities.enforces_reliable_command_order,
+    };
+    return transport_->send_server_to_client(
+        client_id, make_server_welcome_transport_message(welcome, server_time_ms));
 }
 
 core::Status HostSession::assign_replication_sequence(HostSessionCommandReport& report) {

@@ -8,6 +8,7 @@
 #include "engine/input/input_action.hpp"
 #include "engine/movement/player_camera.hpp"
 #include "engine/movement/player_input.hpp"
+#include "engine/net/transport.hpp"
 #include "engine/platform/platform.hpp"
 #include "engine/renderer/environment/day_night.hpp"
 #include "engine/renderer/renderer.hpp"
@@ -42,6 +43,7 @@ using namespace heartstead;
 struct LaunchOptions {
     bool headless = false;
     std::optional<std::uint32_t> maximum_frames;
+    std::optional<net::TransportEndpoint> connect_endpoint;
     bool help = false;
 };
 
@@ -69,6 +71,18 @@ core::Result<LaunchOptions> parse_options(int argc, char** argv) {
             options.maximum_frames = frames;
             // CI smoke runs historically use only --frames and must not require a display.
             options.headless = true;
+        } else if (argument == "--connect") {
+            if (index + 1 >= argc) {
+                return core::Result<LaunchOptions>::failure(
+                    "dev_game.missing_connect_endpoint",
+                    "--connect requires ADDRESS:PORT");
+            }
+            auto endpoint = net::parse_transport_endpoint(argv[++index], 7777);
+            if (!endpoint) {
+                return core::Result<LaunchOptions>::failure(endpoint.error().code,
+                                                            endpoint.error().message);
+            }
+            options.connect_endpoint = std::move(endpoint).value();
         } else {
             return core::Result<LaunchOptions>::failure("dev_game.unknown_option",
                                                         "unknown option: " + std::string(argument));
@@ -78,7 +92,8 @@ core::Result<LaunchOptions> parse_options(int argc, char** argv) {
 }
 
 void print_usage(const char* executable, std::ostream& output) {
-    output << "usage: " << executable << " [--headless] [--frames N]\n"
+    output << "usage: " << executable
+           << " [--headless] [--frames N] [--connect ADDRESS:PORT]\n"
            << "       --frames implies --headless for deterministic smoke runs\n";
 }
 
@@ -98,21 +113,23 @@ create_runtime(const content::ContentValidationReport& content_report) {
 }
 
 core::Status start_runtime(game::GameRuntime& runtime,
-                           const content::ContentValidationReport& content_report, bool headless) {
+                           const content::ContentValidationReport& content_report,
+                           const LaunchOptions& options) {
     auto metadata = content::save_metadata_from_content_report(content_report, "development",
                                                                0x4845415254535445ULL);
     if (!metadata) {
         return core::Status::failure(metadata.error().code, metadata.error().message);
     }
     game::RuntimeConfiguration config;
-    config.create_server = true;
+    config.create_server = !options.connect_endpoint.has_value();
     config.create_client = true;
-    config.create_renderer = !headless;
-    config.create_audio = !headless;
-    config.use_in_memory_transport = true;
-    config.headless = headless;
+    config.create_renderer = !options.headless;
+    config.create_audio = !options.headless;
+    config.use_in_memory_transport = !options.connect_endpoint.has_value();
+    config.remote_server_endpoint = options.connect_endpoint;
+    config.headless = options.headless;
     config.physics_backend =
-        headless ? physics::PhysicsBackend::headless : physics::PhysicsBackend::jolt;
+        options.headless ? physics::PhysicsBackend::headless : physics::PhysicsBackend::jolt;
     config.gameplay_modules.push_back(std::make_shared<game::animals::WanderingAnimalModule>());
     game::SessionRequest request;
     request.metadata = std::move(metadata).value();
@@ -561,8 +578,10 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
         if (!synchronized_ui) {
             return fail(synchronized_ui.error());
         }
-        renderer.set_voxel_fluid_stats(runtime.session()->server()->chunk_fluids().stats());
-        renderer.set_voxel_lighting_stats(runtime.session()->server()->chunk_lighting().stats());
+        if (const auto* server = runtime.session()->server(); server != nullptr) {
+            renderer.set_voxel_fluid_stats(server->chunk_fluids().stats());
+            renderer.set_voxel_lighting_stats(server->chunk_lighting().stats());
+        }
         auto day_night = renderer::evaluate_day_night(
             runtime_frame.value().authoritative_world_tick, runtime.session()->config().world_time);
         if (!day_night) {
@@ -781,7 +800,7 @@ int main(int argc, char** argv) {
         if (!runtime) {
             return fail(runtime.error());
         }
-        auto status = start_runtime(runtime.value(), content_report, options.headless);
+        auto status = start_runtime(runtime.value(), content_report, options);
         if (!status) {
             return fail(status.error());
         }

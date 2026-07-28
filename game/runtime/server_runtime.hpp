@@ -134,6 +134,7 @@ class ServerRuntime final {
     [[nodiscard]] core::Status grant_starting_inventory(core::SaveId owner_id);
     [[nodiscard]] world::WorldPosition scenario_spawn_position() const noexcept;
     [[nodiscard]] core::Status spawn_player(core::NetId client_id);
+    [[nodiscard]] core::Status remove_player_connection(core::NetId client_id);
     [[nodiscard]] core::Status simulate_players(simulation::SimulationContext& context);
     [[nodiscard]] core::Status replicate_players();
     [[nodiscard]] core::Status replicate_entity_motion(std::uint64_t simulation_tick);

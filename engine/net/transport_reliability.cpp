@@ -527,6 +527,7 @@ make_transport_reliability_ack_envelope(const TransportEnvelope& reliable_envelo
     acknowledgement.sender = reliable_envelope.recipient;
     acknowledgement.recipient = reliable_envelope.sender;
     acknowledgement.message = make_transport_reliability_ack_message(key.value(), timestamp_ms);
+    acknowledgement.session_token = reliable_envelope.session_token;
     return core::Result<TransportEnvelope>::success(std::move(acknowledgement));
 }
 

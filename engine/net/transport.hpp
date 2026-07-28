@@ -7,10 +7,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <queue>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace heartstead::net {
@@ -44,6 +46,17 @@ struct TransportEndpoint {
     std::uint16_t port = 7777;
 };
 
+struct TransportSessionToken {
+    std::uint64_t high = 0;
+    std::uint64_t low = 0;
+
+    [[nodiscard]] bool is_valid() const noexcept {
+        return high != 0 || low != 0;
+    }
+
+    [[nodiscard]] bool operator==(const TransportSessionToken&) const noexcept = default;
+};
+
 struct TransportCapabilities {
     bool supports_reliable = true;
     bool supports_unreliable = true;
@@ -70,15 +83,25 @@ struct TransportMessage {
 };
 
 struct TransportEnvelope {
+    TransportEnvelope() = default;
+    TransportEnvelope(core::NetId sender_value, core::NetId recipient_value,
+                      TransportMessage message_value,
+                      TransportSessionToken token_value = {})
+        : sender(sender_value), recipient(recipient_value),
+          message(std::move(message_value)), session_token(token_value) {}
+
     core::NetId sender;
     core::NetId recipient;
     TransportMessage message;
+    TransportSessionToken session_token;
 };
 
 struct TransportMaintenanceResult {
     std::uint32_t retransmission_count = 0;
     std::uint32_t dropped_reliable_message_count = 0;
     std::vector<TransportEnvelope> dropped_reliable_messages;
+    std::vector<core::NetId> connected_clients;
+    std::vector<core::NetId> disconnected_clients;
 };
 
 struct InMemoryTransportHostConfig {
@@ -88,12 +111,26 @@ struct InMemoryTransportHostConfig {
 };
 
 struct ExternalTransportHostConfig {
+    ExternalTransportHostConfig() = default;
+    ExternalTransportHostConfig(core::NetId server_id_value,
+                                TransportEndpoint bind_endpoint_value,
+                                std::uint32_t max_payload_bytes_value,
+                                std::uint32_t max_clients_value,
+                                bool enable_unreliable_channel_value)
+        : server_id(server_id_value), bind_endpoint(std::move(bind_endpoint_value)),
+          max_payload_bytes(max_payload_bytes_value), max_clients(max_clients_value),
+          enable_unreliable_channel(enable_unreliable_channel_value) {}
+
     core::NetId server_id = core::NetId::from_value(1);
     TransportEndpoint bind_endpoint{"0.0.0.0", 7777};
     std::uint32_t max_payload_bytes = 64u * 1024u;
     std::uint32_t max_clients = 8;
     bool enable_unreliable_channel = true;
     TransportReliabilityConfig reliability{};
+    std::string content_fingerprint;
+    std::uint32_t handshake_timeout_ms = 5'000;
+    std::uint32_t idle_timeout_ms = 15'000;
+    std::uint32_t keepalive_interval_ms = 1'000;
 };
 
 struct TransportHostDesc {
@@ -109,6 +146,9 @@ class ITransportHost {
     [[nodiscard]] virtual TransportBackend backend() const noexcept = 0;
     [[nodiscard]] virtual std::string_view backend_name() const noexcept = 0;
     [[nodiscard]] virtual TransportCapabilities capabilities() const noexcept = 0;
+    [[nodiscard]] virtual std::optional<TransportEndpoint> local_endpoint() const {
+        return std::nullopt;
+    }
     [[nodiscard]] virtual core::NetId server_id() const noexcept = 0;
     [[nodiscard]] virtual std::size_t connected_client_count() const noexcept = 0;
     [[nodiscard]] virtual bool is_client_connected(core::NetId client_id) const noexcept = 0;
@@ -186,6 +226,8 @@ validate_transport_host_config(const InMemoryTransportHostConfig& config);
 [[nodiscard]] core::Status
 validate_external_transport_host_config(const ExternalTransportHostConfig& config);
 [[nodiscard]] core::Status validate_transport_endpoint(const TransportEndpoint& endpoint);
+[[nodiscard]] core::Result<TransportEndpoint>
+parse_transport_endpoint(std::string_view endpoint, std::uint16_t default_port = 7777);
 [[nodiscard]] core::Status validate_transport_message(const TransportMessage& message,
                                                       std::uint32_t max_payload_bytes);
 [[nodiscard]] core::Result<TransportCapabilities>

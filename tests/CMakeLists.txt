@@ -229,7 +229,8 @@ heartstead_add_smoke_test(
 heartstead_add_smoke_test(smoke.audio_benchmark heartstead_audio_benchmark --voices 16 --warmup 2
                           --blocks 3)
 heartstead_add_smoke_test(smoke.dev_game heartstead_dev_game --frames 3)
-heartstead_add_smoke_test(smoke.dedicated_server heartstead_dedicated_server --ticks 3)
+heartstead_add_smoke_test(smoke.dedicated_server heartstead_dedicated_server
+                          --bind 127.0.0.1:0 --ticks 3)
 heartstead_add_smoke_test(smoke.physics heartstead_physics_sandbox)
 heartstead_add_smoke_test(smoke.network heartstead_network_sandbox)
 heartstead_add_smoke_test(smoke.scripting heartstead_scripting_sandbox)

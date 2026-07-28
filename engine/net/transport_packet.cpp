@@ -15,7 +15,8 @@ namespace heartstead::net {
 
 namespace {
 
-constexpr std::string_view packet_magic = "heartstead.transport.v1";
+constexpr std::string_view packet_magic_v1 = "heartstead.transport.v1";
+constexpr std::string_view packet_magic_v2 = "heartstead.transport.v2";
 constexpr std::string_view fragment_magic = "heartstead.transport.fragment.v1";
 constexpr std::string_view payload_marker = "\npayload:\n";
 
@@ -161,9 +162,13 @@ require_field(const std::map<std::string, std::string>& fields, std::string_view
 
 std::string TransportPacketCodec::encode(const TransportEnvelope& envelope) {
     std::ostringstream output;
-    output << packet_magic << '\n';
+    output << (envelope.session_token.is_valid() ? packet_magic_v2 : packet_magic_v1) << '\n';
     output << "sender=" << envelope.sender.value() << '\n';
     output << "recipient=" << envelope.recipient.value() << '\n';
+    if (envelope.session_token.is_valid()) {
+        output << "token_high=" << envelope.session_token.high << '\n';
+        output << "token_low=" << envelope.session_token.low << '\n';
+    }
     output << "kind=" << transport_message_kind_name(envelope.message.kind) << '\n';
     output << "channel=" << transport_channel_name(envelope.message.channel) << '\n';
     output << "sequence=" << envelope.message.sequence << '\n';
@@ -191,8 +196,10 @@ core::Result<TransportEnvelope> TransportPacketCodec::decode(std::string_view pa
             "transport packet is missing payload marker");
     }
 
-    auto fields = parse_header_fields(packet.substr(0, marker), packet_magic, "transport_packet",
-                                      "transport packet");
+    const auto header = packet.substr(0, marker);
+    const auto is_v2 = header.starts_with(packet_magic_v2);
+    auto fields = parse_header_fields(header, is_v2 ? packet_magic_v2 : packet_magic_v1,
+                                      "transport_packet", "transport packet");
     if (!fields) {
         return core::Result<TransportEnvelope>::failure(fields.error().code,
                                                         fields.error().message);
@@ -207,6 +214,16 @@ core::Result<TransportEnvelope> TransportPacketCodec::decode(std::string_view pa
         require_field(fields.value(), "sender", "transport_packet", "transport packet");
     auto recipient_value =
         require_field(fields.value(), "recipient", "transport_packet", "transport packet");
+    core::Result<std::string_view> token_high_value =
+        core::Result<std::string_view>::success({});
+    core::Result<std::string_view> token_low_value =
+        core::Result<std::string_view>::success({});
+    if (is_v2) {
+        token_high_value =
+            require_field(fields.value(), "token_high", "transport_packet", "transport packet");
+        token_low_value =
+            require_field(fields.value(), "token_low", "transport_packet", "transport packet");
+    }
     auto kind_value = require_field(fields.value(), "kind", "transport_packet", "transport packet");
     auto channel_value =
         require_field(fields.value(), "channel", "transport_packet", "transport packet");
@@ -218,14 +235,21 @@ core::Result<TransportEnvelope> TransportPacketCodec::decode(std::string_view pa
         require_field(fields.value(), "timestamp", "transport_packet", "transport packet");
     auto payload_size_value =
         require_field(fields.value(), "payload_size", "transport_packet", "transport packet");
-    if (!sender_value || !recipient_value || !kind_value || !channel_value || !sequence_value ||
-        !payload_type_value || !timestamp_value || !payload_size_value) {
+    if (!sender_value || !recipient_value || !token_high_value || !token_low_value || !kind_value ||
+        !channel_value || !sequence_value || !payload_type_value || !timestamp_value ||
+        !payload_size_value) {
         return core::Result<TransportEnvelope>::failure(
             "transport_packet.missing_key", "transport packet is missing required header keys");
     }
 
     auto sender_id = parse_u64(sender_value.value(), "sender");
     auto recipient_id = parse_u64(recipient_value.value(), "recipient");
+    auto token_high = core::Result<std::uint64_t>::success(0);
+    auto token_low = core::Result<std::uint64_t>::success(0);
+    if (is_v2) {
+        token_high = parse_u64(token_high_value.value(), "token_high");
+        token_low = parse_u64(token_low_value.value(), "token_low");
+    }
     auto kind = parse_kind(kind_value.value());
     auto channel = parse_channel(channel_value.value());
     auto sequence = parse_u64(sequence_value.value(), "sequence");
@@ -238,6 +262,14 @@ core::Result<TransportEnvelope> TransportPacketCodec::decode(std::string_view pa
     if (!recipient_id) {
         return core::Result<TransportEnvelope>::failure(recipient_id.error().code,
                                                         recipient_id.error().message);
+    }
+    if (!token_high) {
+        return core::Result<TransportEnvelope>::failure(token_high.error().code,
+                                                        token_high.error().message);
+    }
+    if (!token_low) {
+        return core::Result<TransportEnvelope>::failure(token_low.error().code,
+                                                        token_low.error().message);
     }
     if (!kind) {
         return core::Result<TransportEnvelope>::failure(kind.error().code, kind.error().message);
@@ -267,6 +299,7 @@ core::Result<TransportEnvelope> TransportPacketCodec::decode(std::string_view pa
     TransportEnvelope envelope;
     envelope.sender = core::NetId::from_value(sender_id.value());
     envelope.recipient = core::NetId::from_value(recipient_id.value());
+    envelope.session_token = {token_high.value(), token_low.value()};
     envelope.message.kind = kind.value();
     envelope.message.channel = channel.value();
     envelope.message.sequence = sequence.value();
@@ -281,6 +314,11 @@ core::Result<TransportEnvelope> TransportPacketCodec::decode(std::string_view pa
     if (!envelope.recipient.is_valid()) {
         return core::Result<TransportEnvelope>::failure("transport_packet.invalid_recipient",
                                                         "transport packet recipient id is invalid");
+    }
+    if (is_v2 && !envelope.session_token.is_valid()) {
+        return core::Result<TransportEnvelope>::failure(
+            "transport_packet.invalid_session_token",
+            "version 2 transport packets require a non-zero session token");
     }
 
     auto status = validate_transport_message(envelope.message, config.max_payload_bytes);

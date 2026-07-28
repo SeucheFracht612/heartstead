@@ -74,7 +74,9 @@ target_sources(
     net/replication.cpp
     net/server_command.cpp
     net/transport.cpp
+    net/transport_client.cpp
     net/transport_control.cpp
+    net/transport_handshake.cpp
     net/transport_packet.cpp
     net/transport_reliability.cpp
     networks/network_derivation.cpp
@@ -275,7 +277,9 @@ target_sources(
       net/replication.hpp
       net/server_command.hpp
       net/transport.hpp
+      net/transport_client.hpp
       net/transport_control.hpp
+      net/transport_handshake.hpp
       net/transport_packet.hpp
       net/transport_reliability.hpp
       networks/network_derivation.hpp

@@ -410,6 +410,45 @@ void test_dedicated_headless_runtime_uses_same_scheduler() {
     assert(runtime.shutdown());
 }
 
+void test_external_listen_runtime_uses_true_remote_endpoint() {
+    if (!net::transport_backend_info(net::TransportBackend::external_library).available) {
+        return;
+    }
+    const auto report = content::ContentValidation::validate(source_root());
+    assert(!report.has_errors());
+    auto runtime = make_runtime(report);
+    game::RuntimeConfiguration config;
+    config.use_in_memory_transport = false;
+    config.server_bind_endpoint = {"127.0.0.1", 0};
+    assert(runtime.start_session(config, make_session_request(report)));
+    assert(runtime.session()->server() != nullptr);
+    assert(runtime.session()->client() != nullptr);
+    assert(!runtime.session()->client()->is_connected());
+
+    std::int64_t now_ms = 0;
+    for (std::uint32_t frame_index = 0;
+         frame_index < 8 && !runtime.session()->client()->is_connected(); ++frame_index) {
+        now_ms += 17;
+        assert(runtime.run_frame({16'667, now_ms}));
+    }
+    assert(runtime.session()->client()->is_connected());
+    assert(runtime.session()->server()->host().connected_client_count() == 1);
+    assert(runtime.session()->server()->player_for_client(
+               runtime.session()->client()->client_id()) != nullptr);
+
+    assert(runtime.submit_command("world.set_voxel", set_voxel_payload(), now_ms));
+    for (std::uint32_t frame_index = 0; frame_index < 4; ++frame_index) {
+        now_ms += 17;
+        assert(runtime.run_frame({16'667, now_ms}));
+    }
+    const auto* replicated =
+        runtime.session()->client()->world().chunks().find({0, 0, 0});
+    assert(replicated != nullptr);
+    const auto cell = replicated->get({1, 2, 3});
+    assert(cell && cell.value().type != 0);
+    assert(runtime.shutdown());
+}
+
 void test_jolt_runtime_moves_on_cooked_terrain() {
     if (!physics::physics_backend_info(physics::PhysicsBackend::jolt).available) {
         return;
@@ -1096,6 +1135,7 @@ int main() {
     test_selected_scenario_drives_authoritative_bootstrap();
     test_session_rejects_unknown_or_wrong_kind_scenarios();
     test_dedicated_headless_runtime_uses_same_scheduler();
+    test_external_listen_runtime_uses_true_remote_endpoint();
     test_jolt_runtime_moves_on_cooked_terrain();
     test_jolt_runtime_drops_settles_and_restores_physical_resource();
     test_authoritative_player_input_moves_and_replicates();

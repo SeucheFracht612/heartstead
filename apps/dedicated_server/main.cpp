@@ -1,5 +1,6 @@
 #include "engine/content/content_validation.hpp"
 #include "engine/core/process_entry.hpp"
+#include "engine/net/transport.hpp"
 #include "game/runtime/game_runtime.hpp"
 
 #include <charconv>
@@ -12,11 +13,13 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 
 namespace {
 
 struct LaunchOptions {
     std::optional<std::uint64_t> maximum_ticks;
+    heartstead::net::TransportEndpoint bind_endpoint{"0.0.0.0", 7777};
     bool help = false;
 };
 
@@ -27,32 +30,50 @@ extern "C" void request_stop(int) {
 }
 
 heartstead::core::Result<LaunchOptions> parse_options(int argc, char** argv) {
-    if (argc == 1) {
-        return heartstead::core::Result<LaunchOptions>::success({});
+    LaunchOptions options;
+    for (int index = 1; index < argc; ++index) {
+        const auto argument = std::string_view(argv[index]);
+        if (argument == "--help" || argument == "-h") {
+            options.help = true;
+        } else if (argument == "--ticks") {
+            if (index + 1 >= argc) {
+                return heartstead::core::Result<LaunchOptions>::failure(
+                    "dedicated_server.invalid_arguments", "--ticks requires a value");
+            }
+            std::uint64_t ticks = 0;
+            const std::string_view value(argv[++index]);
+            const auto [end, error] =
+                std::from_chars(value.data(), value.data() + value.size(), ticks);
+            if (error != std::errc{} || end != value.data() + value.size() || ticks == 0) {
+                return heartstead::core::Result<LaunchOptions>::failure(
+                    "dedicated_server.invalid_tick_count",
+                    "--ticks must be a positive 64-bit integer");
+            }
+            options.maximum_ticks = ticks;
+        } else if (argument == "--bind") {
+            if (index + 1 >= argc) {
+                return heartstead::core::Result<LaunchOptions>::failure(
+                    "dedicated_server.invalid_arguments", "--bind requires ADDRESS:PORT");
+            }
+            auto endpoint =
+                heartstead::net::parse_transport_endpoint(argv[++index], 7777);
+            if (!endpoint) {
+                return heartstead::core::Result<LaunchOptions>::failure(
+                    endpoint.error().code, endpoint.error().message);
+            }
+            options.bind_endpoint = std::move(endpoint).value();
+        } else {
+            return heartstead::core::Result<LaunchOptions>::failure(
+                "dedicated_server.invalid_arguments",
+                "unknown option: " + std::string(argument));
+        }
     }
-    if (argc == 2 && (std::string_view(argv[1]) == "--help" || std::string_view(argv[1]) == "-h")) {
-        return heartstead::core::Result<LaunchOptions>::success(
-            {.maximum_ticks = std::nullopt, .help = true});
-    }
-    if (argc != 3 || std::string_view(argv[1]) != "--ticks") {
-        return heartstead::core::Result<LaunchOptions>::failure(
-            "dedicated_server.invalid_arguments", "expected no arguments or --ticks N");
-    }
-
-    std::uint64_t ticks = 0;
-    const std::string_view value(argv[2]);
-    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), ticks);
-    if (error != std::errc{} || end != value.data() + value.size() || ticks == 0) {
-        return heartstead::core::Result<LaunchOptions>::failure(
-            "dedicated_server.invalid_tick_count", "--ticks must be a positive 64-bit integer");
-    }
-    return heartstead::core::Result<LaunchOptions>::success(
-        {.maximum_ticks = ticks, .help = false});
+    return heartstead::core::Result<LaunchOptions>::success(std::move(options));
 }
 
 void print_usage(const char* executable, std::ostream& output) {
-    output << "usage: " << executable << " [--ticks N]\n"
-           << "Runs until SIGINT/SIGTERM by default; --ticks provides a finite smoke run.\n";
+    output << "usage: " << executable << " [--bind ADDRESS:PORT] [--ticks N]\n"
+           << "Listens on 0.0.0.0:7777 by default; --ticks provides a finite smoke run.\n";
 }
 
 int fail(const heartstead::core::Error& error) {
@@ -106,6 +127,8 @@ int main(int argc, char** argv) {
         heartstead::game::RuntimeConfiguration config;
         config.create_server = true;
         config.create_client = false;
+        config.use_in_memory_transport = false;
+        config.server_bind_endpoint = options.value().bind_endpoint;
         config.headless = true;
         heartstead::game::SessionRequest request;
         request.metadata = std::move(metadata).value();
@@ -134,7 +157,10 @@ int main(int argc, char** argv) {
         }
         std::cout << "dedicated server: authoritative_tick="
                   << runtime.value().session()->server()->world().world_time() << " clients="
-                  << runtime.value().session()->server()->host().connected_client_count() << '\n';
+                  << runtime.value().session()->server()->host().connected_client_count()
+                  << " bind=" << heartstead::net::transport_endpoint_name(
+                         options.value().bind_endpoint)
+                  << '\n';
         status = runtime.value().shutdown();
         return status ? 0 : fail(status.error());
     });

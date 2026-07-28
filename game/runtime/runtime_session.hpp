@@ -3,6 +3,7 @@
 #include "engine/core/result.hpp"
 #include "engine/modding/prototype_registry.hpp"
 #include "engine/movement/player_input.hpp"
+#include "engine/net/transport_client.hpp"
 #include "engine/physics/physics_world.hpp"
 #include "engine/save/save_database.hpp"
 #include "engine/save/save_metadata.hpp"
@@ -37,6 +38,8 @@ struct RuntimeConfiguration {
     physics::PhysicsBackend physics_backend = physics::PhysicsBackend::headless;
     world::ChunkFluidSystemConfig chunk_fluids{};
     world::ChunkLightSystemConfig chunk_lighting{};
+    net::TransportEndpoint server_bind_endpoint{"0.0.0.0", 7777};
+    std::optional<net::TransportEndpoint> remote_server_endpoint;
     std::vector<std::shared_ptr<IGameplayModule>> gameplay_modules;
 
     [[nodiscard]] core::Status validate() const;
@@ -108,7 +111,7 @@ class RuntimeSession final {
                    const world::VoxelPalette& voxel_palette);
     [[nodiscard]] core::Status initialize();
     [[nodiscard]] core::Result<RuntimeFrameStats> fault_frame(const core::Error& error);
-    [[nodiscard]] core::Status pump_client_messages();
+    [[nodiscard]] core::Status pump_client_messages(std::int64_t now_ms);
     [[nodiscard]] core::Result<PresentationSynchronizationStats> synchronize_presentation();
 
     RuntimeConfiguration config_;
@@ -118,6 +121,7 @@ class RuntimeSession final {
     simulation::FixedStepClock fixed_step_;
     std::unique_ptr<ServerRuntime> server_;
     std::unique_ptr<ClientRuntime> client_;
+    std::unique_ptr<net::ITransportClient> remote_transport_;
     PresentationWorld presentation_;
     ClientPresentationSynchronizer presentation_synchronizer_;
     std::optional<RuntimeFrameStats> last_frame_stats_;
