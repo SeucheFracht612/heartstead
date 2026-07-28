@@ -5,6 +5,7 @@
 #include "game/runtime/game_runtime.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <filesystem>
@@ -631,6 +632,73 @@ void test_typed_voxel_commands_validate_and_replicate() {
     assert(runtime.shutdown());
 }
 
+void test_runtime_relights_and_replicates_chunk_light() {
+    const auto report = content::ContentValidation::validate(source_root());
+    assert(!report.has_errors());
+    auto runtime = make_runtime(report);
+    game::RuntimeConfiguration config;
+    config.chunk_lighting.max_snapshot_cells_per_update = world::VoxelChunk::total_cells;
+    config.chunk_lighting.apply_time_budget_ms = 20.0;
+    assert(runtime.start_session(config, make_session_request(report)));
+    auto* session = runtime.session();
+    assert(session != nullptr && session->server() != nullptr && session->client() != nullptr);
+    auto& server_world = session->server()->world();
+    const auto clay_type =
+        report.voxel_palette.type_for(*core::PrototypeId::parse("base:voxels/clay"));
+    assert(clay_type.has_value());
+    const world::VoxelCell clay{*clay_type, 0};
+    constexpr world::BlockCoord center{12, 2, 12};
+    constexpr std::array<world::BlockCoord, 6> enclosure{{
+        {11, 2, 12},
+        {13, 2, 12},
+        {12, 1, 12},
+        {12, 3, 12},
+        {12, 2, 11},
+        {12, 2, 13},
+    }};
+    for (const auto position : enclosure) {
+        const auto address = world::block_to_chunk_local(position);
+        assert(server_world.chunks().set(address.chunk, address.local, clay,
+                                         server_world.dirty_regions(), report.voxel_palette));
+    }
+
+    auto wait_for_relight = [&](std::uint64_t target) {
+        for (std::size_t frame_index = 0;
+             frame_index < 5'000 &&
+             session->server()->chunk_lighting().stats().applied_fields < target;
+             ++frame_index) {
+            auto frame =
+                runtime.run_frame({16'667, static_cast<std::int64_t>((frame_index + 1) * 17)});
+            assert(frame);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        assert(session->server()->chunk_lighting().stats().applied_fields >= target);
+    };
+
+    wait_for_relight(1);
+    const auto center_address = world::block_to_chunk_local(center);
+    auto authoritative = server_world.chunks().get(center_address.chunk, center_address.local);
+    auto replicated =
+        session->client()->world().chunks().get(center_address.chunk, center_address.local);
+    assert(authoritative && replicated);
+    assert(authoritative.value().light == 0);
+    assert(replicated.value().light == authoritative.value().light);
+
+    const auto roof_address = world::block_to_chunk_local(enclosure[3]);
+    assert(server_world.chunks().set(roof_address.chunk, roof_address.local,
+                                     world::VoxelCell::air(), server_world.dirty_regions(),
+                                     report.voxel_palette));
+    wait_for_relight(2);
+    authoritative = server_world.chunks().get(center_address.chunk, center_address.local);
+    replicated =
+        session->client()->world().chunks().get(center_address.chunk, center_address.local);
+    assert(authoritative && replicated);
+    assert(authoritative.value().light == 255);
+    assert(replicated.value().light == authoritative.value().light);
+    assert(session->server()->chunk_lighting().stats().total_changed_chunks >= 2);
+    assert(runtime.shutdown());
+}
+
 void test_session_save_and_reload_restores_authoritative_state() {
     const auto report = content::ContentValidation::validate(source_root());
     assert(!report.has_errors());
@@ -976,6 +1044,7 @@ int main() {
     test_jolt_runtime_drops_settles_and_restores_physical_resource();
     test_authoritative_player_input_moves_and_replicates();
     test_typed_voxel_commands_validate_and_replicate();
+    test_runtime_relights_and_replicates_chunk_light();
     test_session_save_and_reload_restores_authoritative_state();
     test_session_file_load_preserves_missing_prototypes();
     test_gameplay_modules_extend_runtime_through_registration_contract();

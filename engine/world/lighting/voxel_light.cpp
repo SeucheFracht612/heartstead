@@ -186,6 +186,19 @@ void propagate_light(ScratchChunks& chunks, const VoxelLightBlockTable& blocks, 
                 "voxel light result no longer matches the resident chunk generation or revision");
         }
     }
+    const auto resident = chunks.identities();
+    if (resident.size() != result.patches.size()) {
+        return core::Status::failure(
+            "voxel_light.stale_result",
+            "voxel light result does not cover the current resident chunk topology");
+    }
+    for (std::size_t index = 0; index < resident.size(); ++index) {
+        if (resident[index] != result.patches[index].identity) {
+            return core::Status::failure(
+                "voxel_light.stale_result",
+                "voxel light result does not match the current resident chunk topology");
+        }
+    }
     return core::Status::ok();
 }
 
@@ -202,7 +215,8 @@ VoxelLightBlockInfo VoxelLightBlockTable::block(std::uint16_t type) const noexce
 }
 
 core::Status VoxelLightBlockTable::validate() const {
-    if (blocks.empty() || blocks.front().emission != 0 || blocks.front().absorption != 0) {
+    if (revision == 0 || blocks.empty() || blocks.front().emission != 0 ||
+        blocks.front().absorption != 0) {
         return core::Status::failure(
             "voxel_light.invalid_block_table",
             "voxel light block table must contain transparent, non-emitting air at type zero");
@@ -212,6 +226,7 @@ core::Status VoxelLightBlockTable::validate() const {
 
 VoxelLightBlockTable build_voxel_light_block_table(const VoxelPalette& palette) {
     VoxelLightBlockTable result;
+    result.revision = palette.render_revision();
     result.blocks.resize(1, VoxelLightBlockInfo{0, 0});
     for (const auto* definition : palette.definitions()) {
         if (definition->type >= result.blocks.size()) {
@@ -249,6 +264,17 @@ core::Status VoxelLightSnapshot::validate() const {
         }
         previous = chunk.identity.coordinate;
         has_previous = true;
+    }
+    BlockCoord previous_source{};
+    bool has_previous_source = false;
+    for (const auto& source : sources) {
+        if (source.light == 0 || (has_previous_source && !(previous_source < source.position))) {
+            return core::Status::failure(
+                "voxel_light.invalid_sources",
+                "voxel light sources must be nonzero and strictly sorted by block position");
+        }
+        previous_source = source.position;
+        has_previous_source = true;
     }
     return core::Status::ok();
 }
@@ -369,6 +395,16 @@ core::Result<VoxelLightSolveResult> solve_voxel_light(const VoxelLightSnapshot& 
             }
         }
     }
+    for (const auto& source : snapshot.sources) {
+        const auto address = block_to_chunk_local(source.position);
+        auto* light = find_light(scratch, address, false);
+        if (light == nullptr || source.light <= *light) {
+            continue;
+        }
+        *light = source.light;
+        block_light_queue.push({source.light, address});
+        ++result.stats.block_light_seed_count;
+    }
 
     propagate_light(scratch, blocks, sunlight_queue, true, result.stats.sunlight_queue_visits);
     propagate_light(scratch, blocks, block_light_queue, false,
@@ -413,6 +449,7 @@ core::Result<VoxelLightApplyReport> apply_voxel_light(ChunkDatabase& chunks,
             continue;
         }
         ++report.changed_chunk_count;
+        report.changed_chunks.push_back(patch.identity.coordinate);
         status = staged_dirty.mark_single(
             dirty::DirtyRegionKind::chunk_mesh,
             {patch.identity.coordinate.x, patch.identity.coordinate.y, patch.identity.coordinate.z},

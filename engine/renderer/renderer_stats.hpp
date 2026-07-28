@@ -28,6 +28,8 @@ struct RendererStats {
     double upload_preparation_ms = 0.0;
     double upload_ms = 0.0;
     double gpu_wait_ms = 0.0;
+    double voxel_relight_solve_ms = 0.0;
+    double voxel_relight_apply_ms = 0.0;
 
     double gpu_opaque_terrain_ms = 0.0;
     double gpu_alpha_tested_terrain_ms = 0.0;
@@ -67,6 +69,7 @@ struct RendererStats {
     std::uint32_t ui_clipped_draw_calls = 0;
     std::uint32_t ui_vertices = 0;
     std::uint32_t ui_glyphs = 0;
+    std::uint32_t voxel_relight_changed_chunks = 0;
 
     std::uint64_t vertices = 0;
     std::uint64_t triangles = 0;
@@ -87,6 +90,10 @@ struct RendererStats {
     double gpu_arena_fragmentation = 0.0;
     std::uint64_t pending_upload_bytes = 0;
     std::uint64_t uploaded_bytes_this_frame = 0;
+    std::uint64_t voxel_relight_backlog_cells = 0;
+    std::uint64_t voxel_relight_visited_cells = 0;
+    std::uint64_t voxel_relight_stale_results = 0;
+    std::uint64_t voxel_relight_apply_budget_overruns = 0;
 };
 
 [[nodiscard]] std::string format_renderer_stats(const RendererStats& stats);

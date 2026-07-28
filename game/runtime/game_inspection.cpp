@@ -186,6 +186,10 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     std::uint64_t collision_box_count = 0;
     double collision_cooking_ms = 0.0;
     double collision_apply_ms = 0.0;
+    std::size_t relight_backlog_cells = 0;
+    std::uint64_t relight_visited_cells = 0;
+    double relight_solve_ms = 0.0;
+    double relight_apply_ms = 0.0;
     for (const auto& tick : stats.server_ticks) {
         simulation_ms += tick.simulation.total_ms;
         command_count += static_cast<std::uint32_t>(tick.commands.command_reports.size());
@@ -198,6 +202,11 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
         collision_box_count = tick.chunk_collision.current_collision_boxes;
         collision_cooking_ms = tick.chunk_collision.last_cooking_ms;
         collision_apply_ms = tick.chunk_collision.last_apply_ms;
+        relight_backlog_cells = tick.chunk_lighting.snapshot_pending_cell_count;
+        relight_visited_cells = tick.chunk_lighting.last_sunlight_queue_visits +
+                                tick.chunk_lighting.last_block_light_queue_visits;
+        relight_solve_ms = tick.chunk_lighting.last_solve_ms;
+        relight_apply_ms = tick.chunk_lighting.last_apply_ms;
     }
     add_field(data, "server_tick_count", std::to_string(stats.server_ticks.size()));
     add_field(data, "simulation_ms", std::to_string(simulation_ms));
@@ -210,6 +219,10 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     add_field(data, "chunk_collision_box_count", std::to_string(collision_box_count));
     add_field(data, "chunk_collision_cooking_ms", std::to_string(collision_cooking_ms));
     add_field(data, "chunk_collision_apply_ms", std::to_string(collision_apply_ms));
+    add_field(data, "voxel_relight_backlog_cells", std::to_string(relight_backlog_cells));
+    add_field(data, "voxel_relight_visited_cells", std::to_string(relight_visited_cells));
+    add_field(data, "voxel_relight_solve_ms", std::to_string(relight_solve_ms));
+    add_field(data, "voxel_relight_apply_ms", std::to_string(relight_apply_ms));
     add_field(data, "client_received_message_count",
               std::to_string(stats.client.received_message_count));
     add_field(data, "presentation_adapter_count", std::to_string(stats.presentation.adapter_count));
@@ -272,6 +285,17 @@ debug::InspectionData GameInspector::inspect(const RuntimeSession& session) {
                   std::to_string(collision_stats.pending_chunk_count));
         add_field(data, "chunk_collision_box_count",
                   std::to_string(collision_stats.current_collision_boxes));
+        const auto& lighting_stats = server->chunk_lighting().stats();
+        add_field(data, "voxel_relight_backlog_cells",
+                  std::to_string(lighting_stats.snapshot_pending_cell_count));
+        add_field(data, "voxel_relight_solve_in_flight",
+                  lighting_stats.solve_in_flight ? "true" : "false");
+        add_field(data, "voxel_relight_applied_fields",
+                  std::to_string(lighting_stats.applied_fields));
+        add_field(data, "voxel_relight_stale_results",
+                  std::to_string(lighting_stats.stale_results));
+        add_field(data, "voxel_relight_apply_budget_overruns",
+                  std::to_string(lighting_stats.apply_budget_overruns));
         add_field(data, "simulation_system_count",
                   std::to_string(server->scheduler().registered_system_count()));
         add_field(data, "gameplay_module_count",

@@ -18,6 +18,10 @@ core::Status RuntimeConfiguration::validate() const {
     if (!status) {
         return status;
     }
+    status = chunk_lighting.validate();
+    if (!status) {
+        return status;
+    }
     if (!create_server && !create_client) {
         return core::Status::failure("runtime_configuration.empty",
                                      "runtime must create a server, client, or both");
@@ -116,6 +120,7 @@ core::Status RuntimeSession::initialize() {
                                                  ? net::TransportBackend::in_memory
                                                  : net::TransportBackend::external_library;
         server_desc.physics.backend = config_.physics_backend;
+        server_desc.chunk_lighting = config_.chunk_lighting;
         server_desc.simulation_ticks_per_second = config_.fixed_step.ticks_per_second;
         server_desc.world_time = config_.world_time;
         server_desc.prototypes = prototypes_;

@@ -85,6 +85,8 @@ heartstead_add_foundation_test(heartstead_physics_character_tests physics_charac
 heartstead_add_foundation_test(heartstead_physical_resource_physics_tests
                                physical_resource_physics_tests.cpp)
 heartstead_add_foundation_test(heartstead_voxel_light_tests voxel_light_tests.cpp)
+heartstead_add_foundation_test(heartstead_chunk_light_system_tests
+                               chunk_light_system_tests.cpp)
 heartstead_add_foundation_test(heartstead_gpu_buffer_arena_tests gpu_buffer_arena_tests.cpp)
 heartstead_add_foundation_test(heartstead_renderer_benchmark_tests renderer_benchmark_tests.cpp)
 heartstead_add_foundation_test(heartstead_render_runtime_asset_tests

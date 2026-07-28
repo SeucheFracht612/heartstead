@@ -15,6 +15,7 @@ their maximum to the stored byte.
 - prototype absorption applies to direct and propagated light
 - absorption `255` is opaque
 - prototype `light_emission` seeds block light
+- active fire records seed the same block-light field at their owning build/entity/resource block
 - unknown voxel types fail dark and opaque
 
 The separate scratch fields are important during removal: relighting starts from zero and rebuilds
@@ -59,3 +60,21 @@ opaque terrain surfaces. Light remains a greedy-mesh merge boundary.
 incrementally copies immutable snapshots under a cell budget, solves off-thread, rejects stale
 output, and applies complete patches on the owner thread. Mesh work remains a separate consumer of
 `chunk_mesh` regions.
+
+The default owner-thread snapshot budget is 4,096 cells per simulation update. The solver owns one
+background job at a time and coalesces further edits into a follow-up rebuild. A topology, content,
+palette, or external-source change makes partial snapshots and completed results stale. Complete
+field application is timed against a 2 ms budget and records overruns rather than publishing a
+partially updated connected light field.
+
+`ChunkLightSystemStats` exposes snapshot backlog, copied cells, queue visits, solve/apply time,
+changed chunks/cells, stale work, and budget overruns. `Renderer::set_voxel_lighting_stats` mirrors
+the current values into `RendererStats`; `dev_game` does this every frame.
+
+Until the M7 binary replication pass, a changed light patch is replicated to connected clients as
+a newer revision of the affected chunk's existing bounded snapshot slices. This is intentionally
+correct before it is bandwidth-optimal.
+
+Fire prototypes retain their existing 8-bit field. Legacy fire values in the conventional `0..15`
+range are expanded to the full voxel-light range when they become spatial sources. A fire is
+spatial when its `fire_id` owns a build piece, entity, or physical resource transform.

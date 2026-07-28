@@ -4,8 +4,8 @@
 #include "engine/modding/prototype_registry.hpp"
 #include "engine/movement/player_input.hpp"
 #include "engine/physics/physics_world.hpp"
-#include "engine/save/save_metadata.hpp"
 #include "engine/save/save_database.hpp"
+#include "engine/save/save_metadata.hpp"
 #include "engine/save/save_snapshot.hpp"
 #include "engine/simulation/fixed_step.hpp"
 #include "engine/simulation/world_time.hpp"
@@ -34,6 +34,7 @@ struct RuntimeConfiguration {
     simulation::FixedStepConfig fixed_step{};
     simulation::WorldTimeConfig world_time{};
     physics::PhysicsBackend physics_backend = physics::PhysicsBackend::headless;
+    world::ChunkLightSystemConfig chunk_lighting{};
     std::vector<std::shared_ptr<IGameplayModule>> gameplay_modules;
 
     [[nodiscard]] core::Status validate() const;

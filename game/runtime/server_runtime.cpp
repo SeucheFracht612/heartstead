@@ -3,6 +3,7 @@
 #include "engine/cargo/cargo_prototype.hpp"
 #include "engine/entities/entity_prototype.hpp"
 #include "engine/items/item_prototype.hpp"
+#include "engine/simulation/fire_prototype.hpp"
 #include "engine/world/chunks/chunk_edit_delta_codec.hpp"
 #include "engine/world/chunks/chunk_replication.hpp"
 #include "engine/world/voxel_change.hpp"
@@ -51,6 +52,61 @@ void revoke_private_subject_access(net::HostSession& host, core::NetId client_id
         policy.private_access_rules.erase(rule);
     }
     host.set_replication_relevance_policy(std::move(policy));
+}
+
+[[nodiscard]] core::Result<std::vector<world::VoxelLightSource>>
+collect_fire_light_sources(const world::WorldState& state,
+                           const modding::PrototypeRegistry& prototypes) {
+    std::vector<world::VoxelLightSource> sources;
+    for (const auto* fire : state.fires().records()) {
+        if (!fire->emits_light()) {
+            continue;
+        }
+        const auto* prototype = prototypes.find(fire->prototype_id);
+        if (prototype == nullptr) {
+            return core::Result<std::vector<world::VoxelLightSource>>::failure(
+                "server_runtime.fire_prototype_missing",
+                "active fire references a prototype that is not loaded");
+        }
+        auto definition = simulation::fire_definition_from_prototype(*prototype);
+        if (!definition) {
+            return core::Result<std::vector<world::VoxelLightSource>>::failure(
+                definition.error().code, definition.error().message);
+        }
+
+        const world::WorldPosition* position = nullptr;
+        if (const auto* build_piece = state.build_objects().find(fire->fire_id);
+            build_piece != nullptr) {
+            position = &build_piece->transform.position;
+        } else if (const auto* entity = state.entities().find_by_save_id(fire->fire_id);
+                   entity != nullptr) {
+            position = &entity->transform.position;
+        } else if (const auto* resource = state.physical_resources().find(fire->fire_id);
+                   resource != nullptr) {
+            position = &resource->position;
+        }
+        if (position == nullptr) {
+            continue;
+        }
+
+        auto light = static_cast<std::uint16_t>(definition.value().light_level);
+        if (light <= 15) {
+            light *= 17;
+        }
+        sources.push_back(
+            {position->anchor, static_cast<std::uint8_t>(std::min<std::uint16_t>(light, 255))});
+    }
+    std::ranges::sort(sources, {}, &world::VoxelLightSource::position);
+    std::vector<world::VoxelLightSource> coalesced;
+    coalesced.reserve(sources.size());
+    for (const auto source : sources) {
+        if (!coalesced.empty() && coalesced.back().position == source.position) {
+            coalesced.back().light = std::max(coalesced.back().light, source.light);
+        } else {
+            coalesced.push_back(source);
+        }
+    }
+    return core::Result<std::vector<world::VoxelLightSource>>::success(std::move(coalesced));
 }
 
 } // namespace
@@ -141,6 +197,12 @@ core::Status ServerRuntime::initialize() {
                                      physical_resources.error().message);
     }
     physical_resource_physics_ = std::move(physical_resources).value();
+    auto chunk_lighting =
+        world::ChunkLightSystem::create(*desc_.voxel_palette, desc_.chunk_lighting);
+    if (!chunk_lighting) {
+        return core::Status::failure(chunk_lighting.error().code, chunk_lighting.error().message);
+    }
+    chunk_lighting_ = std::move(chunk_lighting).value();
 
     auto status = world::WorldCommandRegistry::register_engine_commands(commands_);
     if (!status) {
@@ -273,9 +335,25 @@ core::Status ServerRuntime::initialize() {
         return status;
     }
     status = scheduler_.register_system({
-        "runtime.world_clock",
+        "runtime.chunk_lighting",
         simulation::SimulationPhase::environment,
         {"runtime.physical_resources_sync"},
+        [this](simulation::SimulationContext&) {
+            auto sources = collect_fire_light_sources(world_, *desc_.prototypes);
+            if (!sources) {
+                return core::Status::failure(sources.error().code, sources.error().message);
+            }
+            return chunk_lighting_->update(world_.chunks(), world_.dirty_regions(),
+                                           *desc_.voxel_palette, sources.value());
+        },
+    });
+    if (!status) {
+        return status;
+    }
+    status = scheduler_.register_system({
+        "runtime.world_clock",
+        simulation::SimulationPhase::environment,
+        {"runtime.chunk_lighting"},
         [this](simulation::SimulationContext&) {
             pending_world_time_numerator_ += desc_.world_time.ticks_per_second;
             const auto elapsed_world_ticks =
@@ -313,6 +391,10 @@ core::Status ServerRuntime::initialize() {
                 return core::Status::failure(delivery.error().code, delivery.error().message);
             }
             current_replication_ = std::move(delivery).value();
+            auto relit_status = replicate_relit_chunks();
+            if (!relit_status) {
+                return relit_status;
+            }
             return replicate_players();
         },
     });
@@ -393,6 +475,7 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     stats.physics = current_physics_;
     stats.chunk_collision = chunk_collision_->stats();
     stats.physical_resources = physical_resource_physics_->stats();
+    stats.chunk_lighting = chunk_lighting_->stats();
     stats.moved_player_count = current_moved_player_count_;
     stats.repeated_input_count = current_repeated_input_count_;
     stats.movement_event_count = current_movement_event_count_;
@@ -510,6 +593,14 @@ physics::PhysicalResourcePhysicsSystem& ServerRuntime::physical_resource_physics
 const physics::PhysicalResourcePhysicsSystem&
 ServerRuntime::physical_resource_physics() const noexcept {
     return *physical_resource_physics_;
+}
+
+world::ChunkLightSystem& ServerRuntime::chunk_lighting() noexcept {
+    return *chunk_lighting_;
+}
+
+const world::ChunkLightSystem& ServerRuntime::chunk_lighting() const noexcept {
+    return *chunk_lighting_;
 }
 
 core::Status ServerRuntime::drop_physical_resource(entities::PhysicalResourceRecord resource,
@@ -981,6 +1072,44 @@ core::Status ServerRuntime::replicate_players() {
         }
     }
     pending_player_removals_.clear();
+    return core::Status::ok();
+}
+
+core::Status ServerRuntime::replicate_relit_chunks() {
+    if (chunk_lighting_->changed_chunks().empty() || player_connections_.empty()) {
+        return core::Status::ok();
+    }
+    std::vector<std::uint64_t> client_ids;
+    client_ids.reserve(player_connections_.size());
+    for (const auto& [client_id, _] : player_connections_) {
+        client_ids.push_back(client_id);
+    }
+    std::ranges::sort(client_ids);
+    for (const auto coordinate : chunk_lighting_->changed_chunks()) {
+        const auto* chunk = world_.chunks().find(coordinate);
+        if (chunk == nullptr) {
+            continue;
+        }
+        auto slices = world::make_chunk_snapshot_slices(*chunk);
+        if (!slices) {
+            return core::Status::failure(slices.error().code, slices.error().message);
+        }
+        for (const auto client_id : client_ids) {
+            for (const auto& slice : slices.value()) {
+                auto sequence = reserve_custom_replication_sequence();
+                if (!sequence) {
+                    return core::Status::failure(sequence.error().code, sequence.error().message);
+                }
+                auto status =
+                    host_.send_replication_message(core::NetId::from_value(client_id),
+                                                   world::make_chunk_snapshot_slice_message(
+                                                       slice, sequence.value(), current_time_ms_));
+                if (!status) {
+                    return status;
+                }
+            }
+        }
+    }
     return core::Status::ok();
 }
 

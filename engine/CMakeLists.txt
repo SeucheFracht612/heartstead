@@ -154,6 +154,8 @@ target_sources(
     world/chunks/chunk_edit_delta_codec.cpp
     world/chunks/chunk_replication.cpp
     world/collision/chunk_collision.cpp
+    world/lighting/chunk_light_scheduler.cpp
+    world/lighting/chunk_light_system.cpp
     world/lighting/voxel_light.cpp
     world/meshing/chunk_mesher.cpp
     world/meshing/chunk_mesh_snapshot.cpp
@@ -341,6 +343,8 @@ target_sources(
       world/collision/chunk_collision.hpp
       world/coords/world_coords.hpp
       world/coords/world_position.hpp
+      world/lighting/chunk_light_scheduler.hpp
+      world/lighting/chunk_light_system.hpp
       world/lighting/voxel_light.hpp
       world/meshing/chunk_mesher.hpp
       world/meshing/chunk_mesh_snapshot.hpp

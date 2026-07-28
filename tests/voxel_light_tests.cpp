@@ -142,6 +142,25 @@ void test_block_light_place_remove_and_load_order() {
     assert(patch_light(removed, {1, 0, 0}, {4, 5, 5}) == 0);
 }
 
+void test_external_light_sources_share_block_light_propagation() {
+    const auto palette = light_palette();
+    world::ChunkDatabase chunks;
+    insert_filled_chunk(chunks, {0, 0, 0}, world::VoxelCell{1, 0});
+    insert_filled_chunk(chunks, {1, 0, 0}, world::VoxelCell{1, 0});
+    assert(chunks.set({0, 0, 0}, {31, 5, 5}, world::VoxelCell::air()));
+    for (std::uint16_t x = 0; x <= 3; ++x) {
+        assert(chunks.set({1, 0, 0}, {x, 5, 5}, world::VoxelCell::air()));
+    }
+    auto snapshot = world::build_voxel_light_snapshot(chunks);
+    snapshot.sources.push_back({{31, 5, 5}, 204});
+    auto solved = world::solve_voxel_light(snapshot, world::build_voxel_light_block_table(palette));
+    assert(solved);
+    assert(solved.value().stats.block_light_seed_count == 1);
+    assert(patch_light(solved.value(), {0, 0, 0}, {31, 5, 5}) == 204);
+    assert(patch_light(solved.value(), {1, 0, 0}, {0, 5, 5}) == 188);
+    assert(patch_light(solved.value(), {1, 0, 0}, {3, 5, 5}) == 140);
+}
+
 void test_derived_apply_is_revision_checked_and_not_a_save_edit() {
     const auto palette = light_palette();
     world::ChunkDatabase chunks;
@@ -215,6 +234,9 @@ void test_invalid_inputs_fail_closed() {
     world::VoxelLightSnapshot invalid_snapshot;
     invalid_snapshot.chunks.push_back({});
     assert(!invalid_snapshot.validate());
+    world::VoxelLightSnapshot invalid_sources;
+    invalid_sources.sources = {{{0, 0, 0}, 10}, {{0, 0, 0}, 20}};
+    assert(!invalid_sources.validate());
 
     world::VoxelChunk chunk({0, 0, 0});
     const std::vector<std::uint8_t> short_light(1, 255);
@@ -227,6 +249,7 @@ int main() {
     test_sunlight_columns_and_absorption();
     test_sunlight_floods_a_tunnel_across_a_chunk_border();
     test_block_light_place_remove_and_load_order();
+    test_external_light_sources_share_block_light_propagation();
     test_derived_apply_is_revision_checked_and_not_a_save_edit();
     test_mesher_lights_solid_faces_from_their_exposed_neighbor();
     test_invalid_inputs_fail_closed();

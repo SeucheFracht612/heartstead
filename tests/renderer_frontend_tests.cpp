@@ -208,8 +208,8 @@ void test_chunk_draws_use_phase_pipelines_and_transparent_ordering() {
         world::ChunkMeshSection{3, world::MeshingRenderPhase::transparent, 6, 3},
         world::ChunkMeshSection{4, world::MeshingRenderPhase::fluid, 9, 3},
     };
-    assert(cache.replace_mesh(identity, 1, {{0.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 1.0F}},
-                              vertices, indices, 1, {}, sections));
+    assert(cache.replace_mesh(identity, 1, {{0.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 1.0F}}, vertices,
+                              indices, 1, {}, sections));
 
     renderer::RenderCamera camera;
     camera.floating_origin.block = {16, 16, 64};
@@ -644,7 +644,8 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(retained_renderer.initialize(std::move(init)));
     assert(retained_renderer.is_owner_thread());
     bool worker_reports_owner = true;
-    std::thread ownership_probe([&] { worker_reports_owner = retained_renderer.is_owner_thread(); });
+    std::thread ownership_probe(
+        [&] { worker_reports_owner = retained_renderer.is_owner_thread(); });
     ownership_probe.join();
     assert(!worker_reports_owner);
     assert(retained_renderer.is_initialized());
@@ -663,6 +664,16 @@ void test_renderer_frontend_submits_headless_frames() {
     environment.fog_start = 96.0F;
     environment.fog_end = 160.0F;
     assert(retained_renderer.set_environment(environment));
+    world::ChunkLightSystemStats lighting_stats;
+    lighting_stats.last_solve_ms = 1.25;
+    lighting_stats.last_apply_ms = 0.5;
+    lighting_stats.snapshot_pending_cell_count = 2048;
+    lighting_stats.last_sunlight_queue_visits = 300;
+    lighting_stats.last_block_light_queue_visits = 40;
+    lighting_stats.changed_chunks_this_update = 2;
+    lighting_stats.stale_results = 3;
+    lighting_stats.apply_budget_overruns = 1;
+    retained_renderer.set_voxel_lighting_stats(lighting_stats);
 
     auto invalid_spirv = test_spirv;
     invalid_spirv[0] = 0;
@@ -758,7 +769,14 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(renderer_stats.triangles > 0);
     assert(renderer_stats.resident_mesh_bytes > 0);
     assert(renderer_stats.uploaded_bytes_this_frame > 0);
-    assert(!renderer::format_renderer_stats(renderer_stats).empty());
+    assert(renderer_stats.voxel_relight_solve_ms == 1.25);
+    assert(renderer_stats.voxel_relight_apply_ms == 0.5);
+    assert(renderer_stats.voxel_relight_backlog_cells == 2048);
+    assert(renderer_stats.voxel_relight_visited_cells == 340);
+    assert(renderer_stats.voxel_relight_changed_chunks == 2);
+    assert(renderer_stats.voxel_relight_stale_results == 3);
+    assert(renderer_stats.voxel_relight_apply_budget_overruns == 1);
+    assert(renderer::format_renderer_stats(renderer_stats).contains("relight_cells=340/2048"));
 
     constexpr std::array<renderer::GpuStaticMeshVertex, 3> object_vertices{{
         {{-0.5F, -0.5F, 0.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 0.0F}},
@@ -766,9 +784,11 @@ void test_renderer_frontend_submits_headless_frames() {
         {{0.0F, 0.5F, 0.0F}, {0.0F, 0.0F, 1.0F}, {0.5F, 1.0F}},
     }};
     constexpr std::array<std::uint32_t, 3> object_indices{0, 1, 2};
-    auto object_mesh = retained_renderer.create_static_mesh(
-        {"frontend_triangle", object_vertices, object_indices,
-         {{-0.5F, -0.5F, 0.0F}, {0.5F, 0.5F, 0.0F}}});
+    auto object_mesh =
+        retained_renderer.create_static_mesh({"frontend_triangle",
+                                              object_vertices,
+                                              object_indices,
+                                              {{-0.5F, -0.5F, 0.0F}, {0.5F, 0.5F, 0.0F}}});
     assert(object_mesh);
     auto object_anchor = world::WorldPosition::from_anchor(camera.floating_origin.block, {});
     assert(object_anchor);

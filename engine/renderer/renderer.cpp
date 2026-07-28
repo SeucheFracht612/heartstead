@@ -81,9 +81,13 @@ make_static_mesh_shader_program(std::span<const std::uint32_t> vertex_spirv,
     ShaderProgramDesc shader_program;
     shader_program.id = "static_mesh";
     shader_program.stages = {
-        {rhi::RenderShaderStage::vertex, "main", {vertex_spirv.begin(), vertex_spirv.end()},
+        {rhi::RenderShaderStage::vertex,
+         "main",
+         {vertex_spirv.begin(), vertex_spirv.end()},
          "static_mesh.vert.spv"},
-        {rhi::RenderShaderStage::fragment, "main", {fragment_spirv.begin(), fragment_spirv.end()},
+        {rhi::RenderShaderStage::fragment,
+         "main",
+         {fragment_spirv.begin(), fragment_spirv.end()},
          "static_mesh.frag.spv"},
     };
     shader_program.interface.vertex_stride = sizeof(GpuStaticMeshVertex);
@@ -108,9 +112,13 @@ make_debug_shader_program(std::span<const std::uint32_t> vertex_spirv,
     ShaderProgramDesc shader_program;
     shader_program.id = "debug_lines";
     shader_program.stages = {
-        {rhi::RenderShaderStage::vertex, "main", {vertex_spirv.begin(), vertex_spirv.end()},
+        {rhi::RenderShaderStage::vertex,
+         "main",
+         {vertex_spirv.begin(), vertex_spirv.end()},
          "debug_line.vert.spv"},
-        {rhi::RenderShaderStage::fragment, "main", {fragment_spirv.begin(), fragment_spirv.end()},
+        {rhi::RenderShaderStage::fragment,
+         "main",
+         {fragment_spirv.begin(), fragment_spirv.end()},
          "debug_line.frag.spv"},
     };
     shader_program.interface.vertex_stride = sizeof(GpuDebugVertex);
@@ -130,9 +138,13 @@ make_ui_shader_program(std::span<const std::uint32_t> vertex_spirv,
     ShaderProgramDesc shader_program;
     shader_program.id = "ui";
     shader_program.stages = {
-        {rhi::RenderShaderStage::vertex, "main", {vertex_spirv.begin(), vertex_spirv.end()},
+        {rhi::RenderShaderStage::vertex,
+         "main",
+         {vertex_spirv.begin(), vertex_spirv.end()},
          "ui.vert.spv"},
-        {rhi::RenderShaderStage::fragment, "main", {fragment_spirv.begin(), fragment_spirv.end()},
+        {rhi::RenderShaderStage::fragment,
+         "main",
+         {fragment_spirv.begin(), fragment_spirv.end()},
          "ui.frag.spv"},
     };
     shader_program.interface.vertex_stride = sizeof(GpuUiVertex);
@@ -155,49 +167,92 @@ make_ui_shader_program(std::span<const std::uint32_t> vertex_spirv,
         character = static_cast<unsigned char>(character - 'a' + 'A');
     }
     switch (character) {
-    case '0': return {14, 17, 19, 21, 25, 17, 14};
-    case '1': return {4, 12, 4, 4, 4, 4, 14};
-    case '2': return {14, 17, 1, 2, 4, 8, 31};
-    case '3': return {30, 1, 1, 14, 1, 1, 30};
-    case '4': return {2, 6, 10, 18, 31, 2, 2};
-    case '5': return {31, 16, 16, 30, 1, 1, 30};
-    case '6': return {14, 16, 16, 30, 17, 17, 14};
-    case '7': return {31, 1, 2, 4, 8, 8, 8};
-    case '8': return {14, 17, 17, 14, 17, 17, 14};
-    case '9': return {14, 17, 17, 15, 1, 1, 14};
-    case 'A': return {14, 17, 17, 31, 17, 17, 17};
-    case 'B': return {30, 17, 17, 30, 17, 17, 30};
-    case 'C': return {15, 16, 16, 16, 16, 16, 15};
-    case 'D': return {30, 17, 17, 17, 17, 17, 30};
-    case 'E': return {31, 16, 16, 30, 16, 16, 31};
-    case 'F': return {31, 16, 16, 30, 16, 16, 16};
-    case 'G': return {15, 16, 16, 23, 17, 17, 14};
-    case 'H': return {17, 17, 17, 31, 17, 17, 17};
-    case 'I': return {14, 4, 4, 4, 4, 4, 14};
-    case 'J': return {7, 2, 2, 2, 18, 18, 12};
-    case 'K': return {17, 18, 20, 24, 20, 18, 17};
-    case 'L': return {16, 16, 16, 16, 16, 16, 31};
-    case 'M': return {17, 27, 21, 21, 17, 17, 17};
-    case 'N': return {17, 25, 21, 19, 17, 17, 17};
-    case 'O': return {14, 17, 17, 17, 17, 17, 14};
-    case 'P': return {30, 17, 17, 30, 16, 16, 16};
-    case 'Q': return {14, 17, 17, 17, 21, 18, 13};
-    case 'R': return {30, 17, 17, 30, 20, 18, 17};
-    case 'S': return {15, 16, 16, 14, 1, 1, 30};
-    case 'T': return {31, 4, 4, 4, 4, 4, 4};
-    case 'U': return {17, 17, 17, 17, 17, 17, 14};
-    case 'V': return {17, 17, 17, 17, 10, 10, 4};
-    case 'W': return {17, 17, 17, 21, 21, 27, 17};
-    case 'X': return {17, 17, 10, 4, 10, 17, 17};
-    case 'Y': return {17, 17, 10, 4, 4, 4, 4};
-    case 'Z': return {31, 1, 2, 4, 8, 16, 31};
-    case '-': return {0, 0, 0, 31, 0, 0, 0};
-    case '_': return {0, 0, 0, 0, 0, 0, 31};
-    case '.': return {0, 0, 0, 0, 0, 12, 12};
-    case ':': return {0, 12, 12, 0, 12, 12, 0};
-    case '/': return {1, 2, 2, 4, 8, 8, 16};
-    case '?': return {14, 17, 1, 2, 4, 0, 4};
-    default: return {};
+    case '0':
+        return {14, 17, 19, 21, 25, 17, 14};
+    case '1':
+        return {4, 12, 4, 4, 4, 4, 14};
+    case '2':
+        return {14, 17, 1, 2, 4, 8, 31};
+    case '3':
+        return {30, 1, 1, 14, 1, 1, 30};
+    case '4':
+        return {2, 6, 10, 18, 31, 2, 2};
+    case '5':
+        return {31, 16, 16, 30, 1, 1, 30};
+    case '6':
+        return {14, 16, 16, 30, 17, 17, 14};
+    case '7':
+        return {31, 1, 2, 4, 8, 8, 8};
+    case '8':
+        return {14, 17, 17, 14, 17, 17, 14};
+    case '9':
+        return {14, 17, 17, 15, 1, 1, 14};
+    case 'A':
+        return {14, 17, 17, 31, 17, 17, 17};
+    case 'B':
+        return {30, 17, 17, 30, 17, 17, 30};
+    case 'C':
+        return {15, 16, 16, 16, 16, 16, 15};
+    case 'D':
+        return {30, 17, 17, 17, 17, 17, 30};
+    case 'E':
+        return {31, 16, 16, 30, 16, 16, 31};
+    case 'F':
+        return {31, 16, 16, 30, 16, 16, 16};
+    case 'G':
+        return {15, 16, 16, 23, 17, 17, 14};
+    case 'H':
+        return {17, 17, 17, 31, 17, 17, 17};
+    case 'I':
+        return {14, 4, 4, 4, 4, 4, 14};
+    case 'J':
+        return {7, 2, 2, 2, 18, 18, 12};
+    case 'K':
+        return {17, 18, 20, 24, 20, 18, 17};
+    case 'L':
+        return {16, 16, 16, 16, 16, 16, 31};
+    case 'M':
+        return {17, 27, 21, 21, 17, 17, 17};
+    case 'N':
+        return {17, 25, 21, 19, 17, 17, 17};
+    case 'O':
+        return {14, 17, 17, 17, 17, 17, 14};
+    case 'P':
+        return {30, 17, 17, 30, 16, 16, 16};
+    case 'Q':
+        return {14, 17, 17, 17, 21, 18, 13};
+    case 'R':
+        return {30, 17, 17, 30, 20, 18, 17};
+    case 'S':
+        return {15, 16, 16, 14, 1, 1, 30};
+    case 'T':
+        return {31, 4, 4, 4, 4, 4, 4};
+    case 'U':
+        return {17, 17, 17, 17, 17, 17, 14};
+    case 'V':
+        return {17, 17, 17, 17, 10, 10, 4};
+    case 'W':
+        return {17, 17, 17, 21, 21, 27, 17};
+    case 'X':
+        return {17, 17, 10, 4, 10, 17, 17};
+    case 'Y':
+        return {17, 17, 10, 4, 4, 4, 4};
+    case 'Z':
+        return {31, 1, 2, 4, 8, 16, 31};
+    case '-':
+        return {0, 0, 0, 31, 0, 0, 0};
+    case '_':
+        return {0, 0, 0, 0, 0, 0, 31};
+    case '.':
+        return {0, 0, 0, 0, 0, 12, 12};
+    case ':':
+        return {0, 12, 12, 0, 12, 12, 0};
+    case '/':
+        return {1, 2, 2, 4, 8, 8, 16};
+    case '?':
+        return {14, 17, 1, 2, 4, 0, 4};
+    default:
+        return {};
     }
 }
 
@@ -216,10 +271,9 @@ make_ui_shader_program(std::span<const std::uint32_t> vertex_spirv,
                 if ((rows[row] & (1U << (4U - column))) == 0U) {
                     continue;
                 }
-                const auto offset = layer_size +
-                                    (static_cast<std::size_t>(cell_y + row) * width + cell_x +
-                                     column + 1U) *
-                                        4U;
+                const auto offset =
+                    layer_size +
+                    (static_cast<std::size_t>(cell_y + row) * width + cell_x + column + 1U) * 4U;
                 pixels[offset] = std::byte{0xff};
                 pixels[offset + 1U] = std::byte{0xff};
                 pixels[offset + 2U] = std::byte{0xff};
@@ -294,15 +348,14 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         (void)shutdown();
         return core::Status::failure(error.code, error.message);
     }
-    pipeline_status = create_scene_pipelines(desc.static_mesh_vertex_spirv,
-                                             desc.static_mesh_fragment_spirv);
+    pipeline_status =
+        create_scene_pipelines(desc.static_mesh_vertex_spirv, desc.static_mesh_fragment_spirv);
     if (!pipeline_status) {
         const auto error = pipeline_status.error();
         (void)shutdown();
         return core::Status::failure(error.code, error.message);
     }
-    pipeline_status =
-        create_debug_pipelines(desc.debug_vertex_spirv, desc.debug_fragment_spirv);
+    pipeline_status = create_debug_pipelines(desc.debug_vertex_spirv, desc.debug_fragment_spirv);
     if (!pipeline_status) {
         const auto error = pipeline_status.error();
         (void)shutdown();
@@ -496,8 +549,7 @@ core::Status Renderer::process_chunk_evictions(const world::ChunkStreamEvictionR
     return chunk_system_->process_chunk_evictions(eviction);
 }
 
-core::Status
-Renderer::process_world_render_updates(std::span<const ChunkRenderUpdate> updates) {
+core::Status Renderer::process_world_render_updates(std::span<const ChunkRenderUpdate> updates) {
     if (chunk_system_ == nullptr) {
         return core::Status::failure(
             "renderer.not_initialized",
@@ -507,12 +559,12 @@ Renderer::process_world_render_updates(std::span<const ChunkRenderUpdate> update
         auto status = core::Status::ok();
         switch (update.kind) {
         case ChunkRenderUpdateKind::loaded:
-            status = process_chunk_loads(
-                std::span<const world::ChunkStreamLoadReport>{&update.load, 1});
+            status =
+                process_chunk_loads(std::span<const world::ChunkStreamLoadReport>{&update.load, 1});
             break;
         case ChunkRenderUpdateKind::evicted:
-            status = process_chunk_evictions(
-                std::span<const world::ChunkIdentity>{&update.identity, 1});
+            status =
+                process_chunk_evictions(std::span<const world::ChunkIdentity>{&update.identity, 1});
             break;
         default:
             return core::Status::failure("renderer.invalid_world_render_update",
@@ -526,8 +578,7 @@ Renderer::process_world_render_updates(std::span<const ChunkRenderUpdate> update
 }
 
 core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
-                                                    float simulation_alpha,
-                                                    float delta_seconds) {
+                                                     float simulation_alpha, float delta_seconds) {
     if (device_ == nullptr || chunk_system_ == nullptr || scene_render_system_ == nullptr ||
         debug_renderer_ == nullptr || ui_renderer_ == nullptr || frame_builder_ == nullptr) {
         return core::Result<rhi::RenderFrameStats>::failure(
@@ -546,8 +597,7 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
     }
     chunk_draw_scratch_ = std::move(draws.draws);
     RenderCommandLists command_lists;
-    command_lists.opaque_terrain_draws =
-        std::move(draw_command_scratch_.opaque_terrain_draws);
+    command_lists.opaque_terrain_draws = std::move(draw_command_scratch_.opaque_terrain_draws);
     command_lists.alpha_tested_terrain_draws =
         std::move(draw_command_scratch_.alpha_tested_terrain_draws);
     command_lists.transparent_terrain_draws =
@@ -566,8 +616,8 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
             command_lists.transparent_terrain_draws.push_back(draw);
         }
     }
-    auto scene_draws = scene_render_system_->build_draw_commands(
-        scene_, camera, simulation_alpha, std::move(scene_draw_scratch_));
+    auto scene_draws = scene_render_system_->build_draw_commands(scene_, camera, simulation_alpha,
+                                                                 std::move(scene_draw_scratch_));
     if (!scene_draws) {
         frame_timing_active_ = false;
         return core::Result<rhi::RenderFrameStats>::failure(scene_draws.error().code,
@@ -705,9 +755,8 @@ core::Status Renderer::reload_terrain_shaders(std::span<const std::uint32_t> ver
     return chunk_system_->set_terrain_pipelines(terrain_pipelines_);
 }
 
-core::Status Renderer::reload_static_mesh_shaders(
-    std::span<const std::uint32_t> vertex_spirv,
-    std::span<const std::uint32_t> fragment_spirv) {
+core::Status Renderer::reload_static_mesh_shaders(std::span<const std::uint32_t> vertex_spirv,
+                                                  std::span<const std::uint32_t> fragment_spirv) {
     if (!is_initialized() || shader_manager_ == nullptr || pipeline_cache_ == nullptr ||
         scene_render_system_ == nullptr) {
         return core::Status::failure("renderer.not_initialized",
@@ -799,6 +848,19 @@ core::Status Renderer::set_environment(rhi::RenderEnvironmentData environment) {
     return core::Status::ok();
 }
 
+void Renderer::set_voxel_lighting_stats(const world::ChunkLightSystemStats& lighting) noexcept {
+    stats_.voxel_relight_solve_ms = lighting.last_solve_ms;
+    stats_.voxel_relight_apply_ms = lighting.last_apply_ms;
+    stats_.voxel_relight_changed_chunks = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+        lighting.changed_chunks_this_update,
+        static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())));
+    stats_.voxel_relight_backlog_cells = lighting.snapshot_pending_cell_count;
+    stats_.voxel_relight_visited_cells =
+        lighting.last_sunlight_queue_visits + lighting.last_block_light_queue_visits;
+    stats_.voxel_relight_stale_results = lighting.stale_results;
+    stats_.voxel_relight_apply_budget_overruns = lighting.apply_budget_overruns;
+}
+
 RenderObjectId Renderer::reserve_object_id() {
     return scene_.reserve_object_id();
 }
@@ -852,8 +914,7 @@ bool Renderer::is_initialized() const noexcept {
            frame_builder_ != nullptr && shader_manager_ != nullptr && texture_manager_ != nullptr &&
            material_cache_ != nullptr && pipeline_cache_ != nullptr && mesh_manager_ != nullptr &&
            scene_render_system_ != nullptr && debug_renderer_ != nullptr &&
-           ui_renderer_ != nullptr &&
-           terrain_pipelines_.is_valid() &&
+           ui_renderer_ != nullptr && terrain_pipelines_.is_valid() &&
            scene_pipelines_.is_valid() && debug_pipelines_.is_valid() && ui_pipeline_.is_valid();
 }
 
@@ -1004,15 +1065,15 @@ void Renderer::update_backend_stats(const rhi::RenderFrameStats& frame) noexcept
     stats_.completed_submission_serial = frame.completed_submission_serial;
     stats_.draw_calls = static_cast<std::uint32_t>(std::min(
         frame.draw_count, static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
-    stats_.opaque_terrain_draws = static_cast<std::uint32_t>(std::min(
-        frame.opaque_terrain_draw_count,
-        static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
-    stats_.alpha_tested_terrain_draws = static_cast<std::uint32_t>(std::min(
-        frame.alpha_tested_terrain_draw_count,
-        static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
-    stats_.transparent_terrain_draws = static_cast<std::uint32_t>(std::min(
-        frame.transparent_terrain_draw_count,
-        static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
+    stats_.opaque_terrain_draws = static_cast<std::uint32_t>(
+        std::min(frame.opaque_terrain_draw_count,
+                 static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
+    stats_.alpha_tested_terrain_draws = static_cast<std::uint32_t>(
+        std::min(frame.alpha_tested_terrain_draw_count,
+                 static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
+    stats_.transparent_terrain_draws = static_cast<std::uint32_t>(
+        std::min(frame.transparent_terrain_draw_count,
+                 static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
     stats_.pipeline_switches = static_cast<std::uint32_t>(
         std::min(frame.pipeline_bind_count,
                  static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
@@ -1128,13 +1189,12 @@ core::Status Renderer::create_terrain_pipeline(std::span<const std::uint32_t> ve
                     runtime_material.roughness = 0.2F;
                 }
                 if (model.kind == world::BlockModelKind::cross_plane) {
-                    runtime_material.flags =
-                        runtime_material.flags | VoxelMaterialFlags::alpha_tested |
-                        VoxelMaterialFlags::two_sided;
+                    runtime_material.flags = runtime_material.flags |
+                                             VoxelMaterialFlags::alpha_tested |
+                                             VoxelMaterialFlags::two_sided;
                 }
                 if (definition->light_emission > 0) {
-                    runtime_material.flags =
-                        runtime_material.flags | VoxelMaterialFlags::emissive;
+                    runtime_material.flags = runtime_material.flags | VoxelMaterialFlags::emissive;
                     runtime_material.emissive_strength =
                         static_cast<float>(definition->light_emission) / 255.0F;
                 }
@@ -1298,10 +1358,11 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
     pipeline.blend_mode = rhi::RenderBlendMode::disabled;
     pipeline.color_target_format = rhi::RenderImageFormat::rgba8_unorm;
     pipeline.depth_target_format = rhi::RenderImageFormat::d32_sfloat;
-    const auto vertex_layout = hash_vertex_layout(pipeline.vertex_stride, pipeline.vertex_attributes);
-    const auto prewarm = [&](std::size_t index, RenderPhase phase,
-                             rhi::RenderGraphicsPipelineDesc desc)
-        -> core::Result<rhi::RenderResourceHandle> {
+    const auto vertex_layout =
+        hash_vertex_layout(pipeline.vertex_stride, pipeline.vertex_attributes);
+    const auto prewarm =
+        [&](std::size_t index, RenderPhase phase,
+            rhi::RenderGraphicsPipelineDesc desc) -> core::Result<rhi::RenderResourceHandle> {
         GraphicsPipelineKey key;
         key.shader_program = scene_shader_program_;
         key.vertex_layout = vertex_layout;
@@ -1333,8 +1394,7 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
     transparent_desc.debug_name = "transparent_static_instances_pipeline";
     transparent_desc.depth_write_enable = false;
     transparent_desc.blend_mode = rhi::RenderBlendMode::alpha;
-    auto transparent =
-        prewarm(2, RenderPhase::transparent_terrain, std::move(transparent_desc));
+    auto transparent = prewarm(2, RenderPhase::transparent_terrain, std::move(transparent_desc));
     if (!transparent) {
         return core::Status::failure(transparent.error().code, transparent.error().message);
     }
@@ -1383,9 +1443,11 @@ core::Status Renderer::create_debug_pipelines(std::span<const std::uint32_t> ver
     pipeline.blend_mode = rhi::RenderBlendMode::alpha;
     pipeline.color_target_format = rhi::RenderImageFormat::rgba8_unorm;
     pipeline.depth_target_format = rhi::RenderImageFormat::d32_sfloat;
-    const auto vertex_layout = hash_vertex_layout(pipeline.vertex_stride, pipeline.vertex_attributes);
-    const auto prewarm = [&](std::size_t index, rhi::RenderGraphicsPipelineDesc desc)
-        -> core::Result<rhi::RenderResourceHandle> {
+    const auto vertex_layout =
+        hash_vertex_layout(pipeline.vertex_stride, pipeline.vertex_attributes);
+    const auto prewarm =
+        [&](std::size_t index,
+            rhi::RenderGraphicsPipelineDesc desc) -> core::Result<rhi::RenderResourceHandle> {
         GraphicsPipelineKey key;
         key.shader_program = debug_shader_program_;
         key.vertex_layout = vertex_layout;
@@ -1446,8 +1508,8 @@ core::Status Renderer::create_ui_pipeline(std::span<const std::uint32_t> vertex_
         return core::Status::failure("renderer.ui_atlas_missing",
                                      "UI atlas disappeared after creation");
     }
-    auto shader = shader_manager_->create_program(make_ui_shader_program(vertex_spirv,
-                                                                          fragment_spirv));
+    auto shader =
+        shader_manager_->create_program(make_ui_shader_program(vertex_spirv, fragment_spirv));
     if (!shader) {
         return core::Status::failure(shader.error().code, shader.error().message);
     }

@@ -48,6 +48,11 @@ struct VoxelEditAddress {
     friend auto operator<=>(const VoxelEditAddress&, const VoxelEditAddress&) = default;
 };
 
+[[nodiscard]] constexpr bool same_persistent_cell(VoxelCell left, VoxelCell right) noexcept {
+    return left.type == right.type && left.state_bits == right.state_bits &&
+           left.metadata_handle == right.metadata_handle;
+}
+
 [[nodiscard]] std::vector<VoxelEditRecord>
 canonicalize_saved_edits(std::span<const VoxelEditRecord> edits) {
     std::vector<VoxelEditRecord> canonical;
@@ -195,7 +200,7 @@ core::Status ChunkDatabase::set(ChunkCoord chunk_coord, VoxelCoord voxel_coord, 
         return edit.chunk_coord == chunk_coord && edit.voxel_coord == voxel_coord;
     });
     const bool has_retained_edit = retained_edit != edit_log_.end();
-    if (has_retained_edit && retained_edit->next != previous) {
+    if (has_retained_edit && !same_persistent_cell(retained_edit->next, previous)) {
         return core::Status::failure(
             "chunk_database.edit_history_mismatch",
             "retained voxel edit history does not match the resident chunk state");
@@ -218,7 +223,7 @@ core::Status ChunkDatabase::set(ChunkCoord chunk_coord, VoxelCoord voxel_coord, 
 
     if (!has_retained_edit) {
         edit_log_.push_back(VoxelEditRecord{chunk_coord, voxel_coord, previous, cell});
-    } else if (retained_edit->previous == cell) {
+    } else if (same_persistent_cell(retained_edit->previous, cell)) {
         edit_log_.erase(retained_edit);
     } else {
         retained_edit->next = cell;
@@ -477,8 +482,8 @@ core::Status ChunkDatabase::apply_saved_edits_impl(std::span<const VoxelEditReco
 
     const auto mark_rebuild = [&staged, staged_dirty](const VoxelEditRecord& edit) {
         if (staged_dirty != nullptr) {
-            auto dirty_status = staged.mark_chunk_rebuild_regions(
-                *staged_dirty, edit.chunk_coord, "saved voxel edit delta");
+            auto dirty_status = staged.mark_chunk_rebuild_regions(*staged_dirty, edit.chunk_coord,
+                                                                  "saved voxel edit delta");
             if (!dirty_status) {
                 return dirty_status;
             }

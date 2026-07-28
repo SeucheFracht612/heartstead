@@ -23,6 +23,7 @@ struct VoxelLightBlockInfo {
 };
 
 struct VoxelLightBlockTable {
+    std::uint64_t revision = 1;
     std::vector<VoxelLightBlockInfo> blocks;
 
     [[nodiscard]] VoxelLightBlockInfo block(std::uint16_t type) const noexcept;
@@ -39,8 +40,16 @@ struct ChunkLightSnapshot {
     [[nodiscard]] core::Status validate() const;
 };
 
+struct VoxelLightSource {
+    BlockCoord position{};
+    std::uint8_t light = 0;
+
+    friend auto operator<=>(const VoxelLightSource&, const VoxelLightSource&) = default;
+};
+
 struct VoxelLightSnapshot {
     std::vector<ChunkLightSnapshot> chunks;
+    std::vector<VoxelLightSource> sources;
 
     [[nodiscard]] core::Status validate() const;
 };
@@ -76,6 +85,7 @@ struct VoxelLightApplyReport {
     std::size_t patch_count = 0;
     std::size_t changed_chunk_count = 0;
     std::size_t changed_cell_count = 0;
+    std::vector<ChunkCoord> changed_chunks;
 };
 
 [[nodiscard]] core::Result<VoxelLightApplyReport>

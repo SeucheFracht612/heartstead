@@ -440,6 +440,7 @@ int run_native(game::GameRuntime& runtime, const content::ContentValidationRepor
         if (!runtime_frame) {
             return fail(runtime_frame.error());
         }
+        renderer.set_voxel_lighting_stats(runtime.session()->server()->chunk_lighting().stats());
         const auto* player = runtime.session()->client()->local_player_snapshot();
         if (player == nullptr) {
             return fail("client has no assigned player snapshot");

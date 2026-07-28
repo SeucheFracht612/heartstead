@@ -17,11 +17,12 @@
 #include "engine/renderer/scene/render_scene.hpp"
 #include "engine/renderer/scene/scene_render_system.hpp"
 #include "engine/renderer/ui/ui_renderer.hpp"
+#include "engine/world/lighting/chunk_light_system.hpp"
 #include "engine/world/streaming/chunk_streamer.hpp"
 #include "engine/world/world_state.hpp"
 
-#include <chrono>
 #include <array>
+#include <chrono>
 #include <memory>
 #include <span>
 #include <thread>
@@ -95,12 +96,12 @@ class Renderer {
     [[nodiscard]] core::Status
     process_world_render_updates(std::span<const ChunkRenderUpdate> updates);
 
-    [[nodiscard]] core::Result<rhi::RenderFrameStats> render(const RenderCamera& camera,
-                                                             float simulation_alpha = 1.0F,
-                                                             float delta_seconds = 0.0F);
+    [[nodiscard]] core::Result<rhi::RenderFrameStats>
+    render(const RenderCamera& camera, float simulation_alpha = 1.0F, float delta_seconds = 0.0F);
     [[nodiscard]] core::Result<RenderFrameResult> render_frame(const RenderFrameInput& input);
     [[nodiscard]] core::Status resize(rhi::RenderExtent extent);
     [[nodiscard]] core::Status set_environment(rhi::RenderEnvironmentData environment);
+    void set_voxel_lighting_stats(const world::ChunkLightSystemStats& lighting) noexcept;
     [[nodiscard]] RenderObjectId reserve_object_id();
     [[nodiscard]] RenderLightId reserve_light_id();
     [[nodiscard]] core::Result<RenderObjectId> create_object(RenderObjectProxy object);
@@ -115,12 +116,10 @@ class Renderer {
     [[nodiscard]] core::Status
     reload_static_mesh_shaders(std::span<const std::uint32_t> vertex_spirv,
                                std::span<const std::uint32_t> fragment_spirv);
-    [[nodiscard]] core::Status
-    reload_debug_shaders(std::span<const std::uint32_t> vertex_spirv,
-                         std::span<const std::uint32_t> fragment_spirv);
-    [[nodiscard]] core::Status
-    reload_ui_shaders(std::span<const std::uint32_t> vertex_spirv,
-                      std::span<const std::uint32_t> fragment_spirv);
+    [[nodiscard]] core::Status reload_debug_shaders(std::span<const std::uint32_t> vertex_spirv,
+                                                    std::span<const std::uint32_t> fragment_spirv);
+    [[nodiscard]] core::Status reload_ui_shaders(std::span<const std::uint32_t> vertex_spirv,
+                                                 std::span<const std::uint32_t> fragment_spirv);
 
     [[nodiscard]] bool is_initialized() const noexcept;
     [[nodiscard]] bool is_owner_thread() const noexcept;
@@ -147,9 +146,8 @@ class Renderer {
     [[nodiscard]] core::Status
     create_debug_pipelines(std::span<const std::uint32_t> vertex_spirv,
                            std::span<const std::uint32_t> fragment_spirv);
-    [[nodiscard]] core::Status
-    create_ui_pipeline(std::span<const std::uint32_t> vertex_spirv,
-                       std::span<const std::uint32_t> fragment_spirv);
+    [[nodiscard]] core::Status create_ui_pipeline(std::span<const std::uint32_t> vertex_spirv,
+                                                  std::span<const std::uint32_t> fragment_spirv);
     void update_frontend_stats(std::size_t loaded_chunk_count) noexcept;
     void update_backend_stats(const rhi::RenderFrameStats& frame) noexcept;
 

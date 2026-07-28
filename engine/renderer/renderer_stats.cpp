@@ -14,8 +14,8 @@ std::string format_renderer_stats(const RendererStats& stats) {
         stream << " gpu=" << stats.gpu_frame_ms << "ms"
                << " gpu_frame=" << stats.gpu_timing_frame_index
                << " phases=" << stats.gpu_opaque_terrain_ms << '/'
-               << stats.gpu_alpha_tested_terrain_ms << '/'
-               << stats.gpu_transparent_terrain_ms << "ms";
+               << stats.gpu_alpha_tested_terrain_ms << '/' << stats.gpu_transparent_terrain_ms
+               << "ms";
     } else {
         stream << " gpu=pending";
     }
@@ -26,23 +26,28 @@ std::string format_renderer_stats(const RendererStats& stats) {
     stream << " sync=" << stats.chunk_synchronization_ms << "ms" << " mesh=" << stats.meshing_ms
            << "ms" << " upload=" << stats.upload_ms << "ms" << " cull=" << stats.culling_ms << "ms"
            << " record=" << stats.command_recording_ms << "ms" << " wait=" << stats.gpu_wait_ms
-           << "ms" << " chunks=" << stats.visible_chunks << '/' << stats.resident_chunks << '/'
+           << "ms" << " relight=" << stats.voxel_relight_solve_ms << '/'
+           << stats.voxel_relight_apply_ms << "ms"
+           << " relight_cells=" << stats.voxel_relight_visited_cells << '/'
+           << stats.voxel_relight_backlog_cells
+           << " relight_changed=" << stats.voxel_relight_changed_chunks
+           << " relight_stale=" << stats.voxel_relight_stale_results
+           << " relight_budget_overruns=" << stats.voxel_relight_apply_budget_overruns
+           << " chunks=" << stats.visible_chunks << '/' << stats.resident_chunks << '/'
            << stats.loaded_chunks << " draws=" << stats.draw_calls << '['
            << stats.opaque_terrain_draws << '/' << stats.alpha_tested_terrain_draws << '/'
-           << stats.transparent_terrain_draws << ']'
-           << " pipelines=" << stats.pipeline_switches << " textures=" << stats.resident_textures
-           << '/' << stats.resident_texture_bytes << " materials=" << stats.runtime_materials
-           << " triangles=" << stats.triangles << " resident_bytes=" << stats.resident_mesh_bytes
-           << '/' << stats.gpu_terrain_budget_bytes
-           << " objects=" << stats.visible_objects << '/' << stats.retained_objects
-           << " instances=" << stats.submitted_instances << '/' << stats.instance_draw_calls
-           << " static_meshes=" << stats.resident_static_meshes << '/'
-           << stats.resident_static_mesh_bytes
-           << " debug=" << stats.debug_lines << '/' << stats.debug_draw_calls << '/'
-           << stats.debug_labels << " debug_overflow=" << stats.debug_overflow
-           << " ui=" << stats.ui_vertices << '/' << stats.ui_draw_calls << '/'
-           << stats.ui_clipped_draw_calls << " glyphs=" << stats.ui_glyphs
-           << " ui_overflow=" << stats.ui_overflow
+           << stats.transparent_terrain_draws << ']' << " pipelines=" << stats.pipeline_switches
+           << " textures=" << stats.resident_textures << '/' << stats.resident_texture_bytes
+           << " materials=" << stats.runtime_materials << " triangles=" << stats.triangles
+           << " resident_bytes=" << stats.resident_mesh_bytes << '/'
+           << stats.gpu_terrain_budget_bytes << " objects=" << stats.visible_objects << '/'
+           << stats.retained_objects << " instances=" << stats.submitted_instances << '/'
+           << stats.instance_draw_calls << " static_meshes=" << stats.resident_static_meshes << '/'
+           << stats.resident_static_mesh_bytes << " debug=" << stats.debug_lines << '/'
+           << stats.debug_draw_calls << '/' << stats.debug_labels
+           << " debug_overflow=" << stats.debug_overflow << " ui=" << stats.ui_vertices << '/'
+           << stats.ui_draw_calls << '/' << stats.ui_clipped_draw_calls
+           << " glyphs=" << stats.ui_glyphs << " ui_overflow=" << stats.ui_overflow
            << " suppressed=" << stats.residency_suppressed_chunks
            << " evicted=" << stats.distance_evicted_meshes << '/'
            << stats.memory_pressure_evicted_meshes << " arena=" << stats.gpu_arena_used_bytes << '/'
