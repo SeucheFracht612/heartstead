@@ -207,18 +207,40 @@ void test_walk_jump_dash_and_step() {
     const auto walked = state.position.approximate_global().z - start_z;
     assert(walked > 4.2 && walked < 4.6);
 
+    const auto sprint = movement::input_button_bit(movement::PlayerInputButton::sprint);
+    auto sprint_state = initial_state(3.5, 1.0, 5.5);
+    bool observed_run = false;
+    for (std::uint64_t tick = 1; tick <= 12; ++tick) {
+        auto result =
+            controller.tick(sprint_state, input(tick, sprint, 0, 0, 32'767), {}, collision);
+        assert(result);
+        sprint_state = result.value().state;
+        observed_run |=
+            sprint_state.locomotion_animation.kind == animation::LocomotionAnimationKind::run;
+    }
+    assert(observed_run);
+
     const auto jump = movement::input_button_bit(movement::PlayerInputButton::jump);
     auto jump_state = initial_state(3.5, 1.0, 3.5);
     auto maximum_y = jump_state.position.approximate_global().y;
+    bool observed_jump = false;
+    bool observed_fall = false;
     for (std::uint64_t tick = 1; tick <= 90; ++tick) {
         const auto buttons = tick == 1 ? jump : 0u;
         auto result = controller.tick(jump_state, input(tick, buttons, buttons), {}, collision);
         assert(result);
         jump_state = result.value().state;
         maximum_y = std::max(maximum_y, jump_state.position.approximate_global().y);
+        observed_jump |=
+            jump_state.locomotion_animation.kind == animation::LocomotionAnimationKind::jump;
+        observed_fall |=
+            jump_state.locomotion_animation.kind == animation::LocomotionAnimationKind::fall;
     }
     assert(std::abs(maximum_y - 2.25) < 0.03);
+    assert(observed_jump);
+    assert(observed_fall);
     assert(jump_state.grounded);
+    assert(jump_state.locomotion_animation.kind == animation::LocomotionAnimationKind::idle);
 
     const auto dash = movement::input_button_bit(movement::PlayerInputButton::dash);
     auto dash_state = initial_state(3.5, 1.0, 3.5);

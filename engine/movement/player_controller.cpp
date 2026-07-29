@@ -87,20 +87,25 @@ quantize_position(const world::WorldPosition& position) {
     return std::hypot(value.x, value.z);
 }
 
-[[nodiscard]] animation::LocomotionAnimationKind
-locomotion_kind(const PlayerControllerState& state) noexcept {
+[[nodiscard]] animation::LocomotionAnimationKind locomotion_kind(const PlayerControllerState& state,
+                                                                 bool sprinting) noexcept {
     if (state.mode == PlayerControllerMode::swimming) {
         return animation::LocomotionAnimationKind::swim;
     }
+    if (state.mode == PlayerControllerMode::airborne && !state.grounded) {
+        return state.velocity.y > 0.05 ? animation::LocomotionAnimationKind::jump
+                                       : animation::LocomotionAnimationKind::fall;
+    }
     if (state.grounded && horizontal_length(state.velocity) > 0.05) {
-        return animation::LocomotionAnimationKind::walk;
+        return sprinting ? animation::LocomotionAnimationKind::run
+                         : animation::LocomotionAnimationKind::walk;
     }
     return animation::LocomotionAnimationKind::idle;
 }
 
 void update_locomotion_animation(const PlayerControllerState& previous,
-                                 PlayerControllerState& state) noexcept {
-    const auto kind = locomotion_kind(state);
+                                 PlayerControllerState& state, bool sprinting) noexcept {
+    const auto kind = locomotion_kind(state, sprinting);
     auto& locomotion = state.locomotion_animation;
     if (kind != previous.locomotion_animation.kind) {
         locomotion.kind = kind;
@@ -116,16 +121,29 @@ void update_locomotion_animation(const PlayerControllerState& previous,
         locomotion.phase = 0;
         return;
     }
+    if (kind == animation::LocomotionAnimationKind::jump ||
+        kind == animation::LocomotionAnimationKind::fall) {
+        constexpr std::uint64_t phase_per_tick = 65'536U / 60U;
+        const auto tick_delta =
+            state.simulation_tick > previous.simulation_tick
+                ? std::min<std::uint64_t>(state.simulation_tick - previous.simulation_tick, 4U)
+                : 1U;
+        locomotion.phase = static_cast<std::uint16_t>(std::min<std::uint64_t>(
+            65'535U, static_cast<std::uint64_t>(locomotion.phase) + phase_per_tick * tick_delta));
+        return;
+    }
     const auto displacement =
         state.position.relative_to(previous.position.anchor) - previous.position.local_offset;
     const auto distance = kind == animation::LocomotionAnimationKind::swim
                               ? math::length(displacement)
                               : std::hypot(displacement.x, displacement.z);
     constexpr double walk_cycles_per_meter = 0.55;
+    constexpr double run_cycles_per_meter = 0.42;
     constexpr double swim_cycles_per_meter = 0.35;
-    const auto cycles_per_meter = kind == animation::LocomotionAnimationKind::walk
-                                      ? walk_cycles_per_meter
-                                      : swim_cycles_per_meter;
+    const auto cycles_per_meter =
+        kind == animation::LocomotionAnimationKind::walk  ? walk_cycles_per_meter
+        : kind == animation::LocomotionAnimationKind::run ? run_cycles_per_meter
+                                                          : swim_cycles_per_meter;
     const auto advance =
         static_cast<std::uint64_t>(std::llround(distance * cycles_per_meter * 65'536.0));
     locomotion.phase = static_cast<std::uint16_t>(
@@ -806,7 +824,10 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
             quantized_position.error().code, quantized_position.error().message);
     }
     state.position = quantized_position.value();
-    update_locomotion_animation(previous, state);
+    const auto presentation_sprinting =
+        state.grounded && !state.crouched && input.held(PlayerInputButton::sprint) &&
+        horizontal_length(state.velocity) > config_.walk_speed * movement_modifier * 0.95;
+    update_locomotion_animation(previous, state, presentation_sprinting);
     auto final_status = state.validate(config_);
     if (!final_status) {
         return core::Result<PlayerControllerTickResult>::failure(final_status.error().code,

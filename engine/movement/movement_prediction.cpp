@@ -394,9 +394,9 @@ PlayerControllerSnapshotTextCodec::decode(std::string_view payload,
         invulnerable.value() > 1 || air_dash.value() > 1 || has_fall.value() > 1 ||
         charges.value() > 2 || drain_remainder.value() >= 60 || regen_remainder.value() >= 60 ||
         locomotion_kind.value() >
-            static_cast<std::uint32_t>(animation::LocomotionAnimationKind::swim) ||
+            static_cast<std::uint32_t>(animation::LocomotionAnimationKind::fall) ||
         locomotion_from.value() >
-            static_cast<std::uint32_t>(animation::LocomotionAnimationKind::swim)) {
+            static_cast<std::uint32_t>(animation::LocomotionAnimationKind::fall)) {
         return core::Result<PlayerControllerSnapshot>::failure(
             "movement_snapshot.invalid_payload", "movement snapshot fields are invalid");
     }

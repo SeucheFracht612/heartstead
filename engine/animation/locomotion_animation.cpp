@@ -13,6 +13,9 @@ constexpr float phase_denominator = 65'536.0F;
     case LocomotionAnimationKind::idle:
     case LocomotionAnimationKind::walk:
     case LocomotionAnimationKind::swim:
+    case LocomotionAnimationKind::run:
+    case LocomotionAnimationKind::jump:
+    case LocomotionAnimationKind::fall:
         return true;
     }
     return false;
@@ -44,10 +47,13 @@ float ReplicatedLocomotionAnimation::normalized_transition_from_phase() const no
 
 core::Status LocomotionClipSet::validate(const assets::ModelAsset& model) const {
     if (idle >= model.animations.size() || walk >= model.animations.size() ||
-        swim >= model.animations.size() || transition_ticks == 0 || transition_ticks > 600) {
+        swim >= model.animations.size() || run >= model.animations.size() ||
+        jump >= model.animations.size() || fall >= model.animations.size() ||
+        transition_ticks == 0 || transition_ticks > 600) {
         return core::Status::failure(
             "locomotion_animation.invalid_clips",
-            "locomotion clip set requires valid idle/walk/swim clips and a bounded transition");
+            "locomotion clip set requires valid idle/walk/run/jump/fall/swim clips and a bounded "
+            "transition");
     }
     return core::Status::ok();
 }
@@ -60,15 +66,21 @@ std::uint32_t LocomotionClipSet::clip_for(LocomotionAnimationKind kind) const no
         return walk;
     case LocomotionAnimationKind::swim:
         return swim;
+    case LocomotionAnimationKind::run:
+        return run;
+    case LocomotionAnimationKind::jump:
+        return jump;
+    case LocomotionAnimationKind::fall:
+        return fall;
     }
     return assets::no_model_index;
 }
 
-core::Result<LocomotionClipSet> resolve_locomotion_clips(const assets::ModelAsset& model,
-                                                         std::string_view idle,
-                                                         std::string_view walk,
-                                                         std::string_view swim,
-                                                         std::uint32_t transition_ticks) {
+core::Result<LocomotionClipSet>
+resolve_locomotion_clips(const assets::ModelAsset& model, std::string_view idle,
+                         std::string_view walk, std::string_view run, std::string_view jump,
+                         std::string_view fall, std::string_view swim,
+                         std::uint32_t transition_ticks) {
     auto idle_clip = assets::resolve_model_animation_clip(model, idle);
     if (!idle_clip) {
         return core::Result<LocomotionClipSet>::failure(idle_clip.error().code,
@@ -84,8 +96,23 @@ core::Result<LocomotionClipSet> resolve_locomotion_clips(const assets::ModelAsse
         return core::Result<LocomotionClipSet>::failure(swim_clip.error().code,
                                                         swim_clip.error().message);
     }
-    LocomotionClipSet result{idle_clip.value(), walk_clip.value(), swim_clip.value(),
-                             transition_ticks};
+    auto run_clip = assets::resolve_model_animation_clip(model, run);
+    auto jump_clip = assets::resolve_model_animation_clip(model, jump);
+    auto fall_clip = assets::resolve_model_animation_clip(model, fall);
+    if (!run_clip || !jump_clip || !fall_clip) {
+        const auto& error = !run_clip    ? run_clip.error()
+                            : !jump_clip ? jump_clip.error()
+                                         : fall_clip.error();
+        return core::Result<LocomotionClipSet>::failure(error.code, error.message);
+    }
+    LocomotionClipSet result;
+    result.idle = idle_clip.value();
+    result.walk = walk_clip.value();
+    result.run = run_clip.value();
+    result.jump = jump_clip.value();
+    result.fall = fall_clip.value();
+    result.swim = swim_clip.value();
+    result.transition_ticks = transition_ticks;
     auto status = result.validate(model);
     if (!status) {
         return core::Result<LocomotionClipSet>::failure(status.error().code,
@@ -139,6 +166,12 @@ std::string_view locomotion_animation_kind_name(LocomotionAnimationKind kind) no
         return "walk";
     case LocomotionAnimationKind::swim:
         return "swim";
+    case LocomotionAnimationKind::run:
+        return "run";
+    case LocomotionAnimationKind::jump:
+        return "jump";
+    case LocomotionAnimationKind::fall:
+        return "fall";
     }
     return "unknown";
 }

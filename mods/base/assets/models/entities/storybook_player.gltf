@@ -148,6 +148,75 @@
           }
         }
       ]
+    },
+    {
+      "name": "run",
+      "samplers": [
+        {
+          "input": 7,
+          "output": 9,
+          "interpolation": "LINEAR"
+        },
+        {
+          "input": 7,
+          "output": 10,
+          "interpolation": "LINEAR"
+        }
+      ],
+      "channels": [
+        {
+          "sampler": 0,
+          "target": {
+            "node": 2,
+            "path": "translation"
+          }
+        },
+        {
+          "sampler": 1,
+          "target": {
+            "node": 3,
+            "path": "rotation"
+          }
+        }
+      ]
+    },
+    {
+      "name": "jump",
+      "samplers": [
+        {
+          "input": 7,
+          "output": 11,
+          "interpolation": "LINEAR"
+        }
+      ],
+      "channels": [
+        {
+          "sampler": 0,
+          "target": {
+            "node": 2,
+            "path": "translation"
+          }
+        }
+      ]
+    },
+    {
+      "name": "fall",
+      "samplers": [
+        {
+          "input": 7,
+          "output": 8,
+          "interpolation": "LINEAR"
+        }
+      ],
+      "channels": [
+        {
+          "sampler": 0,
+          "target": {
+            "node": 3,
+            "path": "translation"
+          }
+        }
+      ]
     }
   ],
   "buffers": [

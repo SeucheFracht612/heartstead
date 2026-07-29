@@ -11,6 +11,9 @@ enum class LocomotionAnimationKind : std::uint8_t {
     idle,
     walk,
     swim,
+    run,
+    jump,
+    fall,
 };
 
 struct ReplicatedLocomotionAnimation {
@@ -31,6 +34,9 @@ struct ReplicatedLocomotionAnimation {
 struct LocomotionClipSet {
     std::uint32_t idle = assets::no_model_index;
     std::uint32_t walk = assets::no_model_index;
+    std::uint32_t run = assets::no_model_index;
+    std::uint32_t jump = assets::no_model_index;
+    std::uint32_t fall = assets::no_model_index;
     std::uint32_t swim = assets::no_model_index;
     std::uint32_t transition_ticks = 9;
 
@@ -40,7 +46,8 @@ struct LocomotionClipSet {
 
 [[nodiscard]] core::Result<LocomotionClipSet>
 resolve_locomotion_clips(const assets::ModelAsset& model, std::string_view idle,
-                         std::string_view walk, std::string_view swim,
+                         std::string_view walk, std::string_view run, std::string_view jump,
+                         std::string_view fall, std::string_view swim,
                          std::uint32_t transition_ticks = 9);
 
 [[nodiscard]] core::Result<SkeletalPose>

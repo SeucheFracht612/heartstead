@@ -101,15 +101,20 @@ ModelPresentationSystem::initialize(renderer::Renderer& renderer,
         if (has_skinned_primitives) {
             const auto* idle = definition.animation("idle");
             const auto* walk = definition.animation("walk");
+            const auto* run = definition.animation("run");
+            const auto* jump = definition.animation("jump");
+            const auto* fall = definition.animation("fall");
             const auto* swim = definition.animation("swim");
-            if (idle == nullptr || walk == nullptr || swim == nullptr) {
+            if (idle == nullptr || walk == nullptr || run == nullptr || jump == nullptr ||
+                fall == nullptr || swim == nullptr) {
                 rollback();
                 return core::Status::failure(
                     "model_presentation.missing_locomotion_mapping",
-                    "skinned visual must map idle, walk, and swim clips: " + definition.id.value());
+                    "skinned visual must map idle, walk, run, jump, fall, and swim clips: " +
+                        definition.id.value());
             }
-            auto clips = animation::resolve_locomotion_clips(model, *idle, *walk, *swim,
-                                                             definition.transition_ticks);
+            auto clips = animation::resolve_locomotion_clips(
+                model, *idle, *walk, *run, *jump, *fall, *swim, definition.transition_ticks);
             if (!clips) {
                 rollback();
                 return core::Status::failure(clips.error().code, clips.error().message);

@@ -260,10 +260,13 @@ void test_base_storybook_player_asset() {
     assert(imported.value().materials.size() == 1);
     assert(imported.value().primitives.front().material == 0);
     assert(imported.value().materials.front().base_color_image == 0);
-    assert(imported.value().animations.size() == 3);
+    assert(imported.value().animations.size() == 6);
     assert(imported.value().animations[0].name == "idle");
     assert(imported.value().animations[1].name == "walk");
     assert(imported.value().animations[2].name == "swim");
+    assert(imported.value().animations[3].name == "run");
+    assert(imported.value().animations[4].name == "jump");
+    assert(imported.value().animations[5].name == "fall");
     auto encoded = heartstead::assets::encode_model_asset(imported.value());
     assert(encoded);
     auto runtime_model = heartstead::assets::decode_model_asset(encoded.value());

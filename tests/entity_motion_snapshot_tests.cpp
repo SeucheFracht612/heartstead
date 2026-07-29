@@ -20,9 +20,9 @@ int main() {
     snapshot.current_transform.rotation_degrees.y = 45.0;
     snapshot.current_transform.scale = {0.72, 0.72, 0.72};
     snapshot.previous_transform.scale = snapshot.current_transform.scale;
-    snapshot.locomotion.kind = animation::LocomotionAnimationKind::walk;
+    snapshot.locomotion.kind = animation::LocomotionAnimationKind::fall;
     snapshot.locomotion.phase = 32'768;
-    snapshot.locomotion.transition_from = animation::LocomotionAnimationKind::idle;
+    snapshot.locomotion.transition_from = animation::LocomotionAnimationKind::jump;
     snapshot.locomotion.transition_tick = 40;
     snapshot.simulation_tick = 42;
     assert(snapshot.validate());

@@ -172,7 +172,14 @@ int main() {
     locomotion.phase = 32'768;
     locomotion.transition_from = animation::LocomotionAnimationKind::idle;
     locomotion.transition_tick = 10;
-    const animation::LocomotionClipSet locomotion_clips{2, 0, 1, 5};
+    animation::LocomotionClipSet locomotion_clips;
+    locomotion_clips.idle = 2;
+    locomotion_clips.walk = 0;
+    locomotion_clips.run = 0;
+    locomotion_clips.jump = 2;
+    locomotion_clips.fall = 1;
+    locomotion_clips.swim = 1;
+    locomotion_clips.transition_ticks = 5;
     auto transition_start =
         animation::sample_locomotion_animation(model, locomotion_clips, locomotion, 10);
     auto transition_middle =

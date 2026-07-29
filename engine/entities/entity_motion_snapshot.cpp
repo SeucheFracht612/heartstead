@@ -171,9 +171,9 @@ core::Result<EntityMotionSnapshot> EntityMotionSnapshotTextCodec::decode(std::st
     const auto prototype = core::PrototypeId::parse(prototype_text);
     if (!version || !net_id || !prototype || !previous.parsed() || !current.parsed() || !kind ||
         !phase || !transition_from || !transition_phase || !transition_tick || !simulation_tick ||
-        kind.value() > static_cast<std::uint32_t>(animation::LocomotionAnimationKind::swim) ||
+        kind.value() > static_cast<std::uint32_t>(animation::LocomotionAnimationKind::fall) ||
         transition_from.value() >
-            static_cast<std::uint32_t>(animation::LocomotionAnimationKind::swim)) {
+            static_cast<std::uint32_t>(animation::LocomotionAnimationKind::fall)) {
         return core::Result<EntityMotionSnapshot>::failure(
             "entity_motion_snapshot.invalid_payload", "entity motion snapshot fields are invalid");
     }
