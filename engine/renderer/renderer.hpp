@@ -112,6 +112,7 @@ class Renderer {
     Renderer& operator=(const Renderer&) = delete;
 
     [[nodiscard]] core::Status initialize(RendererInitDesc desc);
+    [[nodiscard]] core::Status wait_idle();
     [[nodiscard]] core::Status shutdown();
 
     [[nodiscard]] core::Status synchronize_chunks(world::WorldState& world,

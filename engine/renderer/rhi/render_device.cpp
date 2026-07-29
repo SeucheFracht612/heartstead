@@ -105,6 +105,11 @@ class HeadlessRenderDevice final : public IRenderDevice {
                shader_modules_.size() + compute_pipelines_.size() + graphics_pipelines_.size();
     }
 
+    [[nodiscard]] core::Status wait_idle() override {
+        completed_submission_serial_ = last_submission_serial_;
+        return core::Status::ok();
+    }
+
     [[nodiscard]] core::Status resize(RenderExtent extent) override {
         auto status = validate_render_extent(extent);
         if (!status) {
@@ -880,6 +885,10 @@ class OwnerThreadRenderDevice final : public IRenderDevice {
 
     [[nodiscard]] std::size_t live_resource_count() const noexcept override {
         return implementation_->live_resource_count();
+    }
+
+    [[nodiscard]] core::Status wait_idle() override {
+        return invoke_status([&] { return implementation_->wait_idle(); });
     }
 
     [[nodiscard]] core::Status resize(RenderExtent extent) override {

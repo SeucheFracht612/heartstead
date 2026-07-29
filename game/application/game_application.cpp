@@ -251,6 +251,12 @@ core::Result<GameApplicationRunReport> GameApplication::run(IGameApplicationMode
     }
 
     report.mode_summary = mode.summary();
+    if (renderer_.is_initialized()) {
+        status = renderer_.wait_idle();
+        if (!status && !first_error.has_value()) {
+            first_error = status.error();
+        }
+    }
     if (mode_started) {
         status = mode.shutdown(services);
         if (!status && !first_error.has_value()) {

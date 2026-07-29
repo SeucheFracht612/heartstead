@@ -294,6 +294,9 @@ Implemented foundation:
     uniform buffers and sampled texture bindings from uploaded sampled images
   - polls frame/upload fences before descriptor mutation and rejects layout replacement, descriptor
     updates, or release of descriptor-referenced resources while the set is still in flight
+  - exposes an owner-thread idle barrier used between the final application frame and mode
+    teardown, so presentation resources can be released only after their last descriptor use
+    completes; renderer shutdown repeats the barrier before destroying renderer-owned resources
   - executes the fixed unified sky, opaque terrain, alpha-tested terrain, rich/static,
     transparent/fluid, debug, UI, and present schema in one command buffer and one queue submission:
     acquire, draw into offscreen color/depth, blit color into the acquired swapchain image,

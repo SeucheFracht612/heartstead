@@ -594,6 +594,7 @@ class IRenderDevice {
     [[nodiscard]] virtual std::uint64_t completed_submission_serial() const noexcept = 0;
     [[nodiscard]] virtual std::size_t live_resource_count() const noexcept = 0;
 
+    [[nodiscard]] virtual core::Status wait_idle() = 0;
     [[nodiscard]] virtual core::Status resize(RenderExtent extent) = 0;
     [[nodiscard]] virtual core::Result<RenderFrameStats> render_frame(RenderFrameDesc desc) = 0;
     [[nodiscard]] virtual core::Result<RenderFrameStats>

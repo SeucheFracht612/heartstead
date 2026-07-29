@@ -503,6 +503,9 @@ core::Status Renderer::shutdown() {
             first_failure = status;
         }
     };
+    if (device_ != nullptr) {
+        remember_failure(device_->wait_idle());
+    }
     chunk_draw_scratch_.clear();
     draw_command_scratch_ = {};
     scene_draw_scratch_ = {};
@@ -587,6 +590,14 @@ core::Status Renderer::shutdown() {
     device_.reset();
     owner_thread_ = {};
     return first_failure;
+}
+
+core::Status Renderer::wait_idle() {
+    if (device_ == nullptr) {
+        return core::Status::failure("renderer.not_initialized",
+                                     "renderer must be initialized before waiting for idle");
+    }
+    return device_->wait_idle();
 }
 
 core::Status Renderer::synchronize_chunks(world::WorldState& world, const RenderCamera& camera) {

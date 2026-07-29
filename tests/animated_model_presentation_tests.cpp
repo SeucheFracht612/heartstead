@@ -93,7 +93,15 @@ int main() {
     config.asset_id = "base:models/entities/test_player.gltf";
     config.visual_prototype = *core::PrototypeId::parse("base:entities/player");
     config.model = make_animated_model();
-    config.locomotion_clips = {0, 1, 2, 6};
+    config.locomotion_clips = {
+        .idle = 0,
+        .walk = 1,
+        .run = 1,
+        .jump = 1,
+        .fall = 0,
+        .swim = 2,
+        .transition_ticks = 6,
+    };
     config.animated_bounds = config.model.bounds.expanded(0.5F);
 
     game::AnimatedModelPresentation presentation;

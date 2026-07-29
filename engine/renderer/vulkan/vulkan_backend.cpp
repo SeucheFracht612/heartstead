@@ -1492,6 +1492,17 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                retired_graphics_pipelines_.size();
     }
 
+    [[nodiscard]] core::Status wait_idle() override {
+        const auto idle_result = vkDeviceWaitIdle(device_);
+        if (idle_result != VK_SUCCESS) {
+            return core::Status::failure("renderer.vulkan_wait_idle_failed",
+                                         "failed to idle Vulkan device: " +
+                                             std::string(vk_result_name(idle_result)));
+        }
+        complete_all_submissions();
+        return core::Status::ok();
+    }
+
     [[nodiscard]] core::Status resize(rhi::RenderExtent extent) override {
         auto status = rhi::validate_render_extent(extent);
         if (!status) {
