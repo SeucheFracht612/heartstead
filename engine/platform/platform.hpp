@@ -123,7 +123,9 @@ enum class KeyCode {
     left_shift,
     left_control,
     left_alt,
+    f1,
     f3,
+    f4,
     f5,
 };
 

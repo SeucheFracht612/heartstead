@@ -24,6 +24,12 @@ void test_contextual_action_map_and_rebinding() {
     assert(gameplay[input::InputAction::move_forward].pressed);
     assert(gameplay[input::InputAction::primary_action].pressed);
     assert(gameplay.look_delta_x == 7 && gameplay.look_delta_y == -3);
+    snapshot.pressed_keys = {platform::KeyCode::f1, platform::KeyCode::f3,
+                             platform::KeyCode::f4};
+    const auto development_controls = actions.evaluate(snapshot);
+    assert(development_controls[input::InputAction::toggle_camera].pressed);
+    assert(development_controls[input::InputAction::toggle_debug].pressed);
+    assert(development_controls[input::InputAction::toggle_debug_geometry].pressed);
 
     actions.set_context(input::InputContext::inventory);
     auto inventory = actions.evaluate(snapshot);

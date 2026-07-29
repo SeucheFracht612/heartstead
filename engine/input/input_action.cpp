@@ -72,6 +72,8 @@ InputActionMap InputActionMap::gameplay_defaults() {
     add_key(InputAction::hotbar_9, platform::KeyCode::digit_9);
     add_key(InputAction::drop_item, platform::KeyCode::f5);
     add_key(InputAction::toggle_debug, platform::KeyCode::f3);
+    add_key(InputAction::toggle_camera, platform::KeyCode::f1);
+    add_key(InputAction::toggle_debug_geometry, platform::KeyCode::f4);
     (void)result.bind(InputBinding::mouse(InputAction::primary_action, InputContext::gameplay,
                                           platform::MouseButton::left));
     (void)result.bind(InputBinding::mouse(InputAction::secondary_action, InputContext::gameplay,
@@ -192,6 +194,7 @@ std::string_view input_action_name(InputAction action) noexcept {
         "primary_action", "secondary_action", "open_inventory", "close_or_pause", "hotbar_1",
         "hotbar_2",       "hotbar_3",         "hotbar_4",       "hotbar_5",       "hotbar_6",
         "hotbar_7",       "hotbar_8",         "hotbar_9",       "drop_item",      "toggle_debug",
+        "toggle_camera",  "toggle_debug_geometry",
     };
     const auto action_index = index(action);
     return action_index < names.size() ? names[action_index] : "unknown";

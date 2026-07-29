@@ -20,8 +20,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -246,6 +248,10 @@ struct DevGameMode::Impl {
     std::uint64_t frame_count = 0;
     std::uint64_t authoritative_tick = 0;
     bool local_client_connected = false;
+    movement::PlayerCameraPerspective camera_perspective =
+        movement::PlayerCameraPerspective::third_person;
+    bool diagnostic_overlay_visible = true;
+    bool debug_geometry_visible = false;
 };
 
 DevGameMode::DevGameMode(DevGameModeConfig config)
@@ -429,6 +435,21 @@ DevGameMode::update(game::GameApplicationServices& services,
         action_frame[input::InputAction::close_or_pause].pressed) {
         services.request_quit();
     }
+    if (!ui_input.value().consumed.keyboard &&
+        action_frame[input::InputAction::toggle_camera].pressed) {
+        state.camera_perspective =
+            state.camera_perspective == movement::PlayerCameraPerspective::third_person
+                ? movement::PlayerCameraPerspective::first_person
+                : movement::PlayerCameraPerspective::third_person;
+    }
+    if (!ui_input.value().consumed.keyboard &&
+        action_frame[input::InputAction::toggle_debug].pressed) {
+        state.diagnostic_overlay_visible = !state.diagnostic_overlay_visible;
+    }
+    if (!ui_input.value().consumed.keyboard &&
+        action_frame[input::InputAction::toggle_debug_geometry].pressed) {
+        state.debug_geometry_visible = !state.debug_geometry_visible;
+    }
 
     auto player_input = state.input_sampler.sample(*frame.input, ++state.input_tick);
     const auto* previous_player = state.runtime.session()->client()->local_player_snapshot();
@@ -484,9 +505,8 @@ DevGameMode::update(game::GameApplicationServices& services,
     if (player == nullptr || !frame.extent.is_valid()) {
         return core::Result<game::GameApplicationFrameOutput>::success({});
     }
-    auto camera_frame =
-        state.camera_rig.evaluate(player->state, movement::PlayerCameraPerspective::third_person,
-                                  frame.extent.width, frame.extent.height);
+    auto camera_frame = state.camera_rig.evaluate(player->state, state.camera_perspective,
+                                                  frame.extent.width, frame.extent.height);
     if (!camera_frame) {
         return core::Result<game::GameApplicationFrameOutput>::failure(
             camera_frame.error().code, camera_frame.error().message);
@@ -536,15 +556,15 @@ DevGameMode::update(game::GameApplicationServices& services,
     }
     state.was_swimming = swimming;
 
+    auto selection = game::interaction::raycast_voxels(
+        state.runtime.session()->client()->world().chunks(),
+        {camera_frame.value().position, camera_frame.value().forward, 6.0});
+    if (!selection) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(
+            selection.error().code, selection.error().message);
+    }
     if (action_frame[input::InputAction::primary_action].pressed ||
         action_frame[input::InputAction::secondary_action].pressed) {
-        auto selection = game::interaction::raycast_voxels(
-            state.runtime.session()->client()->world().chunks(),
-            {camera_frame.value().position, camera_frame.value().forward, 6.0});
-        if (!selection) {
-            return core::Result<game::GameApplicationFrameOutput>::failure(
-                selection.error().code, selection.error().message);
-        }
         const auto& hit = selection.value().hit;
         if (hit.has_value()) {
             if (action_frame[input::InputAction::primary_action].pressed) {
@@ -587,6 +607,45 @@ DevGameMode::update(game::GameApplicationServices& services,
     }
 
     auto camera = render_camera_from(camera_frame.value());
+    if (auto* debug = renderer->debug_renderer(); debug != nullptr) {
+        if (selection.value().hit.has_value()) {
+            auto block_origin =
+                world::WorldPosition::from_anchor(selection.value().hit->block, {});
+            if (!block_origin) {
+                return core::Result<game::GameApplicationFrameOutput>::failure(
+                    block_origin.error().code, block_origin.error().message);
+            }
+            status = debug->submit_aabb(
+                block_origin.value(), {{0.01F, 0.01F, 0.01F}, {0.99F, 0.99F, 0.99F}},
+                {1.0F, 0.78F, 0.18F, 1.0F}, 0.0F, renderer::DebugDepthMode::overlay);
+            if (!status) {
+                return core::Result<game::GameApplicationFrameOutput>::failure(
+                    status.error().code, status.error().message);
+            }
+        }
+        if (state.debug_geometry_visible) {
+            status = debug->submit_aabb(
+                player->state.position, {{-0.3F, 0.0F, -0.3F}, {0.3F, 1.8F, 0.3F}},
+                player->state.grounded ? std::array{0.20F, 1.0F, 0.36F, 1.0F}
+                                       : std::array{1.0F, 0.45F, 0.18F, 1.0F});
+            if (status) {
+                status = debug->submit_axes(player->state.position, 0.75F);
+            }
+            const auto speed = math::length(player->state.velocity);
+            if (status && speed > 0.01) {
+                status = debug->submit_ray(
+                    player->state.position,
+                    {static_cast<float>(player->state.velocity.x),
+                     static_cast<float>(player->state.velocity.y),
+                     static_cast<float>(player->state.velocity.z)},
+                    static_cast<float>(speed), {0.25F, 0.72F, 1.0F, 1.0F});
+            }
+            if (!status) {
+                return core::Result<game::GameApplicationFrameOutput>::failure(
+                    status.error().code, status.error().message);
+            }
+        }
+    }
     status = state.particle_system->update(frame.delta_seconds());
     if (!status) {
         return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
@@ -637,6 +696,45 @@ DevGameMode::update(game::GameApplicationServices& services,
         renderer->set_ui_widget_stats(
             state.game_ui->stats().layout_ms, state.game_ui->stats().paint_ms,
             state.game_ui->stats().layout.widget_count);
+        if (state.diagnostic_overlay_visible) {
+            const auto position = player->state.position.approximate_global();
+            std::ostringstream text;
+            text << std::fixed << std::setprecision(2)
+                 << "FOUNDATION DIAGNOSTICS [F3]\n"
+                 << "session "
+                 << (state.runtime.session()->server() == nullptr ? "remote" : "local")
+                 << " | client " << (state.local_client_connected ? "connected" : "offline")
+                 << " | tick " << state.authoritative_tick << '\n'
+                 << "camera "
+                 << (state.camera_perspective == movement::PlayerCameraPerspective::third_person
+                         ? "third-person"
+                         : "first-person")
+                 << " [F1] | geometry "
+                 << (state.debug_geometry_visible ? "on" : "off") << " [F4]\n"
+                 << "position " << position.x << ", " << position.y << ", " << position.z << '\n'
+                 << "velocity " << player->state.velocity.x << ", " << player->state.velocity.y
+                 << ", " << player->state.velocity.z << '\n'
+                 << "controller " << movement::player_controller_mode_name(player->state.mode)
+                 << " | grounded " << (player->state.grounded ? "yes" : "no") << '\n'
+                 << "input " << player_input.move_x << ", " << player_input.move_z
+                 << " | selected "
+                 << (selection.value().hit.has_value() ? "voxel" : "none");
+            const auto diagnostic_text = text.str();
+            renderer::UiQuadDesc panel;
+            panel.minimum_pixels = {12.0F, 12.0F};
+            panel.maximum_pixels = {
+                std::min(510.0F, static_cast<float>(frame.extent.width) - 12.0F), 112.0F};
+            panel.color = {0.015F, 0.025F, 0.04F, 0.88F};
+            status = ui->submit_quad(panel);
+            if (status) {
+                status = ui->submit_text(
+                    {{20.0F, 20.0F}, diagnostic_text, 11.0F, {0.82F, 0.92F, 1.0F, 1.0F}});
+            }
+            if (!status) {
+                return core::Result<game::GameApplicationFrameOutput>::failure(
+                    status.error().code, status.error().message);
+            }
+        }
     }
 
     game::GameApplicationFrameOutput output;

@@ -44,6 +44,8 @@ enum class InputAction : std::uint8_t {
     hotbar_9,
     drop_item,
     toggle_debug,
+    toggle_camera,
+    toggle_debug_geometry,
     count,
 };
 

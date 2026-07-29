@@ -167,8 +167,12 @@ struct X11OutgoingIncrementalClipboardTransfer {
         return KeyCode::left_control;
     case XK_Alt_L:
         return KeyCode::left_alt;
+    case XK_F1:
+        return KeyCode::f1;
     case XK_F3:
         return KeyCode::f3;
+    case XK_F4:
+        return KeyCode::f4;
     case XK_F5:
         return KeyCode::f5;
     default:
@@ -2205,8 +2209,12 @@ std::string_view key_code_name(KeyCode key) noexcept {
         return "left_control";
     case KeyCode::left_alt:
         return "left_alt";
+    case KeyCode::f1:
+        return "f1";
     case KeyCode::f3:
         return "f3";
+    case KeyCode::f4:
+        return "f4";
     case KeyCode::f5:
         return "f5";
     }
