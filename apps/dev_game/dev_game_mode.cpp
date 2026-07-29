@@ -100,6 +100,10 @@ struct DevGameMode::Impl {
     std::optional<save::FileSaveDatabase> save_database;
     bool loaded_existing_save = false;
     bool wrote_save = false;
+    bool save_dirty = true;
+    std::int64_t last_autosave_at_ms = 0;
+    std::uint64_t last_observed_authoritative_tick = 0;
+    std::uint64_t periodic_save_count = 0;
     game::ModelPresentationSystem model_presentation;
     bool model_presentation_initialized = false;
     std::optional<renderer::CpuParticleSystem> particle_system;
@@ -139,6 +143,10 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
     if (state.config.content_report == nullptr) {
         return core::Status::failure("dev_game.missing_content",
                                      "development mode requires validated content");
+    }
+    if (state.config.autosave_interval_ms <= 0) {
+        return core::Status::failure("dev_game.invalid_autosave_interval",
+                                     "autosave interval must be positive");
     }
     auto runtime =
         game::GameRuntime::initialize(game::GameRuntimeConfig{}, *state.config.content_report);
@@ -256,6 +264,27 @@ DevGameMode::update(game::GameApplicationServices& services,
         return core::Result<game::GameApplicationFrameOutput>::failure(
             "dev_game.runtime_not_started", "development runtime is not active");
     }
+    const auto update_persistence = [&](std::uint64_t authoritative_tick) -> core::Status {
+        if (authoritative_tick != state.last_observed_authoritative_tick) {
+            state.save_dirty = true;
+            state.last_observed_authoritative_tick = authoritative_tick;
+        }
+        if (!state.save_dirty || !state.save_database.has_value() ||
+            state.runtime.session()->server() == nullptr ||
+            frame.now_milliseconds - state.last_autosave_at_ms <
+                state.config.autosave_interval_ms) {
+            return core::Status::ok();
+        }
+        auto status = state.runtime.save_to(*state.save_database);
+        if (!status) {
+            return status;
+        }
+        state.save_dirty = false;
+        state.wrote_save = true;
+        state.last_autosave_at_ms = frame.now_milliseconds;
+        ++state.periodic_save_count;
+        return core::Status::ok();
+    };
 
     if (state.config.headless) {
         auto runtime_frame =
@@ -266,6 +295,11 @@ DevGameMode::update(game::GameApplicationServices& services,
         }
         state.authoritative_tick = runtime_frame.value().authoritative_world_tick;
         state.local_client_connected = state.runtime.session()->client()->is_connected();
+        auto status = update_persistence(state.authoritative_tick);
+        if (!status) {
+            return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
+                                                                           status.error().message);
+        }
         return core::Result<game::GameApplicationFrameOutput>::success({});
     }
 
@@ -341,6 +375,11 @@ DevGameMode::update(game::GameApplicationServices& services,
     }
     state.authoritative_tick = runtime_frame.value().authoritative_world_tick;
     state.local_client_connected = state.runtime.session()->client()->is_connected();
+    auto persistence_status = update_persistence(state.authoritative_tick);
+    if (!persistence_status) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(
+            persistence_status.error().code, persistence_status.error().message);
+    }
 
     auto synchronized_ui = state.game_ui->synchronize(*state.runtime.session()->client());
     if (!synchronized_ui) {
@@ -641,10 +680,12 @@ std::string DevGameMode::summary() const {
     return "development runtime: frames=" + std::to_string(state.frame_count) +
            " authoritative_tick=" + std::to_string(state.authoritative_tick) +
            " local_client=" + (state.local_client_connected ? "connected" : "offline") + " save=" +
-           (state.wrote_save                  ? "written"
-            : state.loaded_existing_save      ? "loaded"
-            : state.save_database.has_value() ? "new"
-                                              : "disabled");
+           (state.wrote_save && state.loaded_existing_save ? "loaded+written"
+            : state.wrote_save                             ? "written"
+            : state.loaded_existing_save                   ? "loaded"
+            : state.save_database.has_value()              ? "new"
+                                                           : "disabled") +
+           " autosaves=" + std::to_string(state.periodic_save_count);
 }
 
 } // namespace heartstead::dev_game

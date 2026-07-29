@@ -36,6 +36,18 @@ target_link_libraries(heartstead_game_application_tests PRIVATE Heartstead::Game
 heartstead_configure_test_target(heartstead_game_application_tests)
 heartstead_register_unit_test(heartstead_game_application_tests)
 
+if(TARGET heartstead_dev_game)
+  add_test(
+    NAME heartstead_dev_game_save_smoke
+    COMMAND
+      ${CMAKE_COMMAND}
+      -DDEV_GAME=$<TARGET_FILE:heartstead_dev_game>
+      -DSAVE_ROOT=${CMAKE_CURRENT_BINARY_DIR}/dev_game_save_smoke
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/dev_game_save_smoke.cmake
+  )
+  set_tests_properties(heartstead_dev_game_save_smoke PROPERTIES TIMEOUT 120 LABELS smoke)
+endif()
+
 add_executable(heartstead_client_audio_presentation_tests client_audio_presentation_tests.cpp)
 target_link_libraries(heartstead_client_audio_presentation_tests PRIVATE Heartstead::GameRuntime)
 heartstead_configure_test_target(heartstead_client_audio_presentation_tests)

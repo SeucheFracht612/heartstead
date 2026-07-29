@@ -3,6 +3,7 @@
 #include "engine/net/transport.hpp"
 #include "game/application/game_application.hpp"
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -18,6 +19,7 @@ struct DevGameModeConfig {
     std::filesystem::path cooked_asset_root;
     std::optional<std::filesystem::path> save_root;
     std::optional<net::TransportEndpoint> connect_endpoint;
+    std::int64_t autosave_interval_ms = 30'000;
     bool headless = false;
 };
 

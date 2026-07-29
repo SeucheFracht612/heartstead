@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,19 +22,19 @@ struct LaunchOptions {
     std::optional<std::uint64_t> maximum_frames;
     std::optional<net::TransportEndpoint> connect_endpoint;
     std::optional<std::filesystem::path> save_root;
+    std::int64_t autosave_interval_ms = 30'000;
     bool disable_persistence = false;
     bool help = false;
 };
 
-[[nodiscard]] core::Result<std::uint64_t>
-parse_positive_frame_count(std::string_view value, std::string_view option) {
+[[nodiscard]] core::Result<std::uint64_t> parse_positive_frame_count(std::string_view value,
+                                                                     std::string_view option) {
     std::uint64_t frames = 0;
-    const auto [end, error] =
-        std::from_chars(value.data(), value.data() + value.size(), frames);
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), frames);
     if (error != std::errc{} || end != value.data() + value.size() || frames == 0) {
-        return core::Result<std::uint64_t>::failure(
-            "dev_game.invalid_frame_count",
-            std::string(option) + " requires a positive 64-bit integer");
+        return core::Result<std::uint64_t>::failure("dev_game.invalid_frame_count",
+                                                    std::string(option) +
+                                                        " requires a positive 64-bit integer");
     }
     return core::Result<std::uint64_t>::success(frames);
 }
@@ -48,9 +49,9 @@ parse_positive_frame_count(std::string_view value, std::string_view option) {
             options.headless = true;
         } else if (argument == "--frames" || argument == "--native-frames") {
             if (index + 1 >= argc) {
-                return core::Result<LaunchOptions>::failure(
-                    "dev_game.missing_frame_count",
-                    std::string(argument) + " requires a positive integer");
+                return core::Result<LaunchOptions>::failure("dev_game.missing_frame_count",
+                                                            std::string(argument) +
+                                                                " requires a positive integer");
             }
             auto frames = parse_positive_frame_count(argv[++index], argument);
             if (!frames) {
@@ -64,9 +65,8 @@ parse_positive_frame_count(std::string_view value, std::string_view option) {
             }
         } else if (argument == "--connect") {
             if (index + 1 >= argc) {
-                return core::Result<LaunchOptions>::failure(
-                    "dev_game.missing_connect_endpoint",
-                    "--connect requires ADDRESS:PORT");
+                return core::Result<LaunchOptions>::failure("dev_game.missing_connect_endpoint",
+                                                            "--connect requires ADDRESS:PORT");
             }
             auto endpoint = net::parse_transport_endpoint(argv[++index], 7777);
             if (!endpoint) {
@@ -76,10 +76,25 @@ parse_positive_frame_count(std::string_view value, std::string_view option) {
             options.connect_endpoint = std::move(endpoint).value();
         } else if (argument == "--save") {
             if (index + 1 >= argc || std::string_view(argv[index + 1]).empty()) {
-                return core::Result<LaunchOptions>::failure(
-                    "dev_game.missing_save_path", "--save requires a directory path");
+                return core::Result<LaunchOptions>::failure("dev_game.missing_save_path",
+                                                            "--save requires a directory path");
             }
             options.save_root = std::filesystem::path(argv[++index]);
+        } else if (argument == "--autosave-seconds") {
+            if (index + 1 >= argc) {
+                return core::Result<LaunchOptions>::failure(
+                    "dev_game.missing_autosave_interval",
+                    "--autosave-seconds requires a positive integer");
+            }
+            auto seconds = parse_positive_frame_count(argv[++index], argument);
+            if (!seconds ||
+                seconds.value() >
+                    static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max() / 1'000)) {
+                return core::Result<LaunchOptions>::failure(
+                    "dev_game.invalid_autosave_interval",
+                    "--autosave-seconds exceeds the supported interval");
+            }
+            options.autosave_interval_ms = static_cast<std::int64_t>(seconds.value() * 1'000);
         } else if (argument == "--no-save") {
             options.disable_persistence = true;
         } else {
@@ -88,8 +103,8 @@ parse_positive_frame_count(std::string_view value, std::string_view option) {
         }
     }
     if (options.disable_persistence && options.save_root.has_value()) {
-        return core::Result<LaunchOptions>::failure(
-            "dev_game.conflicting_save_options", "--save and --no-save cannot be used together");
+        return core::Result<LaunchOptions>::failure("dev_game.conflicting_save_options",
+                                                    "--save and --no-save cannot be used together");
     }
     if (options.connect_endpoint.has_value() && options.save_root.has_value()) {
         return core::Result<LaunchOptions>::failure(
@@ -102,7 +117,8 @@ parse_positive_frame_count(std::string_view value, std::string_view option) {
 void print_usage(const char* executable, std::ostream& output) {
     output << "usage: " << executable
            << " [--headless] [--frames N] [--native-frames N]"
-              " [--connect ADDRESS:PORT] [--save DIRECTORY] [--no-save]\n"
+              " [--connect ADDRESS:PORT] [--save DIRECTORY]"
+              " [--autosave-seconds N] [--no-save]\n"
            << "       --frames implies --headless for deterministic smoke runs\n"
            << "       --native-frames bounds a real windowed smoke run\n"
            << "       normal local launches persist to saves/foundation_slice_0_1\n"
@@ -158,9 +174,9 @@ int main(int argc, char** argv) {
 
         heartstead::dev_game::DevGameModeConfig mode_config;
         mode_config.content_report = &content_report;
-        mode_config.cooked_asset_root =
-            std::filesystem::path{HEARTSTEAD_DEV_GAME_COOKED_ASSET_DIR};
+        mode_config.cooked_asset_root = std::filesystem::path{HEARTSTEAD_DEV_GAME_COOKED_ASSET_DIR};
         mode_config.connect_endpoint = options.connect_endpoint;
+        mode_config.autosave_interval_ms = options.autosave_interval_ms;
         mode_config.headless = options.headless;
         if (!options.disable_persistence && !options.connect_endpoint.has_value()) {
             if (options.save_root.has_value()) {

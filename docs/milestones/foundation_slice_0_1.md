@@ -178,7 +178,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 
 ## Persistence
 
-- [ ] `[Automated]` a missing Foundation save slot creates a new deterministic world.
+- [x] `[Automated]` a missing Foundation save slot creates a new deterministic world.
 - [x] `[Automated]` an existing Foundation save slot reopens instead of creating another baseline.
 - [x] `[Automated]` player position survives clean save and restart.
 - [ ] `[Both]` removed and placed voxels survive clean save and restart.
@@ -187,7 +187,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [ ] `[Automated]` a missing voxel prototype follows the existing missing-prototype recovery path.
 - [x] `[Automated]` an incompatible Foundation layout version fails clearly rather than applying
       edit deltas to an unrelated baseline.
-- [ ] `[Automated]` periodic dirty save and clean-shutdown save use the transactional generation
+- [x] `[Automated]` periodic dirty save and clean-shutdown save use the transactional generation
       commit path.
 
 ## Regression gates
@@ -210,7 +210,9 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 Recorded 2026-07-29:
 
 - `cmake --build --preset default-debug -j2 --target heartstead_dev_game`: passed.
-- `ctest --test-dir build/default-debug --output-on-failure -j2`: 99/99 passed.
+- `ctest --test-dir build/default-debug --output-on-failure -j2`: 100/100 passed.
+- `heartstead_dev_game_save_smoke` creates a missing slot, verifies a periodic generation commit,
+  clean-shutdown commit, and staged-generation cleanup, then reopens and recommits the same slot.
 - `heartstead_runtime_spine_tests`
   - `test_typed_voxel_commands_validate_and_replicate`
   - `test_boundary_voxel_edit_rebuilds_collision_and_removes_support`
