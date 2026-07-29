@@ -78,7 +78,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 ## Player controller and camera
 
 - [ ] `[Both]` the player walks with stable acceleration and stopping.
-- [ ] `[Both]` sprint changes locomotion speed when requested.
+- [x] `[Both]` sprint changes locomotion speed when requested.
 - [ ] `[Both]` jump starts only from a valid supported state.
 - [ ] `[Both]` the player falls and lands without penetration or persistent hovering.
 - [ ] `[Both]` the player steps onto the supported normal voxel ledge height.
@@ -150,7 +150,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [x] `[Automated]` PNG and JPEG sources cook to versioned RGBA8 texture assets.
 - [x] `[Automated]` base-color texture RGB is uploaded as sRGB and material factors remain linear.
 - [ ] `[Both]` one textured static glTF/GLB prop renders through the catalog and cooked store.
-- [ ] `[Both]` one textured skinned player glTF/GLB renders through the same path.
+- [x] `[Both]` one textured skinned player glTF/GLB renders through the same path.
 - [ ] `[Both]` per-primitive base-color material assignment is preserved and visible.
 - [ ] `[Both]` opaque and alpha-mask material modes behave correctly.
 - [ ] `[Both]` double-sided material state behaves correctly.
@@ -248,6 +248,12 @@ Recorded 2026-07-29:
   - `test_saved_edits_ignore_derived_light_when_matching_the_baseline` verifies resident,
     replacement-after-relight, and streamed saved edits compare persistent voxel state while
     allowing derived lighting to be recomputed
+- native locomotion passes verified the overlay reports semantic `walk` with advancing phase, about
+  `4.5 m/s` walking versus `8.8 m/s` while sprint was requested, and no unrequested vertical
+  movement on the flat. The model diagnostics reported all three declared models loaded, two
+  retained visible entity primitives, one evaluated skinned pose and uploaded palette, and zero
+  fallback or unresolved visuals; third-person rendering visibly retained the player's cooked
+  base-color texture.
 - `heartstead_gameplay_input_tests`
   - `test_voxel_interaction_reach_matches_the_authoritative_rule` locks the shared six-metre
     player-to-block reach boundary used by both client selection and authoritative commands

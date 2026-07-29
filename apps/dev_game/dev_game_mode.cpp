@@ -756,6 +756,21 @@ DevGameMode::update(game::GameApplicationServices& services,
                  << (support.value().has_value() ? "0,1,0" : "none") << '\n'
                  << "collision " << collision_text << " | player token "
                  << player->collision_world_revision << '\n'
+                 << "locomotion "
+                 << animation::locomotion_animation_kind_name(
+                        player->state.locomotion_animation.kind)
+                 << " phase " << player->state.locomotion_animation.normalized_phase() << " from "
+                 << animation::locomotion_animation_kind_name(
+                        player->state.locomotion_animation.transition_from)
+                 << '\n'
+                 << "models definitions/loaded " << model_stats.value().definition_count << '/'
+                 << model_stats.value().loaded_model_count << " retained entities/primitives "
+                 << model_stats.value().models.retained_entities << '/'
+                 << model_stats.value().models.retained_primitives << " poses/palettes "
+                 << model_stats.value().models.evaluated_poses << '/'
+                 << model_stats.value().models.uploaded_palettes << " fallback/unresolved "
+                 << model_stats.value().fallback_entity_count << '/'
+                 << model_stats.value().unresolved_visual_count << '\n'
                  << "terrain chunks " << render_stats.loaded_chunks << '/'
                  << render_stats.resident_chunks << " queue " << render_stats.mesh_pending_chunks
                  << '/' << render_stats.upload_pending_chunks << " failed "
@@ -778,7 +793,7 @@ DevGameMode::update(game::GameApplicationServices& services,
             panel.minimum_pixels = {12.0F, 12.0F};
             panel.maximum_pixels = {
                 std::min(620.0F, static_cast<float>(frame.extent.width) - 12.0F),
-                std::min(270.0F, static_cast<float>(frame.extent.height) - 12.0F)};
+                std::min(300.0F, static_cast<float>(frame.extent.height) - 12.0F)};
             panel.color = {0.015F, 0.025F, 0.04F, 0.88F};
             status = ui->submit_quad(panel);
             if (status) {
