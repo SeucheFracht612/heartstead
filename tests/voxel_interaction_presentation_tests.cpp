@@ -1,11 +1,14 @@
 #include "engine/audio/audio_system.hpp"
 #include "engine/audio/sound_event.hpp"
 #include "engine/content/content_validation.hpp"
+#include "engine/core/logging.hpp"
 #include "engine/renderer/particles/particle_system.hpp"
 #include "game/presentation/voxel_interaction_presentation.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <filesystem>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -107,12 +110,27 @@ void test_only_accepted_edits_emit_data_driven_feedback() {
     const std::vector<world::VoxelChangeRecord> legacy_removal{
         {{3, 2, 3}, legacy_cell, air, {}, 1},
     };
+    std::vector<std::string> warnings;
+    core::set_log_sink([&](core::LogLevel level, std::string_view message) {
+        if (level == core::LogLevel::warning) {
+            warnings.emplace_back(message);
+        }
+    });
     assert(presentation.present(legacy_removal, palette, particles.value(), *audio_system.value()));
     assert(particles.value().stats().queued_events == 2);
     assert(audio_system.value()->stats().played_voices == 3);
     assert(presentation.stats().fallback_uses == 2);
+    assert(presentation.stats().fallback_diagnostics == 2);
+    assert(presentation.present(legacy_removal, palette, particles.value(), *audio_system.value()));
+    core::reset_log_sink();
+    assert(warnings.size() == 2);
+    assert(std::ranges::all_of(warnings, [](const std::string& warning) {
+        return warning.find("test:voxels/legacy") != std::string::npos;
+    }));
+    assert(presentation.stats().fallback_uses == 4);
+    assert(presentation.stats().fallback_diagnostics == 2);
     assert(particles.value().update(1.0F / 60.0F));
-    assert(particles.value().stats().active_particles == 36);
+    assert(particles.value().stats().active_particles == 54);
 }
 
 void test_foundation_voxels_resolve_feedback_resources() {

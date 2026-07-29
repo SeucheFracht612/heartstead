@@ -476,7 +476,8 @@ flat normal texture, error material, and error mesh.
 - A glTF material without a base-color texture uses white.
 - A model primitive without an imported material uses the renderer error material.
 - An absent voxel surface sound uses the player visual's default footstep.
-- Absent optional voxel break/place feedback uses the interaction fallback.
+- Absent optional voxel break/place feedback uses the interaction fallback and logs the voxel ID,
+  missing role, and selected fallback once per presentation-system lifetime.
 - An entity with no registered visual uses `base:visuals/fallback`, whose visible primitive binds
   the named renderer error material. The unresolved entity prototype ID is logged once per
   presentation-system lifetime.

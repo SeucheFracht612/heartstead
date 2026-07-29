@@ -46,7 +46,7 @@ build followed by the commands above produced the authoritative result.
 ## Application and session
 
 - [x] `[Automated]` `dev_game --frames 3` always creates a valid local authoritative session.
-- [ ] `[Automated]` a bounded remote-client smoke can connect to the dedicated server.
+- [x] `[Automated]` a bounded remote-client smoke can connect to the dedicated server.
 - [x] `[Automated]` headless `--frames` runs do not require a display or audio output device.
 - [ ] `[Native]` the native executable creates the window, renderer, audio system, input system,
       and development mode without startup warnings.
@@ -121,8 +121,8 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [ ] `[Both]` a face-boundary edit rebuilds both loaded neighboring chunk meshes.
 - [x] `[Automated]` collision cooking reaches the authoritative edited chunk revision.
 - [ ] `[Both]` character collision reflects removal and placement after the collision update.
-- [ ] `[Automated]` an edit dirties voxel lighting when the previous or current block affects light.
-- [ ] `[Automated]` an edit activates fluid work for the edited block and its relevant neighbors.
+- [x] `[Automated]` an edit dirties voxel lighting when the previous or current block affects light.
+- [x] `[Automated]` an edit activates fluid work for the edited block and its relevant neighbors.
 - [ ] `[Native]` diagnostics show command rejection, failed replication apply, failed remesh,
       failed collision cooking, and unresolved lighting/fluid work.
 
@@ -133,7 +133,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [ ] `[Both]` a successful placement plays the placed voxel's positional placement sound.
 - [x] `[Automated]` feedback is queued only after the accepted event reaches presentation.
 - [ ] `[Both]` rejected removal and placement produce no success particle or sound.
-- [ ] `[Automated]` a missing particle or sound reference resolves to its named fallback and emits
+- [x] `[Automated]` a missing particle or sound reference resolves to its named fallback and emits
       one clear diagnostic rather than failing the session.
 
 ## Asset Pipeline V1
@@ -214,6 +214,8 @@ Recorded 2026-07-29:
 - `heartstead_dev_game_save_smoke` creates a missing slot, verifies a periodic generation commit,
   clean-shutdown commit, and staged-generation cleanup, then reopens and recommits the same slot.
 - `heartstead_runtime_spine_tests`
+  - `test_external_listen_runtime_uses_true_remote_endpoint`
+  - `test_two_remote_clients_predict_and_interpolate`
   - `test_typed_voxel_commands_validate_and_replicate`
   - `test_boundary_voxel_edit_rebuilds_collision_and_removes_support`
   - `test_session_save_and_reload_restores_authoritative_state`

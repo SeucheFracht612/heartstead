@@ -970,6 +970,10 @@ void test_typed_voxel_commands_validate_and_replicate() {
     assert(runtime.start_session({}, make_session_request(report)));
     auto* session = runtime.session();
     assert(session != nullptr && session->server() != nullptr && session->client() != nullptr);
+    const auto lighting_regions_before =
+        session->server()->chunk_lighting().stats().dirty_regions_consumed;
+    const auto fluid_regions_before =
+        session->server()->chunk_fluids().stats().dirty_regions_consumed;
     const auto clay = core::PrototypeId::parse("base:voxels/clay");
     assert(clay.has_value());
     const game::interaction::PlaceVoxelCommand place{{9, 1, 8}, *clay};
@@ -977,6 +981,15 @@ void test_typed_voxel_commands_validate_and_replicate() {
     auto placed = runtime.run_frame({16'667, 17});
     assert(placed && placed.value().server_ticks.size() == 1);
     assert(placed.value().server_ticks.front().commands.command_reports.front().success);
+    const auto& placed_trace =
+        placed.value().server_ticks.front().commands.command_reports.front().operation_trace;
+    assert(std::ranges::find(placed_trace.derived_updates, "chunk_lighting") !=
+           placed_trace.derived_updates.end());
+    assert(std::ranges::find(placed_trace.derived_updates, "voxel_fluids") !=
+           placed_trace.derived_updates.end());
+    assert(session->server()->chunk_lighting().stats().dirty_regions_consumed >
+           lighting_regions_before);
+    assert(session->server()->chunk_fluids().stats().dirty_regions_consumed > fluid_regions_before);
     assert(session->server()->events().voxel_changed.size() == 1);
     const auto address = world::block_to_chunk_local(place.position);
     auto authoritative = session->server()->world().chunks().get(address.chunk, address.local);

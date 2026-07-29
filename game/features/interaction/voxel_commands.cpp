@@ -106,6 +106,7 @@ namespace {
     operation.record_derived_update("chunk_mesh");
     operation.record_derived_update("chunk_collision");
     operation.record_derived_update("chunk_lighting");
+    operation.record_derived_update("voxel_fluids");
     operation.emit_event({std::string(world::voxel_changed_event_type),
                           {},
                           world::VoxelChangeTextCodec::encode(change)});
