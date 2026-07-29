@@ -1012,11 +1012,13 @@ production_metadata_fields(const AssetRecord& source, std::span<const std::uint8
 }
 
 void add_model_runtime_metadata(CookedAssetMetadataFields& metadata, const ModelAsset& model) {
-    add_metadata(metadata, "model.runtime_format", "heartstead.model.v1");
+    add_metadata(metadata, "model.runtime_format", "heartstead.model.v2");
     add_metadata(metadata, "model.vertices", model.vertices.size());
     add_metadata(metadata, "model.indices", model.indices.size());
     add_metadata(metadata, "model.nodes", model.nodes.size());
     add_metadata(metadata, "model.primitives", model.primitives.size());
+    add_metadata(metadata, "model.images", model.images.size());
+    add_metadata(metadata, "model.materials", model.materials.size());
     add_metadata(metadata, "model.skins", model.skins.size());
     add_metadata(metadata, "model.animations", model.animations.size());
 }
@@ -1117,7 +1119,32 @@ core::Result<AssetCookResult> AssetCooker::cook(const AssetCatalog& catalog,
                                                           std::string(backend_info.name));
     }
 
-    auto manifest = CookedAssetManifestBuilder::build(catalog, config.manifest_config);
+    for (const auto* source : catalog.records()) {
+        std::error_code size_error;
+        const auto size = std::filesystem::file_size(source->source_path, size_error);
+        if (size_error) {
+            return core::Result<AssetCookResult>::failure("asset_cooker.read_failed",
+                                                          size_error.message());
+        }
+        if (size > config.maximum_source_bytes) {
+            return core::Result<AssetCookResult>::failure(
+                "asset_cooker.source_too_large",
+                "asset source exceeds the configured byte limit: " + source->logical_id);
+        }
+    }
+
+    auto resolved_catalog = catalog;
+    if (config.backend == AssetCookBackend::production_converters) {
+        auto dependency_status = discover_asset_dependencies(resolved_catalog);
+        if (!dependency_status) {
+            return core::Result<AssetCookResult>::failure(
+                dependency_status.error().code.starts_with("gltf_import.")
+                    ? "asset_cooker.invalid_model"
+                    : dependency_status.error().code,
+                dependency_status.error().message);
+        }
+    }
+    auto manifest = CookedAssetManifestBuilder::build(resolved_catalog, config.manifest_config);
     if (!manifest) {
         return core::Result<AssetCookResult>::failure(manifest.error().code,
                                                       manifest.error().message);
@@ -1140,7 +1167,7 @@ core::Result<AssetCookResult> AssetCooker::cook(const AssetCatalog& catalog,
     result.manifest_path = std::move(manifest_path).value();
 
     for (auto& cooked : result.manifest.records) {
-        const auto* source = find_source_record(catalog, cooked);
+        const auto* source = find_source_record(resolved_catalog, cooked);
         if (source == nullptr) {
             return core::Result<AssetCookResult>::failure(
                 "asset_cooker.missing_source_record",
@@ -1304,7 +1331,7 @@ std::string_view asset_cook_pipeline_name(AssetKind kind, AssetCookBackend backe
         case AssetKind::texture:
             return "texture_png_ktx2_jpeg_converter_v1";
         case AssetKind::model:
-            return "model_gltf_runtime_converter_v2";
+            return "model_gltf_runtime_converter_v3";
         case AssetKind::shader:
             return "shader_spirv_runtime_passthrough_v1";
         case AssetKind::sound:

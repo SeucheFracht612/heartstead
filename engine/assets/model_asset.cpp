@@ -12,7 +12,7 @@ namespace heartstead::assets {
 
 namespace {
 
-constexpr std::string_view model_magic = "heartstead.model.v1";
+constexpr std::string_view model_magic = "heartstead.model.v2";
 constexpr float quaternion_tolerance = 0.01F;
 constexpr float weight_tolerance = 0.01F;
 
@@ -37,6 +37,42 @@ constexpr float weight_tolerance = 0.01F;
         weight_sum += weight;
     }
     return std::abs(weight_sum - 1.0F) <= weight_tolerance;
+}
+
+[[nodiscard]] bool valid_model_image(const ModelImage& image, const ModelAssetLimits& limits,
+                                     std::size_t& total_bytes) noexcept {
+    if (!valid_name(image.name, limits) || image.width == 0 || image.height == 0 ||
+        image.width > limits.maximum_image_dimension ||
+        image.height > limits.maximum_image_dimension) {
+        return false;
+    }
+    const auto expected = static_cast<std::uint64_t>(image.width) * image.height * 4U;
+    if (expected != image.rgba8.size() ||
+        expected > limits.maximum_decoded_image_bytes - total_bytes) {
+        return false;
+    }
+    total_bytes += static_cast<std::size_t>(expected);
+    return true;
+}
+
+[[nodiscard]] bool valid_model_material(const ModelMaterial& material, const ModelAsset& asset,
+                                        const ModelAssetLimits& limits) noexcept {
+    if (!valid_name(material.name, limits) ||
+        (material.base_color_image != no_model_index &&
+         material.base_color_image >= asset.images.size()) ||
+        !std::isfinite(material.alpha_cutoff) || material.alpha_cutoff < 0.0F) {
+        return false;
+    }
+    switch (material.alpha_mode) {
+    case ModelAlphaMode::opaque:
+    case ModelAlphaMode::mask:
+        break;
+    default:
+        return false;
+    }
+    return std::ranges::all_of(material.base_color_factor, [](float value) {
+        return std::isfinite(value) && value >= 0.0F && value <= 1.0F;
+    });
 }
 
 [[nodiscard]] bool node_hierarchy_is_acyclic(const ModelAsset& asset) {
@@ -315,10 +351,11 @@ bool ModelNodeTransform::is_valid() const noexcept {
 core::Status ModelAssetLimits::validate() const {
     if (maximum_source_bytes == 0 || maximum_vertices == 0 || maximum_indices == 0 ||
         maximum_nodes == 0 || maximum_primitives == 0 || maximum_skins == 0 ||
-        maximum_joints_per_skin == 0 || maximum_joints_per_skin > UINT16_MAX ||
-        maximum_animations == 0 || maximum_channels_per_animation == 0 ||
-        maximum_keyframes_per_channel == 0 || maximum_name_bytes == 0 ||
-        maximum_name_bytes > UINT32_MAX) {
+        maximum_images == 0 || maximum_materials == 0 || maximum_image_dimension == 0 ||
+        maximum_decoded_image_bytes < 4 || maximum_joints_per_skin == 0 ||
+        maximum_joints_per_skin > UINT16_MAX || maximum_animations == 0 ||
+        maximum_channels_per_animation == 0 || maximum_keyframes_per_channel == 0 ||
+        maximum_name_bytes == 0 || maximum_name_bytes > UINT32_MAX) {
         return core::Status::failure("model_asset.invalid_limits",
                                      "model asset limits must be finite and non-zero");
     }
@@ -335,6 +372,8 @@ core::Status validate_model_asset(const ModelAsset& asset, const ModelAssetLimit
         asset.indices.size() > limits.maximum_indices ||
         asset.nodes.size() > limits.maximum_nodes ||
         asset.primitives.size() > limits.maximum_primitives ||
+        asset.images.size() > limits.maximum_images ||
+        asset.materials.size() > limits.maximum_materials ||
         asset.skins.size() > limits.maximum_skins ||
         asset.animations.size() > limits.maximum_animations || !asset.bounds.is_valid()) {
         return core::Status::failure("model_asset.invalid_counts",
@@ -353,6 +392,21 @@ core::Status validate_model_asset(const ModelAsset& asset, const ModelAssetLimit
         return core::Status::failure("model_asset.invalid_hierarchy",
                                      "model asset node hierarchy is invalid or cyclic");
     }
+    std::size_t total_image_bytes = 0;
+    for (const auto& image : asset.images) {
+        if (!valid_model_image(image, limits, total_image_bytes)) {
+            return core::Status::failure(
+                "model_asset.invalid_image",
+                "model asset image name, dimensions, or RGBA8 payload is invalid");
+        }
+    }
+    if (!std::ranges::all_of(asset.materials, [&](const ModelMaterial& material) {
+            return valid_model_material(material, asset, limits);
+        })) {
+        return core::Status::failure(
+            "model_asset.invalid_material",
+            "model asset material parameters or base-color image binding are invalid");
+    }
     for (const auto& node : asset.nodes) {
         if (!valid_name(node.name, limits) || !node.bind_transform.is_valid()) {
             return core::Status::failure("model_asset.invalid_node",
@@ -362,6 +416,8 @@ core::Status validate_model_asset(const ModelAsset& asset, const ModelAssetLimit
     for (const auto& primitive : asset.primitives) {
         if (!valid_name(primitive.name, limits) || primitive.node >= asset.nodes.size() ||
             (primitive.skin != no_model_index && primitive.skin >= asset.skins.size()) ||
+            (primitive.material != no_model_index &&
+             primitive.material >= asset.materials.size()) ||
             primitive.vertex_count == 0 || primitive.index_count == 0 ||
             primitive.first_vertex > asset.vertices.size() ||
             primitive.vertex_count > asset.vertices.size() - primitive.first_vertex ||
@@ -436,6 +492,8 @@ core::Result<std::vector<std::uint8_t>> encode_model_asset(const ModelAsset& ass
     writer.u32(static_cast<std::uint32_t>(asset.indices.size()));
     writer.u32(static_cast<std::uint32_t>(asset.nodes.size()));
     writer.u32(static_cast<std::uint32_t>(asset.primitives.size()));
+    writer.u32(static_cast<std::uint32_t>(asset.images.size()));
+    writer.u32(static_cast<std::uint32_t>(asset.materials.size()));
     writer.u32(static_cast<std::uint32_t>(asset.skins.size()));
     writer.u32(static_cast<std::uint32_t>(asset.animations.size()));
     write_vec3(writer, asset.bounds.min);
@@ -471,6 +529,24 @@ core::Result<std::vector<std::uint8_t>> encode_model_asset(const ModelAsset& ass
         writer.u32(primitive.index_count);
         writer.u32(primitive.node);
         writer.u32(primitive.skin);
+        writer.u32(primitive.material);
+    }
+    for (const auto& image : asset.images) {
+        writer.string(image.name);
+        writer.u32(image.width);
+        writer.u32(image.height);
+        writer.u32(static_cast<std::uint32_t>(image.rgba8.size()));
+        writer.bytes(image.rgba8);
+    }
+    for (const auto& material : asset.materials) {
+        writer.string(material.name);
+        for (const auto value : material.base_color_factor) {
+            writer.f32(value);
+        }
+        writer.u32(material.base_color_image);
+        writer.u8(static_cast<std::uint8_t>(material.alpha_mode));
+        writer.f32(material.alpha_cutoff);
+        writer.u8(material.double_sided ? 1U : 0U);
     }
     for (const auto& skin : asset.skins) {
         writer.string(skin.name);
@@ -530,14 +606,18 @@ core::Result<ModelAsset> decode_model_asset(std::span<const std::uint8_t> bytes,
     auto index_count = reader.u32();
     auto node_count = reader.u32();
     auto primitive_count = reader.u32();
+    auto image_count = reader.u32();
+    auto material_count = reader.u32();
     auto skin_count = reader.u32();
     auto animation_count = reader.u32();
     if (!vertex_count || !index_count || !node_count || !primitive_count || !skin_count ||
-        !animation_count) {
+        !image_count || !material_count || !animation_count) {
         const auto& error = !vertex_count      ? vertex_count.error()
                             : !index_count     ? index_count.error()
                             : !node_count      ? node_count.error()
                             : !primitive_count ? primitive_count.error()
+                            : !image_count     ? image_count.error()
+                            : !material_count  ? material_count.error()
                             : !skin_count      ? skin_count.error()
                                                : animation_count.error();
         return decode_failure<ModelAsset>(error);
@@ -545,6 +625,8 @@ core::Result<ModelAsset> decode_model_asset(std::span<const std::uint8_t> bytes,
     if (vertex_count.value() > limits.maximum_vertices ||
         index_count.value() > limits.maximum_indices || node_count.value() > limits.maximum_nodes ||
         primitive_count.value() > limits.maximum_primitives ||
+        image_count.value() > limits.maximum_images ||
+        material_count.value() > limits.maximum_materials ||
         skin_count.value() > limits.maximum_skins ||
         animation_count.value() > limits.maximum_animations) {
         return core::Result<ModelAsset>::failure("model_asset.count_limit",
@@ -562,6 +644,8 @@ core::Result<ModelAsset> decode_model_asset(std::span<const std::uint8_t> bytes,
     asset.indices.resize(index_count.value());
     asset.nodes.resize(node_count.value());
     asset.primitives.resize(primitive_count.value());
+    asset.images.resize(image_count.value());
+    asset.materials.resize(material_count.value());
     asset.skins.resize(skin_count.value());
     asset.animations.resize(animation_count.value());
 
@@ -629,19 +713,88 @@ core::Result<ModelAsset> decode_model_asset(std::span<const std::uint8_t> bytes,
         auto indices = reader.u32();
         auto node = reader.u32();
         auto skin = reader.u32();
-        if (!name || !first_vertex || !vertices || !first_index || !indices || !node || !skin) {
+        auto material = reader.u32();
+        if (!name || !first_vertex || !vertices || !first_index || !indices || !node || !skin ||
+            !material) {
             const auto& error = !name           ? name.error()
                                 : !first_vertex ? first_vertex.error()
                                 : !vertices     ? vertices.error()
                                 : !first_index  ? first_index.error()
                                 : !indices      ? indices.error()
                                 : !node         ? node.error()
-                                                : skin.error();
+                                : !skin         ? skin.error()
+                                                : material.error();
             return decode_failure<ModelAsset>(error);
         }
         primitive = {
             std::move(name).value(), first_vertex.value(), vertices.value(), first_index.value(),
-            indices.value(),         node.value(),         skin.value()};
+            indices.value(),         node.value(),         skin.value(),     material.value()};
+    }
+    std::size_t total_image_bytes = 0;
+    for (auto& image : asset.images) {
+        auto name = reader.string(limits.maximum_name_bytes);
+        auto width = reader.u32();
+        auto height = reader.u32();
+        auto byte_count = reader.u32();
+        if (!name || !width || !height || !byte_count) {
+            const auto& error = !name     ? name.error()
+                                : !width  ? width.error()
+                                : !height ? height.error()
+                                          : byte_count.error();
+            return decode_failure<ModelAsset>(error);
+        }
+        const auto expected = static_cast<std::uint64_t>(width.value()) * height.value() * 4U;
+        if (width.value() == 0 || height.value() == 0 ||
+            width.value() > limits.maximum_image_dimension ||
+            height.value() > limits.maximum_image_dimension || expected != byte_count.value() ||
+            expected > limits.maximum_decoded_image_bytes - total_image_bytes) {
+            return core::Result<ModelAsset>::failure(
+                "model_asset.image_limit",
+                "model asset image dimensions or decoded byte count exceed configured limits");
+        }
+        auto rgba8 = reader.bytes(byte_count.value());
+        if (!rgba8) {
+            return decode_failure<ModelAsset>(rgba8.error());
+        }
+        total_image_bytes += byte_count.value();
+        image.name = std::move(name).value();
+        image.width = width.value();
+        image.height = height.value();
+        image.rgba8.assign(rgba8.value().begin(), rgba8.value().end());
+    }
+    for (auto& material : asset.materials) {
+        auto name = reader.string(limits.maximum_name_bytes);
+        if (!name) {
+            return decode_failure<ModelAsset>(name.error());
+        }
+        material.name = std::move(name).value();
+        for (auto& value : material.base_color_factor) {
+            auto decoded = reader.f32();
+            if (!decoded) {
+                return decode_failure<ModelAsset>(decoded.error());
+            }
+            value = decoded.value();
+        }
+        auto image = reader.u32();
+        auto alpha_mode = reader.u8();
+        auto alpha_cutoff = reader.f32();
+        auto double_sided = reader.u8();
+        if (!image || !alpha_mode || !alpha_cutoff || !double_sided) {
+            const auto& error = !image          ? image.error()
+                                : !alpha_mode   ? alpha_mode.error()
+                                : !alpha_cutoff ? alpha_cutoff.error()
+                                                : double_sided.error();
+            return decode_failure<ModelAsset>(error);
+        }
+        if (double_sided.value() > 1U) {
+            return core::Result<ModelAsset>::failure(
+                "model_asset.invalid_boolean",
+                "model asset material contains an invalid double-sided flag");
+        }
+        material.base_color_image = image.value();
+        material.alpha_mode = static_cast<ModelAlphaMode>(alpha_mode.value());
+        material.alpha_cutoff = alpha_cutoff.value();
+        material.double_sided = double_sided.value() != 0U;
     }
     for (auto& skin : asset.skins) {
         auto name = reader.string(limits.maximum_name_bytes);
@@ -769,6 +922,16 @@ model_animation_interpolation_name(ModelAnimationInterpolation interpolation) no
         return "linear";
     case ModelAnimationInterpolation::cubic_spline:
         return "cubic_spline";
+    }
+    return "unknown";
+}
+
+std::string_view model_alpha_mode_name(ModelAlphaMode mode) noexcept {
+    switch (mode) {
+    case ModelAlphaMode::opaque:
+        return "opaque";
+    case ModelAlphaMode::mask:
+        return "mask";
     }
     return "unknown";
 }

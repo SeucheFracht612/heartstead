@@ -14,6 +14,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
+#include <vector>
 
 namespace {
 
@@ -185,6 +187,13 @@ int main(int argc, char** argv) {
             }
         }
 
+        if (cook_backend == assets::AssetCookBackend::production_converters) {
+            auto dependency_status = assets::discover_asset_dependencies(catalog);
+            if (!dependency_status) {
+                core::log(core::LogLevel::error, dependency_status.error().message);
+                return 1;
+            }
+        }
         if (only_logical_id.has_value()) {
             const auto* selected = catalog.find_active(*only_logical_id);
             if (selected == nullptr) {
@@ -192,12 +201,29 @@ int main(int argc, char** argv) {
                           "selected asset is not active: " + *only_logical_id);
                 return 1;
             }
-            const auto selected_record = *selected;
             assets::AssetCatalog filtered;
-            auto status = filtered.add(selected_record);
-            if (!status) {
-                core::log(core::LogLevel::error, status.error().message);
-                return 1;
+            std::vector<std::string> pending{selected->logical_id};
+            std::unordered_set<std::string> included;
+            while (!pending.empty()) {
+                auto logical_id = std::move(pending.back());
+                pending.pop_back();
+                if (!included.insert(logical_id).second) {
+                    continue;
+                }
+                const auto* record = catalog.find_active(logical_id);
+                if (record == nullptr) {
+                    core::log(core::LogLevel::error,
+                              "selected asset dependency is not active: " + logical_id);
+                    return 1;
+                }
+                auto status = filtered.add(*record);
+                if (!status) {
+                    core::log(core::LogLevel::error, status.error().message);
+                    return 1;
+                }
+                for (const auto& dependency : record->dependencies) {
+                    pending.push_back(assets::asset_logical_id(dependency));
+                }
             }
             catalog = std::move(filtered);
         }

@@ -41,9 +41,34 @@
             "WEIGHTS_0": 4
           },
           "indices": 5,
-          "mode": 4
+          "mode": 4,
+          "material": 0
         }
       ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "storybook_player_base",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
+        "baseColorTexture": {
+          "index": 0
+        }
+      },
+      "alphaMode": "OPAQUE",
+      "doubleSided": false
+    }
+  ],
+  "textures": [
+    {
+      "source": 0
+    }
+  ],
+  "images": [
+    {
+      "name": "storybook_player_color",
+      "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAG0lEQVR4nGPYF2Hw/90Wn/8M3+6t+x9jovwfAF7UCmZhHBP2AAAAAElFTkSuQmCC"
     }
   ],
   "skins": [

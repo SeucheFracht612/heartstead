@@ -62,8 +62,34 @@ struct ModelPrimitive {
     std::uint32_t index_count = 0;
     std::uint32_t node = no_model_index;
     std::uint32_t skin = no_model_index;
+    std::uint32_t material = no_model_index;
 
     friend bool operator==(const ModelPrimitive&, const ModelPrimitive&) = default;
+};
+
+struct ModelImage {
+    std::string name;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::uint8_t> rgba8;
+
+    friend bool operator==(const ModelImage&, const ModelImage&) = default;
+};
+
+enum class ModelAlphaMode : std::uint8_t {
+    opaque,
+    mask,
+};
+
+struct ModelMaterial {
+    std::string name;
+    std::array<float, 4> base_color_factor{1.0F, 1.0F, 1.0F, 1.0F};
+    std::uint32_t base_color_image = no_model_index;
+    ModelAlphaMode alpha_mode = ModelAlphaMode::opaque;
+    float alpha_cutoff = 0.5F;
+    bool double_sided = false;
+
+    friend bool operator==(const ModelMaterial&, const ModelMaterial&) = default;
 };
 
 struct ModelSkin {
@@ -112,6 +138,8 @@ struct ModelAsset {
     std::vector<std::uint32_t> indices;
     std::vector<ModelNode> nodes;
     std::vector<ModelPrimitive> primitives;
+    std::vector<ModelImage> images;
+    std::vector<ModelMaterial> materials;
     std::vector<ModelSkin> skins;
     std::vector<ModelAnimationClip> animations;
     math::Bounds3f bounds{};
@@ -119,6 +147,7 @@ struct ModelAsset {
     friend bool operator==(const ModelAsset& left, const ModelAsset& right) {
         return left.vertices == right.vertices && left.indices == right.indices &&
                left.nodes == right.nodes && left.primitives == right.primitives &&
+               left.images == right.images && left.materials == right.materials &&
                left.skins == right.skins && left.animations == right.animations &&
                left.bounds.min == right.bounds.min && left.bounds.max == right.bounds.max;
     }
@@ -130,6 +159,10 @@ struct ModelAssetLimits {
     std::uint32_t maximum_indices = 3'000'000;
     std::uint32_t maximum_nodes = 16'384;
     std::uint32_t maximum_primitives = 16'384;
+    std::uint32_t maximum_images = 1'024;
+    std::uint32_t maximum_materials = 4'096;
+    std::uint32_t maximum_image_dimension = 8'192;
+    std::size_t maximum_decoded_image_bytes = 128U * 1024U * 1024U;
     std::uint32_t maximum_skins = 256;
     std::uint32_t maximum_joints_per_skin = 256;
     std::uint32_t maximum_animations = 256;
@@ -142,6 +175,9 @@ struct ModelAssetLimits {
 
 [[nodiscard]] core::Status validate_model_asset(const ModelAsset& asset,
                                                 const ModelAssetLimits& limits = {});
+[[nodiscard]] core::Result<std::vector<std::filesystem::path>>
+discover_gltf_external_dependencies(const std::filesystem::path& path,
+                                    const ModelAssetLimits& limits = {});
 [[nodiscard]] core::Result<ModelAsset> import_gltf_model(const std::filesystem::path& path,
                                                          const ModelAssetLimits& limits = {});
 [[nodiscard]] core::Result<std::vector<std::uint8_t>>
@@ -152,5 +188,6 @@ encode_model_asset(const ModelAsset& asset, const ModelAssetLimits& limits = {})
 [[nodiscard]] std::string_view model_animation_path_name(ModelAnimationPath path) noexcept;
 [[nodiscard]] std::string_view
 model_animation_interpolation_name(ModelAnimationInterpolation interpolation) noexcept;
+[[nodiscard]] std::string_view model_alpha_mode_name(ModelAlphaMode mode) noexcept;
 
 } // namespace heartstead::assets

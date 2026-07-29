@@ -31,6 +31,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Threads REQUIRED)
 find_package(fastgltf CONFIG REQUIRED)
+find_package(Stb REQUIRED)
 if(HEARTSTEAD_ENABLE_JOLT)
   find_package(Jolt CONFIG REQUIRED)
 endif()

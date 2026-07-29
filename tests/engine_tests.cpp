@@ -220,6 +220,24 @@ std::string minimal_gltf_text() {
     return R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"triangle","mesh":0}],"meshes":[{"name":"triangle","primitives":[{"attributes":{"POSITION":0},"indices":1}]}],"buffers":[{"uri":"data:application/octet-stream;base64,AAAAvwAAAAAAAAAAAAAAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA","byteLength":42}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":6}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[-0.5,0,0],"max":[0.5,1,0]},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}]})";
 }
 
+std::string minimal_external_gltf_text() {
+    auto text = minimal_gltf_text();
+    const std::string embedded = "data:application/octet-stream;base64,"
+                                 "AAAAvwAAAAAAAAAAAAAAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA";
+    const auto offset = text.find(embedded);
+    assert(offset != std::string::npos);
+    text.replace(offset, embedded.size(), "triangle.bin");
+    return text;
+}
+
+std::vector<std::uint8_t> minimal_triangle_buffer_bytes() {
+    return {
+        0x00, 0x00, 0x00, 0xbf, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00,
+    };
+}
+
 std::vector<std::uint8_t> minimal_glb_bytes() {
     std::string json = minimal_gltf_text();
     while (json.size() % 4U != 0) {
@@ -763,7 +781,7 @@ void test_resource_pack_discovery_and_asset_catalog() {
         heartstead::assets::AssetCookBackend::production_converters);
     assert(production_model_pipeline.available);
     assert(production_model_pipeline.converts_source_format);
-    assert(production_model_pipeline.name == "model_gltf_runtime_converter_v2");
+    assert(production_model_pipeline.name == "model_gltf_runtime_converter_v3");
     const auto production_shader_pipeline = heartstead::assets::asset_cook_pipeline_info(
         heartstead::assets::AssetKind::shader,
         heartstead::assets::AssetCookBackend::production_converters);
@@ -1050,14 +1068,16 @@ void test_resource_pack_discovery_and_asset_catalog() {
     assert(invalid_jpeg_cook.error().code == "asset_cooker.invalid_texture");
 
     const auto production_model_assets = root / "production_model_assets";
-    write_text(production_model_assets / "models/building/wall.gltf", minimal_gltf_text());
+    write_text(production_model_assets / "models/building/wall.gltf", minimal_external_gltf_text());
+    write_bytes(production_model_assets / "models/building/triangle.bin",
+                minimal_triangle_buffer_bytes());
     write_bytes(production_model_assets / "models/building/gate.glb", minimal_glb_bytes());
     heartstead::assets::AssetCatalog production_model_catalog;
     auto production_model_indexed = heartstead::assets::AssetCatalogBuilder::index_directory(
         production_model_catalog, production_model_assets, "base",
         heartstead::assets::AssetSourceKind::mod, "base", 0);
     assert(!production_model_indexed.has_errors());
-    assert(production_model_catalog.active_count() == 2);
+    assert(production_model_catalog.active_count() == 3);
     assert(production_model_catalog.count_kind(heartstead::assets::AssetKind::model) == 2);
 
     heartstead::assets::AssetCookConfig production_model_cook_config;
@@ -1068,18 +1088,21 @@ void test_resource_pack_discovery_and_asset_catalog() {
         production_model_catalog, production_model_cook_config);
     assert(production_model_cook);
     assert(production_model_cook.value().manifest.profile == "production");
-    assert(production_model_cook.value().cooked_file_count == 2);
+    assert(production_model_cook.value().cooked_file_count == 3);
     const auto* production_gltf_record =
         production_model_cook.value().manifest.find("base:models/building/wall.gltf");
     const auto* production_glb_record =
         production_model_cook.value().manifest.find("base:models/building/gate.glb");
     assert(production_gltf_record != nullptr);
     assert(production_glb_record != nullptr);
+    assert(production_gltf_record->dependencies.size() == 1);
+    assert(production_gltf_record->dependencies.front().to_string() ==
+           "base:models/building/triangle.bin");
     assert(production_gltf_record->kind == heartstead::assets::AssetKind::model);
     assert(production_glb_record->kind == heartstead::assets::AssetKind::model);
     assert(read_text(production_model_cook_config.output_root /
                      production_gltf_record->cooked_relative_path)
-               .find("backend=model_gltf_runtime_converter_v2") != std::string::npos);
+               .find("backend=model_gltf_runtime_converter_v3") != std::string::npos);
     auto production_model_store =
         heartstead::assets::CookedAssetStore::load(production_model_cook_config.output_root);
     assert(production_model_store);
@@ -1087,12 +1110,12 @@ void test_resource_pack_discovery_and_asset_catalog() {
         production_model_store.value().load_payload("base:models/building/wall.gltf");
     assert(production_gltf_payload);
     assert(production_gltf_payload.value().kind == heartstead::assets::AssetKind::model);
-    assert(production_gltf_payload.value().backend == "model_gltf_runtime_converter_v2");
+    assert(production_gltf_payload.value().backend == "model_gltf_runtime_converter_v3");
     assert(production_gltf_payload.value().profile == "production");
     assert(production_gltf_payload.value().metadata.at("model.container") == "gltf");
     assert(production_gltf_payload.value().metadata.at("model.gltf_version") == "2.0");
     assert(production_gltf_payload.value().metadata.at("model.runtime_format") ==
-           "heartstead.model.v1");
+           "heartstead.model.v2");
     assert(production_gltf_payload.value().metadata.at("model.vertices") == "3");
     assert(production_gltf_payload.value().metadata.at("model.indices") == "3");
     assert(production_gltf_payload.value().metadata.at("model.nodes") == "1");
@@ -3849,8 +3872,7 @@ void test_scripting_runtime() {
     assert(duplicate_permission_call.error().code == "scripting.duplicate_permission");
 
     if (!luau_info.available) {
-        auto unavailable =
-            create_script_runtime(ScriptRuntimeDesc{ScriptBackend::luau, 512});
+        auto unavailable = create_script_runtime(ScriptRuntimeDesc{ScriptBackend::luau, 512});
         assert(!unavailable);
         assert(unavailable.error().code == "scripting.backend_unavailable");
         return;
@@ -4068,9 +4090,8 @@ void test_scripting_runtime() {
     invalid_event_module.module_id = "base:scripts/runtime_server/invalid_event";
     invalid_event_module.source = "return { bad = function() return emit(\".bad\") end }";
     assert(luau_runtime.value()->load_module(invalid_event_module));
-    auto invalid_event_call = luau_runtime.value()->call(
-        ScriptCallDesc{invalid_event_module.module_id, "bad",
-                       ScriptStage::runtime_server, {}, 32, {}});
+    auto invalid_event_call = luau_runtime.value()->call(ScriptCallDesc{
+        invalid_event_module.module_id, "bad", ScriptStage::runtime_server, {}, 32, {}});
     assert(!invalid_event_call);
     assert(invalid_event_call.error().code == "scripting.invalid_host_api_id");
     assert(luau_runtime.value()->unload_module(invalid_event_module.module_id));
@@ -4079,9 +4100,8 @@ void test_scripting_runtime() {
     malformed_emit_module.module_id = "base:scripts/runtime_server/malformed_emit";
     malformed_emit_module.source = "return { bad = function() return emit() end }";
     assert(luau_runtime.value()->load_module(malformed_emit_module));
-    auto malformed_emit_call = luau_runtime.value()->call(
-        ScriptCallDesc{malformed_emit_module.module_id, "bad",
-                       ScriptStage::runtime_server, {}, 32, {}});
+    auto malformed_emit_call = luau_runtime.value()->call(ScriptCallDesc{
+        malformed_emit_module.module_id, "bad", ScriptStage::runtime_server, {}, 32, {}});
     assert(!malformed_emit_call);
     assert(malformed_emit_call.error().code == "scripting.invalid_host_api_id");
     assert(luau_runtime.value()->unload_module(malformed_emit_module.module_id));
@@ -4147,28 +4167,22 @@ void test_script_module_loading_from_mod_lifecycle() {
     assert(loaded.count_stage(heartstead::scripting::ScriptStage::runtime_client) == 1);
     assert(loaded.count_stage(heartstead::scripting::ScriptStage::migration) == 1);
 
-    const auto validation =
-        heartstead::modding::ModValidation::validate(mods_root);
+    const auto validation = heartstead::modding::ModValidation::validate(mods_root);
     assert(!validation.has_errors());
 
-    if (heartstead::scripting::script_backend_info(
-            heartstead::scripting::ScriptBackend::luau)
+    if (heartstead::scripting::script_backend_info(heartstead::scripting::ScriptBackend::luau)
             .available) {
         write_text(mods_root / "base/scripts/runtime_server/tick.luau",
                    "return { tick = function(\n");
-        const auto malformed_validation =
-            heartstead::modding::ModValidation::validate(mods_root);
+        const auto malformed_validation = heartstead::modding::ModValidation::validate(mods_root);
         assert(malformed_validation.has_errors());
-        assert(std::ranges::any_of(
-            malformed_validation.diagnostics, [](const auto& diagnostic) {
-                return diagnostic.code ==
-                       "mod.scripting.module_invalid";
-            }));
-        write_text(
-            mods_root / "base/scripts/runtime_server/tick.luau",
-            "-- heartstead.permissions = \"read_prototypes, emit_commands\"\n"
-            "-- heartstead.api_version = \"2\"\n"
-            "return { tick = function(value) return value end }\n");
+        assert(std::ranges::any_of(malformed_validation.diagnostics, [](const auto& diagnostic) {
+            return diagnostic.code == "mod.scripting.module_invalid";
+        }));
+        write_text(mods_root / "base/scripts/runtime_server/tick.luau",
+                   "-- heartstead.permissions = \"read_prototypes, emit_commands\"\n"
+                   "-- heartstead.api_version = \"2\"\n"
+                   "return { tick = function(value) return value end }\n");
     }
 
     const auto bounded = heartstead::scripting::ScriptModuleLoader::load_from_plan(
@@ -4211,22 +4225,20 @@ void test_script_module_loading_from_mod_lifecycle() {
     assert(tick_module->source.find("heartstead.permissions") == std::string::npos);
     assert(tick_module->source.find("heartstead.api_version") == std::string::npos);
 
-    if (heartstead::scripting::script_backend_info(
-            heartstead::scripting::ScriptBackend::luau)
+    if (heartstead::scripting::script_backend_info(heartstead::scripting::ScriptBackend::luau)
             .available) {
         auto script_runtime =
-            heartstead::scripting::create_script_runtime(
-                heartstead::scripting::ScriptRuntimeDesc{
-                    heartstead::scripting::ScriptBackend::luau, 512});
+            heartstead::scripting::create_script_runtime(heartstead::scripting::ScriptRuntimeDesc{
+                heartstead::scripting::ScriptBackend::luau, 512});
         assert(script_runtime);
         assert(script_runtime.value()->load_module(*tick_module));
-        auto tick_call = script_runtime.value()->call(
-            {tick_module->module_id,
-             "tick",
-             heartstead::scripting::ScriptStage::runtime_server,
-             {heartstead::scripting::ScriptValue::number(42)},
-             32,
-             {}});
+        auto tick_call =
+            script_runtime.value()->call({tick_module->module_id,
+                                          "tick",
+                                          heartstead::scripting::ScriptStage::runtime_server,
+                                          {heartstead::scripting::ScriptValue::number(42)},
+                                          32,
+                                          {}});
         assert(tick_call);
         assert(tick_call.value().return_value.kind ==
                heartstead::scripting::ScriptValueKind::number);
@@ -4989,8 +5001,7 @@ void test_mod_prototype_fingerprints() {
     server_script.source_mod_id = "base";
     server_script.source_path = "scripts/runtime_server/neutral.luau";
     server_script.source = "return { ping = function() return true end }\n";
-    server_script.stage =
-        heartstead::scripting::ScriptStage::runtime_server;
+    server_script.stage = heartstead::scripting::ScriptStage::runtime_server;
     server_script.permissions = {
         heartstead::scripting::ScriptPermission::read_prototypes,
         heartstead::scripting::ScriptPermission::emit_commands,
@@ -4998,41 +5009,30 @@ void test_mod_prototype_fingerprints() {
     auto client_script = server_script;
     client_script.module_id = "base:scripts/runtime_client/neutral";
     client_script.source_path = "scripts/runtime_client/neutral.luau";
-    client_script.stage =
-        heartstead::scripting::ScriptStage::runtime_client;
+    client_script.stage = heartstead::scripting::ScriptStage::runtime_client;
 
     auto scripted = heartstead::modding::build_mod_prototype_fingerprints(
-        {base}, std::vector<heartstead::modding::GenericPrototype>{clay},
-        {}, {server_script, client_script});
-    auto scripts_reordered =
-        heartstead::modding::build_mod_prototype_fingerprints(
-            {base},
-            std::vector<heartstead::modding::GenericPrototype>{clay}, {},
-            {client_script, server_script});
+        {base}, std::vector<heartstead::modding::GenericPrototype>{clay}, {},
+        {server_script, client_script});
+    auto scripts_reordered = heartstead::modding::build_mod_prototype_fingerprints(
+        {base}, std::vector<heartstead::modding::GenericPrototype>{clay}, {},
+        {client_script, server_script});
     assert(scripted.front().script_count == 2);
-    assert(scripted.front().prototype_hash ==
-           scripts_reordered.front().prototype_hash);
+    assert(scripted.front().prototype_hash == scripts_reordered.front().prototype_hash);
 
     auto permission_order_changed = server_script;
     std::ranges::reverse(permission_order_changed.permissions);
-    auto permissions_reordered =
-        heartstead::modding::build_mod_prototype_fingerprints(
-            {base},
-            std::vector<heartstead::modding::GenericPrototype>{clay}, {},
-            {permission_order_changed, client_script});
-    assert(scripted.front().prototype_hash ==
-           permissions_reordered.front().prototype_hash);
+    auto permissions_reordered = heartstead::modding::build_mod_prototype_fingerprints(
+        {base}, std::vector<heartstead::modding::GenericPrototype>{clay}, {},
+        {permission_order_changed, client_script});
+    assert(scripted.front().prototype_hash == permissions_reordered.front().prototype_hash);
 
     auto changed_script = server_script;
-    changed_script.source =
-        "return { ping = function() return false end }\n";
-    auto script_source_changed =
-        heartstead::modding::build_mod_prototype_fingerprints(
-            {base},
-            std::vector<heartstead::modding::GenericPrototype>{clay}, {},
-            {changed_script, client_script});
-    assert(scripted.front().prototype_hash !=
-           script_source_changed.front().prototype_hash);
+    changed_script.source = "return { ping = function() return false end }\n";
+    auto script_source_changed = heartstead::modding::build_mod_prototype_fingerprints(
+        {base}, std::vector<heartstead::modding::GenericPrototype>{clay}, {},
+        {changed_script, client_script});
+    assert(scripted.front().prototype_hash != script_source_changed.front().prototype_hash);
 }
 
 void test_mod_validation_applies_prototype_patches() {
@@ -7599,7 +7599,7 @@ void test_debug_inspection() {
     assert(asset_model_pipeline_inspection.object_type == "asset_cook_pipeline");
     assert(asset_model_pipeline_inspection.state == "available");
     assert(asset_model_pipeline_inspection.find_field("pipeline")->value ==
-           "model_gltf_runtime_converter_v2");
+           "model_gltf_runtime_converter_v3");
     assert(asset_model_pipeline_inspection.find_field("converts_source_format")->value == "true");
     assert(asset_model_pipeline_inspection.issues.empty());
 
@@ -7787,8 +7787,7 @@ void test_debug_inspection() {
     assert(cooked_store_inspection.find_field("manifest_active_count")->value == "2");
 
     const auto inspected_script_backend =
-        heartstead::scripting::script_backend_info(
-            heartstead::scripting::ScriptBackend::luau);
+        heartstead::scripting::script_backend_info(heartstead::scripting::ScriptBackend::luau);
     auto script_backend_inspection =
         heartstead::debug::Inspector::inspect(inspected_script_backend);
     assert(script_backend_inspection.object_type == "script_backend");

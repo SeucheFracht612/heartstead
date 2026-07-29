@@ -1,5 +1,6 @@
 #include "engine/assets/asset_catalog.hpp"
 
+#include "engine/assets/model_asset.hpp"
 #include "engine/core/hash.hpp"
 #include "engine/core/ids.hpp"
 
@@ -125,6 +126,31 @@ core::Status AssetCatalog::add(AssetRecord record) {
         active_by_logical_id_[records_[new_index].logical_id] = new_index;
     }
 
+    return core::Status::ok();
+}
+
+core::Status AssetCatalog::set_dependencies(std::string_view logical_id,
+                                            AssetSourceKind source_kind, std::string_view source_id,
+                                            std::vector<VirtualPath> dependencies) {
+    const auto record = std::ranges::find_if(records_, [&](const AssetRecord& candidate) {
+        return candidate.logical_id == logical_id && candidate.source_kind == source_kind &&
+               candidate.source_id == source_id;
+    });
+    if (record == records_.end()) {
+        return core::Status::failure(
+            "asset_catalog.missing_dependency_owner",
+            "cannot assign dependencies to a missing asset catalog record");
+    }
+    std::ranges::sort(dependencies, {}, &VirtualPath::to_string);
+    const auto duplicate = std::ranges::adjacent_find(
+        dependencies, [](const VirtualPath& left, const VirtualPath& right) {
+            return left.to_string() == right.to_string();
+        });
+    if (duplicate != dependencies.end()) {
+        return core::Status::failure("asset_catalog.duplicate_dependency",
+                                     "asset dependencies must be unique within a catalog record");
+    }
+    record->dependencies = std::move(dependencies);
     return core::Status::ok();
 }
 
@@ -386,6 +412,9 @@ std::string_view asset_source_kind_name(AssetSourceKind kind) noexcept {
 
 AssetKind infer_asset_kind(const std::filesystem::path& relative_path) {
     const auto extension = lower_ascii(relative_path.extension().generic_string());
+    if (extension == ".bin") {
+        return AssetKind::data;
+    }
     if (starts_with_segment(relative_path, "textures") || extension == ".png" ||
         extension == ".ktx2" || extension == ".jpg" || extension == ".jpeg") {
         return AssetKind::texture;
@@ -427,6 +456,55 @@ AssetKind infer_asset_kind(const std::filesystem::path& relative_path) {
         return AssetKind::data;
     }
     return AssetKind::unknown;
+}
+
+core::Status discover_asset_dependencies(AssetCatalog& catalog) {
+    struct Discovered {
+        std::string logical_id;
+        AssetSourceKind source_kind = AssetSourceKind::mod;
+        std::string source_id;
+        std::vector<VirtualPath> dependencies;
+    };
+    std::vector<Discovered> discovered;
+    for (const auto* record : catalog.records()) {
+        if (record->kind != AssetKind::model) {
+            continue;
+        }
+        const auto extension = lower_ascii(record->source_path.extension().generic_string());
+        if (extension != ".gltf" && extension != ".glb") {
+            continue;
+        }
+        auto external = discover_gltf_external_dependencies(record->source_path);
+        if (!external) {
+            return core::Status::failure(external.error().code,
+                                         "failed to discover dependencies for " +
+                                             record->logical_id + ": " + external.error().message);
+        }
+        Discovered entry{record->logical_id, record->source_kind, record->source_id, {}};
+        entry.dependencies.reserve(external.value().size());
+        for (const auto& relative : external.value()) {
+            const auto combined =
+                (record->virtual_path.relative_path.parent_path() / relative).lexically_normal();
+            auto virtual_path = VirtualPath::parse(record->virtual_path.namespace_id + ":" +
+                                                   combined.generic_string());
+            if (!virtual_path) {
+                return core::Status::failure(
+                    "asset_catalog.invalid_discovered_dependency",
+                    "model dependency escapes its asset namespace or has an invalid path: " +
+                        record->logical_id + " -> " + relative.generic_string());
+            }
+            entry.dependencies.push_back(std::move(virtual_path).value());
+        }
+        discovered.push_back(std::move(entry));
+    }
+    for (auto& entry : discovered) {
+        auto status = catalog.set_dependencies(entry.logical_id, entry.source_kind, entry.source_id,
+                                               std::move(entry.dependencies));
+        if (!status) {
+            return status;
+        }
+    }
+    return core::Status::ok();
 }
 
 } // namespace heartstead::assets

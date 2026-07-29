@@ -119,6 +119,11 @@ ContentValidation::validate(const std::filesystem::path& mods_root,
             report.asset_catalog, entry.manifest, entry.asset_priority);
         append_diagnostics_move(report.diagnostics, std::move(indexed.diagnostics));
     }
+    auto dependency_status = assets::discover_asset_dependencies(report.asset_catalog);
+    if (!dependency_status) {
+        add_error(report, mods_root, dependency_status.error().code,
+                  dependency_status.error().message);
+    }
 
     for (const auto* prototype :
          report.registry.prototypes_of_kind(modding::PrototypeKinds::item)) {

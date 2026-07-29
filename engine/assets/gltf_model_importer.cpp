@@ -1,5 +1,7 @@
 #include "engine/assets/model_asset.hpp"
 
+#include "engine/assets/image_asset.hpp"
+
 #include <fastgltf/core.hpp>
 #include <fastgltf/tools.hpp>
 #include <fastgltf/types.hpp>
@@ -8,8 +10,11 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <unordered_map>
 #include <utility>
 
 namespace heartstead::assets {
@@ -169,6 +174,143 @@ namespace {
                     target_skin.inverse_bind_matrices[matrix_index] = model_matrix(matrix);
                 });
         }
+    }
+    return core::Status::ok();
+}
+
+[[nodiscard]] core::Result<std::span<const std::uint8_t>>
+image_source_bytes(const fastgltf::Asset& source, std::size_t image_index) {
+    if (image_index >= source.images.size()) {
+        return core::Result<std::span<const std::uint8_t>>::failure(
+            "gltf_import.image_out_of_bounds", "glTF texture references a missing image");
+    }
+    return std::visit(
+        [&](const auto& data) -> core::Result<std::span<const std::uint8_t>> {
+            using Source = std::remove_cvref_t<decltype(data)>;
+            if constexpr (std::is_same_v<Source, fastgltf::sources::BufferView>) {
+                if (data.bufferViewIndex >= source.bufferViews.size()) {
+                    return core::Result<std::span<const std::uint8_t>>::failure(
+                        "gltf_import.image_buffer_out_of_bounds",
+                        "glTF image references a missing buffer view");
+                }
+                const auto bytes =
+                    fastgltf::DefaultBufferDataAdapter{}(source, data.bufferViewIndex);
+                return core::Result<std::span<const std::uint8_t>>::success(
+                    {reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()});
+            } else if constexpr (std::is_same_v<Source, fastgltf::sources::Array>) {
+                return core::Result<std::span<const std::uint8_t>>::success(
+                    {reinterpret_cast<const std::uint8_t*>(data.bytes.data()), data.bytes.size()});
+            } else if constexpr (std::is_same_v<Source, fastgltf::sources::Vector>) {
+                return core::Result<std::span<const std::uint8_t>>::success(
+                    {reinterpret_cast<const std::uint8_t*>(data.bytes.data()), data.bytes.size()});
+            } else if constexpr (std::is_same_v<Source, fastgltf::sources::ByteView>) {
+                return core::Result<std::span<const std::uint8_t>>::success(
+                    {reinterpret_cast<const std::uint8_t*>(data.bytes.data()), data.bytes.size()});
+            } else {
+                return core::Result<std::span<const std::uint8_t>>::failure(
+                    "gltf_import.image_not_loaded",
+                    "glTF image source was not loaded into the model cooker");
+            }
+        },
+        source.images[image_index].data);
+}
+
+[[nodiscard]] core::Result<std::uint32_t>
+import_base_color_image(const fastgltf::Asset& source, std::size_t image_index, ModelAsset& target,
+                        std::unordered_map<std::size_t, std::uint32_t>& imported_images,
+                        const ModelAssetLimits& limits, std::size_t& total_image_bytes) {
+    const auto existing = imported_images.find(image_index);
+    if (existing != imported_images.end()) {
+        return core::Result<std::uint32_t>::success(existing->second);
+    }
+    if (target.images.size() >= limits.maximum_images) {
+        return core::Result<std::uint32_t>::failure(
+            "gltf_import.image_limit", "glTF referenced image count exceeds its configured limit");
+    }
+    auto bytes = image_source_bytes(source, image_index);
+    if (!bytes) {
+        return core::Result<std::uint32_t>::failure(bytes.error().code, bytes.error().message);
+    }
+    ImageAssetLimits image_limits;
+    image_limits.maximum_dimension = limits.maximum_image_dimension;
+    image_limits.maximum_decoded_bytes = limits.maximum_decoded_image_bytes - total_image_bytes;
+    auto decoded = decode_png_or_jpeg(bytes.value(), image_limits);
+    if (!decoded) {
+        return core::Result<std::uint32_t>::failure(decoded.error().code,
+                                                    "glTF base-color image could not be decoded: " +
+                                                        decoded.error().message);
+    }
+    auto name = model_name(source.images[image_index].name, "image", image_index, limits);
+    if (!name) {
+        return core::Result<std::uint32_t>::failure(name.error().code, name.error().message);
+    }
+    const auto runtime_index = static_cast<std::uint32_t>(target.images.size());
+    total_image_bytes += decoded.value().rgba8.size();
+    target.images.push_back({std::move(name).value(), decoded.value().width, decoded.value().height,
+                             std::move(decoded).value().rgba8});
+    imported_images.emplace(image_index, runtime_index);
+    return core::Result<std::uint32_t>::success(runtime_index);
+}
+
+[[nodiscard]] core::Status import_materials(const fastgltf::Asset& source, ModelAsset& target,
+                                            const ModelAssetLimits& limits) {
+    if (source.materials.size() > limits.maximum_materials) {
+        return core::Status::failure("gltf_import.material_limit",
+                                     "glTF material count exceeds its configured limit");
+    }
+    target.materials.reserve(source.materials.size());
+    std::unordered_map<std::size_t, std::uint32_t> imported_images;
+    std::size_t total_image_bytes = 0;
+    for (std::size_t index = 0; index < source.materials.size(); ++index) {
+        const auto& source_material = source.materials[index];
+        auto name = model_name(source_material.name, "material", index, limits);
+        if (!name) {
+            return core::Status::failure(name.error().code, name.error().message);
+        }
+        if (source_material.alphaMode == fastgltf::AlphaMode::Blend) {
+            return core::Status::failure(
+                "gltf_import.unsupported_alpha_blend",
+                "Asset Pipeline V1 supports opaque and masked glTF materials, not alpha blend");
+        }
+
+        ModelMaterial material;
+        material.name = std::move(name).value();
+        for (std::size_t component = 0; component < material.base_color_factor.size();
+             ++component) {
+            material.base_color_factor[component] =
+                static_cast<float>(source_material.pbrData.baseColorFactor[component]);
+        }
+        material.alpha_mode = source_material.alphaMode == fastgltf::AlphaMode::Mask
+                                  ? ModelAlphaMode::mask
+                                  : ModelAlphaMode::opaque;
+        material.alpha_cutoff = static_cast<float>(source_material.alphaCutoff);
+        material.double_sided = source_material.doubleSided;
+
+        if (source_material.pbrData.baseColorTexture.has_value()) {
+            const auto& texture_info = *source_material.pbrData.baseColorTexture;
+            if (texture_info.texCoordIndex != 0 || texture_info.transform != nullptr) {
+                return core::Status::failure(
+                    "gltf_import.unsupported_texture_coordinates",
+                    "Asset Pipeline V1 base-color textures require TEXCOORD_0 without transforms");
+            }
+            if (texture_info.textureIndex >= source.textures.size()) {
+                return core::Status::failure("gltf_import.texture_out_of_bounds",
+                                             "glTF material references a missing texture");
+            }
+            const auto& texture = source.textures[texture_info.textureIndex];
+            if (!texture.imageIndex.has_value()) {
+                return core::Status::failure(
+                    "gltf_import.unsupported_texture_source",
+                    "Asset Pipeline V1 base-color textures require a PNG or JPEG glTF image");
+            }
+            auto image = import_base_color_image(source, *texture.imageIndex, target,
+                                                 imported_images, limits, total_image_bytes);
+            if (!image) {
+                return core::Status::failure(image.error().code, image.error().message);
+            }
+            material.base_color_image = image.value();
+        }
+        target.materials.push_back(std::move(material));
     }
     return core::Status::ok();
 }
@@ -391,10 +533,18 @@ copy_optional_attribute(const fastgltf::Asset& source, const fastgltf::Primitive
             if (!name) {
                 return core::Status::failure(name.error().code, name.error().message);
             }
-            target.primitives.push_back({std::move(name).value(), first_vertex,
-                                         static_cast<std::uint32_t>(vertices.size()), first_index,
-                                         static_cast<std::uint32_t>(index_accessor.count),
-                                         static_cast<std::uint32_t>(node_index), skin_index});
+            auto material_index = no_model_index;
+            if (primitive.materialIndex.has_value()) {
+                if (*primitive.materialIndex >= target.materials.size()) {
+                    return core::Status::failure("gltf_import.material_out_of_bounds",
+                                                 "glTF primitive references a missing material");
+                }
+                material_index = static_cast<std::uint32_t>(*primitive.materialIndex);
+            }
+            target.primitives.push_back(
+                {std::move(name).value(), first_vertex, static_cast<std::uint32_t>(vertices.size()),
+                 first_index, static_cast<std::uint32_t>(index_accessor.count),
+                 static_cast<std::uint32_t>(node_index), skin_index, material_index});
             for (const auto& vertex : vertices) {
                 if (!has_bounds) {
                     target.bounds = {vertex.position, vertex.position};
@@ -546,6 +696,81 @@ animation_interpolation(fastgltf::AnimationInterpolation source) {
 
 } // namespace
 
+core::Result<std::vector<std::filesystem::path>>
+discover_gltf_external_dependencies(const std::filesystem::path& path,
+                                    const ModelAssetLimits& limits) {
+    auto limit_status = limits.validate();
+    if (!limit_status) {
+        return core::Result<std::vector<std::filesystem::path>>::failure(
+            limit_status.error().code, limit_status.error().message);
+    }
+    if (path.empty()) {
+        return core::Result<std::vector<std::filesystem::path>>::failure(
+            "gltf_import.missing_path", "glTF source path is required");
+    }
+    std::error_code file_error;
+    const auto file_size = std::filesystem::file_size(path, file_error);
+    if (file_error || file_size == 0 || file_size > limits.maximum_source_bytes) {
+        return core::Result<std::vector<std::filesystem::path>>::failure(
+            file_error ? "gltf_import.read_failed" : "gltf_import.source_limit",
+            file_error ? file_error.message()
+                       : "glTF source is empty or exceeds its configured byte limit");
+    }
+
+    auto data = fastgltf::GltfDataBuffer::FromPath(path);
+    if (data.error() != fastgltf::Error::None) {
+        auto failure = fastgltf_failure(data.error(), "failed to read glTF source");
+        return core::Result<std::vector<std::filesystem::path>>::failure(failure.error().code,
+                                                                         failure.error().message);
+    }
+    fastgltf::Parser parser;
+    auto parsed = parser.loadGltf(data.get(), path.parent_path(), fastgltf::Options::None);
+    if (parsed.error() != fastgltf::Error::None) {
+        auto failure = fastgltf_failure(parsed.error(), "failed to parse glTF dependencies");
+        return core::Result<std::vector<std::filesystem::path>>::failure(failure.error().code,
+                                                                         failure.error().message);
+    }
+
+    std::vector<std::filesystem::path> dependencies;
+    const auto collect = [&](const fastgltf::DataSource& source) -> core::Status {
+        const auto* uri_source = std::get_if<fastgltf::sources::URI>(&source);
+        if (uri_source == nullptr || uri_source->uri.isDataUri()) {
+            return core::Status::ok();
+        }
+        if (!uri_source->uri.valid() || !uri_source->uri.isLocalPath() ||
+            !uri_source->uri.query().empty() || !uri_source->uri.fragment().empty()) {
+            return core::Status::failure(
+                "gltf_import.external_uri_unsupported",
+                "glTF external dependencies must use plain relative local paths");
+        }
+        auto dependency = uri_source->uri.fspath();
+        if (dependency.empty() || dependency.is_absolute()) {
+            return core::Status::failure(
+                "gltf_import.external_uri_unsupported",
+                "glTF external dependencies must use non-empty relative paths");
+        }
+        dependencies.push_back(std::move(dependency));
+        return core::Status::ok();
+    };
+    for (const auto& buffer : parsed->buffers) {
+        auto status = collect(buffer.data);
+        if (!status) {
+            return core::Result<std::vector<std::filesystem::path>>::failure(
+                status.error().code, status.error().message);
+        }
+    }
+    for (const auto& image : parsed->images) {
+        auto status = collect(image.data);
+        if (!status) {
+            return core::Result<std::vector<std::filesystem::path>>::failure(
+                status.error().code, status.error().message);
+        }
+    }
+    std::ranges::sort(dependencies);
+    dependencies.erase(std::unique(dependencies.begin(), dependencies.end()), dependencies.end());
+    return core::Result<std::vector<std::filesystem::path>>::success(std::move(dependencies));
+}
+
 core::Result<ModelAsset> import_gltf_model(const std::filesystem::path& path,
                                            const ModelAssetLimits& limits) {
     auto limit_status = limits.validate();
@@ -570,9 +795,9 @@ core::Result<ModelAsset> import_gltf_model(const std::filesystem::path& path,
         return fastgltf_failure(data.error(), "failed to read glTF source");
     }
     fastgltf::Parser parser;
-    const auto options = fastgltf::Options::LoadExternalBuffers |
-                         fastgltf::Options::DecomposeNodeMatrices |
-                         fastgltf::Options::GenerateMeshIndices;
+    const auto options =
+        fastgltf::Options::LoadExternalBuffers | fastgltf::Options::LoadExternalImages |
+        fastgltf::Options::DecomposeNodeMatrices | fastgltf::Options::GenerateMeshIndices;
     auto parsed = parser.loadGltf(data.get(), path.parent_path(), options);
     if (parsed.error() != fastgltf::Error::None) {
         return fastgltf_failure(parsed.error(), "failed to parse glTF source");
@@ -598,6 +823,10 @@ core::Result<ModelAsset> import_gltf_model(const std::filesystem::path& path,
         return importer_failure(status.error().code, status.error().message);
     }
     status = import_skins(parsed.get(), result, limits);
+    if (!status) {
+        return importer_failure(status.error().code, status.error().message);
+    }
+    status = import_materials(parsed.get(), result, limits);
     if (!status) {
         return importer_failure(status.error().code, status.error().message);
     }

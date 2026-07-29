@@ -11,6 +11,7 @@
     },
     "fastgltf",
     "miniaudio",
+    "stb",
     {
       "name": "luau",
       "default-features": false

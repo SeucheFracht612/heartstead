@@ -88,6 +88,16 @@ std::vector<std::uint8_t> animated_triangle_buffer() {
     return bytes;
 }
 
+std::vector<std::uint8_t> one_pixel_png() {
+    return {
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+        0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00,
+        0x00, 0xb5, 0x1c, 0x0c, 0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78,
+        0xda, 0x63, 0x64, 0xf8, 0x0f, 0x00, 0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66,
+        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    };
+}
+
 std::string animated_triangle_gltf() {
     return R"({
   "asset":{"version":"2.0"},
@@ -100,8 +110,21 @@ std::string animated_triangle_gltf() {
   ],
   "meshes":[{"name":"player","primitives":[{
     "attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2,"JOINTS_0":3,"WEIGHTS_0":4},
-    "indices":5
+    "indices":5,
+    "material":0
   }]}],
+  "materials":[{
+    "name":"storybook_cloth",
+    "pbrMetallicRoughness":{
+      "baseColorFactor":[0.8,0.6,0.4,1.0],
+      "baseColorTexture":{"index":0}
+    },
+    "alphaMode":"MASK",
+    "alphaCutoff":0.25,
+    "doubleSided":true
+  }],
+  "textures":[{"source":0}],
+  "images":[{"name":"storybook_color","uri":"player.png"}],
   "skins":[{"name":"rig","inverseBindMatrices":6,"skeleton":1,"joints":[1,2]}],
   "animations":[{"name":"wave","samplers":[{
     "input":7,"output":8,"interpolation":"LINEAR"
@@ -155,8 +178,13 @@ void test_typed_gltf_import_and_codec() {
     std::filesystem::create_directories(root);
     const auto model_path = root / "player.gltf";
     write_file(root / "player.bin", animated_triangle_buffer());
+    write_file(root / "player.png", one_pixel_png());
     write_file(model_path, animated_triangle_gltf());
 
+    auto dependencies = heartstead::assets::discover_gltf_external_dependencies(model_path);
+    assert(dependencies);
+    assert(dependencies.value() ==
+           std::vector<std::filesystem::path>({"player.bin", "player.png"}));
     auto imported = heartstead::assets::import_gltf_model(model_path);
     assert(imported);
     assert(imported.value().vertices.size() == 3);
@@ -167,6 +195,17 @@ void test_typed_gltf_import_and_codec() {
     assert(imported.value().skins[0].joints == std::vector<std::uint32_t>({1, 2}));
     assert(imported.value().primitives.size() == 1);
     assert(imported.value().primitives[0].skin == 0);
+    assert(imported.value().primitives[0].material == 0);
+    assert(imported.value().images.size() == 1);
+    assert(imported.value().images[0].width == 1);
+    assert(imported.value().images[0].height == 1);
+    assert(imported.value().images[0].rgba8.size() == 4);
+    assert(imported.value().materials.size() == 1);
+    assert(imported.value().materials[0].name == "storybook_cloth");
+    assert(imported.value().materials[0].base_color_image == 0);
+    assert(imported.value().materials[0].alpha_mode == heartstead::assets::ModelAlphaMode::mask);
+    assert(imported.value().materials[0].alpha_cutoff == 0.25F);
+    assert(imported.value().materials[0].double_sided);
     assert(imported.value().animations.size() == 1);
     assert(imported.value().animations[0].name == "wave");
     assert(imported.value().animations[0].duration_seconds == 1.0F);
@@ -205,6 +244,12 @@ void test_base_storybook_player_asset() {
     assert(imported.value().indices.size() == 6);
     assert(imported.value().skins.size() == 1);
     assert(imported.value().skins.front().joints.size() == 2);
+    assert(imported.value().images.size() == 1);
+    assert(imported.value().images.front().width == 2);
+    assert(imported.value().images.front().height == 2);
+    assert(imported.value().materials.size() == 1);
+    assert(imported.value().primitives.front().material == 0);
+    assert(imported.value().materials.front().base_color_image == 0);
     assert(imported.value().animations.size() == 3);
     assert(imported.value().animations[0].name == "idle");
     assert(imported.value().animations[1].name == "walk");

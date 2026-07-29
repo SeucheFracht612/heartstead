@@ -59,6 +59,10 @@ struct AssetCatalogBuildResult {
 class AssetCatalog {
   public:
     [[nodiscard]] core::Status add(AssetRecord record);
+    [[nodiscard]] core::Status set_dependencies(std::string_view logical_id,
+                                                AssetSourceKind source_kind,
+                                                std::string_view source_id,
+                                                std::vector<VirtualPath> dependencies);
 
     [[nodiscard]] const AssetRecord* find_active(std::string_view logical_id) const noexcept;
     [[nodiscard]] std::vector<const AssetRecord*> records() const;
@@ -97,5 +101,6 @@ class AssetCatalogBuilder {
 [[nodiscard]] AssetKind infer_asset_kind(const std::filesystem::path& relative_path);
 [[nodiscard]] std::string asset_logical_id(const VirtualPath& path);
 [[nodiscard]] core::Result<std::filesystem::path> asset_logical_path(std::string_view logical_id);
+[[nodiscard]] core::Status discover_asset_dependencies(AssetCatalog& catalog);
 
 } // namespace heartstead::assets
