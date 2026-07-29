@@ -164,7 +164,7 @@ void test_fixed_step_and_input_codec() {
     platform::WindowInputSnapshot small_motion;
     small_motion.mouse_delta_x = 1;
     auto bounded = sampler.sample(small_motion, 1);
-    assert(bounded.yaw_centidegrees == 12);
+    assert(bounded.yaw_centidegrees == -12);
     assert(bounded.validate());
 
     sampler.set_look_sensitivity(movement::max_player_look_sensitivity_centidegrees_per_pixel);
@@ -191,6 +191,74 @@ void test_fixed_step_and_input_codec() {
     assert(!platform.is_key_down(window.value(), platform::KeyCode::w));
     assert(platform.was_key_released(window.value(), platform::KeyCode::w));
     assert(!platform.cursor_captured(window.value()));
+
+    movement::FixedStepPlayerInputScheduler scheduler;
+    platform::WindowInputSnapshot render_input;
+    render_input.down_keys = {platform::KeyCode::d, platform::KeyCode::space};
+    render_input.pressed_keys = {platform::KeyCode::space};
+    render_input.mouse_delta_x = 3;
+    std::vector<movement::PlayerInputFrame> scheduled_inputs;
+    for (std::uint32_t frame_index = 0; frame_index < 4; ++frame_index) {
+        auto scheduled = scheduler.advance(render_input, 4'167);
+        assert(scheduled);
+        scheduled_inputs.insert(scheduled_inputs.end(), scheduled.value().inputs.begin(),
+                                scheduled.value().inputs.end());
+        render_input.pressed_keys.clear();
+        render_input.mouse_delta_x = 0;
+    }
+    assert(scheduled_inputs.size() == 1);
+    assert(scheduled_inputs.front().tick == 1 && scheduled_inputs.front().sequence == 1);
+    assert(scheduled_inputs.front().move_x == 32'767);
+    assert(scheduled_inputs.front().yaw_centidegrees == -36);
+    assert(scheduled_inputs.front().pressed(movement::PlayerInputButton::jump));
+
+    auto catch_up_input = scheduler.advance(render_input, 33'334);
+    assert(catch_up_input && catch_up_input.value().inputs.size() == 2);
+    assert(catch_up_input.value().inputs[0].sequence == 2);
+    assert(catch_up_input.value().inputs[1].sequence == 3);
+    assert(!catch_up_input.value().inputs[0].pressed(movement::PlayerInputButton::jump));
+    assert(!catch_up_input.value().inputs[1].pressed(movement::PlayerInputButton::jump));
+
+    render_input.down_keys = {platform::KeyCode::w};
+    auto disabled_input = scheduler.advance(render_input, 16'667, false);
+    assert(disabled_input && disabled_input.value().inputs.size() == 1);
+    assert(disabled_input.value().inputs.front().move_x == 0);
+    assert(disabled_input.value().inputs.front().move_z == 0);
+}
+
+void test_lateral_input_matches_camera_right() {
+    auto yard = make_yard();
+    movement::VoxelCharacterCollisionWorld collision(yard.chunks, yard.palette);
+    movement::PlayerController controller;
+    const auto state = initial_state(4.5, 1.0, 4.5);
+
+    auto right_input = input(1, 0, 0, 32'767, 0);
+    auto moved_right = controller.tick(state, right_input, {}, collision);
+    assert(moved_right);
+    assert(moved_right.value().state.position.approximate_global().x <
+           state.position.approximate_global().x);
+
+    auto left_input = input(1, 0, 0, -32'767, 0);
+    auto moved_left = controller.tick(state, left_input, {}, collision);
+    assert(moved_left);
+    assert(moved_left.value().state.position.approximate_global().x >
+           state.position.approximate_global().x);
+
+    movement::PlayerCameraRig camera;
+    auto frame =
+        camera.evaluate(state, movement::PlayerCameraPerspective::first_person, 1280, 720);
+    assert(frame);
+    const auto eye = frame.value().position.local_offset;
+    const auto screen_right = frame.value().view *
+                              math::Vec4f{static_cast<float>(eye.x - 1.0),
+                                          static_cast<float>(eye.y),
+                                          static_cast<float>(eye.z), 1.0F};
+    const auto screen_left = frame.value().view *
+                             math::Vec4f{static_cast<float>(eye.x + 1.0),
+                                         static_cast<float>(eye.y),
+                                         static_cast<float>(eye.z), 1.0F};
+    assert(screen_right.x > 0.0F);
+    assert(screen_left.x < 0.0F);
 }
 
 void test_walk_jump_dash_and_step() {
@@ -263,7 +331,7 @@ void test_walk_jump_dash_and_step() {
     bool controller_reported_step = false;
     for (std::uint64_t tick = 1; tick <= 30; ++tick) {
         auto result =
-            controller.tick(controller_step_state, input(tick, 0, 0, 32'767, 0), {}, collision);
+            controller.tick(controller_step_state, input(tick, 0, 0, -32'767, 0), {}, collision);
         assert(result);
         controller_reported_step = controller_reported_step || result.value().diagnostics.stepped;
         assert(result.value().diagnostics.requested_displacement.x >=
@@ -344,7 +412,9 @@ void test_snapshot_prediction_camera_and_load() {
         std::string_view(binary_snapshot).substr(0, binary_snapshot.size() - 1)));
 
     movement::MovementPredictionBuffer prediction;
+    prediction.set_collision_world_revision(8);
     auto second_input = input(2, 0, 0, 0, 32'767);
+    second_input.yaw_centidegrees = -2'500;
     assert(prediction.record(second_input));
     auto predicted = controller.tick(state, second_input, {}, collision);
     assert(predicted);
@@ -354,6 +424,9 @@ void test_snapshot_prediction_camera_and_load() {
     assert(reconciled);
     assert(reconciled.value().replayed_input_count == 1);
     assert(reconciled.value().state.position == predicted.value().state.position);
+    assert(reconciled.value().state.yaw_centidegrees == second_input.yaw_centidegrees);
+    assert(reconciled.value().collision_world_revision_changed);
+    assert(!reconciled.value().hard_correction);
 
     movement::PlayerCameraRig camera;
     auto frame = camera.evaluate(state, movement::PlayerCameraPerspective::first_person, 1280, 720);
@@ -757,6 +830,7 @@ void test_determinism_far_world_store_and_load_normalization() {
 
 int main() {
     test_fixed_step_and_input_codec();
+    test_lateral_input_matches_camera_right();
     test_walk_jump_dash_and_step();
     test_roll_stamina_and_encumbrance();
     test_snapshot_prediction_camera_and_load();

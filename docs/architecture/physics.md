@@ -95,6 +95,13 @@ Implemented foundation:
 - Character movement
   - `ICharacterCollisionWorld` keeps the Souls-style player state machine independent of voxel and
     Jolt implementations
+  - `FixedStepPlayerInputScheduler` retains render-frame key edges and mouse deltas, then emits
+    exactly one input per simulation step, so prediction speed and server queue depth do not depend
+    on monitor refresh rate
+  - prediction reconciliation removes acknowledged sequences and replays the remainder against the
+    already-replicated client voxel world; collision-world revision changes do not discard pending
+    movement/look state, and correction distance is measured only after replay between equivalent
+    predicted states
   - the deterministic voxel implementation remains the headless and prediction reference
   - `PhysicsCharacterCollisionWorld` owns one backend virtual character per authoritative player
     and converts exact world positions through the same bounded physics-island frame as terrain
@@ -115,8 +122,6 @@ Implemented foundation:
     blocking; the local prediction client retains the latest tick for the Foundation overlay
   - `dev_game` selects Jolt for interactive sessions while deterministic headless smoke runs and
     dedicated-server fixtures retain the reference backend
-  - pressing F5 in `dev_game` throws a physical log from the camera and renders its synchronized
-    transform through the existing retained static-instance path
 
 This layer is deliberately separate from `engine/entities/`, `engine/world/`, and
 `engine/save/`. A saved entity, build piece, cargo object, or felled tree can reference

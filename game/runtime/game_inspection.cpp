@@ -133,6 +133,8 @@ debug::InspectionData GameInspector::inspect(const ClientRuntimeStats& stats) {
     add_field(data, "reconciled_input_count", std::to_string(stats.reconciled_input_count));
     add_field(data, "acknowledged_input_count", std::to_string(stats.acknowledged_input_count));
     add_field(data, "hard_correction_count", std::to_string(stats.hard_correction_count));
+    add_field(data, "collision_revision_change_count",
+              std::to_string(stats.collision_revision_change_count));
     add_field(data, "interpolated_player_count",
               std::to_string(stats.interpolated_player_count));
     add_field(data, "maximum_correction_distance",

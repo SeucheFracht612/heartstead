@@ -1,7 +1,10 @@
 #include "game/runtime/client_runtime.hpp"
 
+#include "engine/core/logging.hpp"
+
 #include <algorithm>
 #include <limits>
+#include <sstream>
 #include <utility>
 
 namespace heartstead::game {
@@ -39,6 +42,7 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render
     std::uint32_t reconciled_input_count = 0;
     std::uint32_t acknowledged_input_count = 0;
     std::uint32_t hard_correction_count = 0;
+    std::uint32_t collision_revision_change_count = 0;
     std::uint32_t interpolated_player_count = 0;
     double maximum_correction_distance = 0.0;
     player_tombstones_.clear();
@@ -153,6 +157,7 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render
                                                        authoritative.state.simulation_tick);
         if (authoritative.player_net_id == local_player_net_id_) {
             if (predicted_local_snapshot_.has_value() && prediction_collision_ != nullptr) {
+                const auto predicted_before = predicted_local_snapshot_->state;
                 auto reconciled = prediction_buffer_.reconcile(
                     predicted_local_snapshot_->state, authoritative, prediction_controller_, {},
                     *prediction_collision_);
@@ -168,6 +173,28 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render
                     std::max(maximum_correction_distance, reconciled.value().correction_distance);
                 if (reconciled.value().hard_correction) {
                     ++hard_correction_count;
+                    const auto predicted_position = predicted_before.position.approximate_global();
+                    const auto authoritative_position =
+                        authoritative.state.position.approximate_global();
+                    const auto reconciled_position =
+                        reconciled.value().state.position.approximate_global();
+                    std::ostringstream diagnostic;
+                    diagnostic << "movement hard correction distance="
+                               << reconciled.value().correction_distance << " predicted="
+                               << predicted_position.x << ',' << predicted_position.y << ','
+                               << predicted_position.z << " authoritative="
+                               << authoritative_position.x << ',' << authoritative_position.y << ','
+                               << authoritative_position.z << " reconciled="
+                               << reconciled_position.x << ',' << reconciled_position.y << ','
+                               << reconciled_position.z << " acknowledged="
+                               << reconciled.value().acknowledged_input_count << " replayed="
+                               << reconciled.value().replayed_input_count << " collision_revision="
+                               << prediction_buffer_.collision_world_revision() << "->"
+                               << authoritative.collision_world_revision;
+                    core::log(core::LogLevel::warning, diagnostic.str());
+                }
+                if (reconciled.value().collision_world_revision_changed) {
+                    ++collision_revision_change_count;
                 }
                 predicted_local_snapshot_ = authoritative;
                 predicted_local_snapshot_->state = std::move(reconciled).value().state;
@@ -244,6 +271,7 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render
     stats.reconciled_input_count = reconciled_input_count;
     stats.acknowledged_input_count = acknowledged_input_count;
     stats.hard_correction_count = hard_correction_count;
+    stats.collision_revision_change_count = collision_revision_change_count;
     stats.interpolated_player_count = interpolated_player_count;
     stats.maximum_correction_distance = maximum_correction_distance;
     stats.chunk_snapshot_slice_count = completed_chunks.value().slice_count;

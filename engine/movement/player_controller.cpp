@@ -168,7 +168,9 @@ void update_locomotion_animation(const PlayerControllerState& previous,
 
 [[nodiscard]] math::Vec3d input_direction(const PlayerInputFrame& input) noexcept {
     const auto forward = facing_direction(input.yaw_centidegrees);
-    const math::Vec3d right{forward.z, 0.0, -forward.x};
+    // Match the renderer's camera-right direction. With yaw zero the player looks toward +Z,
+    // which makes screen-right point toward world -X in the renderer's right-handed view.
+    const math::Vec3d right{-forward.z, 0.0, forward.x};
     const auto x = static_cast<double>(input.move_x) / 32'767.0;
     const auto z = static_cast<double>(input.move_z) / 32'767.0;
     const auto value = right * x + forward * z;

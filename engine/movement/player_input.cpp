@@ -52,6 +52,21 @@ template <typename T>
     return static_cast<std::int16_t>(std::lround(std::clamp(value, minimum, maximum)));
 }
 
+[[nodiscard]] std::int32_t clamp_mouse_delta(std::int64_t value) noexcept {
+    return static_cast<std::int32_t>(
+        std::clamp(value, static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::min()),
+                   static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max())));
+}
+
+void append_unique_keys(std::vector<platform::KeyCode>& destination,
+                        const std::vector<platform::KeyCode>& source) {
+    for (const auto key : source) {
+        if (!contains(destination, key)) {
+            destination.push_back(key);
+        }
+    }
+}
+
 } // namespace
 
 core::Status PlayerInputFrame::validate() const {
@@ -161,7 +176,9 @@ PlayerInputFrame PlayerInputSampler::sample(const platform::WindowInputSnapshot&
         z *= 32'767;
     }
 
-    const auto yaw_delta = static_cast<double>(snapshot.mouse_delta_x) * look_sensitivity_;
+    // The renderer's view convention has camera-right opposite world +X while yaw zero faces
+    // world +Z. A rightward mouse motion must therefore decrease player yaw.
+    const auto yaw_delta = -static_cast<double>(snapshot.mouse_delta_x) * look_sensitivity_;
     const auto pitch_delta = static_cast<double>(snapshot.mouse_delta_y) * look_sensitivity_;
     const auto next_yaw = yaw_centidegrees_ + yaw_delta;
     const auto next_pitch = pitch_centidegrees_ - pitch_delta;
@@ -214,6 +231,77 @@ void PlayerInputSampler::set_orientation(double yaw_centidegrees,
     }
     yaw_centidegrees_ = std::remainder(yaw_centidegrees, 36'000.0);
     pitch_centidegrees_ = std::clamp(pitch_centidegrees, -8'900.0, 8'900.0);
+}
+
+FixedStepPlayerInputScheduler::FixedStepPlayerInputScheduler(
+    simulation::FixedStepConfig fixed_step, PlayerInputBindings bindings)
+    : fixed_step_(fixed_step), sampler_(bindings) {}
+
+core::Result<FixedStepPlayerInputFrame>
+FixedStepPlayerInputScheduler::advance(const platform::WindowInputSnapshot& snapshot,
+                                       std::uint64_t frame_time_us, bool gameplay_enabled) {
+    accumulate(snapshot, gameplay_enabled);
+    auto fixed_frame = fixed_step_.advance(frame_time_us);
+    if (!fixed_frame) {
+        return core::Result<FixedStepPlayerInputFrame>::failure(fixed_frame.error().code,
+                                                                fixed_frame.error().message);
+    }
+
+    FixedStepPlayerInputFrame result;
+    result.fixed_step = fixed_frame.value();
+    result.inputs.reserve(result.fixed_step.step_count);
+    for (std::uint32_t step = 0; step < result.fixed_step.step_count; ++step) {
+        platform::WindowInputSnapshot sampled;
+        sampled.window_id = snapshot.window_id;
+        sampled.down_keys = down_keys_;
+        if (step == 0) {
+            sampled.pressed_keys = pressed_keys_;
+            sampled.mouse_delta_x = clamp_mouse_delta(mouse_delta_x_);
+            sampled.mouse_delta_y = clamp_mouse_delta(mouse_delta_y_);
+        }
+        result.inputs.push_back(
+            sampler_.sample(sampled, result.fixed_step.first_tick + step, step == 0));
+    }
+    if (result.fixed_step.step_count > 0) {
+        pressed_keys_.clear();
+        mouse_delta_x_ = 0;
+        mouse_delta_y_ = 0;
+    }
+    return core::Result<FixedStepPlayerInputFrame>::success(std::move(result));
+}
+
+void FixedStepPlayerInputScheduler::set_look_sensitivity(
+    double centidegrees_per_pixel) noexcept {
+    sampler_.set_look_sensitivity(centidegrees_per_pixel);
+}
+
+void FixedStepPlayerInputScheduler::set_orientation(double yaw_centidegrees,
+                                                    double pitch_centidegrees) noexcept {
+    sampler_.set_orientation(yaw_centidegrees, pitch_centidegrees);
+}
+
+void FixedStepPlayerInputScheduler::accumulate(
+    const platform::WindowInputSnapshot& snapshot, bool gameplay_enabled) {
+    if (!gameplay_enabled) {
+        down_keys_.clear();
+        pressed_keys_.clear();
+        mouse_delta_x_ = 0;
+        mouse_delta_y_ = 0;
+        return;
+    }
+    down_keys_ = snapshot.down_keys;
+    append_unique_keys(pressed_keys_, snapshot.pressed_keys);
+    const auto saturating_add = [](std::int64_t current, std::int32_t delta) {
+        if (delta > 0 && current > std::numeric_limits<std::int64_t>::max() - delta) {
+            return std::numeric_limits<std::int64_t>::max();
+        }
+        if (delta < 0 && current < std::numeric_limits<std::int64_t>::min() - delta) {
+            return std::numeric_limits<std::int64_t>::min();
+        }
+        return current + delta;
+    };
+    mouse_delta_x_ = saturating_add(mouse_delta_x_, snapshot.mouse_delta_x);
+    mouse_delta_y_ = saturating_add(mouse_delta_y_, snapshot.mouse_delta_y);
 }
 
 } // namespace heartstead::movement

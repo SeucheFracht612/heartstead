@@ -38,6 +38,7 @@ struct ClientRuntimeStats {
     std::uint32_t reconciled_input_count = 0;
     std::uint32_t acknowledged_input_count = 0;
     std::uint32_t hard_correction_count = 0;
+    std::uint32_t collision_revision_change_count = 0;
     std::uint32_t interpolated_player_count = 0;
     double maximum_correction_distance = 0.0;
     std::uint32_t chunk_snapshot_slice_count = 0;

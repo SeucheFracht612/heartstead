@@ -179,12 +179,16 @@ struct DevGameMode::Impl {
     bool audio_presentation_initialized = false;
     std::unique_ptr<game::GameUiLayer> game_ui;
     input::InputActionMap actions = input::InputActionMap::gameplay_defaults();
-    movement::PlayerInputSampler input_sampler;
+    movement::FixedStepPlayerInputScheduler input_scheduler;
+    movement::PlayerInputFrame last_player_input;
+    bool input_orientation_initialized = false;
     movement::PlayerCameraRig camera_rig;
     renderer::DayNightCycleConfig environment;
-    std::uint64_t input_tick = 0;
     std::uint64_t frame_count = 0;
     std::uint64_t authoritative_tick = 0;
+    std::uint64_t reconciliation_hard_corrections = 0;
+    std::uint64_t reconciliation_collision_revision_changes = 0;
+    double maximum_reconciliation_distance = 0.0;
     bool local_client_connected = false;
     movement::PlayerCameraPerspective camera_perspective =
         movement::PlayerCameraPerspective::third_person;
@@ -335,7 +339,10 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
     if (!initial_ui) {
         return core::Status::failure(initial_ui.error().code, initial_ui.error().message);
     }
-    state.input_sampler.set_orientation(0.0, -2'000.0);
+    if (!state.loaded_existing_save && !state.config.connect_endpoint.has_value()) {
+        state.input_scheduler.set_orientation(0.0, -2'000.0);
+        state.input_orientation_initialized = true;
+    }
     return services.set_cursor_capture(true);
 }
 
@@ -432,19 +439,26 @@ DevGameMode::update(game::GameApplicationServices& services,
         state.debug_geometry_visible = !state.debug_geometry_visible;
     }
 
-    auto player_input = state.input_sampler.sample(*frame.input, ++state.input_tick);
     const auto* previous_player = state.runtime.session()->client()->local_player_snapshot();
-    if (ui_input.value().consumed.blocks_gameplay && previous_player != nullptr) {
-        player_input.move_x = 0;
-        player_input.move_z = 0;
-        player_input.yaw_centidegrees = previous_player->state.yaw_centidegrees;
-        player_input.pitch_centidegrees = previous_player->state.pitch_centidegrees;
-        player_input.held_buttons = 0;
-        player_input.pressed_buttons = 0;
+    if (previous_player != nullptr && !state.input_orientation_initialized) {
+        state.input_scheduler.set_orientation(previous_player->state.yaw_centidegrees,
+                                              previous_player->state.pitch_centidegrees);
+        state.input_orientation_initialized = true;
     }
-    if (state.runtime.session()->client()->is_connected() && previous_player != nullptr) {
-        auto status =
-            state.runtime.session()->submit_player_input(player_input, frame.now_milliseconds);
+    auto scheduled_input =
+        state.input_scheduler.advance(*frame.input, frame.delta_microseconds,
+                                      !ui_input.value().consumed.blocks_gameplay);
+    if (!scheduled_input) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(
+            scheduled_input.error().code, scheduled_input.error().message);
+    }
+    for (const auto& player_input : scheduled_input.value().inputs) {
+        state.last_player_input = player_input;
+        if (!state.runtime.session()->client()->is_connected() || previous_player == nullptr) {
+            continue;
+        }
+        auto status = state.runtime.session()->submit_player_input(player_input,
+                                                                   frame.now_milliseconds);
         if (!status) {
             return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
                                                                            status.error().message);
@@ -457,7 +471,22 @@ DevGameMode::update(game::GameApplicationServices& services,
         return core::Result<game::GameApplicationFrameOutput>::failure(
             runtime_frame.error().code, runtime_frame.error().message);
     }
+    if (runtime_frame.value().fixed_step.step_count !=
+            scheduled_input.value().fixed_step.step_count ||
+        runtime_frame.value().fixed_step.first_tick !=
+            scheduled_input.value().fixed_step.first_tick) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(
+            "dev_game.input_clock_desynchronized",
+            "player input scheduling diverged from the authoritative fixed-step clock");
+    }
     state.authoritative_tick = runtime_frame.value().authoritative_world_tick;
+    state.reconciliation_hard_corrections +=
+        runtime_frame.value().client.hard_correction_count;
+    state.reconciliation_collision_revision_changes +=
+        runtime_frame.value().client.collision_revision_change_count;
+    state.maximum_reconciliation_distance =
+        std::max(state.maximum_reconciliation_distance,
+                 runtime_frame.value().client.maximum_correction_distance);
     state.local_client_connected = state.runtime.session()->client()->is_connected();
     auto persistence_status = update_persistence(state.authoritative_tick);
     if (!persistence_status) {
@@ -830,7 +859,9 @@ DevGameMode::update(game::GameApplicationServices& services,
                  << (state.camera_perspective == movement::PlayerCameraPerspective::third_person
                          ? "third-person"
                          : "first-person")
-                 << " [F1] | geometry " << (state.debug_geometry_visible ? "on" : "off")
+                 << " yaw/pitch " << player->state.yaw_centidegrees * 0.01 << '/'
+                 << player->state.pitch_centidegrees * 0.01
+                 << " [F1 toggle] | geometry " << (state.debug_geometry_visible ? "on" : "off")
                  << " [F4]\n"
                  << "boom " << camera_frame.value().actual_boom_distance << " / "
                  << camera_frame.value().desired_boom_distance
@@ -851,7 +882,10 @@ DevGameMode::update(game::GameApplicationServices& services,
                  << "support " << support_text << " | normal "
                  << (support.value().has_value() ? "0,1,0" : "none") << '\n'
                  << "collision " << collision_text << " | player token "
-                 << player->collision_world_revision << '\n'
+                 << player->collision_world_revision << " | reconcile hard/revision "
+                 << state.reconciliation_hard_corrections << '/'
+                 << state.reconciliation_collision_revision_changes << " max "
+                 << state.maximum_reconciliation_distance << "m\n"
                  << "locomotion "
                  << animation::locomotion_animation_kind_name(
                         player->state.locomotion_animation.kind)
@@ -894,8 +928,8 @@ DevGameMode::update(game::GameApplicationServices& services,
                  << footstep_stats.emitted_footsteps << '/' << footstep_stats.surface_footsteps
                  << '/' << footstep_stats.default_footsteps << '/'
                  << footstep_stats.dropped_footsteps << '\n'
-                 << "input " << player_input.move_x << ", " << player_input.move_z << " | selected "
-                 << selection_text << '\n'
+                 << "input " << state.last_player_input.move_x << ", "
+                 << state.last_player_input.move_z << " | selected " << selection_text << '\n'
                  << "last command " << command_text << " | last error " << last_error_code;
             const auto diagnostic_text = text.str();
             renderer::UiQuadDesc panel;

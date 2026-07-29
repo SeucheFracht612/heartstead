@@ -2,10 +2,12 @@
 
 #include "engine/core/result.hpp"
 #include "engine/platform/platform.hpp"
+#include "engine/simulation/fixed_step.hpp"
 
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace heartstead::movement {
 
@@ -76,6 +78,35 @@ class PlayerInputSampler {
     double yaw_centidegrees_ = 0.0;
     double pitch_centidegrees_ = 0.0;
     double look_sensitivity_ = 12.0;
+};
+
+struct FixedStepPlayerInputFrame {
+    simulation::FixedStepFrame fixed_step;
+    std::vector<PlayerInputFrame> inputs;
+};
+
+// Collects render-frame input and emits exactly one movement input per simulation step. This
+// prevents prediction speed and input queue depth from depending on the render frame rate.
+class FixedStepPlayerInputScheduler {
+  public:
+    explicit FixedStepPlayerInputScheduler(simulation::FixedStepConfig fixed_step = {},
+                                           PlayerInputBindings bindings = {});
+
+    [[nodiscard]] core::Result<FixedStepPlayerInputFrame>
+    advance(const platform::WindowInputSnapshot& snapshot, std::uint64_t frame_time_us,
+            bool gameplay_enabled = true);
+    void set_look_sensitivity(double centidegrees_per_pixel) noexcept;
+    void set_orientation(double yaw_centidegrees, double pitch_centidegrees) noexcept;
+
+  private:
+    void accumulate(const platform::WindowInputSnapshot& snapshot, bool gameplay_enabled);
+
+    simulation::FixedStepClock fixed_step_;
+    PlayerInputSampler sampler_;
+    std::vector<platform::KeyCode> down_keys_;
+    std::vector<platform::KeyCode> pressed_keys_;
+    std::int64_t mouse_delta_x_ = 0;
+    std::int64_t mouse_delta_y_ = 0;
 };
 
 } // namespace heartstead::movement

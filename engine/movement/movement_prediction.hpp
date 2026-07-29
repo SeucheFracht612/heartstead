@@ -74,6 +74,7 @@ struct ReconciliationResult {
     std::size_t acknowledged_input_count = 0;
     double correction_distance = 0.0;
     bool hard_correction = false;
+    bool collision_world_revision_changed = false;
 };
 
 class MovementPredictionBuffer {
@@ -89,6 +90,7 @@ class MovementPredictionBuffer {
     void clear() noexcept;
 
     [[nodiscard]] std::size_t size() const noexcept;
+    [[nodiscard]] std::uint64_t collision_world_revision() const noexcept;
     [[nodiscard]] std::vector<PlayerInputFrame> unacknowledged() const;
 
   private:

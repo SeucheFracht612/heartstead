@@ -290,9 +290,9 @@ window to exit. See [`docs/dev/build_instructions.md`](docs/dev/build_instructio
 rebuild commands and validation details.
 
 The interactive development game uses the same terrain renderer with Jolt-backed movement. Press
-F5 to throw a physical log from the camera and watch its authoritative body settle. Press `Tab`
-to open the inventory, drag with the left mouse button to move a full stack, and use the right
-mouse button to split a stack:
+`F1` to switch between first- and third-person cameras, `F3` for diagnostics, and `F4` for
+controller geometry. Press `Tab` to open the inventory, drag with the left mouse button to move a
+full stack, and use the right mouse button to split a stack:
 
 ```bash
 ./build/default-debug/apps/dev_game/heartstead_dev_game

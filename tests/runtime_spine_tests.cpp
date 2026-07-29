@@ -748,6 +748,88 @@ void test_jolt_runtime_moves_on_cooked_terrain() {
     assert(runtime.shutdown());
 }
 
+void test_collision_revision_preserves_pending_look_and_position() {
+    if (!physics::physics_backend_info(physics::PhysicsBackend::jolt).available) {
+        return;
+    }
+    const auto report = content::ContentValidation::validate(source_root());
+    assert(!report.has_errors());
+    auto runtime = make_runtime(report);
+    game::RuntimeConfiguration config;
+    config.physics_backend = physics::PhysicsBackend::jolt;
+    assert(runtime.start_session(config, make_session_request(report)));
+    auto* session = runtime.session();
+    assert(session != nullptr && session->server() != nullptr && session->client() != nullptr);
+
+    std::int64_t now_ms = 0;
+    for (std::uint32_t attempt = 0;
+         attempt < 100 && session->server()->chunk_collision().find({0, 0, 0}) == nullptr;
+         ++attempt) {
+        now_ms += 17;
+        assert(runtime.run_frame({16'667, now_ms}));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    assert(session->server()->chunk_collision().find({0, 0, 0}) != nullptr);
+
+    movement::PlayerInputFrame input;
+    input.tick = 1;
+    input.sequence = 1;
+    input.yaw_centidegrees = -3'500;
+    assert(session->submit_player_input(input, now_ms));
+    now_ms += 17;
+    auto oriented = runtime.run_frame({16'667, now_ms});
+    assert(oriented);
+    const auto* before = session->client()->local_player_snapshot();
+    assert(before != nullptr && before->state.yaw_centidegrees == input.yaw_centidegrees);
+    const auto before_position = before->state.position;
+    const auto before_collision_revision = before->collision_world_revision;
+
+    constexpr world::BlockCoord edit{8, 0, 10};
+    const auto cell_before = session->server()->world().chunks().get(
+        world::chunk_coord_for_block(edit), world::local_coord_for_block(edit));
+    assert(cell_before && !cell_before.value().is_air());
+    input.tick = 2;
+    input.sequence = 2;
+    assert(session->submit_player_input(input, now_ms));
+    assert(session->submit_remove_voxel({edit}, now_ms));
+    now_ms += 17;
+    auto edited = runtime.run_frame({16'667, now_ms});
+    assert(edited);
+    assert(!edited.value().server_ticks.empty());
+    assert(!edited.value().server_ticks.front().commands.command_reports.empty());
+    assert(edited.value().server_ticks.front().commands.command_reports.front().success);
+
+    std::uint32_t hard_corrections = edited.value().client.hard_correction_count;
+    std::uint32_t collision_revision_changes =
+        edited.value().client.collision_revision_change_count;
+    double maximum_correction = edited.value().client.maximum_correction_distance;
+    for (std::uint64_t sequence = 3;
+         sequence <= 60 && collision_revision_changes == 0; ++sequence) {
+        input.tick = sequence;
+        input.sequence = sequence;
+        assert(session->submit_player_input(input, now_ms));
+        now_ms += 17;
+        auto frame = runtime.run_frame({16'667, now_ms});
+        assert(frame);
+        hard_corrections += frame.value().client.hard_correction_count;
+        collision_revision_changes += frame.value().client.collision_revision_change_count;
+        maximum_correction =
+            std::max(maximum_correction, frame.value().client.maximum_correction_distance);
+    }
+
+    const auto* after = session->client()->local_player_snapshot();
+    assert(after != nullptr);
+    assert(after->collision_world_revision > before_collision_revision);
+    assert(after->state.yaw_centidegrees == input.yaw_centidegrees);
+    assert(collision_revision_changes > 0);
+    assert(hard_corrections == 0);
+    assert(maximum_correction < 0.05);
+    const auto displacement =
+        after->state.position.relative_to(before_position.anchor) - before_position.local_offset;
+    assert(math::length(displacement) < 0.05);
+    assert(runtime.shutdown());
+}
+
 void test_boundary_voxel_edit_rebuilds_collision_and_removes_support() {
     if (!physics::physics_backend_info(physics::PhysicsBackend::jolt).available) {
         return;
@@ -1928,6 +2010,7 @@ int main() {
     test_external_listen_runtime_uses_true_remote_endpoint();
     test_two_remote_clients_predict_and_interpolate();
     test_jolt_runtime_moves_on_cooked_terrain();
+    test_collision_revision_preserves_pending_look_and_position();
     test_boundary_voxel_edit_rebuilds_collision_and_removes_support();
     test_jolt_runtime_drops_settles_and_restores_physical_resource();
     test_authoritative_player_input_moves_and_replicates();

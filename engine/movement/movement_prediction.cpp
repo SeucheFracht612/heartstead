@@ -628,22 +628,19 @@ core::Result<ReconciliationResult> MovementPredictionBuffer::reconcile(
                                                            status.error().message);
     }
     ReconciliationResult result;
-    result.correction_distance =
-        position_distance(predicted.position, authoritative.state.position);
-    result.hard_correction = result.correction_distance > 2.0;
     result.state = authoritative.state;
     while (!inputs_.empty() &&
            inputs_.front().sequence <= authoritative.last_processed_input_sequence) {
         inputs_.pop_front();
         ++result.acknowledged_input_count;
     }
-    if (collision_world_revision_ != 0 && authoritative.collision_world_revision != 0 &&
-        collision_world_revision_ != authoritative.collision_world_revision) {
-        result.acknowledged_input_count += inputs_.size();
-        inputs_.clear();
-        result.hard_correction = true;
-        return core::Result<ReconciliationResult>::success(std::move(result));
-    }
+    result.collision_world_revision_changed =
+        collision_world_revision_ != 0 && authoritative.collision_world_revision != 0 &&
+        collision_world_revision_ != authoritative.collision_world_revision;
+    // Client voxel replication is applied before movement snapshots are reconciled. A server
+    // collision-world revision change therefore does not invalidate the input identities or look
+    // state. Replaying against the client's current voxel world avoids a one-frame position/yaw
+    // snap whenever an accepted block edit changes collision geometry.
     for (const auto& input : inputs_) {
         if (result.state.simulation_tick == std::numeric_limits<std::uint64_t>::max()) {
             return core::Result<ReconciliationResult>::failure(
@@ -663,6 +660,11 @@ core::Result<ReconciliationResult> MovementPredictionBuffer::reconcile(
         result.state = std::move(replayed).value().state;
         ++result.replayed_input_count;
     }
+    // Compare equivalent predicted states after acknowledgements have been removed and remaining
+    // inputs replayed. Comparing against the older raw authoritative state incorrectly reports
+    // ordinary prediction lead under latency as a correction.
+    result.correction_distance = position_distance(predicted.position, result.state.position);
+    result.hard_correction = result.correction_distance > 2.0;
     return core::Result<ReconciliationResult>::success(std::move(result));
 }
 
@@ -672,6 +674,10 @@ void MovementPredictionBuffer::clear() noexcept {
 
 std::size_t MovementPredictionBuffer::size() const noexcept {
     return inputs_.size();
+}
+
+std::uint64_t MovementPredictionBuffer::collision_world_revision() const noexcept {
+    return collision_world_revision_;
 }
 
 std::vector<PlayerInputFrame> MovementPredictionBuffer::unacknowledged() const {
