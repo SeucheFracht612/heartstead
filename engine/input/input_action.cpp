@@ -70,7 +70,6 @@ InputActionMap InputActionMap::gameplay_defaults() {
     add_key(InputAction::hotbar_7, platform::KeyCode::digit_7);
     add_key(InputAction::hotbar_8, platform::KeyCode::digit_8);
     add_key(InputAction::hotbar_9, platform::KeyCode::digit_9);
-    add_key(InputAction::drop_item, platform::KeyCode::f5);
     add_key(InputAction::toggle_debug, platform::KeyCode::f3);
     add_key(InputAction::toggle_camera, platform::KeyCode::f1);
     add_key(InputAction::toggle_debug_geometry, platform::KeyCode::f4);
@@ -189,11 +188,18 @@ InputActionFrame InputActionMap::evaluate(const platform::WindowInputSnapshot& i
 
 std::string_view input_action_name(InputAction action) noexcept {
     constexpr std::array names{
-        "move_forward",   "move_backward",    "move_left",      "move_right",     "jump",
-        "sprint",         "crouch",           "dash",           "roll",           "interact",
-        "primary_action", "secondary_action", "open_inventory", "close_or_pause", "hotbar_1",
-        "hotbar_2",       "hotbar_3",         "hotbar_4",       "hotbar_5",       "hotbar_6",
-        "hotbar_7",       "hotbar_8",         "hotbar_9",       "drop_item",      "toggle_debug",
+        "move_forward",   "move_backward",
+        "move_left",      "move_right",
+        "jump",           "sprint",
+        "crouch",         "dash",
+        "roll",           "interact",
+        "primary_action", "secondary_action",
+        "open_inventory", "close_or_pause",
+        "hotbar_1",       "hotbar_2",
+        "hotbar_3",       "hotbar_4",
+        "hotbar_5",       "hotbar_6",
+        "hotbar_7",       "hotbar_8",
+        "hotbar_9",       "toggle_debug",
         "toggle_camera",  "toggle_debug_geometry",
     };
     const auto action_index = index(action);
