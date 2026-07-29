@@ -24,6 +24,7 @@ struct LaunchOptions {
     std::optional<std::filesystem::path> save_root;
     std::int64_t autosave_interval_ms = 30'000;
     bool disable_persistence = false;
+    bool diagnostic_asset_fallbacks = false;
     bool help = false;
 };
 
@@ -97,6 +98,8 @@ struct LaunchOptions {
             options.autosave_interval_ms = static_cast<std::int64_t>(seconds.value() * 1'000);
         } else if (argument == "--no-save") {
             options.disable_persistence = true;
+        } else if (argument == "--diagnostic-asset-fallbacks") {
+            options.diagnostic_asset_fallbacks = true;
         } else {
             return core::Result<LaunchOptions>::failure("dev_game.unknown_option",
                                                         "unknown option: " + std::string(argument));
@@ -118,11 +121,12 @@ void print_usage(const char* executable, std::ostream& output) {
     output << "usage: " << executable
            << " [--headless] [--frames N] [--native-frames N]"
               " [--connect ADDRESS:PORT] [--save DIRECTORY]"
-              " [--autosave-seconds N] [--no-save]\n"
+              " [--autosave-seconds N] [--no-save] [--diagnostic-asset-fallbacks]\n"
            << "       --frames implies --headless for deterministic smoke runs\n"
            << "       --native-frames bounds a real windowed smoke run\n"
            << "       normal local launches persist to saves/foundation_slice_0_1\n"
-           << "       bounded/headless runs persist only when --save is supplied\n";
+           << "       bounded/headless runs persist only when --save is supplied\n"
+           << "       --diagnostic-asset-fallbacks injects visible model/animation/audio probes\n";
 }
 
 int fail(const core::Error& error) {
@@ -178,6 +182,7 @@ int main(int argc, char** argv) {
         mode_config.connect_endpoint = options.connect_endpoint;
         mode_config.autosave_interval_ms = options.autosave_interval_ms;
         mode_config.headless = options.headless;
+        mode_config.diagnostic_asset_fallbacks = options.diagnostic_asset_fallbacks;
         if (!options.disable_persistence && !options.connect_endpoint.has_value()) {
             if (options.save_root.has_value()) {
                 mode_config.save_root = options.save_root;

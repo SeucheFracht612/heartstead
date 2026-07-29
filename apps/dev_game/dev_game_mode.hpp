@@ -21,6 +21,7 @@ struct DevGameModeConfig {
     std::optional<net::TransportEndpoint> connect_endpoint;
     std::int64_t autosave_interval_ms = 30'000;
     bool headless = false;
+    bool diagnostic_asset_fallbacks = false;
 };
 
 class DevGameMode final : public game::IGameApplicationMode {

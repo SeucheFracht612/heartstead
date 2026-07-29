@@ -2,6 +2,7 @@
 
 #include "engine/assets/cooked_asset_store.hpp"
 #include "engine/content/content_validation.hpp"
+#include "engine/entities/entity_visual.hpp"
 #include "engine/input/input_action.hpp"
 #include "engine/movement/player_camera.hpp"
 #include "engine/movement/player_input.hpp"
@@ -90,10 +91,64 @@ namespace {
     return runtime.start_session(config, std::move(request));
 }
 
+[[nodiscard]] core::Status add_asset_fallback_diagnostics(
+    entities::VisualDefinitionRegistry& definitions) {
+    const auto missing_model_visual = core::PrototypeId::parse("diagnostic:visuals/missing_model");
+    const auto missing_model_entity = core::PrototypeId::parse("diagnostic:entities/missing_model");
+    const auto missing_animation_visual =
+        core::PrototypeId::parse("diagnostic:visuals/missing_animation");
+    const auto missing_animation_entity =
+        core::PrototypeId::parse("diagnostic:entities/missing_animation");
+    if (!missing_model_visual || !missing_model_entity || !missing_animation_visual ||
+        !missing_animation_entity) {
+        return core::Status::failure("dev_game.invalid_asset_fallback_probe",
+                                     "diagnostic asset fallback ids are invalid");
+    }
+
+    entities::EntityVisualDefinition missing_model;
+    missing_model.id = *missing_model_visual;
+    missing_model.entity_prototype = *missing_model_entity;
+    missing_model.model_asset = "diagnostic:models/missing.gltf";
+    missing_model.cast_shadow = false;
+    auto status = definitions.add(std::move(missing_model));
+    if (!status) {
+        return status;
+    }
+
+    entities::EntityVisualDefinition missing_animation;
+    missing_animation.id = *missing_animation_visual;
+    missing_animation.entity_prototype = *missing_animation_entity;
+    missing_animation.model_asset = "base:models/entities/storybook_player.gltf";
+    missing_animation.animation_clips.emplace("idle", "idle");
+    missing_animation.cast_shadow = false;
+    return definitions.add(std::move(missing_animation));
+}
+
+[[nodiscard]] game::RenderObjectSnapshot
+asset_fallback_probe_object(std::uint32_t index, std::uint64_t net_id,
+                            std::string_view visual_prototype, double x,
+                            animation::LocomotionAnimationKind locomotion) {
+    game::RenderObjectSnapshot object;
+    object.id = game::PresentationObjectId::from_parts(index, 1);
+    object.source_net_id = core::NetId::from_value(net_id);
+    object.visual_prototype = *core::PrototypeId::parse(visual_prototype);
+    object.current_transform.position = {x, 1.0, 10.5};
+    object.previous_transform = object.current_transform;
+    object.current_locomotion.kind = locomotion;
+    object.previous_locomotion = object.current_locomotion;
+    object.local_bounds = {{-0.5F, 0.0F, -0.5F}, {0.5F, 2.0F, 0.5F}};
+    object.source_revision = 1;
+    return object;
+}
+
 } // namespace
 
 struct DevGameMode::Impl {
-    explicit Impl(DevGameModeConfig initial_config) : config(std::move(initial_config)) {}
+    explicit Impl(DevGameModeConfig initial_config) : config(std::move(initial_config)) {
+        environment.solar_noon_fraction = 0.0F;
+        environment.fog_start = 24.0F;
+        environment.fog_end = 48.0F;
+    }
 
     DevGameModeConfig config;
     game::GameRuntime runtime;
@@ -106,6 +161,7 @@ struct DevGameMode::Impl {
     std::uint64_t last_observed_authoritative_tick = 0;
     std::uint64_t periodic_save_count = 0;
     std::optional<assets::CookedAssetStore> cooked_assets;
+    entities::VisualDefinitionRegistry visual_definitions;
     game::ModelPresentationSystem model_presentation;
     bool model_presentation_initialized = false;
     std::optional<renderer::CpuParticleSystem> particle_system;
@@ -125,6 +181,7 @@ struct DevGameMode::Impl {
     input::InputActionMap actions = input::InputActionMap::gameplay_defaults();
     movement::PlayerInputSampler input_sampler;
     movement::PlayerCameraRig camera_rig;
+    renderer::DayNightCycleConfig environment;
     std::uint64_t input_tick = 0;
     std::uint64_t frame_count = 0;
     std::uint64_t authoritative_tick = 0;
@@ -184,8 +241,15 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
         return core::Status::failure(cooked_assets.error().code, cooked_assets.error().message);
     }
     state.cooked_assets.emplace(std::move(cooked_assets).value());
+    state.visual_definitions = state.config.content_report->visual_definitions;
+    if (state.config.diagnostic_asset_fallbacks) {
+        status = add_asset_fallback_diagnostics(state.visual_definitions);
+        if (!status) {
+            return status;
+        }
+    }
     status = state.model_presentation.initialize(
-        *renderer, state.config.content_report->visual_definitions, state.config.cooked_asset_root);
+        *renderer, state.visual_definitions, state.config.cooked_asset_root);
     if (!status) {
         return status;
     }
@@ -221,7 +285,7 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
     state.clay = *clay;
 
     const auto* player_visual =
-        state.config.content_report->visual_definitions.find_for_entity(*player_prototype);
+        state.visual_definitions.find_for_entity(*player_prototype);
     const auto* default_footstep =
         player_visual == nullptr ? nullptr : player_visual->sound("footstep_default");
     if (default_footstep == nullptr) {
@@ -247,6 +311,18 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
         return status;
     }
     state.audio_presentation_initialized = true;
+    if (state.config.diagnostic_asset_fallbacks) {
+        const auto missing_sound = core::PrototypeId::parse("diagnostic:audio/missing_event");
+        if (!missing_sound) {
+            return core::Status::failure("dev_game.invalid_asset_fallback_probe",
+                                         "diagnostic sound fallback id is invalid");
+        }
+        auto voice = services.audio()->play(
+            {*missing_sound, audio::AudioEmitterState{game::foundation::spawn_position()}});
+        if (!voice) {
+            return core::Status::failure(voice.error().code, voice.error().message);
+        }
+    }
 
     state.game_ui = std::make_unique<game::GameUiLayer>(
         state.config.content_report->item_definitions,
@@ -398,8 +474,9 @@ DevGameMode::update(game::GameApplicationServices& services,
         renderer->set_voxel_fluid_stats(server->chunk_fluids().stats());
         renderer->set_voxel_lighting_stats(server->chunk_lighting().stats());
     }
-    auto day_night = renderer::evaluate_day_night(runtime_frame.value().authoritative_world_tick,
-                                                  state.runtime.session()->config().world_time);
+    auto day_night =
+        renderer::evaluate_day_night(runtime_frame.value().authoritative_world_tick,
+                                    state.runtime.session()->config().world_time, state.environment);
     if (!day_night) {
         return core::Result<game::GameApplicationFrameOutput>::failure(day_night.error().code,
                                                                        day_night.error().message);
@@ -589,6 +666,14 @@ DevGameMode::update(game::GameApplicationServices& services,
         return core::Result<game::GameApplicationFrameOutput>::failure(
             render_snapshot.error().code, render_snapshot.error().message);
     }
+    if (state.config.diagnostic_asset_fallbacks) {
+        render_snapshot.value().objects.push_back(asset_fallback_probe_object(
+            0xFFFF'FF00U, 9'000'001, "diagnostic:entities/missing_model", 10.5,
+            animation::LocomotionAnimationKind::idle));
+        render_snapshot.value().objects.push_back(asset_fallback_probe_object(
+            0xFFFF'FF01U, 9'000'002, "diagnostic:entities/missing_animation", 12.0,
+            animation::LocomotionAnimationKind::run));
+    }
     auto model_stats = state.model_presentation.synchronize(*renderer, render_snapshot.value());
     if (!model_stats) {
         return core::Result<game::GameApplicationFrameOutput>::failure(model_stats.error().code,
@@ -695,6 +780,7 @@ DevGameMode::update(game::GameApplicationServices& services,
             const auto& render_stats = renderer->stats();
             const auto feedback_stats = state.voxel_interaction_presentation.stats();
             const auto audio_stats = audio->stats();
+            const auto footstep_stats = state.audio_presentation.stats();
             std::string asset_failure_text = "none";
             const auto asset_diagnostics = state.model_presentation.load_diagnostics();
             if (!asset_diagnostics.empty()) {
@@ -793,6 +879,10 @@ DevGameMode::update(game::GameApplicationServices& services,
                  << render_stats.stale_mesh_results << '\n'
                  << "lighting " << lighting_text << '\n'
                  << "fluid " << fluid_text << '\n'
+                 << "environment daylight " << day_night.value().daylight << " sun "
+                 << day_night.value().render.sun_intensity << " fog "
+                 << day_night.value().render.fog_start << '/'
+                 << day_night.value().render.fog_end << " sky on\n"
                  << "feedback remove/place " << feedback_stats.presented_removals << '/'
                  << feedback_stats.presented_placements << " particles/sounds "
                  << feedback_stats.emitted_particles << '/' << feedback_stats.emitted_sounds
@@ -800,6 +890,10 @@ DevGameMode::update(game::GameApplicationServices& services,
                  << "audio voices " << audio_stats.active_voices << " rejected "
                  << audio_stats.rejected_voices << " fallback " << audio_stats.fallback_voices
                  << " warnings " << audio_stats.fallback_diagnostics << '\n'
+                 << "footsteps emitted/surface/default/dropped "
+                 << footstep_stats.emitted_footsteps << '/' << footstep_stats.surface_footsteps
+                 << '/' << footstep_stats.default_footsteps << '/'
+                 << footstep_stats.dropped_footsteps << '\n'
                  << "input " << player_input.move_x << ", " << player_input.move_z << " | selected "
                  << selection_text << '\n'
                  << "last command " << command_text << " | last error " << last_error_code;
@@ -808,7 +902,7 @@ DevGameMode::update(game::GameApplicationServices& services,
             panel.minimum_pixels = {12.0F, 12.0F};
             panel.maximum_pixels = {
                 std::min(620.0F, static_cast<float>(frame.extent.width) - 12.0F),
-                std::min(324.0F, static_cast<float>(frame.extent.height) - 12.0F)};
+                std::min(350.0F, static_cast<float>(frame.extent.height) - 12.0F)};
             panel.color = {0.015F, 0.025F, 0.04F, 0.88F};
             status = ui->submit_quad(panel);
             if (status) {
