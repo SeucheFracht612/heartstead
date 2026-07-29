@@ -7,11 +7,15 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 namespace heartstead::game::foundation {
 
+inline constexpr std::string_view scenario_id = "base:scenarios/homestead";
 inline constexpr std::uint64_t world_seed = 0x4845415254535445ULL;
 inline constexpr std::uint32_t layout_version = 1;
+inline constexpr std::string_view layout_state_mod = "engine";
+inline constexpr std::string_view layout_state_key = "foundation.layout_version";
 inline constexpr world::BlockCoord boundary_edit_upper{29, 0, 7};
 inline constexpr world::BlockCoord boundary_edit_lower{29, -1, 7};
 

@@ -4,9 +4,11 @@
 #include "engine/net/command_payload.hpp"
 #include "engine/scenarios/scenario_prototype.hpp"
 #include "engine/world/world_snapshot.hpp"
+#include "game/foundation/foundation_world.hpp"
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -28,6 +30,40 @@ namespace {
         hash.add_byte(0xffU);
     }
     return "content-" + hash.hex();
+}
+
+[[nodiscard]] core::Status validate_foundation_layout(const save::SaveSnapshot& snapshot,
+                                                      const core::PrototypeId& scenario_id) {
+    if (scenario_id.value() != foundation::scenario_id) {
+        return core::Status::ok();
+    }
+    const auto saved_layout =
+        std::ranges::find_if(snapshot.mod_states, [](const save::ModStateSaveRecord& record) {
+            return record.mod_id == foundation::layout_state_mod &&
+                   record.state_key == foundation::layout_state_key;
+        });
+    if (saved_layout == snapshot.mod_states.end()) {
+        return core::Status::failure("foundation_world.layout_version_missing",
+                                     "Foundation save does not record the baseline layout version");
+    }
+    std::uint32_t version = 0;
+    const auto [end, error] = std::from_chars(
+        saved_layout->encoded_state.data(),
+        saved_layout->encoded_state.data() + saved_layout->encoded_state.size(), version);
+    if (error != std::errc{} ||
+        end != saved_layout->encoded_state.data() + saved_layout->encoded_state.size()) {
+        return core::Status::failure(
+            "foundation_world.layout_version_invalid",
+            "Foundation save contains an invalid baseline layout version: " +
+                saved_layout->encoded_state);
+    }
+    if (version != foundation::layout_version) {
+        return core::Status::failure("foundation_world.layout_version_mismatch",
+                                     "Foundation save layout version " + std::to_string(version) +
+                                         " is incompatible with current layout version " +
+                                         std::to_string(foundation::layout_version));
+    }
+    return core::Status::ok();
 }
 
 } // namespace
@@ -178,6 +214,11 @@ core::Status RuntimeSession::initialize() {
             return core::Status::failure(
                 "runtime_session.scenario_mismatch",
                 "requested scenario does not match the scenario recorded by the save");
+        }
+        auto layout_status =
+            validate_foundation_layout(*request_.initial_snapshot, scenario.value().prototype_id);
+        if (!layout_status) {
+            return layout_status;
         }
     }
 

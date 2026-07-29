@@ -948,6 +948,14 @@ core::Status ServerRuntime::initialize_new_world_scenario() {
     if (!status) {
         return status;
     }
+    if (desc_.scenario.prototype_id.value() == foundation::scenario_id) {
+        status = world_.mod_states().insert({std::string(foundation::layout_state_mod),
+                                             std::string(foundation::layout_state_key),
+                                             std::to_string(foundation::layout_version)});
+        if (!status) {
+            return status;
+        }
+    }
 
     auto spawn = scenario_spawn_position();
     std::size_t cargo_offset = 0;

@@ -41,6 +41,12 @@ generated terrain = reproducible from seed/mod content/region descriptors
 player edits      = explicit chunk edit records
 ```
 
+The Foundation Slice uses a fixed voxel-native test layout rather than the general terrain
+generator. New Foundation worlds record `engine/scenario.id`,
+`engine/foundation.layout_version`, and the fixed Foundation seed. Loading validates the recorded
+layout version before rebuilding the baseline and applying chunk-edit deltas, so deltas from an
+incompatible layout fail clearly instead of being applied to unrelated terrain.
+
 The surface is still one simple region-selected heightfield even though cave, voxel-deposit, and
 typed external-feature foundations exist. Future work should add biome/region transitions, richer
 strata and feature placement ownership while keeping the same boundary: worldgen produces baseline

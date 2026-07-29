@@ -59,7 +59,7 @@ build followed by the commands above produced the authoritative result.
 
 ## Deterministic Foundation environment
 
-- [ ] `[Automated]` a new Foundation world records a stable scenario ID, layout version, and seed.
+- [x] `[Automated]` a new Foundation world records a stable scenario ID, layout version, and seed.
 - [x] `[Automated]` repeated new-world construction produces byte-equivalent baseline chunks.
 - [ ] `[Both]` the player appears at the documented safe spawn.
 - [x] `[Automated]` the full player capsule and camera pivot volume at spawn contain no solid voxel.
@@ -185,7 +185,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [ ] `[Automated]` edits on both sides of a chunk boundary survive restart.
 - [ ] `[Automated]` the active voxel palette manifest is preserved and validated on load.
 - [ ] `[Automated]` a missing voxel prototype follows the existing missing-prototype recovery path.
-- [ ] `[Automated]` an incompatible Foundation layout version fails clearly rather than applying
+- [x] `[Automated]` an incompatible Foundation layout version fails clearly rather than applying
       edit deltas to an unrelated baseline.
 - [ ] `[Automated]` periodic dirty save and clean-shutdown save use the transactional generation
       commit path.
@@ -215,6 +215,7 @@ Recorded 2026-07-29:
   - `test_typed_voxel_commands_validate_and_replicate`
   - `test_boundary_voxel_edit_rebuilds_collision_and_removes_support`
   - `test_session_save_and_reload_restores_authoritative_state`
+  - `test_foundation_save_rejects_incompatible_layout`
   - `test_session_file_load_preserves_missing_prototypes`
 - `heartstead_voxel_interaction_presentation_tests`
   - `test_only_accepted_edits_emit_data_driven_feedback`

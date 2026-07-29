@@ -266,7 +266,8 @@ game::GameRuntime make_runtime(const content::ContentValidationReport& content_r
 }
 
 game::SessionRequest make_session_request(const content::ContentValidationReport& report) {
-    auto metadata = content::save_metadata_from_content_report(report, "runtime-spine-test", 1234);
+    auto metadata = content::save_metadata_from_content_report(report, "runtime-spine-test",
+                                                               game::foundation::world_seed);
     assert(metadata);
     game::SessionRequest request;
     request.metadata = std::move(metadata).value();
@@ -342,9 +343,14 @@ void test_selected_scenario_drives_authoritative_bootstrap() {
     const auto* scenario_id = world.mod_states().find("engine", "scenario.id");
     const auto* start_region = world.mod_states().find("engine", "scenario.start_region");
     const auto* spawn_mode = world.mod_states().find("engine", "scenario.spawn_mode");
+    const auto* layout_version = world.mod_states().find(game::foundation::layout_state_mod,
+                                                         game::foundation::layout_state_key);
     assert(scenario_id != nullptr && scenario_id->encoded_state == "base:scenarios/homestead");
     assert(start_region != nullptr && start_region->encoded_state == "temperate_valley");
     assert(spawn_mode != nullptr && spawn_mode->encoded_state == "homestead");
+    assert(layout_version != nullptr &&
+           layout_version->encoded_state == std::to_string(game::foundation::layout_version));
+    assert(world.metadata().world_seed == game::foundation::world_seed);
     assert(world.cargo().count() == 1);
     const auto cargo = world.cargo().records();
     assert(cargo.front()->prototype_id == *core::PrototypeId::parse("base:cargo/heavy_log"));
@@ -1187,9 +1193,8 @@ void test_session_save_and_reload_restores_authoritative_state() {
     auto frame = runtime.run_frame({16'667, 17});
     assert(frame && frame.value().server_ticks.size() == 1);
     assert(frame.value().server_ticks.front().commands.command_reports.size() == 2);
-    assert(std::ranges::all_of(
-        frame.value().server_ticks.front().commands.command_reports,
-        [](const auto& command) { return command.success; }));
+    assert(std::ranges::all_of(frame.value().server_ticks.front().commands.command_reports,
+                               [](const auto& command) { return command.success; }));
     const auto removed_address = world::block_to_chunk_local(removed_voxel);
     const auto removed_authoritative =
         session->server()->world().chunks().get(removed_address.chunk, removed_address.local);
@@ -1250,6 +1255,31 @@ void test_session_save_and_reload_restores_authoritative_state() {
     std::filesystem::remove_all(save_root);
 }
 
+void test_foundation_save_rejects_incompatible_layout() {
+    const auto report = content::ContentValidation::validate(source_root());
+    assert(!report.has_errors());
+    auto runtime = make_runtime(report);
+    assert(runtime.start_session({}, make_session_request(report)));
+    auto snapshot = runtime.capture_save_snapshot();
+    assert(snapshot);
+    assert(runtime.shutdown());
+
+    auto layout = std::ranges::find_if(
+        snapshot.value().mod_states, [](const save::ModStateSaveRecord& record) {
+            return record.mod_id == game::foundation::layout_state_mod &&
+                   record.state_key == game::foundation::layout_state_key;
+        });
+    assert(layout != snapshot.value().mod_states.end());
+    layout->encoded_state = std::to_string(game::foundation::layout_version + 1);
+
+    auto request = make_session_request(report);
+    request.initial_snapshot = std::move(snapshot).value();
+    const auto status = runtime.start_session({}, std::move(request));
+    assert(!status);
+    assert(status.error().code == "foundation_world.layout_version_mismatch");
+    assert(status.error().message.find("current layout version") != std::string::npos);
+}
+
 void test_session_file_load_preserves_missing_prototypes() {
     const auto report = content::ContentValidation::validate(source_root());
     assert(!report.has_errors());
@@ -1257,6 +1287,11 @@ void test_session_file_load_preserves_missing_prototypes() {
 
     save::SaveSnapshot snapshot;
     snapshot.metadata = make_session_request(report).metadata;
+    snapshot.mod_states.push_back(
+        {"engine", "scenario.id", std::string(game::foundation::scenario_id)});
+    snapshot.mod_states.push_back({std::string(game::foundation::layout_state_mod),
+                                   std::string(game::foundation::layout_state_key),
+                                   std::to_string(game::foundation::layout_version)});
     build::BuildPieceRecord removed_build_piece;
     removed_build_piece.object_id = core::SaveId::from_value(77);
     removed_build_piece.prototype_id =
@@ -1536,6 +1571,7 @@ int main() {
     test_runtime_relights_and_replicates_chunk_light();
     test_runtime_simulates_and_replicates_voxel_fluid();
     test_session_save_and_reload_restores_authoritative_state();
+    test_foundation_save_rejects_incompatible_layout();
     test_session_file_load_preserves_missing_prototypes();
     test_gameplay_modules_extend_runtime_through_registration_contract();
     test_replication_tombstone_removes_presentation_proxy();
