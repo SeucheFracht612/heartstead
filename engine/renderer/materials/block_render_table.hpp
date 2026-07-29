@@ -17,6 +17,7 @@ enum class VoxelMaterialFlags : std::uint32_t {
     emissive = 1U << 2U,
     two_sided = 1U << 3U,
     animated = 1U << 4U,
+    unlit = 1U << 5U,
 };
 
 [[nodiscard]] constexpr VoxelMaterialFlags operator|(VoxelMaterialFlags left,

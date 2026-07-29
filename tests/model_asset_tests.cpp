@@ -1,9 +1,11 @@
 #include "engine/assets/model_asset.hpp"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cassert>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -101,6 +103,8 @@ std::vector<std::uint8_t> one_pixel_png() {
 std::string animated_triangle_gltf() {
     return R"({
   "asset":{"version":"2.0"},
+  "extensionsUsed":["KHR_materials_unlit"],
+  "extensionsRequired":["KHR_materials_unlit"],
   "scene":0,
   "scenes":[{"nodes":[0,1]}],
   "nodes":[
@@ -121,7 +125,8 @@ std::string animated_triangle_gltf() {
     },
     "alphaMode":"MASK",
     "alphaCutoff":0.25,
-    "doubleSided":true
+    "doubleSided":true,
+    "extensions":{"KHR_materials_unlit":{}}
   }],
   "textures":[{"source":0}],
   "images":[{"name":"storybook_color","uri":"player.png"}],
@@ -206,6 +211,7 @@ void test_typed_gltf_import_and_codec() {
     assert(imported.value().materials[0].alpha_mode == heartstead::assets::ModelAlphaMode::mask);
     assert(imported.value().materials[0].alpha_cutoff == 0.25F);
     assert(imported.value().materials[0].double_sided);
+    assert(imported.value().materials[0].unlit);
     assert(imported.value().animations.size() == 1);
     assert(imported.value().animations[0].name == "wave");
     assert(imported.value().animations[0].duration_seconds == 1.0F);
@@ -226,6 +232,19 @@ void test_typed_gltf_import_and_codec() {
     auto decoded = heartstead::assets::decode_model_asset(encoded.value());
     assert(decoded);
     assert(decoded.value() == imported.value());
+
+    auto legacy_model = imported.value();
+    legacy_model.materials.front().unlit = false;
+    auto legacy_encoded = heartstead::assets::encode_model_asset(legacy_model);
+    assert(legacy_encoded);
+    constexpr std::string_view current_magic = "heartstead.model.v3";
+    const auto magic = std::search(legacy_encoded.value().begin(), legacy_encoded.value().end(),
+                                   current_magic.begin(), current_magic.end());
+    assert(magic != legacy_encoded.value().end());
+    *(magic + static_cast<std::ptrdiff_t>(current_magic.size() - 1U)) = '2';
+    auto legacy_decoded = heartstead::assets::decode_model_asset(legacy_encoded.value());
+    assert(legacy_decoded);
+    assert(legacy_decoded.value() == legacy_model);
 
     for (std::size_t size = 0; size < encoded.value().size(); ++size) {
         assert(!heartstead::assets::decode_model_asset(

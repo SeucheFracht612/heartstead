@@ -1064,6 +1064,8 @@ void test_authoritative_player_input_moves_and_replicates() {
     input.tick = 1;
     input.sequence = 1;
     input.move_z = 32'767;
+    input.yaw_centidegrees = 4'500;
+    input.pitch_centidegrees = 7'000;
     assert(session->submit_player_input(input, 10));
     const auto* prediction_diagnostics = session->client()->last_prediction_diagnostics();
     assert(prediction_diagnostics != nullptr);
@@ -1087,6 +1089,12 @@ void test_authoritative_player_input_moves_and_replicates() {
     const auto* player_after = session->server()->player_for_client(client_id);
     assert(player_after != nullptr);
     assert(player_after->state.position.relative_to(start.anchor).z > start.local_offset.z);
+    const auto* authoritative_entity =
+        session->server()->world().entities().find(player_after->runtime_handle);
+    assert(authoritative_entity != nullptr);
+    assert(authoritative_entity->transform.rotation_degrees.x == 0.0);
+    assert(authoritative_entity->transform.rotation_degrees.y == 45.0);
+    assert(authoritative_entity->transform.rotation_degrees.z == 0.0);
     const auto* snapshot = session->client()->player_snapshot(player_net_id);
     assert(snapshot != nullptr);
     assert(snapshot->state.position == player_after->state.position);
@@ -1100,6 +1108,9 @@ void test_authoritative_player_input_moves_and_replicates() {
     assert(player_object != render_snapshot.value().objects.end());
     assert(player_object->current_transform.position == player_after->state.position);
     assert(player_object->previous_transform.position == start);
+    assert(player_object->current_transform.rotation_degrees.x == 0.0);
+    assert(player_object->current_transform.rotation_degrees.y == 45.0);
+    assert(player_object->current_transform.rotation_degrees.z == 0.0);
     assert(std::ranges::any_of(render_snapshot.value().objects, [](const auto& object) {
         return object.visual_prototype.value() ==
                "base:entities/foundation_material_showcase";

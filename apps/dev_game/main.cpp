@@ -1,7 +1,9 @@
 #include "apps/dev_game/dev_game_mode.hpp"
 
+#include "engine/assets/cooked_asset_store.hpp"
 #include "engine/content/content_validation.hpp"
 #include "engine/core/process_entry.hpp"
+#include "engine/renderer/materials/terrain_material_assets.hpp"
 #include "game/application/game_application.hpp"
 
 #include <charconv>
@@ -161,6 +163,18 @@ int main(int argc, char** argv) {
         if (content_report.has_errors()) {
             return fail("content validation failed");
         }
+        auto cooked_assets = heartstead::assets::CookedAssetStore::load(
+            std::filesystem::path{HEARTSTEAD_DEV_GAME_COOKED_ASSET_DIR});
+        if (!cooked_assets) {
+            return fail(cooked_assets.error());
+        }
+        auto terrain_material_assets =
+            heartstead::renderer::materials::load_terrain_material_assets(
+                content_report.voxel_palette, content_report.material_registry,
+                cooked_assets.value());
+        if (!terrain_material_assets) {
+            return fail(terrain_material_assets.error());
+        }
 
         heartstead::game::GameApplicationConfig application_config;
         application_config.headless = options.headless;
@@ -175,6 +189,8 @@ int main(int argc, char** argv) {
         application_config.shader_root =
             std::filesystem::path{HEARTSTEAD_DEV_GAME_ASSET_DIR} / "shaders";
         application_config.voxel_palette = &content_report.voxel_palette;
+        application_config.terrain_material_assets =
+            std::move(terrain_material_assets).value();
 
         heartstead::dev_game::DevGameModeConfig mode_config;
         mode_config.content_report = &content_report;

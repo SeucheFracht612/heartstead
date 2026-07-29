@@ -49,6 +49,7 @@
 #include "engine/renderer/materials/material_definition.hpp"
 #include "engine/renderer/materials/material_pipeline_layout.hpp"
 #include "engine/renderer/materials/material_prototype_loader.hpp"
+#include "engine/renderer/materials/terrain_material_assets.hpp"
 #include "engine/renderer/rhi/render_device.hpp"
 #include "engine/renderer/rhi/render_frame_plan.hpp"
 #include "engine/renderer/shaders/shader_compiler.hpp"
@@ -1183,11 +1184,12 @@ void test_resource_pack_discovery_and_asset_catalog() {
     assert(production_gltf_payload.value().metadata.at("model.container") == "gltf");
     assert(production_gltf_payload.value().metadata.at("model.gltf_version") == "2.0");
     assert(production_gltf_payload.value().metadata.at("model.runtime_format") ==
-           "heartstead.model.v2");
+           "heartstead.model.v3");
     assert(production_gltf_payload.value().metadata.at("model.vertices") == "3");
     assert(production_gltf_payload.value().metadata.at("model.indices") == "3");
     assert(production_gltf_payload.value().metadata.at("model.nodes") == "1");
     assert(production_gltf_payload.value().metadata.at("model.primitives") == "1");
+    assert(production_gltf_payload.value().metadata.at("model.unlit_materials") == "0");
     assert(production_gltf_payload.value().metadata.at("model.skins") == "0");
     assert(production_gltf_payload.value().metadata.at("model.animations") == "0");
     auto decoded_production_gltf =
@@ -1929,6 +1931,68 @@ void test_filtered_model_dependency_cooking() {
            std::string::npos);
     assert(blend_cook.error().message.find("not alpha blend") != std::string::npos);
 
+    std::filesystem::remove_all(root);
+}
+
+void test_terrain_material_asset_loading() {
+    using namespace heartstead;
+    const auto root = make_temp_root();
+    const auto assets_root = root / "assets";
+    write_bytes(assets_root / "textures/voxels/grass.png", minimal_png_bytes());
+    write_bytes(assets_root / "textures/voxels/grass_top.png", minimal_png_bytes());
+
+    assets::AssetCatalog catalog;
+    const auto indexed = assets::AssetCatalogBuilder::index_directory(
+        catalog, assets_root, "base", assets::AssetSourceKind::mod, "base", 0);
+    assert(!indexed.has_errors());
+
+    assets::AssetCookConfig cook_config;
+    cook_config.backend = assets::AssetCookBackend::production_converters;
+    cook_config.output_root = root / "cooked";
+    const auto cooked = assets::AssetCooker::cook(catalog, cook_config);
+    assert(cooked);
+    const auto store = assets::CookedAssetStore::load(cook_config.output_root);
+    assert(store);
+
+    world::VoxelDefinition grass;
+    grass.type = 7;
+    grass.prototype_id = core::PrototypeId::parse("base:voxels/grass").value();
+    grass.display_name = "Grass";
+    grass.terrain_material = "grass";
+    grass.mining_tool = "shovel";
+    world::VoxelPalette palette;
+    assert(palette.add(std::move(grass)));
+
+    renderer::materials::MaterialDefinition material;
+    material.id = core::PrototypeId::parse("base:materials/grass").value();
+    material.domain = renderer::materials::MaterialDomain::terrain;
+    material.blend_mode = renderer::materials::MaterialBlendMode::opaque;
+    material.shader_template =
+        assets::VirtualPath::parse("base:shaders/templates/terrain.slang").value();
+    material.textures.push_back(
+        {"albedo", assets::VirtualPath::parse("base:textures/voxels/grass.png").value(), true});
+    material.textures.push_back(
+        {"top", assets::VirtualPath::parse("base:textures/voxels/grass_top.png").value(), true});
+    material.scalars.push_back({"roughness", 0.9F});
+    material.colors.push_back(
+        {"tint", renderer::materials::MaterialColor{0.8F, 1.0F, 0.8F, 1.0F}});
+    renderer::materials::MaterialRegistry materials;
+    assert(materials.add(std::move(material)));
+
+    const auto terrain_assets = renderer::materials::load_terrain_material_assets(
+        palette, materials, store.value());
+    assert(terrain_assets);
+    assert(terrain_assets.value().textures.size() == 2);
+    assert(terrain_assets.value().textures[0].image.width == 2);
+    assert(terrain_assets.value().textures[0].image.height == 2);
+    assert(terrain_assets.value().textures[0].image.rgba8.size() == 16);
+    const auto* assignment = terrain_assets.value().find(7);
+    assert(assignment != nullptr);
+    assert(assignment->side_texture == 0);
+    assert(assignment->top_texture == 1);
+    assert(assignment->bottom_texture == 0);
+    assert(assignment->roughness == 0.9F);
+    assert((assignment->base_color == std::array<float, 4>{0.8F, 1.0F, 0.8F, 1.0F}));
     std::filesystem::remove_all(root);
 }
 
@@ -14956,6 +15020,7 @@ int main() {
     test_math_primitives();
     test_resource_pack_discovery_and_asset_catalog();
     test_filtered_model_dependency_cooking();
+    test_terrain_material_asset_loading();
     test_headless_platform();
     test_renderer_rhi();
     test_physics_world();

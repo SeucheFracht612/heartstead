@@ -160,7 +160,7 @@ int main() {
     assert(updated.value().evaluated_poses == 1);
     assert(updated.value().uploaded_palettes == 1);
 
-    snapshot.objects.clear();
+    snapshot.objects.front().visible = false;
     auto removed = presentation.synchronize(renderer, snapshot);
     assert(removed);
     assert(removed.value().removed_entities == 1);
@@ -169,6 +169,15 @@ int main() {
     assert(empty_frame);
     assert(renderer.stats().retained_objects == 0);
     assert(renderer.stats().retained_skin_palettes == 0);
+
+    snapshot.objects.front().visible = true;
+    auto restored = presentation.synchronize(renderer, snapshot);
+    assert(restored);
+    assert(restored.value().inserted_entities == 1);
+    assert(restored.value().retained_entities == 1);
+    assert(renderer.render(camera));
+    assert(renderer.stats().retained_objects == 1);
+    assert(renderer.stats().retained_skin_palettes == 1);
 
     assert(presentation.shutdown(renderer));
     assert(renderer.render(camera));

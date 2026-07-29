@@ -88,6 +88,7 @@ struct ModelMaterial {
     ModelAlphaMode alpha_mode = ModelAlphaMode::opaque;
     float alpha_cutoff = 0.5F;
     bool double_sided = false;
+    bool unlit = false;
 
     friend bool operator==(const ModelMaterial&, const ModelMaterial&) = default;
 };

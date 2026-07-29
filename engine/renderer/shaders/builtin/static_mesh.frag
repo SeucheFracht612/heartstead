@@ -35,6 +35,7 @@ const uint LAYER_ALPHA_TESTED = 1U;
 const uint LAYER_TRANSPARENT = 2U;
 const uint MATERIAL_ALPHA_TESTED = 1U;
 const uint MATERIAL_TWO_SIDED = 8U;
+const uint MATERIAL_UNLIT = 32U;
 
 vec3 linear_to_srgb(vec3 linear_color) {
     vec3 low = linear_color * 12.92;
@@ -51,15 +52,17 @@ void main() {
         base_color.a < material.alpha_cutoff) {
         discard;
     }
-    vec3 normal = normalize(fragment_normal);
-    if ((material.flags & MATERIAL_TWO_SIDED) != 0U && !gl_FrontFacing) {
-        normal = -normal;
+    vec3 color = base_color.rgb;
+    if ((material.flags & MATERIAL_UNLIT) == 0U) {
+        vec3 normal = normalize(fragment_normal);
+        if ((material.flags & MATERIAL_TWO_SIDED) != 0U && !gl_FrontFacing) {
+            normal = -normal;
+        }
+        vec3 sun_direction = normalize(frame.sun_direction_intensity.xyz);
+        float directional = frame.sun_direction_intensity.w *
+                            max(dot(normal, sun_direction), 0.0);
+        color *= frame.ambient_color_fog_start.rgb + vec3(directional);
     }
-    vec3 sun_direction = normalize(frame.sun_direction_intensity.xyz);
-    float directional = frame.sun_direction_intensity.w *
-                        max(dot(normal, sun_direction), 0.0);
-    vec3 color = base_color.rgb *
-                 (frame.ambient_color_fog_start.rgb + vec3(directional));
     float fog = smoothstep(frame.ambient_color_fog_start.w, frame.fog_color_fog_end.w,
                            length(fragment_world_position));
     color = mix(color, frame.fog_color_fog_end.rgb, fog);

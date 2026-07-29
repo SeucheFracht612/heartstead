@@ -405,7 +405,8 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         return core::Status::failure(error.code, error.message);
     }
     pipeline_status = create_terrain_pipeline(desc.terrain_vertex_spirv,
-                                              desc.terrain_fragment_spirv, desc.voxel_palette);
+                                              desc.terrain_fragment_spirv, desc.voxel_palette,
+                                              desc.terrain_material_assets);
     if (!pipeline_status) {
         const auto error = pipeline_status.error();
         (void)shutdown();
@@ -1183,6 +1184,9 @@ Renderer::create_model_materials(std::string_view asset_id, const assets::ModelA
             runtime.flags = runtime.flags | VoxelMaterialFlags::two_sided;
             binding.flags = binding.flags | RenderObjectFlags::two_sided;
         }
+        if (source.unlit) {
+            runtime.flags = runtime.flags | VoxelMaterialFlags::unlit;
+        }
         auto created = material_cache_->upsert(std::move(runtime));
         if (!created) {
             return core::Result<std::vector<ModelRenderMaterialBinding>>::failure(
@@ -1265,6 +1269,28 @@ MaterialRuntimeHandle Renderer::fallback_material() const noexcept {
 std::optional<MaterialRuntimeDesc>
 Renderer::describe_material(MaterialRuntimeHandle handle) const noexcept {
     return material_cache_ == nullptr ? std::nullopt : material_cache_->describe(handle);
+}
+
+std::optional<MaterialRuntimeDesc>
+Renderer::describe_voxel_material(std::uint16_t voxel_type) const noexcept {
+    if (material_cache_ == nullptr || voxel_type == world::VoxelDefinition::air_type) {
+        return std::nullopt;
+    }
+    const auto runtime_id =
+        core::PrototypeId::parse("base:materials/runtime_voxel_" + std::to_string(voxel_type));
+    if (!runtime_id) {
+        return std::nullopt;
+    }
+    const auto* view = material_cache_->find(runtime_id.value());
+    return view == nullptr ? std::nullopt : material_cache_->describe(view->handle);
+}
+
+std::optional<TextureView> Renderer::describe_terrain_texture() const noexcept {
+    if (texture_manager_ == nullptr) {
+        return std::nullopt;
+    }
+    const auto* view = texture_manager_->find(terrain_texture_array_);
+    return view == nullptr ? std::nullopt : std::optional<TextureView>{*view};
 }
 
 std::optional<TextureView> Renderer::describe_surface_texture() const noexcept {
@@ -1503,7 +1529,9 @@ core::Status Renderer::create_sky_pipeline(std::span<const std::uint32_t> vertex
 
 core::Status Renderer::create_terrain_pipeline(std::span<const std::uint32_t> vertex_spirv,
                                                std::span<const std::uint32_t> fragment_spirv,
-                                               const world::VoxelPalette* voxel_palette) {
+                                               const world::VoxelPalette* voxel_palette,
+                                               const materials::TerrainMaterialAssetSet&
+                                                   material_assets) {
     if (shader_manager_ == nullptr || sampler_cache_ == nullptr || texture_manager_ == nullptr ||
         material_cache_ == nullptr || pipeline_cache_ == nullptr) {
         return core::Status::failure("renderer.runtime_assets_uninitialized",
@@ -1513,6 +1541,10 @@ core::Status Renderer::create_terrain_pipeline(std::span<const std::uint32_t> ve
     if (!material) {
         return core::Status::failure("renderer.invalid_terrain_material",
                                      "internal terrain material prototype id is invalid");
+    }
+    auto asset_status = material_assets.validate();
+    if (!asset_status) {
+        return asset_status;
     }
 
     TerrainTextureArrayBuilder texture_builder(16, 16);
@@ -1531,6 +1563,18 @@ core::Status Renderer::create_terrain_pipeline(std::span<const std::uint32_t> ve
         if (!layer) {
             return core::Status::failure(layer.error().code, layer.error().message);
         }
+    }
+    std::vector<std::uint32_t> material_texture_layers;
+    material_texture_layers.reserve(material_assets.textures.size());
+    for (const auto& texture : material_assets.textures) {
+        const auto resized =
+            resize_surface_rgba8(texture.image.width, texture.image.height, texture.image.rgba8,
+                                 16, 16);
+        layer = texture_builder.add_layer(texture.logical_id, resized);
+        if (!layer) {
+            return core::Status::failure(layer.error().code, layer.error().message);
+        }
+        material_texture_layers.push_back(layer.value());
     }
     auto texture_desc = texture_builder.build("terrain_texture_array");
     if (!texture_desc) {
@@ -1585,6 +1629,33 @@ core::Status Renderer::create_terrain_pipeline(std::span<const std::uint32_t> ve
         runtime_material.side_texture = 1U + (static_cast<std::uint32_t>(type) - 1U) % 6U;
         runtime_material.top_texture = runtime_material.side_texture;
         runtime_material.bottom_texture = runtime_material.side_texture;
+        if (const auto* material_asset = material_assets.find(type)) {
+            const auto resolve_texture = [&material_texture_layers](std::uint32_t asset_index,
+                                                                    std::uint32_t fallback) {
+                return asset_index == materials::no_terrain_texture_asset
+                           ? fallback
+                           : material_texture_layers[asset_index];
+            };
+            runtime_material.side_texture =
+                resolve_texture(material_asset->side_texture, runtime_material.side_texture);
+            runtime_material.top_texture =
+                resolve_texture(material_asset->top_texture, runtime_material.top_texture);
+            runtime_material.bottom_texture =
+                resolve_texture(material_asset->bottom_texture, runtime_material.bottom_texture);
+            runtime_material.base_color = material_asset->base_color;
+            runtime_material.roughness = material_asset->roughness;
+            if (material_asset->blend_mode == materials::MaterialBlendMode::masked) {
+                runtime_material.flags =
+                    runtime_material.flags | VoxelMaterialFlags::alpha_tested;
+            } else if (material_asset->blend_mode == materials::MaterialBlendMode::translucent ||
+                       material_asset->blend_mode == materials::MaterialBlendMode::additive) {
+                runtime_material.flags =
+                    runtime_material.flags | VoxelMaterialFlags::translucent;
+            }
+            if (material_asset->double_sided) {
+                runtime_material.flags = runtime_material.flags | VoxelMaterialFlags::two_sided;
+            }
+        }
         if (voxel_palette != nullptr) {
             const auto* definition = voxel_palette->find_by_type(type);
             if (definition != nullptr) {

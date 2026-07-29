@@ -107,6 +107,7 @@ target_sources(
     renderer/materials/block_render_table.cpp
     renderer/materials/material_definition.cpp
     renderer/materials/material_runtime_cache.cpp
+    renderer/materials/terrain_material_assets.cpp
     renderer/materials/material_pipeline_layout.cpp
     renderer/materials/pipeline_cache.cpp
     renderer/materials/material_prototype_loader.cpp
@@ -315,6 +316,7 @@ target_sources(
       renderer/materials/block_render_table.hpp
       renderer/materials/material_definition.hpp
       renderer/materials/material_runtime_cache.hpp
+      renderer/materials/terrain_material_assets.hpp
       renderer/materials/material_pipeline_layout.hpp
       renderer/materials/pipeline_cache.hpp
       renderer/materials/material_prototype_loader.hpp

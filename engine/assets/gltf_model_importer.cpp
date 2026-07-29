@@ -21,6 +21,8 @@ namespace heartstead::assets {
 
 namespace {
 
+constexpr auto supported_gltf_extensions = fastgltf::Extensions::KHR_materials_unlit;
+
 [[nodiscard]] core::Result<ModelAsset> importer_failure(std::string code, std::string message) {
     return core::Result<ModelAsset>::failure(std::move(code), std::move(message));
 }
@@ -285,6 +287,7 @@ import_base_color_image(const fastgltf::Asset& source, std::size_t image_index, 
                                   : ModelAlphaMode::opaque;
         material.alpha_cutoff = static_cast<float>(source_material.alphaCutoff);
         material.double_sided = source_material.doubleSided;
+        material.unlit = source_material.unlit;
 
         if (source_material.pbrData.baseColorTexture.has_value()) {
             const auto& texture_info = *source_material.pbrData.baseColorTexture;
@@ -723,7 +726,7 @@ discover_gltf_external_dependencies(const std::filesystem::path& path,
         return core::Result<std::vector<std::filesystem::path>>::failure(failure.error().code,
                                                                          failure.error().message);
     }
-    fastgltf::Parser parser;
+    fastgltf::Parser parser(supported_gltf_extensions);
     auto parsed = parser.loadGltf(data.get(), path.parent_path(), fastgltf::Options::None);
     if (parsed.error() != fastgltf::Error::None) {
         auto failure = fastgltf_failure(parsed.error(), "failed to parse glTF dependencies");
@@ -794,7 +797,7 @@ core::Result<ModelAsset> import_gltf_model(const std::filesystem::path& path,
     if (data.error() != fastgltf::Error::None) {
         return fastgltf_failure(data.error(), "failed to read glTF source");
     }
-    fastgltf::Parser parser;
+    fastgltf::Parser parser(supported_gltf_extensions);
     const auto options =
         fastgltf::Options::LoadExternalBuffers | fastgltf::Options::LoadExternalImages |
         fastgltf::Options::DecomposeNodeMatrices | fastgltf::Options::GenerateMeshIndices;

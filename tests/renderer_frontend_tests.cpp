@@ -644,6 +644,23 @@ void test_renderer_frontend_submits_headless_frames() {
     init.chunk_config.max_bytes_uploaded_per_frame = 1024 * 1024;
     init.scene_render_config.maximum_instances_per_frame = 2;
     init.scene_render_config.maximum_skin_matrices_per_frame = 4;
+    renderer::materials::TerrainTextureAsset terrain_texture;
+    terrain_texture.logical_id = "base:textures/voxels/test_grass.png";
+    terrain_texture.image.width = 2;
+    terrain_texture.image.height = 2;
+    terrain_texture.image.rgba8 = {
+        32,  96,  24, 255, 48,  128, 32, 255,
+        64,  144, 40, 255, 80,  160, 48, 255,
+    };
+    init.terrain_material_assets.textures.push_back(std::move(terrain_texture));
+    renderer::materials::TerrainVoxelMaterialAsset terrain_material;
+    terrain_material.voxel_type = 1;
+    terrain_material.side_texture = 0;
+    terrain_material.top_texture = 0;
+    terrain_material.bottom_texture = 0;
+    terrain_material.base_color = {0.75F, 1.0F, 0.75F, 1.0F};
+    terrain_material.roughness = 0.9F;
+    init.terrain_material_assets.materials.push_back(terrain_material);
 
     renderer::Renderer retained_renderer;
     assert(retained_renderer.initialize(std::move(init)));
@@ -656,6 +673,16 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(retained_renderer.is_initialized());
     assert(retained_renderer.device() != nullptr);
     assert(retained_renderer.fallback_resources().is_valid());
+    const auto terrain_array = retained_renderer.describe_terrain_texture();
+    assert(terrain_array);
+    assert(terrain_array->array_layers == 8);
+    const auto voxel_material = retained_renderer.describe_voxel_material(1);
+    assert(voxel_material);
+    assert(voxel_material->side_texture == 7);
+    assert(voxel_material->top_texture == 7);
+    assert(voxel_material->bottom_texture == 7);
+    assert(voxel_material->base_color == terrain_material.base_color);
+    assert(voxel_material->roughness == terrain_material.roughness);
     const auto initialized_resource_count = retained_renderer.device()->live_resource_count();
     // Ten shader modules, eleven prewarmed pipelines, sky geometry, four fallback textures,
     // terrain/UI arrays, one shared sampler, one material-table buffer, static arenas/instances,
@@ -682,6 +709,7 @@ void test_renderer_frontend_submits_headless_frames() {
     source_material.alpha_mode = assets::ModelAlphaMode::mask;
     source_material.alpha_cutoff = 0.375F;
     source_material.double_sided = true;
+    source_material.unlit = true;
     material_model.materials.push_back(source_material);
     material_model.bounds = {{-0.5F, 0.0F, 0.0F}, {0.5F, 1.0F, 0.0F}};
     auto model_materials = retained_renderer.create_model_materials(
@@ -698,6 +726,8 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(material->base_color == source_material.base_color_factor);
     assert(material->alpha_cutoff == source_material.alpha_cutoff);
     assert(material->surface_texture == 4);
+    assert((static_cast<std::uint32_t>(material->flags) &
+            static_cast<std::uint32_t>(renderer::VoxelMaterialFlags::unlit)) != 0U);
     assert(model_materials.value().front().layer == renderer::RenderLayer::alpha_tested);
     assert(renderer::any(model_materials.value().front().flags &
                          renderer::RenderObjectFlags::two_sided));

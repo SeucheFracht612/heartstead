@@ -1249,8 +1249,7 @@ core::Status ServerRuntime::simulate_players(simulation::SimulationContext& cont
         if (auto* legacy = world_.entities().find(connection.runtime_handle); legacy != nullptr) {
             legacy->transform.position = player->state.position;
             legacy->transform.rotation_degrees = {
-                static_cast<double>(player->state.pitch_centidegrees) * 0.01,
-                static_cast<double>(player->state.yaw_centidegrees) * 0.01, 0.0};
+                0.0, static_cast<double>(player->state.yaw_centidegrees) * 0.01, 0.0};
         }
         auto* transform =
             entities_.find_component<entities::TransformComponent>(connection.entity_id);
@@ -1261,8 +1260,7 @@ core::Status ServerRuntime::simulate_players(simulation::SimulationContext& cont
         transform->previous = transform->current;
         transform->current.position = player->state.position;
         transform->current.rotation_degrees = {
-            static_cast<double>(player->state.pitch_centidegrees) * 0.01,
-            static_cast<double>(player->state.yaw_centidegrees) * 0.01, 0.0};
+            0.0, static_cast<double>(player->state.yaw_centidegrees) * 0.01, 0.0};
         if (player->state.position != previous_position) {
             ++current_moved_player_count_;
             if (context.events != nullptr) {

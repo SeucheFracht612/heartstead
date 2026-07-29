@@ -23,6 +23,7 @@ struct GameApplicationConfig {
     platform::WindowDesc window{"Heartstead", 1280, 720, true};
     std::filesystem::path shader_root;
     const world::VoxelPalette* voxel_palette = nullptr;
+    renderer::materials::TerrainMaterialAssetSet terrain_material_assets;
     bool enable_render_validation = true;
 
     [[nodiscard]] core::Status validate() const;

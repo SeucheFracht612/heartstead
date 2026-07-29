@@ -12,6 +12,7 @@ if(TARGET heartstead_dev_game)
     CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/mods/*/data/entity_visuals/*.toml"
     "${PROJECT_SOURCE_DIR}/mods/*/data/audio/*.toml"
+    "${PROJECT_SOURCE_DIR}/mods/*/data/materials/*.toml"
     "${PROJECT_SOURCE_DIR}/mods/*/assets/*"
     "${PROJECT_SOURCE_DIR}/resource_packs/*/resource_pack.toml"
     "${PROJECT_SOURCE_DIR}/resource_packs/*/assets/*"

@@ -1026,13 +1026,18 @@ production_metadata_fields(const AssetRecord& source, std::span<const std::uint8
 }
 
 void add_model_runtime_metadata(CookedAssetMetadataFields& metadata, const ModelAsset& model) {
-    add_metadata(metadata, "model.runtime_format", "heartstead.model.v2");
+    add_metadata(metadata, "model.runtime_format", "heartstead.model.v3");
     add_metadata(metadata, "model.vertices", model.vertices.size());
     add_metadata(metadata, "model.indices", model.indices.size());
     add_metadata(metadata, "model.nodes", model.nodes.size());
     add_metadata(metadata, "model.primitives", model.primitives.size());
     add_metadata(metadata, "model.images", model.images.size());
     add_metadata(metadata, "model.materials", model.materials.size());
+    add_metadata(metadata, "model.unlit_materials",
+                 std::ranges::count_if(model.materials,
+                                       [](const ModelMaterial& material) {
+                                           return material.unlit;
+                                       }));
     add_metadata(metadata, "model.skins", model.skins.size());
     add_metadata(metadata, "model.animations", model.animations.size());
 }

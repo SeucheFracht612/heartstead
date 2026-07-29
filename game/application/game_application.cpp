@@ -331,6 +331,7 @@ core::Status GameApplication::initialize_shell() {
     renderer_desc.ui_vertex_spirv = std::move(shaders.value().ui_vertex);
     renderer_desc.ui_fragment_spirv = std::move(shaders.value().ui_fragment);
     renderer_desc.voxel_palette = config_.voxel_palette;
+    renderer_desc.terrain_material_assets = std::move(config_.terrain_material_assets);
     return renderer_.initialize(std::move(renderer_desc));
 }
 

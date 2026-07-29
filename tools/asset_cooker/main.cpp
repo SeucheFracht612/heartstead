@@ -220,6 +220,12 @@ int main(int argc, char** argv) {
                 for (const auto& event : content_report.sound_events.definitions()) {
                     only_logical_ids.push_back(event.asset_id);
                 }
+                for (const auto& reference : content_report.material_assets.references) {
+                    if (reference.kind ==
+                        renderer::materials::MaterialAssetReferenceKind::texture) {
+                        only_logical_ids.push_back(reference.logical_id);
+                    }
+                }
             }
         }
         if (include_entity_visuals || include_presentation_assets || !only_logical_ids.empty()) {

@@ -157,6 +157,7 @@ Material slots are preserved per glTF primitive. Model V1 supports:
 - opaque materials;
 - alpha-mask materials and `alphaCutoff`;
 - `doubleSided`;
+- required or optional `KHR_materials_unlit`;
 - a material with no base-color image, which uses the named white fallback texture.
 
 The shader multiplies the sampled texture by the base-color factor. Base-color RGB is interpreted
@@ -171,8 +172,14 @@ PNG is recommended when alpha matters. JPEG is opaque and lossy. KTX2 cannot be 
 base-color image in V1.
 
 Model images are decoded to bounded RGBA8 during cooking and stored in the versioned
-`heartstead.model.v2` payload. An individual image may be at most 8192 pixels on either axis, and
+`heartstead.model.v3` payload. An individual image may be at most 8192 pixels on either axis, and
 the decoded images in one model share a 128 MiB limit.
+
+`KHR_materials_unlit` is supported for both optional and required glTF extensions. Unlit materials
+retain their base-color texture/factor, alpha mode, and double-sided state, but bypass sun and
+ambient lighting. They still participate in scene fog. This is stored as a material flag and uses
+the shared static-mesh shader, so it does not create extra textures, draw calls, or pipeline
+variants.
 
 ### Static visual definition
 
@@ -257,9 +264,10 @@ The production cooker recognizes `.png`, `.jpg`, `.jpeg`, and `.ktx2`.
   payloads. Their color space remains unspecified until a material consumer binds them.
 - KTX2 receives bounded container validation, but there is no runtime Basis/KTX transcode path.
 
-The current terrain palette, UI atlas, and particle materials are renderer-generated. A standalone
-texture prototype does not yet make an image appear on a voxel, UI widget, or particle. Do not
-promise final terrain/UI/particle art through this path until those consumers are connected.
+Terrain materials can bind standalone production-cooked PNG/JPEG assets. The renderer resamples
+each source image into its 16 x 16 sRGB terrain texture array and generates mipmaps. UI atlas and
+particle materials remain renderer-generated; a standalone texture does not yet make an image
+appear on those consumers.
 
 The checked-in `.txt` files below some texture/UI folders are development placeholders, not image
 formats to copy.
@@ -393,8 +401,23 @@ A voxel prototype may provide:
 - footstep surface sound.
 
 Current cube and partial block models are generated from box definitions. Standalone authored
-terrain textures are not connected yet, so the block's `terrain_material` token and generated
-renderer palette provide the visible Foundation material.
+terrain textures are resolved through the block's `terrain_material` token. For example,
+`terrain_material = "grass"` on `base:voxels/grass` selects `base:materials/grass`:
+
+```toml
+kind = "material"
+id = "base:materials/grass"
+domain = "terrain"
+blend_mode = "opaque"
+shader_template = "base:shaders/templates/terrain.slang"
+texture.albedo = "base:textures/voxels/grass.png"
+scalar.roughness = "0.9"
+color.tint = "1.0,1.0,1.0,1.0"
+```
+
+`texture.albedo` supplies every face. `texture.side`, `texture.top`, and `texture.bottom` may
+replace individual faces, which is useful for grass-over-dirt blocks. Unassigned faces retain the
+generated diagnostic palette. Resource packs can replace a texture at the same logical ID.
 
 ## Build, import, and validation
 
@@ -541,7 +564,8 @@ diagnostic safety nets, not substitutes for delivering valid definitions and ass
 - A mapped animation name is missing or duplicated.
 - A valid sound file has no `sound_event`, or the event is never referenced by presentation data.
 - OGG was assumed to be playable because it passed cooking.
-- A standalone terrain/UI/particle texture was assumed to have a runtime consumer.
+- A standalone UI/particle texture was assumed to have a runtime consumer.
+- A terrain material references KTX2 even though runtime terrain currently requires PNG/JPEG.
 
 ## Reference material
 

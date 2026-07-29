@@ -12,7 +12,12 @@ namespace heartstead::assets {
 
 namespace {
 
-constexpr std::string_view model_magic = "heartstead.model.v2";
+constexpr std::string_view model_magic_v2 = "heartstead.model.v2";
+constexpr std::string_view model_magic_v3 = "heartstead.model.v3";
+constexpr std::uint8_t model_material_double_sided = 1U << 0U;
+constexpr std::uint8_t model_material_unlit = 1U << 1U;
+constexpr std::uint8_t known_model_material_flags =
+    model_material_double_sided | model_material_unlit;
 constexpr float quaternion_tolerance = 0.01F;
 constexpr float weight_tolerance = 0.01F;
 
@@ -487,7 +492,7 @@ core::Result<std::vector<std::uint8_t>> encode_model_asset(const ModelAsset& ass
                                                                 status.error().message);
     }
     ByteWriter writer;
-    writer.string(model_magic);
+    writer.string(model_magic_v3);
     writer.u32(static_cast<std::uint32_t>(asset.vertices.size()));
     writer.u32(static_cast<std::uint32_t>(asset.indices.size()));
     writer.u32(static_cast<std::uint32_t>(asset.nodes.size()));
@@ -546,7 +551,14 @@ core::Result<std::vector<std::uint8_t>> encode_model_asset(const ModelAsset& ass
         writer.u32(material.base_color_image);
         writer.u8(static_cast<std::uint8_t>(material.alpha_mode));
         writer.f32(material.alpha_cutoff);
-        writer.u8(material.double_sided ? 1U : 0U);
+        std::uint8_t flags = 0;
+        if (material.double_sided) {
+            flags |= model_material_double_sided;
+        }
+        if (material.unlit) {
+            flags |= model_material_unlit;
+        }
+        writer.u8(flags);
     }
     for (const auto& skin : asset.skins) {
         writer.string(skin.name);
@@ -594,11 +606,14 @@ core::Result<ModelAsset> decode_model_asset(std::span<const std::uint8_t> bytes,
                                                  "model asset payload size is invalid");
     }
     ByteReader reader(bytes);
-    auto magic = reader.string(model_magic.size());
+    auto magic = reader.string(model_magic_v3.size());
     if (!magic) {
         return decode_failure<ModelAsset>(magic.error());
     }
-    if (magic.value() != model_magic) {
+    const auto model_version = magic.value() == model_magic_v3   ? 3U
+                               : magic.value() == model_magic_v2 ? 2U
+                                                                 : 0U;
+    if (model_version == 0U) {
         return core::Result<ModelAsset>::failure("model_asset.invalid_magic",
                                                  "model asset payload has an unknown version");
     }
@@ -778,23 +793,26 @@ core::Result<ModelAsset> decode_model_asset(std::span<const std::uint8_t> bytes,
         auto image = reader.u32();
         auto alpha_mode = reader.u8();
         auto alpha_cutoff = reader.f32();
-        auto double_sided = reader.u8();
-        if (!image || !alpha_mode || !alpha_cutoff || !double_sided) {
+        auto flags = reader.u8();
+        if (!image || !alpha_mode || !alpha_cutoff || !flags) {
             const auto& error = !image          ? image.error()
                                 : !alpha_mode   ? alpha_mode.error()
                                 : !alpha_cutoff ? alpha_cutoff.error()
-                                                : double_sided.error();
+                                                : flags.error();
             return decode_failure<ModelAsset>(error);
         }
-        if (double_sided.value() > 1U) {
+        const auto allowed_flags =
+            model_version >= 3U ? known_model_material_flags : model_material_double_sided;
+        if ((flags.value() & static_cast<std::uint8_t>(~allowed_flags)) != 0U) {
             return core::Result<ModelAsset>::failure(
                 "model_asset.invalid_boolean",
-                "model asset material contains an invalid double-sided flag");
+                "model asset material contains unsupported flags");
         }
         material.base_color_image = image.value();
         material.alpha_mode = static_cast<ModelAlphaMode>(alpha_mode.value());
         material.alpha_cutoff = alpha_cutoff.value();
-        material.double_sided = double_sided.value() != 0U;
+        material.double_sided = (flags.value() & model_material_double_sided) != 0U;
+        material.unlit = model_version >= 3U && (flags.value() & model_material_unlit) != 0U;
     }
     for (auto& skin : asset.skins) {
         auto name = reader.string(limits.maximum_name_bytes);

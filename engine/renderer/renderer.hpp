@@ -13,6 +13,7 @@
 #include "engine/renderer/frame/frame_builder.hpp"
 #include "engine/renderer/materials/material_runtime_cache.hpp"
 #include "engine/renderer/materials/pipeline_cache.hpp"
+#include "engine/renderer/materials/terrain_material_assets.hpp"
 #include "engine/renderer/particles/particle_system.hpp"
 #include "engine/renderer/render_camera.hpp"
 #include "engine/renderer/renderer_stats.hpp"
@@ -72,6 +73,7 @@ struct RendererInitDesc {
     std::vector<std::uint32_t> ui_vertex_spirv;
     std::vector<std::uint32_t> ui_fragment_spirv;
     const world::VoxelPalette* voxel_palette = nullptr;
+    materials::TerrainMaterialAssetSet terrain_material_assets;
     ChunkRenderConfig chunk_config{};
     ChunkGpuCacheConfig chunk_gpu_cache_config{};
     MeshManagerConfig mesh_manager_config{};
@@ -180,6 +182,9 @@ class Renderer {
     [[nodiscard]] MaterialRuntimeHandle fallback_material() const noexcept;
     [[nodiscard]] std::optional<MaterialRuntimeDesc>
     describe_material(MaterialRuntimeHandle handle) const noexcept;
+    [[nodiscard]] std::optional<MaterialRuntimeDesc>
+    describe_voxel_material(std::uint16_t voxel_type) const noexcept;
+    [[nodiscard]] std::optional<TextureView> describe_terrain_texture() const noexcept;
     [[nodiscard]] std::optional<TextureView> describe_surface_texture() const noexcept;
     [[nodiscard]] DebugRenderer* debug_renderer() noexcept;
     [[nodiscard]] const DebugRenderer* debug_renderer() const noexcept;
@@ -195,7 +200,8 @@ class Renderer {
     [[nodiscard]] core::Status
     create_terrain_pipeline(std::span<const std::uint32_t> vertex_spirv,
                             std::span<const std::uint32_t> fragment_spirv,
-                            const world::VoxelPalette* voxel_palette);
+                            const world::VoxelPalette* voxel_palette,
+                            const materials::TerrainMaterialAssetSet& material_assets);
     [[nodiscard]] core::Status
     create_scene_pipelines(std::span<const std::uint32_t> vertex_spirv,
                            std::span<const std::uint32_t> fragment_spirv);

@@ -695,6 +695,12 @@ DevGameMode::update(game::GameApplicationServices& services,
         return core::Result<game::GameApplicationFrameOutput>::failure(
             render_snapshot.error().code, render_snapshot.error().message);
     }
+    for (auto& object : render_snapshot.value().objects) {
+        if (object.source_net_id == player->player_net_id) {
+            object.visible = camera_frame.value().body.local_body_visible;
+            break;
+        }
+    }
     if (state.config.diagnostic_asset_fallbacks) {
         render_snapshot.value().objects.push_back(asset_fallback_probe_object(
             0xFFFF'FF00U, 9'000'001, "diagnostic:entities/missing_model", 10.5,
