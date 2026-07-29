@@ -10,6 +10,7 @@
 
 #include <array>
 #include <cassert>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -295,6 +296,42 @@ void write_silent_wave(const std::filesystem::path& path) {
     assert(output.good());
 }
 
+void write_test_vorbis(const std::filesystem::path& path) {
+    const auto fixture = std::filesystem::path(HEARTSTEAD_TEST_SOURCE_DIR) /
+                         "tests/fixtures/minimal_vorbis.ogg.b64";
+    std::ifstream input(fixture);
+    assert(input.is_open());
+    const std::string encoded{std::istreambuf_iterator<char>(input),
+                              std::istreambuf_iterator<char>()};
+    constexpr std::string_view alphabet =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::vector<std::uint8_t> decoded;
+    std::uint32_t bits = 0;
+    std::uint32_t bit_count = 0;
+    for (const auto character : encoded) {
+        if (std::isspace(static_cast<unsigned char>(character)) != 0) {
+            continue;
+        }
+        if (character == '=') {
+            break;
+        }
+        const auto value = alphabet.find(character);
+        assert(value != std::string_view::npos);
+        bits = (bits << 6U) | static_cast<std::uint32_t>(value);
+        bit_count += 6U;
+        if (bit_count >= 8U) {
+            bit_count -= 8U;
+            decoded.push_back(static_cast<std::uint8_t>((bits >> bit_count) & 0xFFU));
+        }
+    }
+    assert(decoded.size() == 3'801);
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    assert(output.is_open());
+    output.write(reinterpret_cast<const char*>(decoded.data()),
+                 static_cast<std::streamsize>(decoded.size()));
+    assert(output.good());
+}
+
 void test_miniaudio_backend_and_owner_thread_device_rebuild() {
     const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
     const auto directory = std::filesystem::temp_directory_path() /
@@ -302,7 +339,9 @@ void test_miniaudio_backend_and_owner_thread_device_rebuild() {
     assert(std::filesystem::create_directories(directory));
     const auto path = directory / "loop.wav";
     const auto tone_path = directory / "step.tone";
+    const auto vorbis_path = directory / "loop.ogg";
     write_silent_wave(path);
+    write_test_vorbis(vorbis_path);
     {
         std::ofstream output(tone_path, std::ios::trunc);
         assert(output.is_open());
@@ -340,6 +379,18 @@ void test_miniaudio_backend_and_owner_thread_device_rebuild() {
         false,
         {},
     }));
+    assert(assets.add(assets::AssetRecord{
+        "test:sounds/loop.ogg",
+        assets::AssetKind::sound,
+        assets::VirtualPath{"test", "sounds/loop.ogg"},
+        assets::AssetSourceKind::mod,
+        "test",
+        0,
+        vorbis_path,
+        "0000000000000003",
+        false,
+        {},
+    }));
     audio::SoundEventRegistry registry;
     auto loop = event("test:audio/miniaudio_loop");
     loop.asset_id = "test:sounds/loop.wav";
@@ -350,6 +401,11 @@ void test_miniaudio_backend_and_owner_thread_device_rebuild() {
     auto tone = event("test:audio/miniaudio_tone");
     tone.asset_id = "test:sounds/step.tone";
     assert(registry.add(tone));
+    auto vorbis = event("test:audio/miniaudio_vorbis");
+    vorbis.asset_id = "test:sounds/loop.ogg";
+    vorbis.spatialized = false;
+    vorbis.looping = true;
+    assert(registry.add(vorbis));
 
     assets::AssetCookConfig cook_config;
     cook_config.backend = assets::AssetCookBackend::production_converters;
@@ -361,6 +417,7 @@ void test_miniaudio_backend_and_owner_thread_device_rebuild() {
     assert(cooked_store);
     assert(std::filesystem::remove(path));
     assert(std::filesystem::remove(tone_path));
+    assert(std::filesystem::remove(vorbis_path));
 
     audio::AudioSystemDesc desc;
     desc.backend = audio::AudioBackend::miniaudio;
@@ -392,7 +449,13 @@ void test_miniaudio_backend_and_owner_thread_device_rebuild() {
         system.value()->play({id("test:audio/miniaudio_tone"), tone_emitter, 1.0F, 1.0F});
     assert(tone_voice);
     assert(system.value()->voice_snapshot(tone_voice.value())->spatialized);
-    assert(system.value()->stats().cached_assets == 2);
+    auto vorbis_voice =
+        system.value()->play({id("test:audio/miniaudio_vorbis"), std::nullopt, 1.0F, 1.0F});
+    assert(vorbis_voice);
+    assert(system.value()->voice_snapshot(vorbis_voice.value())->looping);
+    assert(system.value()->update(0.01F));
+    assert(system.value()->is_active(vorbis_voice.value()));
+    assert(system.value()->stats().cached_assets == 3);
     assert(system.value()->stats().asset_cache_hits == 1);
     assert(system.value()->stats().source_asset_loads == 0);
     auto fallback_voice =
@@ -402,10 +465,11 @@ void test_miniaudio_backend_and_owner_thread_device_rebuild() {
     assert(fallback_snapshot.has_value());
     assert(fallback_snapshot->event_id == id("test:audio/miniaudio_tone"));
     assert(system.value()->stats().fallback_voices == 1);
-    assert(system.value()->stats().cached_assets == 2);
+    assert(system.value()->stats().cached_assets == 3);
     assert(system.value()->stats().asset_cache_hits == 2);
     assert(system.value()->stats().source_asset_loads == 0);
     assert(system.value()->stop(fallback_voice.value()));
+    assert(system.value()->stop(vorbis_voice.value()));
     assert(system.value()->stop(tone_voice.value()));
     assert(system.value()->stop(replacement.value()));
     system.value().reset();

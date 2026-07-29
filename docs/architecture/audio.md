@@ -45,10 +45,10 @@ references fail content validation before session startup.
 The base mod currently uses bounded `.tone` manifests for source-controlled development sounds.
 They describe a sine/noise generator and envelope rather than embedding binary media. The
 production cooker validates them and records a versioned procedural-tone runtime format. The
-miniaudio backend materializes deterministic mono PCM from the cooked payload. Authored WAV and
-FLAC assets use the same event path without gameplay changes. OGG is catalogued and
-production-cooked, but is not an end-to-end playback format yet: the current miniaudio build does
-not include a Vorbis decoder.
+miniaudio backend materializes deterministic mono PCM from the cooked payload. Authored WAV, FLAC,
+and Ogg Vorbis assets use the same event path without gameplay changes. The miniaudio translation
+unit enables stb_vorbis, so production-cooked Ogg Vorbis data is an end-to-end playback format;
+Opus-in-Ogg remains unsupported.
 
 `GameRuntime` owns the active asset catalog and event registry used to create an audio system.
 The Foundation executable also supplies its verified `CookedAssetStore`. Production playback loads

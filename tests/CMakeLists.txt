@@ -141,6 +141,9 @@ heartstead_add_foundation_test(heartstead_physics_character_tests physics_charac
 heartstead_add_foundation_test(heartstead_physical_resource_physics_tests
                                physical_resource_physics_tests.cpp)
 heartstead_add_foundation_test(heartstead_audio_system_tests audio_system_tests.cpp)
+target_compile_definitions(
+  heartstead_audio_system_tests PRIVATE HEARTSTEAD_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
 heartstead_add_foundation_test(heartstead_model_asset_tests model_asset_tests.cpp)
 target_compile_definitions(
   heartstead_model_asset_tests PRIVATE HEARTSTEAD_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
