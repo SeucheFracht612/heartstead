@@ -1250,6 +1250,19 @@ MaterialRuntimeHandle Renderer::fallback_material() const noexcept {
     return fallback_material_;
 }
 
+std::optional<MaterialRuntimeDesc>
+Renderer::describe_material(MaterialRuntimeHandle handle) const noexcept {
+    return material_cache_ == nullptr ? std::nullopt : material_cache_->describe(handle);
+}
+
+std::optional<TextureView> Renderer::describe_surface_texture() const noexcept {
+    if (surface_texture_array_ == nullptr) {
+        return std::nullopt;
+    }
+    const auto* view = surface_texture_array_->texture_view();
+    return view == nullptr ? std::nullopt : std::optional<TextureView>{*view};
+}
+
 DebugRenderer* Renderer::debug_renderer() noexcept {
     return debug_renderer_.get();
 }

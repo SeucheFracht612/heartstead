@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -89,6 +90,8 @@ class MaterialRuntimeCache {
 
     [[nodiscard]] const MaterialRuntimeView* find(MaterialRuntimeHandle handle) const noexcept;
     [[nodiscard]] const MaterialRuntimeView* find(const core::PrototypeId& id) const noexcept;
+    [[nodiscard]] std::optional<MaterialRuntimeDesc>
+    describe(MaterialRuntimeHandle handle) const noexcept;
     [[nodiscard]] const BlockRenderTable& block_render_table() const noexcept;
     [[nodiscard]] rhi::RenderResourceHandle gpu_table_buffer() const noexcept;
     [[nodiscard]] rhi::RenderResourceHandle surface_gpu_table_buffer() const noexcept;

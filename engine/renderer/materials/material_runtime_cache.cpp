@@ -252,6 +252,12 @@ const MaterialRuntimeView* MaterialRuntimeCache::find(const core::PrototypeId& i
     return found == records_.end() ? nullptr : &found->view;
 }
 
+std::optional<MaterialRuntimeDesc>
+MaterialRuntimeCache::describe(MaterialRuntimeHandle handle) const noexcept {
+    const auto* record = find_record(handle);
+    return record == nullptr ? std::nullopt : std::optional<MaterialRuntimeDesc>{record->desc};
+}
+
 const BlockRenderTable& MaterialRuntimeCache::block_render_table() const noexcept {
     return table_;
 }

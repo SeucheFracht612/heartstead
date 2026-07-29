@@ -142,7 +142,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [x] `[Automated]` filtered model cooking also cooks required external or generated image assets.
 - [x] `[Automated]` changing a dependency changes the dependent cooked record/hash.
 - [x] `[Automated]` PNG and JPEG sources cook to versioned RGBA8 texture assets.
-- [ ] `[Automated]` base-color texture RGB is uploaded as sRGB and material factors remain linear.
+- [x] `[Automated]` base-color texture RGB is uploaded as sRGB and material factors remain linear.
 - [ ] `[Both]` one textured static glTF/GLB prop renders through the catalog and cooked store.
 - [ ] `[Both]` one textured skinned player glTF/GLB renders through the same path.
 - [ ] `[Both]` per-primitive base-color material assignment is preserved and visible.
@@ -226,6 +226,9 @@ Recorded 2026-07-29:
     - selects the model's external buffer and image dependency closure
     - proves an external image change alters the dependent model's cooked hash
     - verifies alpha-blend rejection includes the logical model ID and importer reason
+- `heartstead_renderer_frontend_tests`
+  - `test_renderer_frontend_submits_headless_frames` verifies model base-color textures use an
+    sRGB image view while base-color factors reach the GPU surface-material record unchanged
 - `heartstead_voxel_interaction_presentation_tests`
   - `test_only_accepted_edits_emit_data_driven_feedback`
   - `test_foundation_voxels_resolve_feedback_resources`

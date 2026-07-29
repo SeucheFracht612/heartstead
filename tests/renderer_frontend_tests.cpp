@@ -662,6 +662,54 @@ void test_renderer_frontend_submits_headless_frames() {
     // a skin-matrix ring, and buffered debug/UI geometry.
     assert(initialized_resource_count == 43);
 
+    assets::ModelAsset material_model;
+    material_model.vertices.resize(3);
+    material_model.vertices[0].position = {-0.5F, 0.0F, 0.0F};
+    material_model.vertices[1].position = {0.5F, 0.0F, 0.0F};
+    material_model.vertices[2].position = {0.0F, 1.0F, 0.0F};
+    material_model.indices = {0, 1, 2};
+    material_model.nodes.push_back({"root", assets::no_model_index, {}});
+    material_model.primitives.push_back({"triangle", 0, 3, 0, 3, 0, assets::no_model_index, 0});
+    material_model.images.push_back(
+        {"base_color",
+         2,
+         2,
+         {16, 32, 64, 255, 32, 64, 128, 255, 64, 128, 192, 255, 128, 192, 224, 128}});
+    assets::ModelMaterial source_material;
+    source_material.name = "paint";
+    source_material.base_color_factor = {0.25F, 0.5F, 0.75F, 0.8F};
+    source_material.base_color_image = 0;
+    source_material.alpha_mode = assets::ModelAlphaMode::mask;
+    source_material.alpha_cutoff = 0.375F;
+    source_material.double_sided = true;
+    material_model.materials.push_back(source_material);
+    material_model.bounds = {{-0.5F, 0.0F, 0.0F}, {0.5F, 1.0F, 0.0F}};
+    auto model_materials = retained_renderer.create_model_materials(
+        "base:models/props/color_contract.gltf", material_model);
+    assert(model_materials);
+    assert(model_materials.value().size() == 1);
+    const auto texture = retained_renderer.describe_surface_texture();
+    assert(texture);
+    assert(texture->color_space == renderer::TextureColorSpace::srgb);
+    assert(texture->array_layers == 5);
+    const auto material =
+        retained_renderer.describe_material(model_materials.value().front().material);
+    assert(material);
+    assert(material->base_color == source_material.base_color_factor);
+    assert(material->alpha_cutoff == source_material.alpha_cutoff);
+    assert(material->surface_texture == 4);
+    assert(model_materials.value().front().layer == renderer::RenderLayer::alpha_tested);
+    assert(renderer::any(model_materials.value().front().flags &
+                         renderer::RenderObjectFlags::two_sided));
+    const auto gpu_material = renderer::gpu_surface_material(*material);
+    assert(std::ranges::equal(gpu_material.base_color, source_material.base_color_factor));
+    auto cached_model_materials = retained_renderer.create_model_materials(
+        "base:models/props/color_contract.gltf", material_model);
+    assert(cached_model_materials);
+    assert(cached_model_materials.value().front().material ==
+           model_materials.value().front().material);
+    assert(retained_renderer.describe_surface_texture()->array_layers == 5);
+
     renderer::rhi::RenderEnvironmentData invalid_environment;
     invalid_environment.fog_end = invalid_environment.fog_start;
     assert(!retained_renderer.set_environment(invalid_environment));
@@ -771,7 +819,7 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(renderer_stats.draw_calls == 2);
     assert(renderer_stats.pipeline_switches == 2);
     assert(renderer_stats.resident_textures == 7);
-    assert(renderer_stats.runtime_materials == 256);
+    assert(renderer_stats.runtime_materials == 257);
     assert(renderer_stats.resident_pipelines == 12);
     assert(renderer_stats.resident_texture_bytes > 0);
     assert(renderer_stats.vertices > 0);

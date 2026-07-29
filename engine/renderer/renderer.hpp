@@ -28,6 +28,7 @@
 #include <array>
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -176,6 +177,9 @@ class Renderer {
     [[nodiscard]] RendererFallbackResources fallback_resources() const noexcept;
     [[nodiscard]] RenderMeshHandle fallback_mesh() const noexcept;
     [[nodiscard]] MaterialRuntimeHandle fallback_material() const noexcept;
+    [[nodiscard]] std::optional<MaterialRuntimeDesc>
+    describe_material(MaterialRuntimeHandle handle) const noexcept;
+    [[nodiscard]] std::optional<TextureView> describe_surface_texture() const noexcept;
     [[nodiscard]] DebugRenderer* debug_renderer() noexcept;
     [[nodiscard]] const DebugRenderer* debug_renderer() const noexcept;
     [[nodiscard]] std::span<const DebugTextLabelFrame> debug_text_labels() const noexcept;
