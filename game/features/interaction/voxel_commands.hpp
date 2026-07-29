@@ -16,6 +16,7 @@ namespace heartstead::game::interaction {
 
 inline constexpr std::string_view place_voxel_command_type = "voxel.place";
 inline constexpr std::string_view remove_voxel_command_type = "voxel.remove";
+inline constexpr double maximum_voxel_interaction_reach = 6.0;
 
 struct PlaceVoxelCommand {
     world::BlockCoord position;
@@ -27,6 +28,10 @@ struct RemoveVoxelCommand {
 };
 
 using VoxelPlacementValidator = std::function<core::Status(world::BlockCoord, world::VoxelCell)>;
+
+[[nodiscard]] core::Status
+validate_voxel_interaction_reach(world::BlockCoord position,
+                                 const movement::PlayerControllerState& player);
 
 class VoxelCommandTextCodec {
   public:

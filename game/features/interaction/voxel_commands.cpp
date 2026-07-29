@@ -57,15 +57,16 @@ namespace {
     return core::Result<world::BlockCoord>::success(result);
 }
 
-[[nodiscard]] core::Status validate_reach(world::BlockCoord position,
-                                          const movement::PlayerControllerState& player) {
+[[nodiscard]] core::Status
+validate_voxel_interaction_reach_impl(world::BlockCoord position,
+                                      const movement::PlayerControllerState& player) {
     auto center = world::WorldPosition::from_anchor(position, {0.5, 0.5, 0.5});
     if (!center) {
         return core::Status::failure(center.error().code, center.error().message);
     }
     const auto delta =
         center.value().relative_to(player.position.anchor) - player.position.local_offset;
-    if (math::length(delta) > 6.0) {
+    if (math::length(delta) > maximum_voxel_interaction_reach) {
         return core::Status::failure("voxel_command.out_of_reach",
                                      "voxel target is outside the player's interaction reach");
     }
@@ -117,6 +118,11 @@ namespace {
 }
 
 } // namespace
+
+core::Status validate_voxel_interaction_reach(world::BlockCoord position,
+                                              const movement::PlayerControllerState& player) {
+    return validate_voxel_interaction_reach_impl(position, player);
+}
 
 std::string VoxelCommandTextCodec::encode(const PlaceVoxelCommand& command) {
     net::CommandPayload payload;
@@ -178,7 +184,7 @@ core::Status execute_place_voxel(const PlaceVoxelCommand& command,
                                  const net::CommandExecutionContext& context,
                                  world::WorldOperation& operation,
                                  const VoxelPlacementValidator& validate_placement) {
-    auto status = validate_reach(command.position, player);
+    auto status = validate_voxel_interaction_reach(command.position, player);
     if (!status) {
         return status;
     }
@@ -221,7 +227,7 @@ core::Status execute_remove_voxel(const RemoveVoxelCommand& command,
                                   const net::CommandEnvelope& envelope,
                                   const net::CommandExecutionContext& context,
                                   world::WorldOperation& operation) {
-    auto status = validate_reach(command.position, player);
+    auto status = validate_voxel_interaction_reach(command.position, player);
     if (!status) {
         return status;
     }

@@ -482,13 +482,28 @@ DevGameMode::update(game::GameApplicationServices& services,
                                                                        status.error().message);
     }
 
+    const auto camera_from_player =
+        camera_frame.value().position.relative_to(player->state.position.anchor) -
+        player->state.position.local_offset;
+    const auto camera_selection_distance =
+        game::interaction::maximum_voxel_interaction_reach + math::length(camera_from_player);
     auto selection = game::interaction::raycast_voxels(
         state.runtime.session()->client()->world().chunks(),
-        {camera_frame.value().position, camera_frame.value().forward, 6.0},
+        {camera_frame.value().position, camera_frame.value().forward, camera_selection_distance},
         &state.config.content_report->voxel_palette);
     if (!selection) {
         return core::Result<game::GameApplicationFrameOutput>::failure(selection.error().code,
                                                                        selection.error().message);
+    }
+    if (selection.value().hit.has_value()) {
+        const auto reachable = game::interaction::validate_voxel_interaction_reach(
+            selection.value().hit->block, player->state);
+        if (!reachable && reachable.error().code == "voxel_command.out_of_reach") {
+            selection.value().hit.reset();
+        } else if (!reachable) {
+            return core::Result<game::GameApplicationFrameOutput>::failure(
+                reachable.error().code, reachable.error().message);
+        }
     }
     if (action_frame[input::InputAction::primary_action].pressed ||
         action_frame[input::InputAction::secondary_action].pressed) {
@@ -679,6 +694,15 @@ DevGameMode::update(game::GameApplicationServices& services,
             const auto& render_stats = renderer->stats();
             const auto feedback_stats = state.voxel_interaction_presentation.stats();
             const auto audio_stats = audio->stats();
+            std::string selection_text = "none";
+            if (selection.value().hit.has_value()) {
+                const auto& hit = *selection.value().hit;
+                std::ostringstream selection_stream;
+                selection_stream << hit.block.x << ',' << hit.block.y << ',' << hit.block.z
+                                 << " face " << hit.face_normal.x << ',' << hit.face_normal.y << ','
+                                 << hit.face_normal.z << " distance " << hit.distance;
+                selection_text = selection_stream.str();
+            }
             std::string lighting_text = "remote";
             std::string fluid_text = "remote";
             if (const auto* server = state.runtime.session()->server(); server != nullptr) {
@@ -747,7 +771,7 @@ DevGameMode::update(game::GameApplicationServices& services,
                  << audio_stats.rejected_voices << " fallback " << audio_stats.fallback_voices
                  << " warnings " << audio_stats.fallback_diagnostics << '\n'
                  << "input " << player_input.move_x << ", " << player_input.move_z << " | selected "
-                 << (selection.value().hit.has_value() ? "voxel" : "none") << '\n'
+                 << selection_text << '\n'
                  << "last command " << command_text << " | last error " << last_error_code;
             const auto diagnostic_text = text.str();
             renderer::UiQuadDesc panel;

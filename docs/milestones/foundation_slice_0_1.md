@@ -61,7 +61,7 @@ build followed by the commands above produced the authoritative result.
 
 - [x] `[Automated]` a new Foundation world records a stable scenario ID, layout version, and seed.
 - [x] `[Automated]` repeated new-world construction produces byte-equivalent baseline chunks.
-- [ ] `[Both]` the player appears at the documented safe spawn.
+- [x] `[Both]` the player appears at the documented safe spawn.
 - [x] `[Automated]` the full player capsule and camera pivot volume at spawn contain no solid voxel.
 - [ ] `[Both]` dirt, stone, grass, water, and visually distinct diagnostic blocks are present.
 - [ ] `[Both]` the compact controller course contains full-block steps, partial-height steps,
@@ -89,22 +89,22 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [x] `[Automated]` traversing internal block edges does not create unrequested upward velocity.
 - [ ] `[Both]` removing the supporting block makes the player fall after collision refresh.
 - [ ] `[Both]` water enters and exits the existing swimming/controller mode correctly.
-- [ ] `[Native]` first- and third-person camera modes can be selected explicitly.
+- [x] `[Native]` first- and third-person camera modes can be selected explicitly.
 - [ ] `[Both]` the third-person camera shortens its boom before entering solid terrain.
 - [ ] `[Native]` the camera restores its desired distance smoothly after an obstruction clears.
 - [x] `[Native]` the controller overlay displays position, velocity, requested movement, actual
       displacement, grounded state, ground normal/state, controller mode, step result, supporting
       body/block, and pending terrain-collision revision.
-- [ ] `[Native]` controller geometry and contact debug drawing can be toggled independently of the
+- [x] `[Native]` controller geometry and contact debug drawing can be toggled independently of the
       text overlay.
 
 ## Voxel selection and authoritative editing
 
-- [ ] `[Both]` aiming at a selectable voxel produces a hit position and face.
-- [ ] `[Native]` the selected voxel's declared selection bounds receive a clear outline.
+- [x] `[Both]` aiming at a selectable voxel produces a hit position and face.
+- [x] `[Native]` the selected voxel's declared selection bounds receive a clear outline.
 - [ ] `[Native]` the outline disappears when no voxel is in interaction range.
-- [ ] `[Both]` primary action submits a remove command for the selected voxel.
-- [ ] `[Both]` secondary action submits a place command against the selected hit face.
+- [x] `[Both]` primary action submits a remove command for the selected voxel.
+- [x] `[Both]` secondary action submits a place command against the selected hit face.
 - [x] `[Automated]` the server rejects an edit outside interaction range.
 - [x] `[Automated]` the server rejects removal of an empty voxel.
 - [x] `[Automated]` the server rejects placement into an occupied voxel.
@@ -230,6 +230,19 @@ Recorded 2026-07-29:
   at the bottom, and the session, controller, derived-world, feedback, audio, and error lines are
   legible. `heartstead_ui_renderer_tests` fixes the coordinate contract at the top-left, center,
   and bottom-right NDC points.
+- native XTest input passes verified the documented `(8.50, 1.00, 8.50)` spawn, explicit
+  first-/third-person switching, and independent controller-geometry toggling while the text
+  overlay remained enabled. A selected voxel displayed block `(8, 0, 9)`, face `(0, 1, 0)`, and
+  distance `2.15`, with its selection bounds outlined. Primary remove and secondary place were
+  each accepted once; the presentation counters reported one remove event, one place event, two
+  particle emissions, one sound emission, no dropped events, and no last error. A separate
+  deliberately out-of-reach placement was rejected as `voxel_command.out_of_reach` while all
+  feedback counters remained zero.
+- `heartstead_gameplay_input_tests`
+  - `test_voxel_interaction_reach_matches_the_authoritative_rule` locks the shared six-metre
+    player-to-block reach boundary used by both client selection and authoritative commands
+  - the existing DDA and declared-selection-bounds tests provide the automated half of the native
+    block/face selection observation
 - `heartstead_dev_game_save_smoke` creates a missing slot, verifies a periodic generation commit,
   clean-shutdown commit, and staged-generation cleanup, then reopens and recommits the same slot.
 - `heartstead_runtime_spine_tests`

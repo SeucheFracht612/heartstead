@@ -1,6 +1,7 @@
 #include "engine/input/input_action.hpp"
 #include "engine/world/chunks/chunk_replication.hpp"
 #include "engine/world/voxels/voxel_chunk.hpp"
+#include "game/features/interaction/voxel_commands.hpp"
 #include "game/features/interaction/voxel_raycast.hpp"
 
 #include <cassert>
@@ -130,6 +131,18 @@ void test_voxel_raycast_uses_declared_selection_bounds() {
     assert(above_slab.value().hit->face_normal == (math::Coord3i{0, 0, -1}));
 }
 
+void test_voxel_interaction_reach_matches_the_authoritative_rule() {
+    movement::PlayerControllerState player;
+    player.position = {0.5, 0.5, 0.5};
+    assert(game::interaction::validate_voxel_interaction_reach({6, 0, 0}, player));
+    assert(game::interaction::validate_voxel_interaction_reach({-6, 0, 0}, player));
+
+    const auto positive = game::interaction::validate_voxel_interaction_reach({7, 0, 0}, player);
+    const auto negative = game::interaction::validate_voxel_interaction_reach({-7, 0, 0}, player);
+    assert(!positive && positive.error().code == "voxel_command.out_of_reach");
+    assert(!negative && negative.error().code == "voxel_command.out_of_reach");
+}
+
 void test_chunk_snapshot_slices_round_trip_worst_case_geometry() {
     world::ChunkDatabase chunks;
     auto& chunk = chunks.get_or_create({-2, 3, 4});
@@ -166,6 +179,7 @@ int main() {
     test_voxel_dda_hits_faces_and_negative_coordinates();
     test_voxel_dda_preserves_large_world_anchor();
     test_voxel_raycast_uses_declared_selection_bounds();
+    test_voxel_interaction_reach_matches_the_authoritative_rule();
     test_chunk_snapshot_slices_round_trip_worst_case_geometry();
     return 0;
 }
