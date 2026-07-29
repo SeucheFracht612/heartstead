@@ -15,6 +15,7 @@ target_sources(
     presentation/animated_model_presentation.cpp
     presentation/client_audio_presentation.cpp
     presentation/client_presentation.cpp
+    presentation/model_presentation_system.cpp
     presentation/particle_presentation.cpp
     presentation/presentation_world.cpp
     runtime/client_runtime.cpp
@@ -40,6 +41,7 @@ target_sources(
       presentation/animated_model_presentation.hpp
       presentation/client_audio_presentation.hpp
       presentation/client_presentation.hpp
+      presentation/model_presentation_system.hpp
       presentation/particle_presentation.hpp
       presentation/presentation_world.hpp
       presentation/render_snapshot.hpp

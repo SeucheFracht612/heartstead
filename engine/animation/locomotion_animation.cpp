@@ -64,6 +64,36 @@ std::uint32_t LocomotionClipSet::clip_for(LocomotionAnimationKind kind) const no
     return assets::no_model_index;
 }
 
+core::Result<LocomotionClipSet> resolve_locomotion_clips(const assets::ModelAsset& model,
+                                                         std::string_view idle,
+                                                         std::string_view walk,
+                                                         std::string_view swim,
+                                                         std::uint32_t transition_ticks) {
+    auto idle_clip = assets::resolve_model_animation_clip(model, idle);
+    if (!idle_clip) {
+        return core::Result<LocomotionClipSet>::failure(idle_clip.error().code,
+                                                        idle_clip.error().message);
+    }
+    auto walk_clip = assets::resolve_model_animation_clip(model, walk);
+    if (!walk_clip) {
+        return core::Result<LocomotionClipSet>::failure(walk_clip.error().code,
+                                                        walk_clip.error().message);
+    }
+    auto swim_clip = assets::resolve_model_animation_clip(model, swim);
+    if (!swim_clip) {
+        return core::Result<LocomotionClipSet>::failure(swim_clip.error().code,
+                                                        swim_clip.error().message);
+    }
+    LocomotionClipSet result{idle_clip.value(), walk_clip.value(), swim_clip.value(),
+                             transition_ticks};
+    auto status = result.validate(model);
+    if (!status) {
+        return core::Result<LocomotionClipSet>::failure(status.error().code,
+                                                        status.error().message);
+    }
+    return core::Result<LocomotionClipSet>::success(result);
+}
+
 core::Result<SkeletalPose>
 sample_locomotion_animation(const assets::ModelAsset& model, const LocomotionClipSet& clips,
                             const ReplicatedLocomotionAnimation& animation,

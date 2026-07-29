@@ -39,6 +39,7 @@ target_sources(
     entities/entity.cpp
     entities/entity_motion_snapshot.cpp
     entities/entity_prototype.cpp
+    entities/entity_visual.cpp
     entities/entity_world.cpp
     entities/physical_resource.cpp
     items/item_stack.cpp
@@ -241,6 +242,7 @@ target_sources(
       entities/entity_motion_snapshot.hpp
       entities/entity_id.hpp
       entities/entity_prototype.hpp
+      entities/entity_visual.hpp
       entities/entity_world.hpp
       entities/physical_resource.hpp
       input/input_action.hpp

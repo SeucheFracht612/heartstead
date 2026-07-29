@@ -158,6 +158,15 @@ ContentValidation::validate(const std::filesystem::path& mods_root,
         report.entity_definitions.push_back(std::move(definition).value());
     }
 
+    auto visual_definitions =
+        entities::visual_definition_registry_from_prototypes(report.registry, report.asset_catalog);
+    if (!visual_definitions) {
+        add_error(report, mods_root, visual_definitions.error().code,
+                  visual_definitions.error().message);
+    } else {
+        report.visual_definitions = std::move(visual_definitions).value();
+    }
+
     for (const auto* prototype :
          report.registry.prototypes_of_kind(modding::PrototypeKinds::particle)) {
         auto definition = renderer::particle_prototype_from_generic(*prototype);

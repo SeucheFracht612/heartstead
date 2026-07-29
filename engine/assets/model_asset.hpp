@@ -184,6 +184,8 @@ discover_gltf_external_dependencies(const std::filesystem::path& path,
 encode_model_asset(const ModelAsset& asset, const ModelAssetLimits& limits = {});
 [[nodiscard]] core::Result<ModelAsset> decode_model_asset(std::span<const std::uint8_t> bytes,
                                                           const ModelAssetLimits& limits = {});
+[[nodiscard]] core::Result<std::uint32_t> resolve_model_animation_clip(const ModelAsset& model,
+                                                                       std::string_view clip_name);
 
 [[nodiscard]] std::string_view model_animation_path_name(ModelAnimationPath path) noexcept;
 [[nodiscard]] std::string_view

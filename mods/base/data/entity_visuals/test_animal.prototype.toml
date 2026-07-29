@@ -1,0 +1,7 @@
+kind = "entity_visual"
+id = "base:visuals/test_animal"
+display_name = "Test Animal Visual"
+entity = "base:entities/test_animal"
+model = "base:models/entities/storybook_animal.gltf"
+bounds_padding = "0.25"
+cast_shadow = "true"

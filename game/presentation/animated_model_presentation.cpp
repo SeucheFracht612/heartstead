@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <span>
 #include <unordered_set>
 #include <utility>
@@ -70,18 +71,21 @@ core::Status AnimatedModelPresentationConfig::validate() const {
     if (!status) {
         return status;
     }
-    status = locomotion_clips.validate(model);
-    if (!status) {
-        return status;
+    const auto has_skinned_primitives =
+        std::ranges::any_of(model.primitives, [](const assets::ModelPrimitive& primitive) {
+            return primitive.skin != assets::no_model_index;
+        });
+    if (has_skinned_primitives) {
+        status = locomotion_clips.validate(model);
+        if (!status) {
+            return status;
+        }
     }
     if (asset_id.empty() || !visual_prototype.is_valid() || !animated_bounds.is_valid() ||
-        !finite_color(color) ||
-        std::ranges::none_of(model.primitives, [](const assets::ModelPrimitive& primitive) {
-            return primitive.skin != assets::no_model_index;
-        })) {
+        !finite_color(color)) {
         return core::Status::failure(
             "animated_model_presentation.invalid_config",
-            "animated presentation requires an id, prototype, bounds, and skinned mesh");
+            "model presentation requires an id, prototype, finite bounds, and color");
     }
     return core::Status::ok();
 }
@@ -142,6 +146,10 @@ core::Status AnimatedModelPresentation::initialize(renderer::Renderer& renderer,
     primitives_ = std::move(uploaded);
     entities_.clear();
     stats_ = {};
+    has_skinned_primitives_ =
+        std::ranges::any_of(config_.model.primitives, [](const assets::ModelPrimitive& primitive) {
+            return primitive.skin != assets::no_model_index;
+        });
     initialized_ = true;
     return core::Status::ok();
 }
@@ -174,14 +182,18 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
             continue;
         }
 
-        auto pose = animation::sample_locomotion_animation(config_.model, config_.locomotion_clips,
-                                                           source.current_locomotion,
-                                                           snapshot.simulation_tick);
-        if (!pose) {
-            return core::Result<AnimatedModelPresentationStats>::failure(pose.error().code,
-                                                                         pose.error().message);
+        std::optional<animation::SkeletalPose> pose;
+        if (has_skinned_primitives_) {
+            auto sampled = animation::sample_locomotion_animation(
+                config_.model, config_.locomotion_clips, source.current_locomotion,
+                snapshot.simulation_tick);
+            if (!sampled) {
+                return core::Result<AnimatedModelPresentationStats>::failure(
+                    sampled.error().code, sampled.error().message);
+            }
+            pose.emplace(std::move(sampled).value());
+            ++frame_stats.evaluated_poses;
         }
-        ++frame_stats.evaluated_poses;
         auto previous_transform =
             render_transform(source.previous_transform, source.current_transform.position);
         auto current_transform =
@@ -384,6 +396,7 @@ core::Status AnimatedModelPresentation::shutdown(renderer::Renderer& renderer) {
     primitives_.clear();
     config_ = {};
     stats_ = {};
+    has_skinned_primitives_ = false;
     initialized_ = false;
     return core::Status::ok();
 }

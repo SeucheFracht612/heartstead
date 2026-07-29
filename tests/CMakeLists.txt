@@ -61,6 +61,21 @@ target_link_libraries(heartstead_animated_model_presentation_tests
 heartstead_configure_test_target(heartstead_animated_model_presentation_tests)
 heartstead_register_unit_test(heartstead_animated_model_presentation_tests)
 
+add_executable(heartstead_model_presentation_system_tests model_presentation_system_tests.cpp)
+target_link_libraries(heartstead_model_presentation_system_tests PRIVATE Heartstead::GameRuntime)
+target_compile_definitions(
+  heartstead_model_presentation_system_tests
+  PRIVATE
+    HEARTSTEAD_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    HEARTSTEAD_TEST_COOKED_ASSET_DIR="${CMAKE_BINARY_DIR}/apps/dev_game/assets/cooked"
+)
+if(TARGET heartstead_dev_game_model_assets)
+  add_dependencies(heartstead_model_presentation_system_tests
+                   heartstead_dev_game_model_assets)
+endif()
+heartstead_configure_test_target(heartstead_model_presentation_system_tests)
+heartstead_register_unit_test(heartstead_model_presentation_system_tests)
+
 add_executable(heartstead_headless_session_tests headless_session_tests.cpp)
 target_link_libraries(heartstead_headless_session_tests PRIVATE Heartstead::GameRuntime)
 target_compile_definitions(

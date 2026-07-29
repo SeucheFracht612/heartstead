@@ -936,4 +936,31 @@ std::string_view model_alpha_mode_name(ModelAlphaMode mode) noexcept {
     return "unknown";
 }
 
+core::Result<std::uint32_t> resolve_model_animation_clip(const ModelAsset& model,
+                                                         std::string_view clip_name) {
+    if (clip_name.empty()) {
+        return core::Result<std::uint32_t>::failure(
+            "model_asset.empty_animation_name",
+            "animation clip lookup requires a non-empty exported clip name");
+    }
+    auto resolved = no_model_index;
+    for (std::uint32_t index = 0; index < model.animations.size(); ++index) {
+        if (model.animations[index].name != clip_name) {
+            continue;
+        }
+        if (resolved != no_model_index) {
+            return core::Result<std::uint32_t>::failure(
+                "model_asset.ambiguous_animation_name",
+                "animation clip name is duplicated in the model: " + std::string(clip_name));
+        }
+        resolved = index;
+    }
+    if (resolved == no_model_index) {
+        return core::Result<std::uint32_t>::failure("model_asset.missing_animation_name",
+                                                    "animation clip does not exist in the model: " +
+                                                        std::string(clip_name));
+    }
+    return core::Result<std::uint32_t>::success(resolved);
+}
+
 } // namespace heartstead::assets

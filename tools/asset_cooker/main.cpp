@@ -11,7 +11,6 @@
 
 #include <filesystem>
 #include <iostream>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -89,7 +88,7 @@ int main(int argc, char** argv) {
         std::filesystem::path output_path;
         assets::AssetCookBackend cook_backend = assets::AssetCookBackend::development_passthrough;
         bool inspect_after_cook = false;
-        std::optional<std::string> only_logical_id;
+        std::vector<std::string> only_logical_ids;
         auto positional_count = 0;
         for (int index = 1; index < argc; ++index) {
             const auto argument = std::string_view(argv[index]);
@@ -102,7 +101,7 @@ int main(int argc, char** argv) {
                     print_usage(argv[0], std::cerr);
                     return 2;
                 }
-                only_logical_id = argv[++index];
+                only_logical_ids.emplace_back(argv[++index]);
                 continue;
             }
             if (argument.starts_with("--")) {
@@ -194,15 +193,18 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
-        if (only_logical_id.has_value()) {
-            const auto* selected = catalog.find_active(*only_logical_id);
-            if (selected == nullptr) {
-                core::log(core::LogLevel::error,
-                          "selected asset is not active: " + *only_logical_id);
-                return 1;
-            }
+        if (!only_logical_ids.empty()) {
             assets::AssetCatalog filtered;
-            std::vector<std::string> pending{selected->logical_id};
+            std::vector<std::string> pending;
+            pending.reserve(only_logical_ids.size());
+            for (const auto& logical_id : only_logical_ids) {
+                const auto* selected = catalog.find_active(logical_id);
+                if (selected == nullptr) {
+                    core::log(core::LogLevel::error, "selected asset is not active: " + logical_id);
+                    return 1;
+                }
+                pending.push_back(selected->logical_id);
+            }
             std::unordered_set<std::string> included;
             while (!pending.empty()) {
                 auto logical_id = std::move(pending.back());

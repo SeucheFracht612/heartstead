@@ -9,18 +9,19 @@ namespace {
 
 [[nodiscard]] bool is_known_kind(std::string_view kind) noexcept {
     return kind == PrototypeKinds::item || kind == PrototypeKinds::cargo ||
-           kind == PrototypeKinds::entity || kind == PrototypeKinds::voxel ||
-           kind == PrototypeKinds::block_model || kind == PrototypeKinds::build_piece ||
-           kind == PrototypeKinds::assembly || kind == PrototypeKinds::workpiece ||
-           kind == PrototypeKinds::pattern || kind == PrototypeKinds::process ||
-           kind == PrototypeKinds::fire || kind == PrototypeKinds::room_descriptor ||
-           kind == PrototypeKinds::material || kind == PrototypeKinds::scenario ||
-           kind == PrototypeKinds::recipe || kind == PrototypeKinds::biome ||
-           kind == PrototypeKinds::world_feature || kind == PrototypeKinds::crop ||
-           kind == PrototypeKinds::animal || kind == PrototypeKinds::map_layer ||
-           kind == PrototypeKinds::ui_panel || kind == PrototypeKinds::network ||
-           kind == PrototypeKinds::ward || kind == PrototypeKinds::admin_command ||
-           kind == PrototypeKinds::sound_event || kind == PrototypeKinds::particle;
+           kind == PrototypeKinds::entity || kind == PrototypeKinds::entity_visual ||
+           kind == PrototypeKinds::voxel || kind == PrototypeKinds::block_model ||
+           kind == PrototypeKinds::build_piece || kind == PrototypeKinds::assembly ||
+           kind == PrototypeKinds::workpiece || kind == PrototypeKinds::pattern ||
+           kind == PrototypeKinds::process || kind == PrototypeKinds::fire ||
+           kind == PrototypeKinds::room_descriptor || kind == PrototypeKinds::material ||
+           kind == PrototypeKinds::scenario || kind == PrototypeKinds::recipe ||
+           kind == PrototypeKinds::biome || kind == PrototypeKinds::world_feature ||
+           kind == PrototypeKinds::crop || kind == PrototypeKinds::animal ||
+           kind == PrototypeKinds::map_layer || kind == PrototypeKinds::ui_panel ||
+           kind == PrototypeKinds::network || kind == PrototypeKinds::ward ||
+           kind == PrototypeKinds::admin_command || kind == PrototypeKinds::sound_event ||
+           kind == PrototypeKinds::particle;
 }
 
 } // namespace

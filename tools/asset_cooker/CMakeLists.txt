@@ -9,6 +9,8 @@ heartstead_configure_target(heartstead_asset_cooker)
 if(TARGET heartstead_dev_game)
   set(heartstead_dev_game_model
       "${PROJECT_SOURCE_DIR}/mods/base/assets/models/entities/storybook_player.gltf")
+  set(heartstead_dev_game_animal_model
+      "${PROJECT_SOURCE_DIR}/mods/base/assets/models/entities/storybook_animal.gltf")
   set(heartstead_dev_game_cooked_root
       "${CMAKE_BINARY_DIR}/apps/dev_game/assets/cooked")
   set(heartstead_dev_game_cooked_manifest
@@ -19,8 +21,10 @@ if(TARGET heartstead_dev_game)
       "$<TARGET_FILE:heartstead_asset_cooker>" "${PROJECT_SOURCE_DIR}"
       "${heartstead_dev_game_cooked_manifest}" production --only
       base:models/entities/storybook_player.gltf
+      --only base:models/entities/storybook_animal.gltf
     DEPENDS heartstead_asset_cooker "${heartstead_dev_game_model}"
-    COMMENT "Cooking the dev-game skeletal model"
+            "${heartstead_dev_game_animal_model}"
+    COMMENT "Cooking the dev-game model set"
     VERBATIM
   )
   add_custom_target(

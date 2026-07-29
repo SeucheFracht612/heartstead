@@ -210,6 +210,16 @@ void test_typed_gltf_import_and_codec() {
     assert(imported.value().animations[0].name == "wave");
     assert(imported.value().animations[0].duration_seconds == 1.0F);
     assert(imported.value().animations[0].channels[0].values.size() == 2);
+    assert(heartstead::assets::resolve_model_animation_clip(imported.value(), "wave").value() == 0);
+    auto missing_clip =
+        heartstead::assets::resolve_model_animation_clip(imported.value(), "missing");
+    assert(!missing_clip);
+    assert(missing_clip.error().code == "model_asset.missing_animation_name");
+    auto ambiguous_clips = imported.value();
+    ambiguous_clips.animations.push_back(ambiguous_clips.animations.front());
+    auto ambiguous = heartstead::assets::resolve_model_animation_clip(ambiguous_clips, "wave");
+    assert(!ambiguous);
+    assert(ambiguous.error().code == "model_asset.ambiguous_animation_name");
 
     auto encoded = heartstead::assets::encode_model_asset(imported.value());
     assert(encoded);

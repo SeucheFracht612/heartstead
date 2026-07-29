@@ -15,6 +15,7 @@ struct PrototypeKinds {
     static constexpr std::string_view item = "item";
     static constexpr std::string_view cargo = "cargo";
     static constexpr std::string_view entity = "entity";
+    static constexpr std::string_view entity_visual = "entity_visual";
     static constexpr std::string_view voxel = "voxel";
     static constexpr std::string_view block_model = "block_model";
     static constexpr std::string_view build_piece = "build_piece";

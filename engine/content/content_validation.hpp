@@ -7,6 +7,7 @@
 #include "engine/cargo/cargo.hpp"
 #include "engine/core/result.hpp"
 #include "engine/entities/entity.hpp"
+#include "engine/entities/entity_visual.hpp"
 #include "engine/items/item_stack.hpp"
 #include "engine/modding/generic_prototype.hpp"
 #include "engine/modding/mod_diagnostic.hpp"
@@ -22,8 +23,8 @@
 #include "engine/save/save_metadata.hpp"
 #include "engine/scenarios/scenario.hpp"
 #include "engine/scripting/script_runtime.hpp"
-#include "engine/workpieces/workpiece_definition.hpp"
 #include "engine/ui/widget_tree.hpp"
+#include "engine/workpieces/workpiece_definition.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
 
 #include <cstddef>
@@ -51,6 +52,7 @@ struct ContentValidationReport {
     std::vector<items::ItemDefinition> item_definitions;
     std::vector<cargo::CargoDefinition> cargo_definitions;
     std::vector<entities::EntityDefinition> entity_definitions;
+    entities::VisualDefinitionRegistry visual_definitions;
     world::VoxelPalette voxel_palette;
     std::vector<assemblies::AssemblyDefinition> assembly_definitions;
     std::vector<processes::ProcessDefinition> process_definitions;

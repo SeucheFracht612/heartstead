@@ -1,8 +1,5 @@
 #include "apps/dev_game/dev_game_mode.hpp"
 
-#include "engine/assets/asset_cooker.hpp"
-#include "engine/assets/cooked_asset_store.hpp"
-#include "engine/assets/model_asset.hpp"
 #include "engine/content/content_validation.hpp"
 #include "engine/entities/physical_resource.hpp"
 #include "engine/input/input_action.hpp"
@@ -12,8 +9,8 @@
 #include "game/features/animals/wandering_animal_module.hpp"
 #include "game/features/interaction/voxel_raycast.hpp"
 #include "game/foundation/foundation_world.hpp"
-#include "game/presentation/animated_model_presentation.hpp"
 #include "game/presentation/client_audio_presentation.hpp"
+#include "game/presentation/model_presentation_system.hpp"
 #include "game/presentation/particle_presentation.hpp"
 #include "game/runtime/game_runtime.hpp"
 #include "game/ui/game_ui.hpp"
@@ -150,30 +147,6 @@ synchronize_demo_resources(const game::GameRuntime& runtime, renderer::Renderer&
     return renderer.apply_scene_updates(updates);
 }
 
-[[nodiscard]] core::Result<assets::ModelAsset>
-load_storybook_player_model(const std::filesystem::path& cooked_asset_root) {
-    constexpr std::string_view logical_id = "base:models/entities/storybook_player.gltf";
-    auto store = assets::CookedAssetStore::load(cooked_asset_root);
-    if (!store) {
-        return core::Result<assets::ModelAsset>::failure(store.error().code, store.error().message);
-    }
-    auto payload = store.value().load_payload(logical_id);
-    if (!payload) {
-        return core::Result<assets::ModelAsset>::failure(payload.error().code,
-                                                         payload.error().message);
-    }
-    const auto production_model_pipeline = assets::asset_cook_pipeline_name(
-        assets::AssetKind::model, assets::AssetCookBackend::production_converters);
-    if (payload.value().kind != assets::AssetKind::model ||
-        payload.value().profile != "production" ||
-        payload.value().backend != production_model_pipeline) {
-        return core::Result<assets::ModelAsset>::failure(
-            "dev_game.invalid_character_asset",
-            "storybook player must be a production-cooked model asset");
-    }
-    return assets::decode_model_asset(payload.value().bytes);
-}
-
 [[nodiscard]] renderer::RenderCamera render_camera_from(const movement::PlayerCameraFrame& frame) {
     renderer::RenderCamera camera;
     camera.floating_origin = frame.floating_origin;
@@ -221,10 +194,8 @@ struct DevGameMode::Impl {
     DevGameModeConfig config;
     game::GameRuntime runtime;
     bool runtime_started = false;
-    game::AnimatedModelPresentation animated_models;
-    game::AnimatedModelPresentation animated_animals;
-    bool animated_models_initialized = false;
-    bool animated_animals_initialized = false;
+    game::ModelPresentationSystem model_presentation;
+    bool model_presentation_initialized = false;
     std::optional<renderer::CpuParticleSystem> particle_system;
     renderer::ParticleSystemConfig particle_config;
     game::ParticlePresentation particle_presentation;
@@ -284,40 +255,12 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
         return core::Status::failure("dev_game.renderer_missing",
                                      "native development mode requires the application renderer");
     }
-    auto character_model = load_storybook_player_model(state.config.cooked_asset_root);
-    if (!character_model) {
-        return core::Status::failure(character_model.error().code, character_model.error().message);
-    }
-    game::AnimatedModelPresentationConfig animated_model_config;
-    animated_model_config.asset_id = "base:models/entities/storybook_player.gltf";
-    animated_model_config.visual_prototype = *core::PrototypeId::parse("base:entities/player");
-    animated_model_config.model = std::move(character_model).value();
-    animated_model_config.locomotion_clips = {0, 1, 2, 9};
-    animated_model_config.animated_bounds = animated_model_config.model.bounds.expanded(0.4F);
-    animated_model_config.flags = renderer::RenderObjectFlags::cast_shadow;
-    status = state.animated_models.initialize(*renderer, std::move(animated_model_config));
+    status = state.model_presentation.initialize(
+        *renderer, state.config.content_report->visual_definitions, state.config.cooked_asset_root);
     if (!status) {
         return status;
     }
-    state.animated_models_initialized = true;
-
-    auto animal_model = load_storybook_player_model(state.config.cooked_asset_root);
-    if (!animal_model) {
-        return core::Status::failure(animal_model.error().code, animal_model.error().message);
-    }
-    game::AnimatedModelPresentationConfig animal_model_config;
-    animal_model_config.asset_id = "base:models/entities/storybook_player.gltf#test_animal";
-    animal_model_config.visual_prototype = *core::PrototypeId::parse("base:entities/test_animal");
-    animal_model_config.model = std::move(animal_model).value();
-    animal_model_config.locomotion_clips = {0, 1, 2, 9};
-    animal_model_config.animated_bounds = animal_model_config.model.bounds.expanded(0.4F);
-    animal_model_config.flags = renderer::RenderObjectFlags::cast_shadow;
-    animal_model_config.color = {0.83F, 0.70F, 0.42F, 1.0F};
-    status = state.animated_animals.initialize(*renderer, std::move(animal_model_config));
-    if (!status) {
-        return status;
-    }
-    state.animated_animals_initialized = true;
+    state.model_presentation_initialized = true;
 
     state.particle_config.maximum_particles = 8'192;
     state.particle_config.maximum_emitters = 64;
@@ -684,15 +627,10 @@ DevGameMode::update(game::GameApplicationServices& services,
         return core::Result<game::GameApplicationFrameOutput>::failure(
             render_snapshot.error().code, render_snapshot.error().message);
     }
-    auto animated_stats = state.animated_models.synchronize(*renderer, render_snapshot.value());
-    if (!animated_stats) {
-        return core::Result<game::GameApplicationFrameOutput>::failure(
-            animated_stats.error().code, animated_stats.error().message);
-    }
-    animated_stats = state.animated_animals.synchronize(*renderer, render_snapshot.value());
-    if (!animated_stats) {
-        return core::Result<game::GameApplicationFrameOutput>::failure(
-            animated_stats.error().code, animated_stats.error().message);
+    auto model_stats = state.model_presentation.synchronize(*renderer, render_snapshot.value());
+    if (!model_stats) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(model_stats.error().code,
+                                                                       model_stats.error().message);
     }
     auto particle_stats =
         state.particle_presentation.synchronize(*renderer, *state.particle_system, camera);
@@ -776,13 +714,9 @@ core::Status DevGameMode::shutdown(game::GameApplicationServices& services) {
             remember_failure(state.particle_presentation.shutdown(*renderer));
             state.particle_presentation_initialized = false;
         }
-        if (state.animated_models_initialized) {
-            remember_failure(state.animated_models.shutdown(*renderer));
-            state.animated_models_initialized = false;
-        }
-        if (state.animated_animals_initialized) {
-            remember_failure(state.animated_animals.shutdown(*renderer));
-            state.animated_animals_initialized = false;
+        if (state.model_presentation_initialized) {
+            remember_failure(state.model_presentation.shutdown(*renderer));
+            state.model_presentation_initialized = false;
         }
     }
     state.game_ui.reset();
