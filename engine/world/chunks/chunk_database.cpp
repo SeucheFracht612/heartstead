@@ -440,7 +440,7 @@ ChunkDatabase::insert_generated_with_saved_edits_impl(VoxelChunk chunk,
         if (!current) {
             return core::Status::failure(current.error().code, current.error().message);
         }
-        if (current.value() != edit.previous) {
+        if (!same_persistent_cell(current.value(), edit.previous)) {
             return core::Status::failure(
                 "chunk_database.saved_edit_base_mismatch",
                 "saved edit history does not match the generated terrain baseline");
@@ -516,7 +516,7 @@ core::Status ChunkDatabase::apply_saved_edits_impl(std::span<const VoxelEditReco
         if (!current) {
             return core::Status::failure(current.error().code, current.error().message);
         }
-        if (current.value() != existing.next) {
+        if (!same_persistent_cell(current.value(), existing.next)) {
             return core::Status::failure(
                 "chunk_database.edit_history_mismatch",
                 "retained voxel edit history does not match the resident chunk state");
@@ -537,7 +537,7 @@ core::Status ChunkDatabase::apply_saved_edits_impl(std::span<const VoxelEditReco
         if (!current) {
             return core::Status::failure(current.error().code, current.error().message);
         }
-        if (current.value() != edit.previous) {
+        if (!same_persistent_cell(current.value(), edit.previous)) {
             return core::Status::failure(
                 "chunk_database.saved_edit_base_mismatch",
                 "saved edit history does not match the resident terrain baseline");

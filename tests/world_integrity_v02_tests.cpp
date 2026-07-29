@@ -249,6 +249,36 @@ void test_saved_edit_batch_validation_is_atomic() {
     assert(chunks.edit_log().empty());
 }
 
+void test_saved_edits_ignore_derived_light_when_matching_the_baseline() {
+    using namespace heartstead;
+
+    constexpr world::ChunkCoord coord{10, 0, 0};
+    constexpr world::VoxelCoord voxel{4, 5, 6};
+    constexpr world::VoxelCell sunlit_air{0, 255, 0, 0};
+    constexpr world::VoxelCell placed_block{7, 0, 3, 11};
+    const std::vector<world::VoxelEditRecord> edits{
+        {coord, voxel, sunlit_air, placed_block},
+    };
+
+    world::ChunkDatabase resident;
+    resident.get_or_create(coord).clear_all_dirty();
+    assert(resident.apply_saved_edits(edits));
+    auto restored = resident.get(coord, voxel);
+    assert(restored && restored.value() == placed_block);
+
+    std::vector<std::uint8_t> relit(world::VoxelChunk::total_cells, 19);
+    assert(resident.find(coord)->apply_derived_light(relit));
+    assert(resident.apply_saved_edits(edits));
+    restored = resident.get(coord, voxel);
+    assert(restored && restored.value() == placed_block);
+
+    world::VoxelChunk generated(coord);
+    world::ChunkDatabase streamed;
+    assert(streamed.insert_generated_with_saved_edits(std::move(generated), edits));
+    restored = streamed.get(coord, voxel);
+    assert(restored && restored.value() == placed_block);
+}
+
 void test_chunk_mutations_preflight_and_compact_edit_history() {
     using namespace heartstead;
 
@@ -557,6 +587,7 @@ int main() {
     test_worldgen_features_only_belong_to_their_surface_chunk();
     test_chunk_interest_planning_is_bounded();
     test_saved_edit_batch_validation_is_atomic();
+    test_saved_edits_ignore_derived_light_when_matching_the_baseline();
     test_chunk_mutations_preflight_and_compact_edit_history();
     test_chunk_residency_changes_invalidate_shared_seams();
     test_stream_reload_preserves_one_canonical_delta();

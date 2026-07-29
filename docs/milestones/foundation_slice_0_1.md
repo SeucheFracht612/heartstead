@@ -117,11 +117,11 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 ## Replication and derived terrain updates
 
 - [x] `[Automated]` an accepted server edit changes the authoritative chunk content revision.
-- [ ] `[Both]` the accepted edit appears in the local client voxel world.
+- [x] `[Both]` the accepted edit appears in the local client voxel world.
 - [x] `[Automated]` the accepted edit appears on a second connected client.
 - [x] `[Automated]` the client applies the voxel mutation before dispatching its accepted-edit
       presentation event.
-- [ ] `[Both]` an interior edit rebuilds the changed chunk mesh.
+- [x] `[Both]` an interior edit rebuilds the changed chunk mesh.
 - [ ] `[Both]` a face-boundary edit rebuilds both loaded neighboring chunk meshes.
 - [x] `[Automated]` collision cooking reaches the authoritative edited chunk revision.
 - [ ] `[Both]` character collision reflects removal and placement after the collision update.
@@ -189,7 +189,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [x] `[Automated]` a missing Foundation save slot creates a new deterministic world.
 - [x] `[Automated]` an existing Foundation save slot reopens instead of creating another baseline.
 - [x] `[Automated]` player position survives clean save and restart.
-- [ ] `[Both]` removed and placed voxels survive clean save and restart.
+- [x] `[Both]` removed and placed voxels survive clean save and restart.
 - [x] `[Automated]` edits on both sides of a chunk boundary survive restart.
 - [x] `[Automated]` the active voxel palette manifest is preserved and validated on load.
 - [x] `[Automated]` a missing voxel prototype follows the existing missing-prototype recovery path.
@@ -238,6 +238,16 @@ Recorded 2026-07-29:
   particle emissions, one sound emission, no dropped events, and no last error. A separate
   deliberately out-of-reach placement was rejected as `voxel_command.out_of_reach` while all
   feedback counters remained zero.
+- a native save/reopen pass removed the interior grass voxel at `(8, 0, 8)`, observed the local
+  mesh become a one-block hole and selection advance through it, closed through the window event,
+  and observed the hole again after reopening the same save. A second pass placed a voxel at
+  `(8, 1, 10)`, visibly remeshed it above the ground, closed cleanly, and reopened with that same
+  voxel visible and selected. The placement initially exposed and now regresses a load failure
+  where persisted sunlight was compared against the not-yet-relit baseline.
+- `heartstead_world_integrity_v02_tests`
+  - `test_saved_edits_ignore_derived_light_when_matching_the_baseline` verifies resident,
+    replacement-after-relight, and streamed saved edits compare persistent voxel state while
+    allowing derived lighting to be recomputed
 - `heartstead_gameplay_input_tests`
   - `test_voxel_interaction_reach_matches_the_authoritative_rule` locks the shared six-metre
     player-to-block reach boundary used by both client selection and authoritative commands
