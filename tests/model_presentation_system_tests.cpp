@@ -1,3 +1,5 @@
+#include "engine/assets/cooked_asset_store.hpp"
+#include "engine/assets/model_asset.hpp"
 #include "engine/content/content_validation.hpp"
 #include "engine/renderer/rhi/render_device.hpp"
 #include "game/presentation/model_presentation_system.hpp"
@@ -6,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -60,6 +63,37 @@ int main() {
     assert(player && animal);
     assert(content.visual_definitions.find_for_entity(*player) != nullptr);
     assert(content.visual_definitions.find_for_entity(*animal) != nullptr);
+
+    auto store =
+        assets::CookedAssetStore::load(std::filesystem::path{HEARTSTEAD_TEST_COOKED_ASSET_DIR});
+    assert(store);
+    assert(store.value().manifest().validate_dependencies());
+    std::unordered_set<std::string> visual_models;
+    for (const auto& definition : content.visual_definitions.definitions()) {
+        visual_models.insert(definition.model_asset);
+        const auto* record = store.value().manifest().find_active(definition.model_asset);
+        assert(record != nullptr);
+        assert(record->kind == assets::AssetKind::model);
+        auto payload = store.value().load_payload(*record);
+        assert(payload);
+        auto model = assets::decode_model_asset(payload.value().bytes);
+        assert(model);
+        for (const auto& [role, clip_name] : definition.animation_clips) {
+            (void)role;
+            assert(assets::resolve_model_animation_clip(model.value(), clip_name));
+        }
+        for (const auto& [role, sound_event] : definition.sound_events) {
+            (void)role;
+            assert(content.sound_events.find(sound_event) != nullptr);
+        }
+    }
+    assert(store.value().manifest().active_count() >= visual_models.size());
+    for (const auto& event : content.sound_events.definitions()) {
+        const auto* asset = content.asset_catalog.find_active(event.asset_id);
+        assert(asset != nullptr);
+        assert(asset->kind == assets::AssetKind::sound || asset->kind == assets::AssetKind::music);
+        assert(std::filesystem::is_regular_file(asset->source_path));
+    }
 
     renderer::Renderer renderer;
     initialize_renderer(renderer);

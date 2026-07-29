@@ -7,10 +7,12 @@ target_compile_definitions(
 heartstead_configure_target(heartstead_asset_cooker)
 
 if(TARGET heartstead_dev_game)
-  set(heartstead_dev_game_model
-      "${PROJECT_SOURCE_DIR}/mods/base/assets/models/entities/storybook_player.gltf")
-  set(heartstead_dev_game_animal_model
-      "${PROJECT_SOURCE_DIR}/mods/base/assets/models/entities/storybook_animal.gltf")
+  file(
+    GLOB_RECURSE heartstead_dev_game_visual_sources
+    CONFIGURE_DEPENDS
+    "${PROJECT_SOURCE_DIR}/mods/*/data/entity_visuals/*.toml"
+    "${PROJECT_SOURCE_DIR}/mods/*/assets/models/*"
+  )
   set(heartstead_dev_game_cooked_root
       "${CMAKE_BINARY_DIR}/apps/dev_game/assets/cooked")
   set(heartstead_dev_game_cooked_manifest
@@ -19,12 +21,9 @@ if(TARGET heartstead_dev_game)
     OUTPUT "${heartstead_dev_game_cooked_manifest}"
     COMMAND
       "$<TARGET_FILE:heartstead_asset_cooker>" "${PROJECT_SOURCE_DIR}"
-      "${heartstead_dev_game_cooked_manifest}" production --only
-      base:models/entities/storybook_player.gltf
-      --only base:models/entities/storybook_animal.gltf
-    DEPENDS heartstead_asset_cooker "${heartstead_dev_game_model}"
-            "${heartstead_dev_game_animal_model}"
-    COMMENT "Cooking the dev-game model set"
+      "${heartstead_dev_game_cooked_manifest}" production --entity-visuals
+    DEPENDS heartstead_asset_cooker ${heartstead_dev_game_visual_sources}
+    COMMENT "Cooking the dev-game entity visual asset set"
     VERBATIM
   )
   add_custom_target(

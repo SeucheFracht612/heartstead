@@ -96,11 +96,35 @@ void test_wandering_animal_is_replicated_and_deterministic() {
     }));
 }
 
+void test_foundation_scene_objects_resolve_visual_definitions() {
+    const auto content = content::ContentValidation::validate(source_root());
+    assert(!content.has_errors());
+
+    game::HeadlessSessionDesc desc;
+    desc.source_root = source_root();
+    desc.runtime.gameplay_modules.push_back(
+        std::make_shared<game::animals::WanderingAnimalModule>());
+    auto harness = game::HeadlessSessionHarness::create(std::move(desc));
+    assert(harness);
+    auto report = harness.value()->run_ticks(5);
+    assert(report);
+    auto snapshot = harness.value()->runtime().capture_render_snapshot();
+    assert(snapshot);
+    assert(snapshot.value().objects.size() == 2);
+    for (const auto& object : snapshot.value().objects) {
+        const auto* visual = content.visual_definitions.find_for_entity(object.visual_prototype);
+        assert(visual != nullptr);
+        assert(content.asset_catalog.find_active(visual->model_asset) != nullptr);
+    }
+    assert(harness.value()->shutdown());
+}
+
 } // namespace
 
 int main() {
     test_local_headless_session_advances_shared_runtime();
     test_dedicated_headless_session_uses_same_harness_without_client_services();
     test_wandering_animal_is_replicated_and_deterministic();
+    test_foundation_scene_objects_resolve_visual_definitions();
     return 0;
 }

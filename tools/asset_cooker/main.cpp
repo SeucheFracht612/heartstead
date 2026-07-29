@@ -4,6 +4,7 @@
 #include "engine/assets/cooked_asset_store.hpp"
 #include "engine/assets/resource_pack.hpp"
 #include "engine/assets/virtual_file_system.hpp"
+#include "engine/content/content_validation.hpp"
 #include "engine/core/logging.hpp"
 #include "engine/core/process_entry.hpp"
 #include "engine/debug/inspection.hpp"
@@ -45,7 +46,7 @@ bool parse_backend(std::string_view value, heartstead::assets::AssetCookBackend&
 void print_usage(const char* executable, std::ostream& output) {
     output << "usage: " << executable
            << " [source_root] [asset_manifest_path] [development|production]"
-              " [--only LOGICAL_ID] [--inspect]\n"
+              " [--only LOGICAL_ID] [--entity-visuals] [--inspect]\n"
            << "       " << executable << " --inspect-store <cooked_root> [asset_manifest.txt]\n";
 }
 
@@ -88,12 +89,17 @@ int main(int argc, char** argv) {
         std::filesystem::path output_path;
         assets::AssetCookBackend cook_backend = assets::AssetCookBackend::development_passthrough;
         bool inspect_after_cook = false;
+        bool include_entity_visuals = false;
         std::vector<std::string> only_logical_ids;
         auto positional_count = 0;
         for (int index = 1; index < argc; ++index) {
             const auto argument = std::string_view(argv[index]);
             if (argument == "--inspect") {
                 inspect_after_cook = true;
+                continue;
+            }
+            if (argument == "--entity-visuals") {
+                include_entity_visuals = true;
                 continue;
             }
             if (argument == "--only") {
@@ -193,7 +199,21 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
-        if (!only_logical_ids.empty()) {
+        if (include_entity_visuals) {
+            const auto content_report = content::ContentValidation::validate(source_root);
+            if (content_report.has_errors()) {
+                for (const auto& diagnostic : content_report.diagnostics) {
+                    if (diagnostic.severity == modding::DiagnosticSeverity::error) {
+                        log_diagnostic(diagnostic);
+                    }
+                }
+                return 1;
+            }
+            for (const auto& visual : content_report.visual_definitions.definitions()) {
+                only_logical_ids.push_back(visual.model_asset);
+            }
+        }
+        if (include_entity_visuals || !only_logical_ids.empty()) {
             assets::AssetCatalog filtered;
             std::vector<std::string> pending;
             pending.reserve(only_logical_ids.size());
