@@ -11,7 +11,9 @@ if(TARGET heartstead_dev_game)
     GLOB_RECURSE heartstead_dev_game_visual_sources
     CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/mods/*/data/entity_visuals/*.toml"
-    "${PROJECT_SOURCE_DIR}/mods/*/assets/models/*"
+    "${PROJECT_SOURCE_DIR}/mods/*/assets/*"
+    "${PROJECT_SOURCE_DIR}/resource_packs/*/resource_pack.toml"
+    "${PROJECT_SOURCE_DIR}/resource_packs/*/assets/*"
   )
   set(heartstead_dev_game_cooked_root
       "${CMAKE_BINARY_DIR}/apps/dev_game/assets/cooked")
