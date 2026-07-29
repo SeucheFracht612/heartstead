@@ -218,6 +218,9 @@ The normative target and the implementation audit are in
 [`docs/architecture/engine_v0_2_audit.md`](docs/architecture/engine_v0_2_audit.md). Runtime ownership
 and feature extension are documented in
 [`docs/architecture/runtime_composition.md`](docs/architecture/runtime_composition.md).
+Artist- and audio-contributor delivery formats, folder layout, import steps, and current runtime
+limitations are documented in
+[`docs/asset_pipeline.md`](docs/asset_pipeline.md).
 
 ## Build
 

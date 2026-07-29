@@ -45,13 +45,16 @@ references fail content validation before session startup.
 The base mod currently uses bounded `.tone` manifests for source-controlled development sounds.
 They describe a sine/noise generator and envelope rather than embedding binary media. The
 production cooker validates them, records sample-rate/frame metadata, and the miniaudio backend
-materializes deterministic mono PCM at load time. Authored WAV, OGG, and FLAC assets use the same
-event path without gameplay changes.
+materializes deterministic mono PCM at load time. Authored WAV and FLAC assets use the same event
+path without gameplay changes. OGG is catalogued and production-cooked, but is not an end-to-end
+playback format yet: the current miniaudio build does not include a Vorbis decoder.
 
 `GameRuntime` owns the active asset catalog and event registry used to create an audio system.
 `ClientAudioPresentation` then updates the listener from the exact camera position, maintains the
-ambient loop, and turns grounded travel distance into spatial footstep events. The audio system
-must be shut down before its runtime because these registries are borrowed for the system lifetime.
+ambient loop, and turns grounded walk/run distance into spatial footstep events. It queries the
+supporting full or partial voxel and selects `interaction.footstep_sound`; an absent surface sound
+uses `sounds.footstep_default` from the player visual. The audio system must be shut down before its
+runtime because these registries are borrowed for the system lifetime.
 
 ## Playback and device recovery
 
@@ -87,7 +90,8 @@ Primary references:
   ramps, direction cones, priority stealing, rejected voices, procedural PCM, the real miniaudio
   null device, device-loss recovery, and offline rendering.
 - `heartstead_client_audio_presentation_tests` covers exact far-origin listener updates, grounded
-  distance-based footsteps, and ambient-loop lifecycle through the logical null backend.
+  distance-based footsteps, partial-voxel surface selection, default footsteps, and ambient-loop
+  lifecycle through the logical null backend.
 - `heartstead_audio_benchmark` renders the real miniaudio graph offline. On an Intel Core Ultra 7
   258V, the Release build with 128 looping mono voices at 48 kHz stereo and 256-frame blocks
   measured 0.125 ms average and 0.178 ms p95 over 1,000 blocks (target: below 1.0 ms p95).

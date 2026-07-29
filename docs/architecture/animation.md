@@ -1,7 +1,7 @@
 # Animation
 
-Heartstead cooks glTF 2.0 geometry, skins, and animation clips into the bounded
-`heartstead.model.v1` runtime asset described in [assets.md](assets.md). Runtime animation never
+Heartstead cooks glTF 2.0 geometry, materials, skins, and animation clips into the bounded
+`heartstead.model.v2` runtime asset described in [assets.md](assets.md). Runtime animation never
 parses JSON and never receives source-container paths.
 
 The animation boundary follows the glTF interpolation rules:
@@ -28,8 +28,9 @@ The latter preserves the authored model-node transform inside the palette while 
 floating-origin transform remains on the render object. This is the standard whole-model glTF
 instance composition and avoids decomposing animated node matrices back into renderer TRS values.
 Palettes—not replicated bone transforms—are presentation data. Replication carries a bounded
-idle/walk/swim state, normalized phase, source state, and transition tick. Clients interpolate that
-state, sample the same cooked clips, and blend locally.
+idle/walk/run/jump/fall/swim state, normalized phase, source state, and transition tick. Clients
+interpolate that state, resolve the visual's authored clip names, sample the same cooked clips, and
+blend locally.
 
 `skin_model_vertex` is the CPU reference implementation for position and normal linear-blend
 skinning. The renderer uses GPU skinning through the existing static-instance path: its unified
@@ -62,6 +63,7 @@ The base test animal is a normal gameplay module and entity prototype. Its serve
 system uses a seeded, fixed-step state machine, mirrors transforms into the generic replicated
 components, and alternates walking and idle segments so the same transition blending is exercised
 outside player control. Two independent headless sessions produce byte-for-byte equal transform
-and locomotion trajectories. `dev_game` production-cooks the authored storybook glTF at build time,
-loads only `heartstead.model.v1` at runtime, and renders both the third-person player and test animal
-through `AnimatedModelPresentation`.
+and locomotion trajectories. `entity_visual` definitions bind entity prototypes to model IDs and
+named clips. The build production-cooks every declared visual model and dependency, and
+`ModelPresentationSystem` renders both the third-person player and test animal through shared
+static/skinned presentation without per-entity application wiring.

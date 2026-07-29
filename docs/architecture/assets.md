@@ -124,6 +124,8 @@ Implemented foundation:
   - accepts `development` or `production` as an optional cook backend argument
   - accepts `--only <logical_id>` to cook one active catalog record through the same validated
     pipeline
+  - accepts `--entity-visuals` to discover every declared entity visual model and cook its
+    transitive dependency closure
   - accepts `--inspect` to print cooked asset store inspection data after a successful cook
   - accepts `--inspect-store <cooked_root> [manifest]` to inspect an existing cooked asset store
   - writes cooked payload files and `build/cooked_assets/asset_manifest.txt` by default
@@ -160,11 +162,13 @@ assets (`data`, `localization`, `ui`, and unknown/raw data), material assets, gl
 assets, PNG/KTX2/JPEG `texture` assets, `.spv` `shader` assets, WAV/OGG/FLAC `sound` or `music`
 assets, and SFNT `font` assets into deterministic production-profile payload wrappers. Text glTF
 and GLB models are strictly parsed and validated by fastgltf, bounded by engine-owned limits, and
-converted into the versioned `heartstead.model.v1` binary. That runtime format contains indexed
-triangle geometry, four-influence skin vertices, a node hierarchy, inverse-bind matrices, and
-bounded translation/rotation/scale animation clips; it never requires the runtime to parse JSON or
-follow external glTF buffer paths. Unsupported topology, morph-weight animation, excess joint
-influences, malformed hierarchies, and out-of-range accessors fail closed as
+converted into the versioned `heartstead.model.v2` binary. That runtime format contains indexed
+triangle geometry, UV0, four-influence skin vertices, a node hierarchy, inverse-bind matrices,
+bounded translation/rotation/scale animation clips, decoded RGBA8 base-color images, glTF
+base-color factors, and per-primitive material references. Opaque, alpha-mask, and double-sided
+material state is preserved; alpha blend and transformed/non-UV0 base-color textures fail closed.
+The runtime never parses JSON or follows external glTF paths. Unsupported topology, morph-weight
+animation, excess joint influences, malformed hierarchies, and out-of-range accessors fail as
 `asset_cooker.invalid_model`. PNG textures are validated for signature and IHDR shape; KTX2
 textures are validated for identifier, dimensions, DFD range, and level index ranges; JPEG textures
 are validated for SOI, sane marker ranges, nonzero frame dimensions, and EOI. Malformed textures
@@ -189,6 +193,5 @@ cooked payload hash, and payload validation still define compatibility.
 
 Other binary media source formats, such as unsupported compressed audio containers, are not
 converted yet and fail through the relevant format validation error. Future model optimization,
-mesh/material extraction, compressed texture/audio conversion, and
-Slang/HLSL-to-SPIR-V production compilation must keep the same virtual path, override, profile, and
-manifest rules.
+additional PBR material channels, compressed texture/audio conversion, and Slang/HLSL-to-SPIR-V
+production compilation must keep the same virtual path, override, profile, and manifest rules.

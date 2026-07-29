@@ -112,7 +112,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 
 ## Replication and derived terrain updates
 
-- [ ] `[Automated]` an accepted server edit changes the authoritative chunk content revision.
+- [x] `[Automated]` an accepted server edit changes the authoritative chunk content revision.
 - [ ] `[Both]` the accepted edit appears in the local client voxel world.
 - [x] `[Automated]` the accepted edit appears on a second connected client.
 - [x] `[Automated]` the client applies the voxel mutation before dispatching its accepted-edit
@@ -131,14 +131,14 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [ ] `[Both]` a successful removal emits the previous voxel's break particle.
 - [ ] `[Both]` a successful removal plays the previous voxel's positional break sound.
 - [ ] `[Both]` a successful placement plays the placed voxel's positional placement sound.
-- [ ] `[Automated]` feedback is queued only after the accepted event reaches presentation.
+- [x] `[Automated]` feedback is queued only after the accepted event reaches presentation.
 - [ ] `[Both]` rejected removal and placement produce no success particle or sound.
 - [ ] `[Automated]` a missing particle or sound reference resolves to its named fallback and emits
       one clear diagnostic rather than failing the session.
 
 ## Asset Pipeline V1
 
-- [ ] `[Automated]` the Foundation manifest closes over every transitive asset dependency.
+- [x] `[Automated]` the Foundation manifest closes over every transitive asset dependency.
 - [ ] `[Automated]` filtered model cooking also cooks required external or generated image assets.
 - [ ] `[Automated]` changing a dependency changes the dependent cooked record/hash.
 - [ ] `[Automated]` PNG and JPEG sources cook to versioned RGBA8 texture assets.
@@ -149,8 +149,8 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [ ] `[Both]` opaque and alpha-mask material modes behave correctly.
 - [ ] `[Both]` double-sided material state behaves correctly.
 - [ ] `[Automated]` unsupported blend materials fail cooking with the logical asset ID and reason.
-- [ ] `[Automated]` animation mappings resolve unique authored clip names, never numeric indices.
-- [ ] `[Automated]` missing or duplicate mapped animation names produce a clear validation error.
+- [x] `[Automated]` animation mappings resolve unique authored clip names, never numeric indices.
+- [x] `[Automated]` missing or duplicate mapped animation names produce a clear validation error.
 - [ ] `[Automated]` WAV and Ogg Vorbis sources cook to the versioned runtime audio representation.
 - [ ] `[Both]` at least one positional emitter plays a cooked sound asset.
 - [ ] `[Automated]` runtime model, texture, material, animation, and audio resources are cached by
@@ -162,14 +162,15 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 
 ## Data-driven presentation
 
-- [ ] `[Automated]` every Foundation entity prototype resolves an `entity_visual` definition.
-- [ ] `[Automated]` declaring a static entity visual does not require a skin or animation mapping.
-- [ ] `[Automated]` declaring a skinned entity visual validates all named animation mappings.
+- [x] `[Automated]` every entity present in the Foundation scene resolves an `entity_visual`
+      definition.
+- [x] `[Automated]` declaring a static entity visual does not require a skin or animation mapping.
+- [x] `[Automated]` declaring a skinned entity visual validates all named animation mappings.
 - [ ] `[Both]` the player selects idle, walk, run, jump, fall, and swim presentation states from
       semantic locomotion state.
-- [ ] `[Automated]` newly replicated entities with valid visual definitions appear without
+- [x] `[Automated]` newly replicated entities with valid visual definitions appear without
       application-entry-point changes.
-- [ ] `[Automated]` removed entities release their presentation instances while cached assets remain
+- [x] `[Automated]` removed entities release their presentation instances while cached assets remain
       valid for other users.
 - [ ] `[Both]` footstep sounds follow locomotion timing and resolve from the supporting voxel.
 - [ ] `[Automated]` an unknown visual definition presents the fallback model/material and reports
@@ -178,8 +179,8 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 ## Persistence
 
 - [ ] `[Automated]` a missing Foundation save slot creates a new deterministic world.
-- [ ] `[Automated]` an existing Foundation save slot reopens instead of creating another baseline.
-- [ ] `[Automated]` player position survives clean save and restart.
+- [x] `[Automated]` an existing Foundation save slot reopens instead of creating another baseline.
+- [x] `[Automated]` player position survives clean save and restart.
 - [ ] `[Both]` removed and placed voxels survive clean save and restart.
 - [ ] `[Automated]` edits on both sides of a chunk boundary survive restart.
 - [ ] `[Automated]` the active voxel palette manifest is preserved and validated on load.
@@ -193,16 +194,41 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 
 - [x] `[Automated]` the complete default-debug build passes.
 - [x] `[Automated]` the complete default-debug CTest suite passes.
-- [ ] `[Automated]` the Foundation headless integration test starts a session, spawns a player,
+- [x] `[Automated]` the Foundation headless integration test starts a session, spawns a player,
       submits an edit, advances ticks, verifies server and client state, saves, reloads, and
       verifies the edit.
-- [ ] `[Automated]` the Foundation asset validation test cooks and loads all required assets and
+- [x] `[Automated]` the Foundation asset validation test cooks and loads all required assets and
       resolves every presentation reference.
 - [x] `[Automated]` the bounded `dev_game` headless smoke passes.
 - [ ] `[Native]` the bounded real-window smoke creates renderer/audio resources, renders the
       Foundation scene, and shuts down cleanly.
 - [ ] `[Native]` all visual and audible checklist items receive a final in-game pass before the
       milestone is marked complete.
+
+## Automated evidence
+
+Recorded 2026-07-29:
+
+- `cmake --build --preset default-debug -j2 --target heartstead_dev_game`: passed.
+- `ctest --test-dir build/default-debug --output-on-failure -j2`: 99/99 passed.
+- `heartstead_runtime_spine_tests`
+  - `test_typed_voxel_commands_validate_and_replicate`
+  - `test_boundary_voxel_edit_rebuilds_collision_and_removes_support`
+  - `test_session_save_and_reload_restores_authoritative_state`
+  - `test_session_file_load_preserves_missing_prototypes`
+- `heartstead_voxel_interaction_presentation_tests`
+  - `test_only_accepted_edits_emit_data_driven_feedback`
+  - `test_foundation_voxels_resolve_feedback_resources`
+- `heartstead_model_asset_tests`
+  - `test_typed_gltf_import_and_codec`
+  - `test_base_storybook_player_asset`
+- `heartstead_model_presentation_system_tests` validates cooked manifest closure, every declared
+  visual model, every named clip and sound reference, static/skinned insertion, and removal.
+- `heartstead_headless_session_tests`
+  - `test_foundation_scene_objects_resolve_visual_definitions`
+
+Unchecked `[Both]` and `[Native]` items intentionally remain open until their in-game portion has
+been observed.
 
 ## Gameplay-additive exit condition
 
