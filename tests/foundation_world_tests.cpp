@@ -92,7 +92,7 @@ void test_foundation_world_is_deterministic_and_voxel_native() {
 
     const auto water = cell_at(first, {25, 0, 15});
     assert(water.type == *water_type);
-    assert(water.state_bits == world::full_fluid_state_bits());
+    assert(water.state_bits == world::full_fluid_source_state_bits());
     assert(cell_at(first, {25, -1, 15}).type == *water_type);
 
     assert(cell_at(first, {3, 0, 2}).type == *dirt_type);
@@ -172,6 +172,7 @@ void test_foundation_pool_enters_and_exits_swimming_mode() {
     const auto jump = movement::input_button_bit(movement::PlayerInputButton::jump);
     bool entered = false;
     bool exited = false;
+    bool selected_swim_animation = false;
     for (std::uint64_t tick = 1; tick <= 360; ++tick) {
         movement::PlayerInputFrame input;
         input.tick = tick;
@@ -184,6 +185,8 @@ void test_foundation_pool_enters_and_exits_swimming_mode() {
         assert(result);
         state = result.value().state;
         entered |= state.mode == movement::PlayerControllerMode::swimming;
+        selected_swim_animation |=
+            state.locomotion_animation.kind == animation::LocomotionAnimationKind::swim;
         exited = entered && state.mode != movement::PlayerControllerMode::swimming &&
                  state.position.approximate_global().z < 13.9;
         if (exited) {
@@ -192,6 +195,7 @@ void test_foundation_pool_enters_and_exits_swimming_mode() {
     }
 
     assert(entered);
+    assert(selected_swim_animation);
     assert(exited);
 }
 

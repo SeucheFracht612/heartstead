@@ -56,7 +56,7 @@ struct FoundationCells {
         return core::Result<FoundationCells>::failure(error->code, error->message);
     }
     auto water_cell = water.value();
-    water_cell.state_bits = world::full_fluid_state_bits();
+    water_cell.state_bits = world::full_fluid_source_state_bits();
     return core::Result<FoundationCells>::success({clay.value(), dirt.value(), grass.value(),
                                                    half_step.value(), low_ceiling.value(),
                                                    stone.value(), water_cell});

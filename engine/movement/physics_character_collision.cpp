@@ -145,6 +145,74 @@ PhysicsCharacterCollisionWorld::move(const world::WorldPosition& position,
         return core::Result<CharacterMoveResult>::failure(next.error().code, next.error().message);
     }
     auto applied = to_world_delta(moved.value().applied_delta);
+    bool stepped = moved.value().stepped;
+    bool grounded =
+        moved.value().ground_state == physics::PhysicsCharacterGroundState::on_ground;
+
+    const auto& voxel_move = unloaded_guard.value();
+    const auto physics_blocked_horizontally =
+        std::abs(applied.x - desired_delta.x) > collision_epsilon ||
+        std::abs(applied.z - desired_delta.z) > collision_epsilon;
+    // CharacterVirtual can stall at the convex seam between a floor and a riser when both are
+    // children of the same cooked chunk compound. The voxel solver is authoritative for static
+    // terrain, so use its exact step candidate only after Jolt revalidates the complete character
+    // shape at that position (including dynamic-body overlap).
+    if (voxel_move.stepped && !stepped && physics_blocked_horizontally) {
+        auto candidate_local =
+            world::to_physics_local(voxel_move.position, config_.physics_island);
+        if (!candidate_local) {
+            return core::Result<CharacterMoveResult>::failure(candidate_local.error().code,
+                                                              candidate_local.error().message);
+        }
+        const auto physics_position = moved.value().position;
+        auto candidate_status = character_->set_position(candidate_local.value());
+        if (!candidate_status) {
+            return core::Result<CharacterMoveResult>::failure(candidate_status.error().code,
+                                                              candidate_status.error().message);
+        }
+        auto accepted =
+            character_->set_shape(to_physics_shape(shape), 0.0F);
+        if (!accepted) {
+            (void)character_->set_position(physics_position);
+            return core::Result<CharacterMoveResult>::failure(accepted.error().code,
+                                                              accepted.error().message);
+        }
+        if (accepted.value()) {
+            auto supported = character_->has_support(0.08F);
+            if (!supported) {
+                (void)character_->set_position(physics_position);
+                return core::Result<CharacterMoveResult>::failure(supported.error().code,
+                                                                  supported.error().message);
+            }
+            next = world_position(character_->position());
+            if (!next) {
+                (void)character_->set_position(physics_position);
+                return core::Result<CharacterMoveResult>::failure(next.error().code,
+                                                                  next.error().message);
+            }
+            applied = next.value().relative_to(position.anchor) - position.local_offset;
+            stepped = true;
+            grounded = supported.value() || voxel_move.grounded;
+        } else {
+            auto restore_status = character_->set_position(physics_position);
+            if (!restore_status) {
+                return core::Result<CharacterMoveResult>::failure(
+                    restore_status.error().code, restore_status.error().message);
+            }
+        }
+    }
+
+    // Preserve exact voxel support when Jolt reports a transient unsupported state on a compound
+    // subshape seam. The tight probe cannot turn an actual fall into a hovering grounded state.
+    if (!grounded && desired_delta.y <= 0.0) {
+        auto terrain_supported = voxel_queries_.has_support(next.value(), shape, 0.025);
+        if (!terrain_supported) {
+            return core::Result<CharacterMoveResult>::failure(terrain_supported.error().code,
+                                                              terrain_supported.error().message);
+        }
+        grounded = terrain_supported.value();
+    }
+
     bool edge_drop_prevented = false;
     if (prevent_edge_drop &&
         (std::abs(desired_delta.x) > collision_epsilon ||
@@ -180,11 +248,9 @@ PhysicsCharacterCollisionWorld::move(const world::WorldPosition& position,
     result.hit_x = std::abs(applied.x - desired_delta.x) > collision_epsilon;
     result.hit_y = std::abs(applied.y - desired_delta.y) > collision_epsilon;
     result.hit_z = std::abs(applied.z - desired_delta.z) > collision_epsilon;
-    result.grounded =
-        moved.value().ground_state == physics::PhysicsCharacterGroundState::on_ground ||
-        edge_drop_prevented;
+    result.grounded = grounded || edge_drop_prevented;
     result.hit_ceiling = desired_delta.y > 0.0 && result.hit_y;
-    result.stepped = moved.value().stepped;
+    result.stepped = stepped;
     return core::Result<CharacterMoveResult>::success(result);
 }
 

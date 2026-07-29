@@ -663,6 +663,88 @@ void test_jolt_runtime_moves_on_cooked_terrain() {
     assert(after != nullptr);
     assert(after->state.position.relative_to(start.anchor).z > start.local_offset.z + 4.0);
     assert(std::abs(after->state.position.approximate_global().y - 1.0) < 0.06);
+
+    auto* terrace_player = session->server()->player_for_client(client_id);
+    assert(terrace_player != nullptr);
+    terrace_player->state.position = {4.5, 1.0, 12.5};
+    terrace_player->state.velocity = {};
+    terrace_player->state.fall_origin = terrace_player->state.position;
+    terrace_player->state.scripted_start = terrace_player->state.position;
+    terrace_player->state.scripted_target = terrace_player->state.position;
+    terrace_player->state.mode = movement::PlayerControllerMode::grounded;
+    terrace_player->state.grounded = true;
+
+    bool reached_terrace_top = false;
+    bool descended_from_terrace = false;
+    for (std::uint64_t sequence = 61; sequence <= 300; ++sequence) {
+        input.tick = sequence;
+        input.sequence = sequence;
+        assert(session->submit_player_input(input, now_ms));
+        now_ms += 17;
+        assert(runtime.run_frame({16'667, now_ms}));
+        const auto* current = session->server()->player_for_client(client_id);
+        assert(current != nullptr);
+        const auto position = current->state.position.approximate_global();
+        reached_terrace_top |= position.z >= 17.5 && position.z <= 21.0 && position.y >= 2.9;
+        descended_from_terrace |=
+            reached_terrace_top && position.z >= 24.0 && position.y <= 1.06 &&
+            current->state.grounded;
+        if (descended_from_terrace) {
+            break;
+        }
+    }
+    assert(reached_terrace_top);
+    assert(descended_from_terrace);
+
+    const auto water_id = core::PrototypeId::parse("base:voxels/water");
+    assert(water_id.has_value());
+    const auto* water_definition = report.voxel_palette.find_by_prototype(*water_id);
+    assert(water_definition != nullptr);
+    const auto pool_cell =
+        session->server()->world().chunks().get(world::chunk_coord_for_block({25, 0, 15}),
+                                               world::local_coord_for_block({25, 0, 15}));
+    assert(pool_cell && pool_cell.value().type == water_definition->type);
+    const auto pool_state = world::decode_fluid_state(pool_cell.value().state_bits);
+    assert(pool_state && pool_state.value().source);
+
+    auto* swimming_player = session->server()->player_for_client(client_id);
+    assert(swimming_player != nullptr);
+    swimming_player->state.position = {26.5, 1.0, 12.5};
+    swimming_player->state.velocity = {};
+    swimming_player->state.fall_origin = swimming_player->state.position;
+    swimming_player->state.scripted_start = swimming_player->state.position;
+    swimming_player->state.scripted_target = swimming_player->state.position;
+    swimming_player->state.mode = movement::PlayerControllerMode::grounded;
+    swimming_player->state.grounded = true;
+
+    bool entered_pool = false;
+    bool selected_swim_animation = false;
+    bool exited_pool = false;
+    const auto jump = movement::input_button_bit(movement::PlayerInputButton::jump);
+    for (std::uint64_t sequence = 301; sequence <= 660; ++sequence) {
+        input.tick = sequence;
+        input.sequence = sequence;
+        input.move_z = entered_pool ? -32'767 : 32'767;
+        input.held_buttons = entered_pool ? jump : 0U;
+        assert(session->submit_player_input(input, now_ms));
+        now_ms += 17;
+        assert(runtime.run_frame({16'667, now_ms}));
+        const auto* current = session->server()->player_for_client(client_id);
+        assert(current != nullptr);
+        entered_pool |= current->state.mode == movement::PlayerControllerMode::swimming;
+        selected_swim_animation |=
+            current->state.locomotion_animation.kind ==
+            animation::LocomotionAnimationKind::swim;
+        exited_pool =
+            entered_pool && current->state.mode != movement::PlayerControllerMode::swimming &&
+            current->state.position.approximate_global().z < 13.9;
+        if (exited_pool) {
+            break;
+        }
+    }
+    assert(entered_pool);
+    assert(selected_swim_animation);
+    assert(exited_pool);
     assert(runtime.shutdown());
 }
 
@@ -755,6 +837,54 @@ void test_boundary_voxel_edit_rebuilds_collision_and_removes_support() {
     const auto client_cell =
         session->client()->world().chunks().get(upper_address.chunk, upper_address.local);
     assert(client_cell && client_cell.value().is_air());
+
+    player->state.position = {27.5, 1.0, 7.5};
+    player->state.velocity = {};
+    player->state.mode = movement::PlayerControllerMode::grounded;
+    player->state.grounded = true;
+    const auto stone = core::PrototypeId::parse("base:voxels/stone");
+    assert(stone.has_value());
+    assert(session->submit_place_voxel(
+        {game::foundation::boundary_edit_upper, *stone}, now_ms));
+    now_ms += 17;
+    auto replaced = runtime.run_frame({16'667, now_ms});
+    assert(replaced);
+    assert(replaced.value().server_ticks.front().commands.command_reports.front().success);
+    const auto replacement_revision =
+        server_chunks.find(upper_address.chunk)->content_revision();
+    bool replacement_collision_applied = false;
+    for (std::uint64_t sequence = 121; sequence <= 180; ++sequence) {
+        neutral.tick = sequence;
+        neutral.sequence = sequence;
+        assert(session->submit_player_input(neutral, now_ms));
+        now_ms += 17;
+        assert(runtime.run_frame({16'667, now_ms}));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const auto* upper = session->server()->chunk_collision().find(upper_address.chunk);
+        replacement_collision_applied =
+            upper != nullptr && upper->content_revision >= replacement_revision;
+        if (replacement_collision_applied) {
+            break;
+        }
+    }
+    assert(replacement_collision_applied);
+
+    player = session->server()->player_for_client(client_id);
+    player->state.position = {29.5, 1.0, 7.5};
+    player->state.velocity = {};
+    player->state.fall_origin = player->state.position;
+    player->state.mode = movement::PlayerControllerMode::airborne;
+    player->state.grounded = false;
+    for (std::uint64_t sequence = 181; sequence <= 210; ++sequence) {
+        neutral.tick = sequence;
+        neutral.sequence = sequence;
+        assert(session->submit_player_input(neutral, now_ms));
+        now_ms += 17;
+        assert(runtime.run_frame({16'667, now_ms}));
+    }
+    player = session->server()->player_for_client(client_id);
+    assert(player->state.grounded);
+    assert(player->state.position.approximate_global().y >= 0.99);
     assert(runtime.shutdown());
 }
 
