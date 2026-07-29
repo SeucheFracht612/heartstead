@@ -106,6 +106,9 @@ Implemented foundation:
   - the third-person camera sweeps a radius against each voxel prototype's declared collision
     bounds, retracts immediately when the safe boom distance shrinks, and restores outward at a
     time-based speed after space clears; unloaded chunks remain conservative solid occluders
+  - each controller tick returns non-persistent diagnostics for requested, applied, and
+    depenetration displacement plus axis hits, ceiling contact, step-up, and unloaded-chunk
+    blocking; the local prediction client retains the latest tick for the Foundation overlay
   - `dev_game` selects Jolt for interactive sessions while deterministic headless smoke runs and
     dedicated-server fixtures retain the reference backend
   - pressing F5 in `dev_game` throws a physical log from the camera and renders its synchronized

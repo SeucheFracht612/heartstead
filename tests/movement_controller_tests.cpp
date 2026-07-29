@@ -259,6 +259,18 @@ void test_walk_jump_dash_and_step() {
     assert(step_move);
     assert(step_move.value().stepped);
     assert(step_move.value().position.approximate_global().y > 1.45);
+    auto controller_step_state = initial_state(7.2, 1.0, 2.5);
+    bool controller_reported_step = false;
+    for (std::uint64_t tick = 1; tick <= 30; ++tick) {
+        auto result =
+            controller.tick(controller_step_state, input(tick, 0, 0, 32'767, 0), {}, collision);
+        assert(result);
+        controller_reported_step = controller_reported_step || result.value().diagnostics.stepped;
+        assert(result.value().diagnostics.requested_displacement.x >=
+               result.value().diagnostics.applied_displacement.x);
+        controller_step_state = result.value().state;
+    }
+    assert(controller_reported_step);
     auto support =
         collision.supporting_voxel(world::WorldPosition{8.5, 1.5, 2.5}, {0.6, 1.8}, 0.08);
     assert(support && support.value().has_value());

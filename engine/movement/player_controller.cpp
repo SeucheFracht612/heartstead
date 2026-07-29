@@ -398,6 +398,18 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
     }
 
     PlayerControllerTickResult result;
+    const auto record_move = [&result](const CharacterMoveResult& move) {
+        result.diagnostics.requested_displacement += move.requested_delta;
+        result.diagnostics.applied_displacement += move.applied_delta;
+        result.diagnostics.depenetration_displacement += move.depenetration_delta;
+        result.diagnostics.hit_x = result.diagnostics.hit_x || move.hit_x;
+        result.diagnostics.hit_y = result.diagnostics.hit_y || move.hit_y;
+        result.diagnostics.hit_z = result.diagnostics.hit_z || move.hit_z;
+        result.diagnostics.hit_ceiling = result.diagnostics.hit_ceiling || move.hit_ceiling;
+        result.diagnostics.stepped = result.diagnostics.stepped || move.stepped;
+        result.diagnostics.blocked_by_unloaded_chunk =
+            result.diagnostics.blocked_by_unloaded_chunk || move.blocked_by_unloaded_chunk;
+    };
     auto& state = result.state;
     state = previous;
     state.simulation_tick = input.tick;
@@ -511,6 +523,7 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
             return core::Result<PlayerControllerTickResult>::failure(moved.error().code,
                                                                      moved.error().message);
         }
+        record_move(moved.value());
         state.position = moved.value().position;
         state.velocity = delta / tick_seconds;
         const auto blocked = moved.value().hit_x || moved.value().hit_z;
@@ -535,6 +548,7 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
             return core::Result<PlayerControllerTickResult>::failure(moved.error().code,
                                                                      moved.error().message);
         }
+        record_move(moved.value());
         state.position = moved.value().position;
         state.velocity = delta / tick_seconds;
         state.grounded = moved.value().grounded;
@@ -575,6 +589,7 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
             return core::Result<PlayerControllerTickResult>::failure(moved.error().code,
                                                                      moved.error().message);
         }
+        record_move(moved.value());
         state.position = moved.value().position;
         state.velocity = delta / tick_seconds;
         if (moved.value().hit_x || moved.value().hit_y || moved.value().hit_z) {
@@ -622,6 +637,7 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
             return core::Result<PlayerControllerTickResult>::failure(moved.error().code,
                                                                      moved.error().message);
         }
+        record_move(moved.value());
         state.position = moved.value().position;
         if (moved.value().hit_x) {
             state.velocity.x = 0.0;
@@ -652,6 +668,7 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
             return core::Result<PlayerControllerTickResult>::failure(moved.error().code,
                                                                      moved.error().message);
         }
+        record_move(moved.value());
         state.position = moved.value().position;
     } else {
         const auto was_grounded = state.grounded;
@@ -756,6 +773,7 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
                 return core::Result<PlayerControllerTickResult>::failure(moved.error().code,
                                                                          moved.error().message);
             }
+            record_move(moved.value());
             state.position = moved.value().position;
             if (moved.value().hit_x) {
                 state.velocity.x = 0.0;

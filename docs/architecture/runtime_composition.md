@@ -95,6 +95,12 @@ The client representations are separate:
 - `Renderer` owns GPU assets, caches, draw construction, and submission. Only the camera-relative
   delta is converted to float.
 
+The Foundation diagnostic overlay consumes these public boundaries rather than backend internals.
+It reports authoritative and presentation ticks, the last command/rejection, local prediction
+movement diagnostics, the supporting voxel, player collision token, and authoritative collision
+cook queue plus support-chunk content/cooked revisions. This keeps a failed edit or stale terrain
+body diagnosable from the running game.
+
 The development application still uses the renderer's V1 chunk synchronization entry point for
 terrain cell snapshot construction. Dynamic presentation objects use the retained scene boundary.
 Replacing terrain synchronization with chunk presentation change sets does not alter the RHI or

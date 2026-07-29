@@ -155,9 +155,22 @@ struct PlayerControllerState {
     [[nodiscard]] core::Status validate(const PlayerMovementConfig& config) const;
 };
 
+struct PlayerControllerTickDiagnostics {
+    math::Vec3d requested_displacement{};
+    math::Vec3d applied_displacement{};
+    math::Vec3d depenetration_displacement{};
+    bool hit_x = false;
+    bool hit_y = false;
+    bool hit_z = false;
+    bool hit_ceiling = false;
+    bool stepped = false;
+    bool blocked_by_unloaded_chunk = false;
+};
+
 struct PlayerControllerTickResult {
     PlayerControllerState state;
     std::vector<MovementEvent> events;
+    PlayerControllerTickDiagnostics diagnostics;
 };
 
 class PlayerController {

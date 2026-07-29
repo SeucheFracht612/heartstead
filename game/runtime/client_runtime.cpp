@@ -124,6 +124,7 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render
         remote_player_interpolators_.erase(removal.value().value());
         if (removal.value() == local_player_net_id_) {
             predicted_local_snapshot_.reset();
+            last_prediction_diagnostics_.reset();
             prediction_buffer_.clear();
         }
         player_tombstones_.push_back(removal.value());
@@ -301,7 +302,9 @@ core::Status ClientRuntime::predict_local_input(const movement::PlayerInputFrame
         prediction_buffer_.clear();
         return core::Status::failure(predicted.error().code, predicted.error().message);
     }
-    predicted_local_snapshot_->state = std::move(predicted).value().state;
+    auto predicted_tick = std::move(predicted).value();
+    predicted_local_snapshot_->state = std::move(predicted_tick.state);
+    last_prediction_diagnostics_ = predicted_tick.diagnostics;
     predicted_local_snapshot_->last_processed_input_sequence =
         predicted_local_snapshot_->state.last_input_sequence;
     movement_snapshots_.insert_or_assign(local_player_net_id_.value(), *predicted_local_snapshot_);
@@ -349,6 +352,11 @@ core::NetId ClientRuntime::local_player_net_id() const noexcept {
 
 const movement::PlayerControllerSnapshot* ClientRuntime::local_player_snapshot() const noexcept {
     return player_snapshot(local_player_net_id_);
+}
+
+const movement::PlayerControllerTickDiagnostics*
+ClientRuntime::last_prediction_diagnostics() const noexcept {
+    return last_prediction_diagnostics_.has_value() ? &*last_prediction_diagnostics_ : nullptr;
 }
 
 std::vector<const movement::PlayerControllerSnapshot*> ClientRuntime::movement_snapshots() const {

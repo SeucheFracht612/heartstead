@@ -598,13 +598,92 @@ DevGameMode::update(game::GameApplicationServices& services,
                                       state.game_ui->stats().paint_ms,
                                       state.game_ui->stats().layout.widget_count);
         if (state.diagnostic_overlay_visible) {
+            movement::VoxelCharacterCollisionWorld diagnostic_collision(
+                state.runtime.session()->client()->world().chunks(),
+                state.config.content_report->voxel_palette);
+            auto support = diagnostic_collision.supporting_voxel(
+                player->state.position, {0.6, player->state.crouched ? 1.2 : 1.8}, 0.12);
+            if (!support) {
+                return core::Result<game::GameApplicationFrameOutput>::failure(
+                    support.error().code, support.error().message);
+            }
             const auto position = player->state.position.approximate_global();
+            const auto* movement_diagnostics =
+                state.runtime.session()->client()->last_prediction_diagnostics();
+            const auto requested_displacement = movement_diagnostics == nullptr
+                                                    ? math::Vec3d{}
+                                                    : movement_diagnostics->requested_displacement;
+            const auto applied_displacement = movement_diagnostics == nullptr
+                                                  ? math::Vec3d{}
+                                                  : movement_diagnostics->applied_displacement;
+            std::string support_text = "none";
+            if (support.value().has_value()) {
+                const auto& value = *support.value();
+                std::ostringstream support_stream;
+                support_stream << value.block.x << ',' << value.block.y << ',' << value.block.z
+                               << ' ';
+                if (value.unloaded) {
+                    support_stream << "unloaded";
+                } else if (value.voxel != nullptr) {
+                    support_stream << value.voxel->prototype_id.value();
+                } else {
+                    support_stream << "unknown";
+                }
+                support_text = support_stream.str();
+            }
+
+            std::string collision_text = "remote";
+            if (const auto* server = state.runtime.session()->server(); server != nullptr) {
+                const auto& collision_stats = server->chunk_collision().stats();
+                std::ostringstream collision_stream;
+                collision_stream << "world " << collision_stats.world_revision << " queue "
+                                 << collision_stats.pending_chunk_count << '/'
+                                 << collision_stats.in_flight_job_count;
+                if (support.value().has_value()) {
+                    const auto coordinate = world::chunk_coord_for_block(support.value()->block);
+                    const auto* chunk = server->world().chunks().find(coordinate);
+                    const auto* body = server->chunk_collision().find(coordinate);
+                    const auto current_revision = chunk == nullptr ? 0U : chunk->content_revision();
+                    const auto cooked_revision = body == nullptr ? 0U : body->content_revision;
+                    const auto collision_ready =
+                        chunk != nullptr && body != nullptr && current_revision == cooked_revision;
+                    collision_stream << " support " << cooked_revision << '/' << current_revision
+                                     << (collision_ready ? " ready" : " pending");
+                }
+                if (collision_stats.failed_results > 0) {
+                    collision_stream << " failed " << collision_stats.failed_results;
+                }
+                collision_text = collision_stream.str();
+            }
+
+            const auto command_results = state.runtime.session()->client()->command_results();
+            std::string command_text = "none";
+            std::string last_error_code = "none";
+            if (!command_results.empty()) {
+                const auto& latest = command_results.back();
+                command_text = latest.command_type + " #" + std::to_string(latest.sequence) +
+                               (latest.success ? " accepted" : " rejected");
+                for (auto result = command_results.rbegin(); result != command_results.rend();
+                     ++result) {
+                    if (!result->success) {
+                        last_error_code =
+                            result->error_code.empty() ? "command.rejected" : result->error_code;
+                        break;
+                    }
+                }
+            }
+            if (const auto& fault = state.runtime.session()->fault(); fault.has_value()) {
+                last_error_code = fault->code;
+            }
+
             std::ostringstream text;
             text << std::fixed << std::setprecision(2) << "FOUNDATION DIAGNOSTICS [F3]\n"
                  << "session "
                  << (state.runtime.session()->server() == nullptr ? "remote" : "local")
                  << " | client " << (state.local_client_connected ? "connected" : "offline")
-                 << " | tick " << state.authoritative_tick << '\n'
+                 << " | auth " << state.authoritative_tick << " | present "
+                 << render_snapshot.value().simulation_tick << " rev "
+                 << render_snapshot.value().presentation_revision << '\n'
                  << "camera "
                  << (state.camera_perspective == movement::PlayerCameraPerspective::third_person
                          ? "third-person"
@@ -618,15 +697,28 @@ DevGameMode::update(game::GameApplicationServices& services,
                  << "position " << position.x << ", " << position.y << ", " << position.z << '\n'
                  << "velocity " << player->state.velocity.x << ", " << player->state.velocity.y
                  << ", " << player->state.velocity.z << '\n'
+                 << "move requested " << requested_displacement.x << ", "
+                 << requested_displacement.y << ", " << requested_displacement.z << " applied "
+                 << applied_displacement.x << ", " << applied_displacement.y << ", "
+                 << applied_displacement.z << '\n'
                  << "controller " << movement::player_controller_mode_name(player->state.mode)
-                 << " | grounded " << (player->state.grounded ? "yes" : "no") << '\n'
+                 << " | grounded " << (player->state.grounded ? "yes" : "no") << " | step "
+                 << (movement_diagnostics != nullptr && movement_diagnostics->stepped ? "yes"
+                                                                                      : "no")
+                 << '\n'
+                 << "support " << support_text << " | normal "
+                 << (support.value().has_value() ? "0,1,0" : "none") << '\n'
+                 << "collision " << collision_text << " | player token "
+                 << player->collision_world_revision << '\n'
                  << "input " << player_input.move_x << ", " << player_input.move_z << " | selected "
-                 << (selection.value().hit.has_value() ? "voxel" : "none");
+                 << (selection.value().hit.has_value() ? "voxel" : "none") << '\n'
+                 << "last command " << command_text << " | last error " << last_error_code;
             const auto diagnostic_text = text.str();
             renderer::UiQuadDesc panel;
             panel.minimum_pixels = {12.0F, 12.0F};
             panel.maximum_pixels = {
-                std::min(510.0F, static_cast<float>(frame.extent.width) - 12.0F), 126.0F};
+                std::min(620.0F, static_cast<float>(frame.extent.width) - 12.0F),
+                std::min(214.0F, static_cast<float>(frame.extent.height) - 12.0F)};
             panel.color = {0.015F, 0.025F, 0.04F, 0.88F};
             status = ui->submit_quad(panel);
             if (status) {

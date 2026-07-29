@@ -815,6 +815,10 @@ void test_authoritative_player_input_moves_and_replicates() {
     input.sequence = 1;
     input.move_z = 32'767;
     assert(session->submit_player_input(input, 10));
+    const auto* prediction_diagnostics = session->client()->last_prediction_diagnostics();
+    assert(prediction_diagnostics != nullptr);
+    assert(prediction_diagnostics->requested_displacement.z > 0.0);
+    assert(prediction_diagnostics->applied_displacement.z > 0.0);
     auto frame = runtime.run_frame({16'667, 17});
     assert(frame);
     assert(frame.value().server_ticks.size() == 1);

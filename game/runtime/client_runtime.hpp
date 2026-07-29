@@ -67,6 +67,8 @@ class ClientRuntime final {
     player_snapshot(core::NetId player_net_id) const noexcept;
     [[nodiscard]] core::NetId local_player_net_id() const noexcept;
     [[nodiscard]] const movement::PlayerControllerSnapshot* local_player_snapshot() const noexcept;
+    [[nodiscard]] const movement::PlayerControllerTickDiagnostics*
+    last_prediction_diagnostics() const noexcept;
     [[nodiscard]] std::vector<const movement::PlayerControllerSnapshot*> movement_snapshots() const;
     [[nodiscard]] std::vector<const entities::EntityMotionSnapshot*>
     entity_motion_snapshots() const;
@@ -109,6 +111,7 @@ class ClientRuntime final {
     movement::MovementPredictionBuffer prediction_buffer_;
     std::unique_ptr<movement::VoxelCharacterCollisionWorld> prediction_collision_;
     std::optional<movement::PlayerControllerSnapshot> predicted_local_snapshot_;
+    std::optional<movement::PlayerControllerTickDiagnostics> last_prediction_diagnostics_;
     std::uint32_t predicted_inputs_since_sync_ = 0;
 };
 
