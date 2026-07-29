@@ -83,7 +83,7 @@ int main() {
     auto frame = renderer.render(camera);
     assert(frame);
     assert(renderer.stats().submitted_instances == 3);
-    assert(renderer.stats().instance_draw_calls == 3);
+    assert(renderer.stats().instance_draw_calls == 1);
 
     assert(system.value().update(1.0F / 60.0F));
     synchronized = presentation.synchronize(renderer, system.value(), camera);

@@ -75,7 +75,7 @@ struct Options {
             object.current_transform.rotation_degrees.y = static_cast<float>(column) * 11.25F;
             object.previous_transform.rotation_degrees = object.current_transform.rotation_degrees;
             object.mesh = active_renderer.fallback_mesh();
-            object.material = {1, 1};
+            object.material = active_renderer.fallback_material();
             object.local_bounds = {{-0.5F, -0.5F, -0.5F}, {0.5F, 0.5F, 0.5F}};
             object.color = {0.18F + static_cast<float>(row) * 0.035F, 0.58F,
                             0.22F + static_cast<float>(column) * 0.025F, 1.0F};

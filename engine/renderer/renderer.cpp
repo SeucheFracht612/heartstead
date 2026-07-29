@@ -369,6 +369,23 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         (void)shutdown();
         return core::Status::failure(error.code, error.message);
     }
+    const auto fallback_material_id = core::PrototypeId::parse("base:materials/error");
+    if (!fallback_material_id) {
+        (void)shutdown();
+        return core::Status::failure("renderer.invalid_fallback_material_id",
+                                     "internal fallback material id is invalid");
+    }
+    MaterialRuntimeDesc fallback_material;
+    fallback_material.id = fallback_material_id.value();
+    fallback_material.domain = MaterialRuntimeDomain::surface;
+    fallback_material.base_color = {1.0F, 0.0F, 1.0F, 1.0F};
+    auto created_fallback_material = material_cache_->upsert(std::move(fallback_material));
+    if (!created_fallback_material) {
+        const auto error = created_fallback_material.error();
+        (void)shutdown();
+        return core::Status::failure(error.code, error.message);
+    }
+    fallback_material_ = created_fallback_material.value();
     auto pipeline_status = create_sky_pipeline(desc.sky_vertex_spirv, desc.sky_fragment_spirv);
     if (!pipeline_status) {
         const auto error = pipeline_status.error();
@@ -546,6 +563,7 @@ core::Status Renderer::shutdown() {
     ui_shader_program_ = {};
     terrain_texture_array_ = {};
     ui_texture_atlas_ = {};
+    fallback_material_ = {};
     terrain_sampler_ = {};
     environment_ = {};
     device_.reset();
@@ -1030,7 +1048,8 @@ bool Renderer::is_initialized() const noexcept {
            scene_render_system_ != nullptr && sky_renderer_ != nullptr &&
            sky_renderer_->is_initialized() && debug_renderer_ != nullptr &&
            ui_renderer_ != nullptr && sky_pipeline_.is_valid() && terrain_pipelines_.is_valid() &&
-           scene_pipelines_.is_valid() && debug_pipelines_.is_valid() && ui_pipeline_.is_valid();
+           scene_pipelines_.is_valid() && debug_pipelines_.is_valid() && ui_pipeline_.is_valid() &&
+           fallback_material_.is_valid();
 }
 
 bool Renderer::is_owner_thread() const noexcept {
@@ -1050,8 +1069,25 @@ const SceneRenderStats& Renderer::scene_stats() const noexcept {
     return scene_render_system_ == nullptr ? empty : scene_render_system_->stats();
 }
 
+RendererFallbackResources Renderer::fallback_resources() const noexcept {
+    RendererFallbackResources resources;
+    resources.error_mesh = fallback_mesh();
+    resources.error_material = fallback_material_;
+    if (texture_manager_ != nullptr) {
+        resources.error_texture = texture_manager_->error_texture();
+        resources.white_texture = texture_manager_->white_texture();
+        resources.black_texture = texture_manager_->black_texture();
+        resources.normal_texture = texture_manager_->normal_texture();
+    }
+    return resources;
+}
+
 RenderMeshHandle Renderer::fallback_mesh() const noexcept {
     return mesh_manager_ == nullptr ? RenderMeshHandle{} : mesh_manager_->fallback_mesh();
+}
+
+MaterialRuntimeHandle Renderer::fallback_material() const noexcept {
+    return fallback_material_;
 }
 
 DebugRenderer* Renderer::debug_renderer() noexcept {

@@ -92,6 +92,9 @@ core::Status AnimatedModelPresentation::initialize(renderer::Renderer& renderer,
         return core::Status::failure("animated_model_presentation.already_initialized",
                                      "animated model presentation is already initialized");
     }
+    if (!config.material.is_valid()) {
+        config.material = renderer.fallback_material();
+    }
     auto status = config.validate();
     if (!status) {
         return status;

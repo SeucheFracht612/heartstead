@@ -79,6 +79,20 @@ struct RendererInitDesc {
     bool development_shader_hot_reload = false;
 };
 
+struct RendererFallbackResources {
+    RenderMeshHandle error_mesh;
+    MaterialRuntimeHandle error_material;
+    TextureHandle error_texture;
+    TextureHandle white_texture;
+    TextureHandle black_texture;
+    TextureHandle normal_texture;
+
+    [[nodiscard]] bool is_valid() const noexcept {
+        return error_mesh.is_valid() && error_material.is_valid() && error_texture.is_valid() &&
+               white_texture.is_valid() && black_texture.is_valid() && normal_texture.is_valid();
+    }
+};
+
 class Renderer {
   public:
     Renderer() = default;
@@ -143,7 +157,9 @@ class Renderer {
     [[nodiscard]] const ChunkRenderStats& chunk_stats() const noexcept;
     [[nodiscard]] const RendererStats& stats() const noexcept;
     [[nodiscard]] const SceneRenderStats& scene_stats() const noexcept;
+    [[nodiscard]] RendererFallbackResources fallback_resources() const noexcept;
     [[nodiscard]] RenderMeshHandle fallback_mesh() const noexcept;
+    [[nodiscard]] MaterialRuntimeHandle fallback_material() const noexcept;
     [[nodiscard]] DebugRenderer* debug_renderer() noexcept;
     [[nodiscard]] const DebugRenderer* debug_renderer() const noexcept;
     [[nodiscard]] std::span<const DebugTextLabelFrame> debug_text_labels() const noexcept;
@@ -188,6 +204,7 @@ class Renderer {
     ShaderProgramHandle ui_shader_program_;
     TextureHandle terrain_texture_array_;
     TextureHandle ui_texture_atlas_;
+    MaterialRuntimeHandle fallback_material_;
     rhi::RenderResourceHandle terrain_sampler_;
     std::unique_ptr<ShaderManager> shader_manager_;
     std::unique_ptr<SamplerCache> sampler_cache_;

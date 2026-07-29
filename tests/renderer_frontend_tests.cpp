@@ -655,6 +655,7 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(!worker_reports_owner);
     assert(retained_renderer.is_initialized());
     assert(retained_renderer.device() != nullptr);
+    assert(retained_renderer.fallback_resources().is_valid());
     const auto initialized_resource_count = retained_renderer.device()->live_resource_count();
     // Ten shader modules, eleven prewarmed pipelines, sky geometry, four fallback textures,
     // terrain/UI arrays, one shared sampler, one material-table buffer, static arenas/instances,
@@ -770,7 +771,7 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(renderer_stats.draw_calls == 2);
     assert(renderer_stats.pipeline_switches == 2);
     assert(renderer_stats.resident_textures == 6);
-    assert(renderer_stats.runtime_materials == 255);
+    assert(renderer_stats.runtime_materials == 256);
     assert(renderer_stats.resident_pipelines == 11);
     assert(renderer_stats.resident_texture_bytes > 0);
     assert(renderer_stats.vertices > 0);
@@ -805,7 +806,7 @@ void test_renderer_frontend_submits_headless_frames() {
     object.previous_transform.position = {0.0F, 0.0F, -5.0F};
     object.current_transform = object.previous_transform;
     object.mesh = object_mesh.value();
-    object.material = {1, 1};
+    object.material = retained_renderer.fallback_material();
     object.local_bounds = {{-0.5F, -0.5F, 0.0F}, {0.5F, 0.5F, 0.0F}};
     auto object_id = retained_renderer.create_object(object);
     assert(object_id);
@@ -893,7 +894,7 @@ void test_renderer_frontend_submits_headless_frames() {
     animated_object.previous_transform.position = {0.0F, 0.0F, -5.0F};
     animated_object.current_transform = animated_object.previous_transform;
     animated_object.mesh = animated_mesh.value();
-    animated_object.material = {1, 1};
+    animated_object.material = retained_renderer.fallback_material();
     animated_object.local_bounds = animated_model.bounds;
     animated_object.skin_palette = skin_palette_id.value();
     auto animated_object_id = retained_renderer.create_object(animated_object);

@@ -16,8 +16,14 @@
 
 namespace heartstead::renderer {
 
+enum class MaterialRuntimeDomain : std::uint8_t {
+    surface,
+    voxel,
+};
+
 struct MaterialRuntimeDesc {
     core::PrototypeId id;
+    MaterialRuntimeDomain domain = MaterialRuntimeDomain::voxel;
     std::uint16_t voxel_type = 0;
     std::uint32_t side_texture = 0;
     std::uint32_t top_texture = 0;
@@ -34,6 +40,7 @@ struct MaterialRuntimeDesc {
 struct MaterialRuntimeView {
     MaterialRuntimeHandle handle;
     core::PrototypeId id;
+    MaterialRuntimeDomain domain = MaterialRuntimeDomain::voxel;
     std::uint16_t voxel_type = 0;
     std::uint32_t material_index = 0;
     std::uint64_t revision = 0;

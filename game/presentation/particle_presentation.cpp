@@ -69,6 +69,11 @@ core::Status ParticlePresentation::initialize(renderer::Renderer& renderer,
         return core::Status::failure("particle_presentation.already_initialized",
                                      "particle presentation is already initialized");
     }
+    for (auto& material : config.material_groups) {
+        if (!material.is_valid()) {
+            material = renderer.fallback_material();
+        }
+    }
     auto status = config.validate();
     if (!status) {
         return status;

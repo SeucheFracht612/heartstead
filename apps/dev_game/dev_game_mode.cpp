@@ -57,7 +57,7 @@ physical_resource_proxy(const entities::PhysicalResourceRecord& resource,
     proxy.current_transform.scale = {1.2F, 0.4F, 0.4F};
     proxy.previous_transform = previous == nullptr ? proxy.current_transform : previous->transform;
     proxy.mesh = renderer.fallback_mesh();
-    proxy.material = {1, 1};
+    proxy.material = renderer.fallback_material();
     proxy.local_bounds = {{-0.5F, -0.5F, -0.5F}, {0.5F, 0.5F, 0.5F}};
     proxy.flags = renderer::RenderObjectFlags::cast_shadow;
     proxy.color = {0.42F, 0.20F, 0.07F, 1.0F};

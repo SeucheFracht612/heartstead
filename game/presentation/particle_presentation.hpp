@@ -11,12 +11,7 @@
 namespace heartstead::game {
 
 struct ParticlePresentationConfig {
-    std::array<renderer::MaterialRuntimeHandle, 4> material_groups{
-        renderer::MaterialRuntimeHandle{1, 1},
-        renderer::MaterialRuntimeHandle{2, 1},
-        renderer::MaterialRuntimeHandle{3, 1},
-        renderer::MaterialRuntimeHandle{4, 1},
-    };
+    std::array<renderer::MaterialRuntimeHandle, 4> material_groups{};
     std::uint32_t maximum_presented_particles = 50'000;
 
     [[nodiscard]] core::Status validate() const noexcept;

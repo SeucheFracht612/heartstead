@@ -357,6 +357,17 @@ void test_material_table_updates_without_mesh_changes() {
     assert(array_desc.value().array_layers == 2);
 
     renderer::MaterialRuntimeCache materials(*device.value());
+    auto fallback_id = core::PrototypeId::parse("base:materials/error");
+    assert(fallback_id);
+    renderer::MaterialRuntimeDesc fallback;
+    fallback.id = fallback_id.value();
+    fallback.domain = renderer::MaterialRuntimeDomain::surface;
+    auto fallback_handle = materials.upsert(fallback);
+    assert(fallback_handle);
+    assert(materials.find(fallback_handle.value())->domain ==
+           renderer::MaterialRuntimeDomain::surface);
+    assert(materials.find(fallback_handle.value())->material_index == 0);
+    assert(materials.block_render_table().revision() == 1);
     auto material_id = core::PrototypeId::parse("base:materials/grass");
     assert(material_id);
     renderer::MaterialRuntimeDesc material;

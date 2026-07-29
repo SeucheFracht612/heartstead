@@ -20,7 +20,7 @@ struct AnimatedModelPresentationConfig {
     core::PrototypeId visual_prototype;
     assets::ModelAsset model;
     animation::LocomotionClipSet locomotion_clips;
-    renderer::MaterialRuntimeHandle material{1, 1};
+    renderer::MaterialRuntimeHandle material;
     renderer::RenderLayer layer = renderer::RenderLayer::opaque;
     renderer::RenderObjectFlags flags = renderer::RenderObjectFlags::cast_shadow;
     math::Bounds3f animated_bounds{};

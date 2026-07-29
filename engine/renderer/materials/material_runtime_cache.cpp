@@ -33,18 +33,21 @@ core::Result<MaterialRuntimeHandle> MaterialRuntimeCache::upsert(MaterialRuntime
         return record.occupied && record.desc.id == desc.id;
     });
     if (existing != records_.end()) {
-        if (existing->desc.voxel_type != desc.voxel_type) {
+        if (existing->desc.domain != desc.domain ||
+            existing->desc.voxel_type != desc.voxel_type) {
             return core::Result<MaterialRuntimeHandle>::failure(
-                "material_runtime.voxel_type_change_rejected",
-                "resident material cannot change its stable voxel/material-table index");
+                "material_runtime.identity_change_rejected",
+                "resident material cannot change its stable domain or material-table index");
         }
         if (existing->desc == desc) {
             return core::Result<MaterialRuntimeHandle>::success(existing->view.handle);
         }
-        status = table_.set(desc.voxel_type, gpu_voxel_material(desc));
-        if (!status) {
-            return core::Result<MaterialRuntimeHandle>::failure(status.error().code,
-                                                                status.error().message);
+        if (desc.domain == MaterialRuntimeDomain::voxel) {
+            status = table_.set(desc.voxel_type, gpu_voxel_material(desc));
+            if (!status) {
+                return core::Result<MaterialRuntimeHandle>::failure(status.error().code,
+                                                                    status.error().message);
+            }
         }
         existing->desc = std::move(desc);
         if (existing->view.revision == std::numeric_limits<std::uint64_t>::max()) {
@@ -54,18 +57,21 @@ core::Result<MaterialRuntimeHandle> MaterialRuntimeCache::upsert(MaterialRuntime
         update_stats();
         return core::Result<MaterialRuntimeHandle>::success(existing->view.handle);
     }
-    const auto conflicting = std::ranges::find_if(records_, [&desc](const Record& record) {
-        return record.occupied && record.desc.voxel_type == desc.voxel_type;
-    });
-    if (conflicting != records_.end()) {
-        return core::Result<MaterialRuntimeHandle>::failure(
-            "material_runtime.duplicate_voxel_type",
-            "two runtime materials cannot own the same voxel/material-table index");
-    }
-    status = table_.set(desc.voxel_type, gpu_voxel_material(desc));
-    if (!status) {
-        return core::Result<MaterialRuntimeHandle>::failure(status.error().code,
-                                                            status.error().message);
+    if (desc.domain == MaterialRuntimeDomain::voxel) {
+        const auto conflicting = std::ranges::find_if(records_, [&desc](const Record& record) {
+            return record.occupied && record.desc.domain == MaterialRuntimeDomain::voxel &&
+                   record.desc.voxel_type == desc.voxel_type;
+        });
+        if (conflicting != records_.end()) {
+            return core::Result<MaterialRuntimeHandle>::failure(
+                "material_runtime.duplicate_voxel_type",
+                "two runtime materials cannot own the same voxel/material-table index");
+        }
+        status = table_.set(desc.voxel_type, gpu_voxel_material(desc));
+        if (!status) {
+            return core::Result<MaterialRuntimeHandle>::failure(status.error().code,
+                                                                status.error().message);
+        }
     }
 
     std::size_t slot = records_.size();
@@ -83,8 +89,10 @@ core::Result<MaterialRuntimeHandle> MaterialRuntimeCache::upsert(MaterialRuntime
     record.desc = std::move(desc);
     record.view.handle = {static_cast<std::uint32_t>(slot + 1), record.generation};
     record.view.id = record.desc.id;
+    record.view.domain = record.desc.domain;
     record.view.voxel_type = record.desc.voxel_type;
-    record.view.material_index = record.desc.voxel_type;
+    record.view.material_index =
+        record.desc.domain == MaterialRuntimeDomain::voxel ? record.desc.voxel_type : 0;
     record.view.revision = 1;
     update_stats();
     return core::Result<MaterialRuntimeHandle>::success(record.view.handle);
@@ -241,10 +249,16 @@ const std::string* TerrainTextureArrayBuilder::layer_id(std::uint32_t layer) con
 }
 
 core::Status validate_material_runtime_desc(const MaterialRuntimeDesc& desc) {
-    if (!desc.id.is_valid() || desc.voxel_type == 0) {
+    if (!desc.id.is_valid()) {
         return core::Status::failure(
             "material_runtime.invalid_identity",
-            "runtime material requires a valid prototype id and non-air voxel type");
+            "runtime material requires a valid prototype id");
+    }
+    if ((desc.domain == MaterialRuntimeDomain::voxel && desc.voxel_type == 0) ||
+        (desc.domain == MaterialRuntimeDomain::surface && desc.voxel_type != 0)) {
+        return core::Status::failure(
+            "material_runtime.invalid_domain",
+            "voxel materials require a non-air voxel type and surface materials require type zero");
     }
     for (const auto value : desc.base_color) {
         if (!std::isfinite(value) || value < 0.0F || value > 1.0F) {
