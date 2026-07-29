@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -18,7 +19,7 @@ namespace heartstead::game {
 struct AnimatedModelPresentationConfig {
     std::string asset_id;
     core::PrototypeId visual_prototype;
-    assets::ModelAsset model;
+    std::shared_ptr<const assets::ModelAsset> model;
     animation::LocomotionClipSet locomotion_clips;
     renderer::MaterialRuntimeHandle material;
     renderer::RenderLayer layer = renderer::RenderLayer::opaque;

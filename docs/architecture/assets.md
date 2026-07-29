@@ -89,6 +89,16 @@ Implemented foundation:
   - applies configurable manifest/payload byte limits plus fixed header line/field limits before
     allocating decoded payload state
 
+- Runtime presentation caches
+  - key decoded model and animation data by the catalog's stable logical asset id
+  - share immutable decoded model data across visual definitions instead of copying geometry and
+    clips into each presenter
+  - acquire reference-counted mesh handles by logical model-and-primitive id, so releasing one
+    visual cannot invalidate another user
+  - reuse model material handles and texture-array layers by their derived logical ids
+  - load and cache cooked audio payloads by sound asset id; source files are compatibility fallback
+    inputs rather than the production playback path
+
 - `AssetCooker`
   - builds the cooked manifest from the catalog
   - fails early when an active cooked asset dependency cannot resolve to another active cooked

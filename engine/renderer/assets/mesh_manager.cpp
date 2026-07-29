@@ -169,8 +169,8 @@ core::Status MeshManager::initialize(MeshManagerConfig config) {
 }
 
 core::Result<RenderMeshHandle> MeshManager::create_mesh(const StaticMeshUploadDesc& desc) {
-    if (const auto* existing = find(desc.id); existing != nullptr) {
-        return core::Result<RenderMeshHandle>::success(existing->handle);
+    if (auto* existing = find_record(desc.id); existing != nullptr) {
+        return retain_record(*existing);
     }
     return upload_mesh(desc, false);
 }
@@ -178,8 +178,8 @@ core::Result<RenderMeshHandle> MeshManager::create_mesh(const StaticMeshUploadDe
 core::Result<RenderMeshHandle> MeshManager::create_model_primitive(std::string id,
                                                                    const assets::ModelAsset& model,
                                                                    std::uint32_t primitive_index) {
-    if (const auto* existing = find(id); existing != nullptr) {
-        return core::Result<RenderMeshHandle>::success(existing->handle);
+    if (auto* existing = find_record(id); existing != nullptr) {
+        return retain_record(*existing);
     }
     auto status = assets::validate_model_asset(model);
     if (!status) {
@@ -298,6 +298,7 @@ core::Result<RenderMeshHandle> MeshManager::upload_mesh(const StaticMeshUploadDe
                    static_cast<std::uint32_t>(desc.vertices.size()),
                    static_cast<std::uint32_t>(desc.indices.size()),
                    skin_joint_count,
+                   fallback ? 0U : 1U,
                    rhi::RenderIndexType::uint32,
                    desc.local_bounds,
                    fallback};
@@ -317,7 +318,29 @@ core::Status MeshManager::release(RenderMeshHandle handle) {
         return core::Status::failure("mesh_manager.release_fallback",
                                      "the static mesh fallback is manager-owned");
     }
+    if (record->view.reference_count > 1U) {
+        --record->view.reference_count;
+        return core::Status::ok();
+    }
+    if (record->view.reference_count == 0U) {
+        return core::Status::failure("mesh_manager.invalid_reference_count",
+                                     "static mesh has no releasable owner");
+    }
     return retire_record(*record);
+}
+
+core::Result<RenderMeshHandle> MeshManager::retain_record(Record& record) {
+    if (record.view.fallback) {
+        return core::Result<RenderMeshHandle>::failure(
+            "mesh_manager.reserved_id", "the fallback static mesh id is manager-owned");
+    }
+    if (record.view.reference_count == std::numeric_limits<std::uint32_t>::max()) {
+        return core::Result<RenderMeshHandle>::failure("mesh_manager.reference_overflow",
+                                                       "static mesh reference count overflowed");
+    }
+    ++record.view.reference_count;
+    ++stats_.cache_hit_count;
+    return core::Result<RenderMeshHandle>::success(record.view.handle);
 }
 
 core::Status MeshManager::retire_record(Record& record) {
@@ -383,6 +406,12 @@ const MeshManager::Record* MeshManager::find_record(RenderMeshHandle handle) con
     return record.occupied && record.generation == handle.generation ? &record : nullptr;
 }
 
+MeshManager::Record* MeshManager::find_record(std::string_view id) noexcept {
+    const auto found = std::ranges::find_if(
+        records_, [id](const Record& record) { return record.occupied && record.id == id; });
+    return found == records_.end() ? nullptr : &*found;
+}
+
 void MeshManager::collect() noexcept {
     if (vertex_arena_ != nullptr) {
         vertex_arena_->collect(device_->completed_submission_serial());
@@ -395,10 +424,12 @@ void MeshManager::collect() noexcept {
 void MeshManager::refresh_stats() noexcept {
     const auto uploaded_mesh_count = stats_.uploaded_mesh_count;
     const auto uploaded_bytes = stats_.uploaded_bytes;
+    const auto cache_hit_count = stats_.cache_hit_count;
     const auto fallback_resolution_count = stats_.fallback_resolution_count;
     stats_ = {};
     stats_.uploaded_mesh_count = uploaded_mesh_count;
     stats_.uploaded_bytes = uploaded_bytes;
+    stats_.cache_hit_count = cache_hit_count;
     stats_.fallback_resolution_count = fallback_resolution_count;
     for (const auto& record : records_) {
         if (record.occupied) {

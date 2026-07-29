@@ -50,6 +50,8 @@ Implemented foundation:
   - bind entity prototypes to production-cooked static or skinned models
   - map locomotion roles to unique authored clip names
   - are synchronized for replicated scene objects by `ModelPresentationSystem`
+  - share one immutable decoded model, including animation data, for every definition that names
+    the same logical model asset; renderer mesh, texture, and material caches use that same id
   - use the cooked `base:visuals/fallback` marker and renderer error material for an unresolved
     entity prototype, logging each unresolved ID once
 

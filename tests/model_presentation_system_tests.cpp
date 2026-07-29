@@ -73,6 +73,7 @@ int main() {
     assert(store);
     assert(store.value().manifest().validate_dependencies());
     std::unordered_set<std::string> visual_models;
+    std::size_t fallback_primitive_count = 0;
     for (const auto& definition : content.visual_definitions.definitions()) {
         visual_models.insert(definition.model_asset);
         const auto* record = store.value().manifest().find_active(definition.model_asset);
@@ -82,6 +83,9 @@ int main() {
         assert(payload);
         auto model = assets::decode_model_asset(payload.value().bytes);
         assert(model);
+        if (definition.id == *fallback) {
+            fallback_primitive_count = model.value().primitives.size();
+        }
         for (const auto& [role, clip_name] : definition.animation_clips) {
             (void)role;
             assert(assets::resolve_model_animation_clip(model.value(), clip_name));
@@ -103,6 +107,30 @@ int main() {
         assert(payload && payload.value().profile == "production");
         assert(payload.value().metadata.contains("audio.runtime_format"));
     }
+    assert(fallback_primitive_count > 0);
+
+    entities::VisualDefinitionRegistry shared_visuals;
+    const auto* fallback_definition = content.visual_definitions.find(*fallback);
+    assert(fallback_definition != nullptr);
+    assert(shared_visuals.add(*fallback_definition));
+    auto cache_probe = *fallback_definition;
+    cache_probe.id = *core::PrototypeId::parse("base:visuals/cache_probe");
+    cache_probe.entity_prototype = *core::PrototypeId::parse("base:entities/cache_probe");
+    assert(shared_visuals.add(std::move(cache_probe)));
+
+    renderer::Renderer cache_renderer;
+    initialize_renderer(cache_renderer);
+    game::ModelPresentationSystem shared_models;
+    assert(shared_models.initialize(cache_renderer, shared_visuals,
+                                    std::filesystem::path{HEARTSTEAD_TEST_COOKED_ASSET_DIR}));
+    assert(shared_models.stats().definition_count == 2);
+    assert(shared_models.stats().loaded_model_count == 1);
+    renderer::RenderCamera cache_camera;
+    assert(cache_camera.set_aspect_ratio(640.0F / 360.0F));
+    assert(cache_renderer.render(cache_camera));
+    assert(cache_renderer.stats().resident_static_meshes == 1 + fallback_primitive_count);
+    assert(shared_models.shutdown(cache_renderer));
+    assert(cache_renderer.shutdown());
 
     renderer::Renderer renderer;
     initialize_renderer(renderer);

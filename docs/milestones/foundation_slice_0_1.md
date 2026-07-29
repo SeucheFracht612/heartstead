@@ -153,7 +153,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [x] `[Automated]` missing or duplicate mapped animation names produce a clear validation error.
 - [x] `[Automated]` WAV and Ogg Vorbis sources cook to the versioned runtime audio representation.
 - [ ] `[Both]` at least one positional emitter plays a cooked sound asset.
-- [ ] `[Automated]` runtime model, texture, material, animation, and audio resources are cached by
+- [x] `[Automated]` runtime model, texture, material, animation, and audio resources are cached by
       stable logical asset ID.
 - [ ] `[Both]` missing texture, material, model, animation, and sound assets each use their named
       fallback behavior.
@@ -238,7 +238,12 @@ Recorded 2026-07-29:
     payloads (including a positional tone), and verifies stable logical-ID cache reuse
 - `heartstead_renderer_frontend_tests`
   - `test_renderer_frontend_submits_headless_frames` verifies model base-color textures use an
-    sRGB image view while base-color factors reach the GPU surface-material record unchanged
+    sRGB image view while base-color factors reach the GPU surface-material record unchanged, and
+    repeated logical model ids reuse material handles and texture-array layers
+- `heartstead_mesh_manager_tests` verifies repeated stable ids share one mesh allocation, retain
+  explicit ownership, and retire only after the final release
+- `heartstead_animated_model_presentation_tests` verifies two presenters can share one model mesh
+  and that shutting either presenter down leaves the other one's mesh valid
 - `heartstead_voxel_interaction_presentation_tests`
   - `test_only_accepted_edits_emit_data_driven_feedback`
   - `test_foundation_voxels_resolve_feedback_resources`
@@ -246,7 +251,8 @@ Recorded 2026-07-29:
   - `test_typed_gltf_import_and_codec`
   - `test_base_storybook_player_asset`
 - `heartstead_model_presentation_system_tests` validates cooked manifest closure, every declared
-  visual model, every named clip and sound reference, static/skinned insertion, removal, and
+  visual model, every named clip and sound reference, one decoded model and one renderer mesh set
+  for two definitions sharing a logical model id, static/skinned insertion, removal, and
   one-diagnostic-per-ID fallback presentation for an unknown visual.
 - `heartstead_headless_session_tests`
   - `test_foundation_scene_objects_resolve_visual_definitions`

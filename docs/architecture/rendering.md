@@ -163,8 +163,8 @@ Implemented foundation:
   - directional and point lights are retained independently and extracted into camera-relative
     frame data without searching gameplay/entity databases
   - `MeshManager` validates an explicit 56-byte unified static/skinned-mesh vertex ABI, caches
-    shared assets by id,
-    suballocates device-local vertex/index arenas, retires released ranges by submission serial, and
+    shared assets by stable logical id, reference-counts every acquisition, suballocates
+    device-local vertex/index arenas, retires the final released range by submission serial, and
     resolves stale/missing handles to a visible manager-owned error cube
   - `SceneRenderSystem` flattens batches into a 96-byte instance ABI (camera-relative matrix,
     color, layer metadata), rotates through buffered storage-table segments, and emits one indexed

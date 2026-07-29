@@ -6,6 +6,7 @@
 #include "engine/core/logging.hpp"
 
 #include <algorithm>
+#include <memory>
 #include <ranges>
 #include <string>
 #include <unordered_map>
@@ -66,7 +67,7 @@ core::Status ModelPresentationSystem::initialize(
         return core::Status::failure(store.error().code, store.error().message);
     }
 
-    std::unordered_map<std::string, assets::ModelAsset> model_cache;
+    std::unordered_map<std::string, std::shared_ptr<const assets::ModelAsset>> model_cache;
     presentations_.reserve(visual_definitions.size());
     const auto rollback = [&]() {
         for (auto entry = presentations_.rbegin(); entry != presentations_.rend(); ++entry) {
@@ -82,9 +83,12 @@ core::Status ModelPresentationSystem::initialize(
                 rollback();
                 return core::Status::failure(model.error().code, model.error().message);
             }
-            cached = model_cache.emplace(definition.model_asset, std::move(model).value()).first;
+            cached = model_cache
+                         .emplace(definition.model_asset,
+                                  std::make_shared<assets::ModelAsset>(std::move(model).value()))
+                         .first;
         }
-        const auto& model = cached->second;
+        const auto& model = *cached->second;
         for (const auto& [role, clip_name] : definition.animation_clips) {
             auto clip = assets::resolve_model_animation_clip(model, clip_name);
             if (!clip) {
@@ -98,7 +102,7 @@ core::Status ModelPresentationSystem::initialize(
         AnimatedModelPresentationConfig presentation_config;
         presentation_config.asset_id = definition.model_asset;
         presentation_config.visual_prototype = definition.entity_prototype;
-        presentation_config.model = model;
+        presentation_config.model = cached->second;
         presentation_config.animated_bounds = model.bounds.expanded(definition.bounds_padding);
         presentation_config.flags = definition.cast_shadow
                                         ? renderer::RenderObjectFlags::cast_shadow

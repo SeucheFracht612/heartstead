@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -89,10 +90,11 @@ int main() {
     using namespace heartstead;
     renderer::Renderer renderer;
     initialize_renderer(renderer);
+    const auto shared_model = std::make_shared<assets::ModelAsset>(make_animated_model());
     game::AnimatedModelPresentationConfig config;
     config.asset_id = "base:models/entities/test_player.gltf";
     config.visual_prototype = *core::PrototypeId::parse("base:entities/player");
-    config.model = make_animated_model();
+    config.model = shared_model;
     config.locomotion_clips = {
         .idle = 0,
         .walk = 1,
@@ -102,10 +104,14 @@ int main() {
         .swim = 2,
         .transition_ticks = 6,
     };
-    config.animated_bounds = config.model.bounds.expanded(0.5F);
+    config.animated_bounds = config.model->bounds.expanded(0.5F);
+    auto second_config = config;
+    second_config.visual_prototype = *core::PrototypeId::parse("base:entities/test_animal");
 
     game::AnimatedModelPresentation presentation;
     assert(presentation.initialize(renderer, std::move(config)));
+    game::AnimatedModelPresentation second_presentation;
+    assert(second_presentation.initialize(renderer, std::move(second_config)));
 
     game::RenderSnapshot snapshot;
     snapshot.simulation_tick = 10;
@@ -132,6 +138,12 @@ int main() {
     assert(renderer.stats().retained_objects == 1);
     assert(renderer.stats().retained_skin_palettes == 1);
     assert(renderer.stats().submitted_skin_matrices == 1);
+    assert(renderer.stats().resident_static_meshes == 2); // fallback plus one shared primitive
+
+    assert(second_presentation.shutdown(renderer));
+    assert(renderer.render(camera));
+    assert(renderer.stats().retained_objects == 1);
+    assert(renderer.stats().resident_static_meshes == 2);
 
     snapshot.simulation_tick = 12;
     snapshot.objects.front().source_revision = 2;
@@ -159,6 +171,8 @@ int main() {
     assert(renderer.stats().retained_skin_palettes == 0);
 
     assert(presentation.shutdown(renderer));
+    assert(renderer.render(camera));
+    assert(renderer.stats().resident_static_meshes == 1);
     assert(renderer.shutdown());
     return 0;
 }

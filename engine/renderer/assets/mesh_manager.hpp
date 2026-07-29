@@ -55,6 +55,7 @@ struct RenderMeshView {
     std::uint32_t vertex_count = 0;
     std::uint32_t index_count = 0;
     std::uint32_t skin_joint_count = 0;
+    std::uint32_t reference_count = 0;
     rhi::RenderIndexType index_type = rhi::RenderIndexType::uint32;
     math::Bounds3f local_bounds{};
     bool fallback = false;
@@ -74,6 +75,7 @@ struct MeshManagerStats {
     std::uint64_t resident_mesh_bytes = 0;
     std::uint64_t uploaded_mesh_count = 0;
     std::uint64_t uploaded_bytes = 0;
+    std::uint64_t cache_hit_count = 0;
     std::uint64_t fallback_resolution_count = 0;
     GpuBufferArenaStats vertex_arena;
     GpuBufferArenaStats index_arena;
@@ -110,6 +112,8 @@ class MeshManager {
                                                              std::uint32_t skin_joint_count = 0);
     [[nodiscard]] Record* find_record(RenderMeshHandle handle) noexcept;
     [[nodiscard]] const Record* find_record(RenderMeshHandle handle) const noexcept;
+    [[nodiscard]] Record* find_record(std::string_view id) noexcept;
+    [[nodiscard]] core::Result<RenderMeshHandle> retain_record(Record& record);
     [[nodiscard]] core::Status retire_record(Record& record);
     void collect() noexcept;
     void refresh_stats() noexcept;

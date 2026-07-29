@@ -53,8 +53,13 @@ void test_mesh_upload_cache_fallback_and_release() {
     assert(duplicate);
     assert(duplicate.value() == mesh.value());
     assert(manager.stats().uploaded_mesh_count == 2); // fallback plus the triangle
+    assert(manager.stats().cache_hit_count == 1);
+    assert(manager.find_exact(mesh.value())->reference_count == 2);
 
     assert(manager.release(mesh.value()));
+    assert(manager.find_exact(mesh.value()) != nullptr);
+    assert(manager.find_exact(mesh.value())->reference_count == 1);
+    assert(manager.release(duplicate.value()));
     assert(manager.find_exact(mesh.value()) == nullptr);
     const auto* fallback = manager.find(mesh.value());
     assert(fallback != nullptr);

@@ -67,16 +67,20 @@ remove_palette_update(renderer::RenderSkinPaletteId id) noexcept {
 } // namespace
 
 core::Status AnimatedModelPresentationConfig::validate() const {
-    auto status = assets::validate_model_asset(model);
+    if (model == nullptr) {
+        return core::Status::failure("animated_model_presentation.missing_model",
+                                     "model presentation requires shared model data");
+    }
+    auto status = assets::validate_model_asset(*model);
     if (!status) {
         return status;
     }
     const auto has_skinned_primitives =
-        std::ranges::any_of(model.primitives, [](const assets::ModelPrimitive& primitive) {
+        std::ranges::any_of(model->primitives, [](const assets::ModelPrimitive& primitive) {
             return primitive.skin != assets::no_model_index;
         });
     if (has_skinned_primitives) {
-        status = locomotion_clips.validate(model);
+        status = locomotion_clips.validate(*model);
         if (!status) {
             return status;
         }
@@ -101,9 +105,10 @@ core::Status AnimatedModelPresentation::initialize(renderer::Renderer& renderer,
         return status;
     }
 
+    const auto& model = *config.model;
     std::vector<renderer::ModelRenderMaterialBinding> model_materials;
     if (!config.material.is_valid()) {
-        auto created_materials = renderer.create_model_materials(config.asset_id, config.model);
+        auto created_materials = renderer.create_model_materials(config.asset_id, model);
         if (!created_materials) {
             return core::Status::failure(created_materials.error().code,
                                          created_materials.error().message);
@@ -112,12 +117,11 @@ core::Status AnimatedModelPresentation::initialize(renderer::Renderer& renderer,
     }
 
     std::vector<PrimitiveBinding> uploaded;
-    uploaded.reserve(config.model.primitives.size());
-    for (std::uint32_t index = 0; index < config.model.primitives.size(); ++index) {
-        const auto& primitive = config.model.primitives[index];
-        auto mesh = renderer.create_model_primitive(config.asset_id + "#" + std::to_string(index) +
-                                                        ":" + primitive.name,
-                                                    config.model, index);
+    uploaded.reserve(model.primitives.size());
+    for (std::uint32_t index = 0; index < model.primitives.size(); ++index) {
+        const auto& primitive = model.primitives[index];
+        auto mesh = renderer.create_model_primitive(
+            config.asset_id + "#" + std::to_string(index) + ":" + primitive.name, model, index);
         if (!mesh) {
             for (const auto& binding : uploaded) {
                 (void)renderer.release_static_mesh(binding.mesh);
@@ -147,7 +151,7 @@ core::Status AnimatedModelPresentation::initialize(renderer::Renderer& renderer,
     entities_.clear();
     stats_ = {};
     has_skinned_primitives_ =
-        std::ranges::any_of(config_.model.primitives, [](const assets::ModelPrimitive& primitive) {
+        std::ranges::any_of(config_.model->primitives, [](const assets::ModelPrimitive& primitive) {
             return primitive.skin != assets::no_model_index;
         });
     initialized_ = true;
@@ -164,6 +168,7 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
     }
 
     AnimatedModelPresentationStats frame_stats;
+    const auto& model = *config_.model;
     std::unordered_set<std::uint64_t> current_entities;
     current_entities.reserve(snapshot.objects.size());
     for (const auto& source : snapshot.objects) {
@@ -184,9 +189,9 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
 
         std::optional<animation::SkeletalPose> pose;
         if (has_skinned_primitives_) {
-            auto sampled = animation::sample_locomotion_animation(
-                config_.model, config_.locomotion_clips, source.current_locomotion,
-                snapshot.simulation_tick);
+            auto sampled = animation::sample_locomotion_animation(model, config_.locomotion_clips,
+                                                                  source.current_locomotion,
+                                                                  snapshot.simulation_tick);
             if (!sampled) {
                 return core::Result<AnimatedModelPresentationStats>::failure(
                     sampled.error().code, sampled.error().message);
@@ -225,11 +230,11 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
                 (void)renderer.apply_scene_updates(rollback);
             };
             for (const auto& binding : primitives_) {
-                const auto& primitive = config_.model.primitives[binding.primitive_index];
+                const auto& primitive = model.primitives[binding.primitive_index];
                 renderer::RenderSkinPaletteId palette_id;
                 if (primitive.skin != assets::no_model_index) {
                     auto palette = animation::build_model_space_skinning_palette(
-                        config_.model, primitive.skin, primitive.node, pose.value());
+                        model, primitive.skin, primitive.node, pose.value());
                     if (!palette) {
                         rollback_entity();
                         return core::Result<AnimatedModelPresentationStats>::failure(
@@ -281,11 +286,11 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
         updates.reserve(primitives_.size() * 2U);
         for (std::size_t index = 0; index < primitives_.size(); ++index) {
             const auto& binding = primitives_[index];
-            const auto& primitive = config_.model.primitives[binding.primitive_index];
+            const auto& primitive = model.primitives[binding.primitive_index];
             const auto& visual = retained->second.primitives[index];
             if (primitive.skin != assets::no_model_index) {
                 auto palette = animation::build_model_space_skinning_palette(
-                    config_.model, primitive.skin, primitive.node, pose.value());
+                    model, primitive.skin, primitive.node, pose.value());
                 if (!palette) {
                     return core::Result<AnimatedModelPresentationStats>::failure(
                         palette.error().code, palette.error().message);
