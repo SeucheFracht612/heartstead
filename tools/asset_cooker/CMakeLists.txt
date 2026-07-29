@@ -11,6 +11,7 @@ if(TARGET heartstead_dev_game)
     GLOB_RECURSE heartstead_dev_game_visual_sources
     CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/mods/*/data/entity_visuals/*.toml"
+    "${PROJECT_SOURCE_DIR}/mods/*/data/audio/*.toml"
     "${PROJECT_SOURCE_DIR}/mods/*/assets/*"
     "${PROJECT_SOURCE_DIR}/resource_packs/*/resource_pack.toml"
     "${PROJECT_SOURCE_DIR}/resource_packs/*/assets/*"
@@ -23,9 +24,9 @@ if(TARGET heartstead_dev_game)
     OUTPUT "${heartstead_dev_game_cooked_manifest}"
     COMMAND
       "$<TARGET_FILE:heartstead_asset_cooker>" "${PROJECT_SOURCE_DIR}"
-      "${heartstead_dev_game_cooked_manifest}" production --entity-visuals
+      "${heartstead_dev_game_cooked_manifest}" production --presentation-assets
     DEPENDS heartstead_asset_cooker ${heartstead_dev_game_visual_sources}
-    COMMENT "Cooking the dev-game entity visual asset set"
+    COMMENT "Cooking the dev-game presentation asset set"
     VERBATIM
   )
   add_custom_target(

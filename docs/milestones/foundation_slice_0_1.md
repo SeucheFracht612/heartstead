@@ -200,7 +200,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [x] `[Automated]` the Foundation asset validation test cooks and loads all required assets and
       resolves every presentation reference.
 - [x] `[Automated]` the bounded `dev_game` headless smoke passes.
-- [ ] `[Native]` the bounded real-window smoke creates renderer/audio resources, renders the
+- [x] `[Native]` the bounded real-window smoke creates renderer/audio resources, renders the
       Foundation scene, and shuts down cleanly.
 - [ ] `[Native]` all visual and audible checklist items receive a final in-game pass before the
       milestone is marked complete.
@@ -211,6 +211,9 @@ Recorded 2026-07-29:
 
 - `cmake --build --preset default-debug -j2 --target heartstead_dev_game`: passed.
 - `ctest --test-dir build/default-debug --output-on-failure -j2`: 100/100 passed.
+- `heartstead_dev_game --native-frames 120 --no-save`: passed after waiting for the final GPU
+  submission before mode-owned render resources are released. The host does not provide
+  `VK_LAYER_KHRONOS_validation`, so the separate warning-free startup item remains open.
 - `heartstead_dev_game_save_smoke` creates a missing slot, verifies a periodic generation commit,
   clean-shutdown commit, and staged-generation cleanup, then reopens and recommits the same slot.
 - `heartstead_runtime_spine_tests`
@@ -230,6 +233,9 @@ Recorded 2026-07-29:
     - verifies alpha-blend rejection includes the logical model ID and importer reason
   - `test_resource_pack_discovery_and_asset_catalog` validates the versioned WAV and Ogg Vorbis
     production payloads and rejects malformed or non-Vorbis Ogg input
+- `heartstead_audio_system_tests`
+  - production-cooks WAV and procedural-tone fixtures, deletes both sources, plays the cooked
+    payloads (including a positional tone), and verifies stable logical-ID cache reuse
 - `heartstead_renderer_frontend_tests`
   - `test_renderer_frontend_submits_headless_frames` verifies model base-color textures use an
     sRGB image view while base-color factors reach the GPU surface-material record unchanged

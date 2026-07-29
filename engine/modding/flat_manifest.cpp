@@ -176,11 +176,27 @@ std::map<std::string, std::string> parse_flat_manifest(const std::filesystem::pa
                        source.error().message);
         return {};
     }
+    return parse_flat_manifest_text(source.value(), file, diagnostics, options);
+}
 
+std::map<std::string, std::string>
+parse_flat_manifest_text(std::string_view text, const std::filesystem::path& source,
+                         std::vector<ModDiagnostic>& diagnostics,
+                         FlatManifestParseOptions options) {
+    if (options.diagnostic_prefix.empty() || options.maximum_bytes == 0 ||
+        options.maximum_line_bytes == 0 || options.maximum_fields == 0) {
+        add_diagnostic(source, diagnostics, options, "invalid_limits",
+                       "flat manifest parser limits and diagnostic prefix must be non-zero");
+        return {};
+    }
+    if (text.size() > options.maximum_bytes) {
+        add_diagnostic(source, diagnostics, options, "too_large",
+                       "flat manifest source exceeds its byte limit");
+        return {};
+    }
     std::map<std::string, std::string> values;
     std::size_t line_number = 0;
     std::size_t line_start = 0;
-    const std::string_view text = source.value();
     while (line_start <= text.size()) {
         ++line_number;
         const auto line_end = text.find('\n', line_start);
@@ -191,7 +207,7 @@ std::map<std::string, std::string> parse_flat_manifest(const std::filesystem::pa
             line.remove_suffix(1);
         }
         if (line.size() > options.maximum_line_bytes) {
-            add_diagnostic(file, diagnostics, options, "too_large",
+            add_diagnostic(source, diagnostics, options, "too_large",
                            "manifest line exceeds its byte limit at line " +
                                std::to_string(line_number));
             return {};
@@ -199,28 +215,28 @@ std::map<std::string, std::string> parse_flat_manifest(const std::filesystem::pa
 
         const auto syntax = inspect_line(line);
         if (!syntax.valid) {
-            add_diagnostic(file, diagnostics, options, "syntax",
+            add_diagnostic(source, diagnostics, options, "syntax",
                            "unterminated quote or escape at line " + std::to_string(line_number));
         } else {
             const auto content = line.substr(0, syntax.content_end);
             if (!trim(content).empty()) {
                 if (!syntax.separator.has_value() || *syntax.separator >= syntax.content_end) {
-                    add_diagnostic(file, diagnostics, options, "syntax",
+                    add_diagnostic(source, diagnostics, options, "syntax",
                                    "expected key = value at line " + std::to_string(line_number));
                 } else {
                     const auto key = trim(content.substr(0, *syntax.separator));
                     const auto encoded_value = trim(content.substr(*syntax.separator + 1U));
                     const auto value = parse_quoted_value(encoded_value);
                     if (!is_valid_key(key) || encoded_value.empty() || !value.has_value()) {
-                        add_diagnostic(file, diagnostics, options, "syntax",
+                        add_diagnostic(source, diagnostics, options, "syntax",
                                        "invalid key or value at line " +
                                            std::to_string(line_number));
                     } else if (values.contains(std::string(key))) {
-                        add_diagnostic(file, diagnostics, options, "duplicate_key",
+                        add_diagnostic(source, diagnostics, options, "duplicate_key",
                                        "manifest key is duplicated at line " +
                                            std::to_string(line_number) + ": " + std::string(key));
                     } else if (values.size() >= options.maximum_fields) {
-                        add_diagnostic(file, diagnostics, options, "too_large",
+                        add_diagnostic(source, diagnostics, options, "too_large",
                                        "manifest exceeds its field limit");
                         return {};
                     } else {

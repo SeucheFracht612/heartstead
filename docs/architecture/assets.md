@@ -126,6 +126,8 @@ Implemented foundation:
     pipeline
   - accepts `--entity-visuals` to discover every declared entity visual model and cook its
     transitive dependency closure
+  - accepts `--presentation-assets` to cook every declared entity visual model and every active
+    sound-event asset; this is the set staged automatically for `dev_game`
   - accepts `--inspect` to print cooked asset store inspection data after a successful cook
   - accepts `--inspect-store <cooked_root> [manifest]` to inspect an existing cooked asset store
   - writes cooked payload files and `build/cooked_assets/asset_manifest.txt` by default

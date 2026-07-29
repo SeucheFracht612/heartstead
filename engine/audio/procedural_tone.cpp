@@ -65,17 +65,8 @@ u32_field(const std::map<std::string, std::string>& fields, std::string_view key
     return core::Result<std::uint32_t>::success(parsed);
 }
 
-[[nodiscard]] core::Result<ToneDefinition> load_definition(const std::filesystem::path& path) {
-    std::vector<modding::ModDiagnostic> diagnostics;
-    const auto fields = modding::parse_flat_manifest(path, diagnostics,
-                                                     {.diagnostic_prefix = "procedural_tone",
-                                                      .maximum_bytes = 16U * 1024U,
-                                                      .maximum_line_bytes = 1024U,
-                                                      .maximum_fields = 16U});
-    if (!diagnostics.empty()) {
-        return core::Result<ToneDefinition>::failure(diagnostics.front().code,
-                                                     diagnostics.front().message);
-    }
+[[nodiscard]] core::Result<ToneDefinition>
+definition_from_fields(const std::map<std::string, std::string>& fields) {
     const auto* wave = field(fields, "wave");
     auto frequency = float_field(fields, "frequency_hz", 220.0F);
     auto secondary = float_field(fields, "secondary_frequency_hz", 0.0F);
@@ -133,6 +124,36 @@ u32_field(const std::map<std::string, std::string>& fields, std::string_view key
     return core::Result<ToneDefinition>::success(std::move(result));
 }
 
+[[nodiscard]] core::Result<ToneDefinition> load_definition(const std::filesystem::path& path) {
+    std::vector<modding::ModDiagnostic> diagnostics;
+    const auto fields = modding::parse_flat_manifest(path, diagnostics,
+                                                     {.diagnostic_prefix = "procedural_tone",
+                                                      .maximum_bytes = 16U * 1024U,
+                                                      .maximum_line_bytes = 1024U,
+                                                      .maximum_fields = 16U});
+    if (!diagnostics.empty()) {
+        return core::Result<ToneDefinition>::failure(diagnostics.front().code,
+                                                     diagnostics.front().message);
+    }
+    return definition_from_fields(fields);
+}
+
+[[nodiscard]] core::Result<ToneDefinition>
+load_definition(std::string_view manifest, const std::filesystem::path& source) {
+    std::vector<modding::ModDiagnostic> diagnostics;
+    const auto fields = modding::parse_flat_manifest_text(
+        manifest, source, diagnostics,
+        {.diagnostic_prefix = "procedural_tone",
+         .maximum_bytes = 16U * 1024U,
+         .maximum_line_bytes = 1024U,
+         .maximum_fields = 16U});
+    if (!diagnostics.empty()) {
+        return core::Result<ToneDefinition>::failure(diagnostics.front().code,
+                                                     diagnostics.front().message);
+    }
+    return definition_from_fields(fields);
+}
+
 [[nodiscard]] float envelope(const ToneDefinition& definition, float elapsed_ms) noexcept {
     auto gain = 1.0F;
     if (definition.attack_ms > 0.0F && elapsed_ms < definition.attack_ms) {
@@ -145,26 +166,15 @@ u32_field(const std::map<std::string, std::string>& fields, std::string_view key
     return std::clamp(gain, 0.0F, 1.0F);
 }
 
-} // namespace
-
-bool is_procedural_tone_asset(const std::filesystem::path& path) noexcept {
-    return path.extension() == ".tone";
-}
-
-core::Result<ProceduralToneAsset> load_procedural_tone_asset(const std::filesystem::path& path,
-                                                             std::uint32_t sample_rate) {
+[[nodiscard]] core::Result<ProceduralToneAsset>
+make_procedural_tone_asset(const ToneDefinition& definition, std::uint32_t sample_rate) {
     if (sample_rate < 8'000 || sample_rate > 384'000) {
         return core::Result<ProceduralToneAsset>::failure(
             "procedural_tone.invalid_sample_rate",
             "procedural tone sample rate must be between 8000 and 384000");
     }
-    auto definition = load_definition(path);
-    if (!definition) {
-        return core::Result<ProceduralToneAsset>::failure(definition.error().code,
-                                                          definition.error().message);
-    }
-    const auto sample_count_double = static_cast<double>(sample_rate) *
-                                     static_cast<double>(definition.value().duration_ms) / 1000.0;
+    const auto sample_count_double =
+        static_cast<double>(sample_rate) * static_cast<double>(definition.duration_ms) / 1000.0;
     const auto sample_count = static_cast<std::size_t>(std::ceil(sample_count_double));
     if (sample_count == 0) {
         return core::Result<ProceduralToneAsset>::failure("procedural_tone.empty",
@@ -174,13 +184,13 @@ core::Result<ProceduralToneAsset> load_procedural_tone_asset(const std::filesyst
     ProceduralToneAsset result;
     result.sample_rate = sample_rate;
     result.mono_samples.resize(sample_count);
-    auto noise_state = definition.value().seed == 0 ? 1U : definition.value().seed;
+    auto noise_state = definition.seed == 0 ? 1U : definition.seed;
     constexpr auto tau = std::numbers::pi_v<float> * 2.0F;
     for (std::size_t index = 0; index < sample_count; ++index) {
         const auto seconds = static_cast<float>(index) / static_cast<float>(sample_rate);
         const auto elapsed_ms = seconds * 1000.0F;
         float sample = 0.0F;
-        if (definition.value().wave == "noise") {
+        if (definition.wave == "noise") {
             noise_state ^= noise_state << 13U;
             noise_state ^= noise_state >> 17U;
             noise_state ^= noise_state << 5U;
@@ -189,17 +199,43 @@ core::Result<ProceduralToneAsset> load_procedural_tone_asset(const std::filesyst
                          2.0F -
                      1.0F;
         } else {
-            sample = std::sin(tau * definition.value().frequency_hz * seconds);
-            if (definition.value().secondary_frequency_hz > 0.0F) {
+            sample = std::sin(tau * definition.frequency_hz * seconds);
+            if (definition.secondary_frequency_hz > 0.0F) {
                 sample =
-                    (sample + std::sin(tau * definition.value().secondary_frequency_hz * seconds)) *
-                    0.5F;
+                    (sample + std::sin(tau * definition.secondary_frequency_hz * seconds)) * 0.5F;
             }
         }
         result.mono_samples[index] =
-            sample * definition.value().amplitude * envelope(definition.value(), elapsed_ms);
+            sample * definition.amplitude * envelope(definition, elapsed_ms);
     }
     return core::Result<ProceduralToneAsset>::success(std::move(result));
+}
+
+} // namespace
+
+bool is_procedural_tone_asset(const std::filesystem::path& path) noexcept {
+    return path.extension() == ".tone";
+}
+
+core::Result<ProceduralToneAsset> load_procedural_tone_asset(const std::filesystem::path& path,
+                                                             std::uint32_t sample_rate) {
+    auto definition = load_definition(path);
+    if (!definition) {
+        return core::Result<ProceduralToneAsset>::failure(definition.error().code,
+                                                          definition.error().message);
+    }
+    return make_procedural_tone_asset(definition.value(), sample_rate);
+}
+
+core::Result<ProceduralToneAsset>
+load_procedural_tone_asset(std::string_view manifest, std::uint32_t sample_rate,
+                           const std::filesystem::path& source) {
+    auto definition = load_definition(manifest, source);
+    if (!definition) {
+        return core::Result<ProceduralToneAsset>::failure(definition.error().code,
+                                                          definition.error().message);
+    }
+    return make_procedural_tone_asset(definition.value(), sample_rate);
 }
 
 } // namespace heartstead::audio

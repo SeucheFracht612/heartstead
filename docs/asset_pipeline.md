@@ -436,20 +436,23 @@ For audio:
 
 The development cooker is permissive. A production cook is the authoritative media/import check.
 
-### 3. Cook every declared entity visual
+### 3. Cook the complete Foundation presentation set
 
 ```bash
 ./build/default-debug/tools/asset_cooker/heartstead_asset_cooker \
-  . build/foundation-visuals/asset_manifest.txt production \
-  --entity-visuals --inspect
+  . build/foundation-presentation/asset_manifest.txt production \
+  --presentation-assets --inspect
 ```
 
-This reads all `entity_visual` definitions, selects their active model assets, follows transitive
-glTF dependencies, converts each model to the runtime format, writes the cooked store, and reloads
-the store to verify it.
+This reads all `entity_visual` and `sound_event` definitions, selects their active model and audio
+assets, follows transitive glTF dependencies, converts each supported asset to its runtime format,
+writes the cooked store, and reloads the store to verify it.
 
-Building `heartstead_dev_game` runs this visual cook automatically. New entity visual model IDs do
-not require editing the application or the CMake model list.
+Building `heartstead_dev_game` runs this presentation cook automatically. Runtime audio consumes
+these cooked payloads by logical ID; it does not need the source media after startup. New entity
+visual models and sound-event assets do not require editing the application or a CMake asset list.
+
+Use `--entity-visuals` when you intentionally want only the declared model set.
 
 ### 4. Preview in the Foundation game
 

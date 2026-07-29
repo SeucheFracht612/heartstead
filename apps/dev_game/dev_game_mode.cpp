@@ -1,5 +1,6 @@
 #include "apps/dev_game/dev_game_mode.hpp"
 
+#include "engine/assets/cooked_asset_store.hpp"
 #include "engine/content/content_validation.hpp"
 #include "engine/input/input_action.hpp"
 #include "engine/movement/player_camera.hpp"
@@ -104,6 +105,7 @@ struct DevGameMode::Impl {
     std::int64_t last_autosave_at_ms = 0;
     std::uint64_t last_observed_authoritative_tick = 0;
     std::uint64_t periodic_save_count = 0;
+    std::optional<assets::CookedAssetStore> cooked_assets;
     game::ModelPresentationSystem model_presentation;
     bool model_presentation_initialized = false;
     std::optional<renderer::CpuParticleSystem> particle_system;
@@ -177,6 +179,11 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
         return core::Status::failure("dev_game.renderer_missing",
                                      "native development mode requires the application renderer");
     }
+    auto cooked_assets = assets::CookedAssetStore::load(state.config.cooked_asset_root);
+    if (!cooked_assets) {
+        return core::Status::failure(cooked_assets.error().code, cooked_assets.error().message);
+    }
+    state.cooked_assets.emplace(std::move(cooked_assets).value());
     status = state.model_presentation.initialize(
         *renderer, state.config.content_report->visual_definitions, state.config.cooked_asset_root);
     if (!status) {
@@ -226,7 +233,8 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
     audio_presentation_config.default_footstep_event_id = default_footstep->value();
     state.audio_presentation = game::ClientAudioPresentation(std::move(audio_presentation_config));
 
-    auto audio_system = state.runtime.create_audio_system(audio::AudioBackend::miniaudio);
+    auto audio_system = state.runtime.create_audio_system(
+        audio::AudioBackend::miniaudio, {}, false, &*state.cooked_assets);
     if (!audio_system) {
         return core::Status::failure(audio_system.error().code, audio_system.error().message);
     }

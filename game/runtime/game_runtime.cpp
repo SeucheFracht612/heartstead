@@ -430,7 +430,8 @@ ScriptHostCommandRouter GameRuntime::make_script_host_command_router() const {
 
 core::Result<std::unique_ptr<audio::IAudioSystem>>
 GameRuntime::create_audio_system(audio::AudioBackend backend, audio::AudioMixerConfig mixer,
-                                 bool use_null_output_device) const {
+                                 bool use_null_output_device,
+                                 const assets::CookedAssetStore* cooked_assets) const {
     if (!is_initialized() || assets_ == nullptr || sound_events_ == nullptr) {
         return core::Result<std::unique_ptr<audio::IAudioSystem>>::failure(
             "game_runtime.audio_content_unavailable",
@@ -440,6 +441,7 @@ GameRuntime::create_audio_system(audio::AudioBackend backend, audio::AudioMixerC
     desc.backend = backend;
     desc.events = sound_events_.get();
     desc.assets = assets_.get();
+    desc.cooked_assets = cooked_assets;
     desc.mixer = mixer;
     desc.use_null_output_device = use_null_output_device;
     return audio::create_audio_system(desc);

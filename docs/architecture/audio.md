@@ -44,12 +44,17 @@ references fail content validation before session startup.
 
 The base mod currently uses bounded `.tone` manifests for source-controlled development sounds.
 They describe a sine/noise generator and envelope rather than embedding binary media. The
-production cooker validates them, records sample-rate/frame metadata, and the miniaudio backend
-materializes deterministic mono PCM at load time. Authored WAV and FLAC assets use the same event
-path without gameplay changes. OGG is catalogued and production-cooked, but is not an end-to-end
-playback format yet: the current miniaudio build does not include a Vorbis decoder.
+production cooker validates them and records a versioned procedural-tone runtime format. The
+miniaudio backend materializes deterministic mono PCM from the cooked payload. Authored WAV and
+FLAC assets use the same event path without gameplay changes. OGG is catalogued and
+production-cooked, but is not an end-to-end playback format yet: the current miniaudio build does
+not include a Vorbis decoder.
 
 `GameRuntime` owns the active asset catalog and event registry used to create an audio system.
+The Foundation executable also supplies its verified `CookedAssetStore`. Production playback loads
+the event's payload from that store, registers encoded audio or generated tone PCM with miniaudio
+under the stable logical asset ID, and reuses that registration for later voices. Source paths are
+retained only as a compatibility path for tools or tests that do not provide a cooked store.
 `ClientAudioPresentation` then updates the listener from the exact camera position, maintains the
 ambient loop, and turns grounded walk/run distance into spatial footstep events. It queries the
 supporting full or partial voxel and selects `interaction.footstep_sound`; an absent surface sound
@@ -58,10 +63,12 @@ runtime because these registries are borrowed for the system lifetime.
 
 ## Playback and device recovery
 
-The production backend uses miniaudio's high-level engine/resource-manager APIs. Short SFX decode
-into managed buffers; music and long ambient beds stream. Engine sound groups mirror the
-backend-neutral buses. Device callbacks only pull audio and enqueue notification state. They never
-call gameplay or rebuild the device.
+The production backend uses miniaudio's high-level engine/resource-manager APIs. Cooked assets are
+registered once by logical ID; short SFX decode into managed buffers. Self-contained cooked
+payloads currently decode from memory even when an event carries the streaming hint, while the
+source-file compatibility path can still stream. Engine sound groups mirror the backend-neutral
+buses. Device callbacks only pull audio and enqueue notification state. They never call gameplay
+or rebuild the device.
 
 Output stop/reroute notifications are consumed by the application owner thread. That thread may
 reinitialize playback and restore logical looping voices; failure moves the system to a silent

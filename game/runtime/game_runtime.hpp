@@ -114,7 +114,8 @@ class GameRuntime {
     [[nodiscard]] ScriptHostCommandRouter make_script_host_command_router() const;
     [[nodiscard]] core::Result<std::unique_ptr<audio::IAudioSystem>>
     create_audio_system(audio::AudioBackend backend, audio::AudioMixerConfig mixer = {},
-                        bool use_null_output_device = false) const;
+                        bool use_null_output_device = false,
+                        const assets::CookedAssetStore* cooked_assets = nullptr) const;
 
     [[nodiscard]] const GameSystemDescriptor* find_system(GameSystemKind kind) const noexcept;
     [[nodiscard]] core::Status require_system(GameSystemKind kind) const;

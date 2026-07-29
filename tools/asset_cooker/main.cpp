@@ -45,7 +45,7 @@ bool parse_backend(std::string_view value, heartstead::assets::AssetCookBackend&
 void print_usage(const char* executable, std::ostream& output) {
     output << "usage: " << executable
            << " [source_root] [asset_manifest_path] [development|production]"
-              " [--only LOGICAL_ID] [--entity-visuals] [--inspect]\n"
+              " [--only LOGICAL_ID] [--entity-visuals] [--presentation-assets] [--inspect]\n"
            << "       " << executable << " --inspect-store <cooked_root> [asset_manifest.txt]\n";
 }
 
@@ -89,6 +89,7 @@ int main(int argc, char** argv) {
         assets::AssetCookBackend cook_backend = assets::AssetCookBackend::development_passthrough;
         bool inspect_after_cook = false;
         bool include_entity_visuals = false;
+        bool include_presentation_assets = false;
         std::vector<std::string> only_logical_ids;
         auto positional_count = 0;
         for (int index = 1; index < argc; ++index) {
@@ -99,6 +100,10 @@ int main(int argc, char** argv) {
             }
             if (argument == "--entity-visuals") {
                 include_entity_visuals = true;
+                continue;
+            }
+            if (argument == "--presentation-assets") {
+                include_presentation_assets = true;
                 continue;
             }
             if (argument == "--only") {
@@ -198,7 +203,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
-        if (include_entity_visuals) {
+        if (include_entity_visuals || include_presentation_assets) {
             const auto content_report = content::ContentValidation::validate(source_root);
             if (content_report.has_errors()) {
                 for (const auto& diagnostic : content_report.diagnostics) {
@@ -211,8 +216,13 @@ int main(int argc, char** argv) {
             for (const auto& visual : content_report.visual_definitions.definitions()) {
                 only_logical_ids.push_back(visual.model_asset);
             }
+            if (include_presentation_assets) {
+                for (const auto& event : content_report.sound_events.definitions()) {
+                    only_logical_ids.push_back(event.asset_id);
+                }
+            }
         }
-        if (include_entity_visuals || !only_logical_ids.empty()) {
+        if (include_entity_visuals || include_presentation_assets || !only_logical_ids.empty()) {
             auto filtered = assets::select_asset_dependency_closure(catalog, only_logical_ids);
             if (!filtered) {
                 core::log(core::LogLevel::error, filtered.error().message);

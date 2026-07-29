@@ -946,6 +946,9 @@ InspectionData Inspector::inspect(const audio::AudioSystemStats& stats) {
     add_field(data, "rejected_voices", std::to_string(stats.rejected_voices));
     add_field(data, "device_reinitializations", std::to_string(stats.device_reinitializations));
     add_field(data, "device_failures", std::to_string(stats.device_failures));
+    add_field(data, "cached_assets", std::to_string(stats.cached_assets));
+    add_field(data, "asset_cache_hits", std::to_string(stats.asset_cache_hits));
+    add_field(data, "source_asset_loads", std::to_string(stats.source_asset_loads));
     add_field(data, "master_gain", std::to_string(stats.master_gain));
     if (stats.active_voices > stats.maximum_voices) {
         data.state = "invalid";

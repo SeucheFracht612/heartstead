@@ -97,6 +97,11 @@ int main() {
         assert(asset != nullptr);
         assert(asset->kind == assets::AssetKind::sound || asset->kind == assets::AssetKind::music);
         assert(std::filesystem::is_regular_file(asset->source_path));
+        const auto* cooked = store.value().manifest().find_active(event.asset_id);
+        assert(cooked != nullptr && cooked->kind == asset->kind);
+        auto payload = store.value().load_payload(*cooked);
+        assert(payload && payload.value().profile == "production");
+        assert(payload.value().metadata.contains("audio.runtime_format"));
     }
 
     renderer::Renderer renderer;

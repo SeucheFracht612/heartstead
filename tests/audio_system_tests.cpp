@@ -1,4 +1,6 @@
 #include "engine/assets/asset_catalog.hpp"
+#include "engine/assets/asset_cooker.hpp"
+#include "engine/assets/cooked_asset_store.hpp"
 #include "engine/audio/audio_mixer.hpp"
 #include "engine/audio/audio_system.hpp"
 #include "engine/audio/sound_event.hpp"
@@ -50,7 +52,7 @@ void test_sound_event_prototype_resolution() {
         "test",
         0,
         "footstep.wav",
-        "hash",
+        "0000000000000001",
         false,
         {},
     });
@@ -241,7 +243,19 @@ void test_miniaudio_backend_and_owner_thread_device_rebuild() {
                            ("heartstead_audio_system_tests_" + std::to_string(unique));
     assert(std::filesystem::create_directories(directory));
     const auto path = directory / "loop.wav";
+    const auto tone_path = directory / "step.tone";
     write_silent_wave(path);
+    {
+        std::ofstream output(tone_path, std::ios::trunc);
+        assert(output.is_open());
+        output << "wave = \"noise\"\n"
+                  "amplitude = 0.1\n"
+                  "duration_ms = 80\n"
+                  "attack_ms = 2\n"
+                  "release_ms = 8\n"
+                  "seed = 7\n";
+        assert(output.good());
+    }
 
     assets::AssetCatalog assets;
     assert(assets.add(assets::AssetRecord{
@@ -252,7 +266,19 @@ void test_miniaudio_backend_and_owner_thread_device_rebuild() {
         "test",
         0,
         path,
-        "hash",
+        "0000000000000001",
+        false,
+        {},
+    }));
+    assert(assets.add(assets::AssetRecord{
+        "test:sounds/step.tone",
+        assets::AssetKind::sound,
+        assets::VirtualPath{"test", "sounds/step.tone"},
+        assets::AssetSourceKind::mod,
+        "test",
+        0,
+        tone_path,
+        "0000000000000002",
         false,
         {},
     }));
@@ -263,11 +289,26 @@ void test_miniaudio_backend_and_owner_thread_device_rebuild() {
     loop.looping = true;
     loop.maximum_instances = 1;
     assert(registry.add(loop));
+    auto tone = event("test:audio/miniaudio_tone");
+    tone.asset_id = "test:sounds/step.tone";
+    assert(registry.add(tone));
+
+    assets::AssetCookConfig cook_config;
+    cook_config.backend = assets::AssetCookBackend::production_converters;
+    cook_config.output_root = directory / "cooked";
+    assert(std::filesystem::create_directories(cook_config.output_root));
+    auto cooked = assets::AssetCooker::cook(assets, cook_config);
+    assert(cooked);
+    auto cooked_store = assets::CookedAssetStore::load(cook_config.output_root);
+    assert(cooked_store);
+    assert(std::filesystem::remove(path));
+    assert(std::filesystem::remove(tone_path));
 
     audio::AudioSystemDesc desc;
     desc.backend = audio::AudioBackend::miniaudio;
     desc.events = &registry;
     desc.assets = &assets;
+    desc.cooked_assets = &cooked_store.value();
     desc.use_null_output_device = true;
     auto system = audio::create_audio_system(desc);
     assert(system);
@@ -286,6 +327,16 @@ void test_miniaudio_backend_and_owner_thread_device_rebuild() {
     assert(replacement);
     assert(!system.value()->is_active(voice.value()));
     assert(system.value()->is_active(replacement.value()));
+    audio::AudioEmitterState tone_emitter;
+    tone_emitter.position = position(2, 0, 0);
+    auto tone_voice =
+        system.value()->play({id("test:audio/miniaudio_tone"), tone_emitter, 1.0F, 1.0F});
+    assert(tone_voice);
+    assert(system.value()->voice_snapshot(tone_voice.value())->spatialized);
+    assert(system.value()->stats().cached_assets == 2);
+    assert(system.value()->stats().asset_cache_hits == 1);
+    assert(system.value()->stats().source_asset_loads == 0);
+    assert(system.value()->stop(tone_voice.value()));
     assert(system.value()->stop(replacement.value()));
     system.value().reset();
     assert(std::filesystem::remove_all(directory) > 0);

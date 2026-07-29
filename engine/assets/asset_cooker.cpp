@@ -968,6 +968,8 @@ validate_production_source_payload(const AssetRecord& source,
         auto tone = audio::load_procedural_tone_asset(source.source_path, 48'000);
         if (tone) {
             add_metadata(metadata, "audio.container", "tone");
+            add_metadata(metadata, "audio.runtime_format",
+                         "heartstead.audio.procedural_tone.v1");
             add_metadata(metadata, "audio.channels", 1);
             add_metadata(metadata, "audio.sample_rate", tone.value().sample_rate);
             add_metadata(metadata, "audio.frames", tone.value().mono_samples.size());
@@ -1393,9 +1395,9 @@ std::string_view asset_cook_pipeline_name(AssetKind kind, AssetCookBackend backe
             return "model_gltf_runtime_converter_v3";
         case AssetKind::shader:
             return "shader_spirv_runtime_passthrough_v1";
-        case AssetKind::sound:
-        case AssetKind::music:
-            return "audio_runtime_converter_v2";
+    case AssetKind::sound:
+    case AssetKind::music:
+        return "audio_runtime_converter_v3";
         case AssetKind::material:
             return "material_runtime_converter_v1";
         case AssetKind::font:

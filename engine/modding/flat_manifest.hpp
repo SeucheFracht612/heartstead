@@ -25,4 +25,9 @@ struct FlatManifestParseOptions {
 parse_flat_manifest(const std::filesystem::path& file, std::vector<ModDiagnostic>& diagnostics,
                     FlatManifestParseOptions options);
 
+[[nodiscard]] std::map<std::string, std::string>
+parse_flat_manifest_text(std::string_view text, const std::filesystem::path& source,
+                         std::vector<ModDiagnostic>& diagnostics,
+                         FlatManifestParseOptions options);
+
 } // namespace heartstead::modding

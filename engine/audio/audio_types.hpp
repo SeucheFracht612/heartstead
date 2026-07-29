@@ -81,6 +81,9 @@ struct AudioSystemStats {
     std::uint64_t rejected_voices = 0;
     std::uint64_t device_reinitializations = 0;
     std::uint64_t device_failures = 0;
+    std::uint32_t cached_assets = 0;
+    std::uint64_t asset_cache_hits = 0;
+    std::uint64_t source_asset_loads = 0;
     float master_gain = 1.0F;
 };
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/assets/asset_catalog.hpp"
+#include "engine/assets/cooked_asset_store.hpp"
 #include "engine/audio/audio_mixer.hpp"
 #include "engine/audio/audio_types.hpp"
 #include "engine/audio/sound_event.hpp"
@@ -17,6 +18,7 @@ struct AudioSystemDesc {
     AudioBackend backend = AudioBackend::null_backend;
     const SoundEventRegistry* events = nullptr;
     const assets::AssetCatalog* assets = nullptr;
+    const assets::CookedAssetStore* cooked_assets = nullptr;
     AudioMixerConfig mixer{};
     std::uint32_t sample_rate = 48'000;
     std::uint32_t output_channels = 2;

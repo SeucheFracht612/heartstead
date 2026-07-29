@@ -41,6 +41,7 @@ class MiniaudioSystem final : public IAudioSystem {
             uninitialize_voice(*voice);
         }
         voices_.clear();
+        unregister_cached_assets();
         uninitialize_groups();
         if (engine_initialized_) {
             ma_engine_uninit(&engine_);
@@ -127,9 +128,22 @@ class MiniaudioSystem final : public IAudioSystem {
         if (event->looping) {
             flags |= MA_SOUND_FLAG_LOOPING;
         }
-        const auto path = asset->source_path.string();
+        std::string path;
+        const auto use_cooked_asset = desc_.cooked_assets != nullptr;
+        if (use_cooked_asset) {
+            auto prepared = prepare_cooked_asset(*event);
+            if (!prepared) {
+                (void)mixer_.stop(logical_voice.value());
+                return core::Result<AudioVoiceId>::failure(prepared.error().code,
+                                                           prepared.error().message);
+            }
+            path = event->asset_id;
+        } else {
+            path = asset->source_path.string();
+            ++source_asset_loads_;
+        }
         ma_result result = MA_ERROR;
-        if (is_procedural_tone_asset(asset->source_path)) {
+        if (!use_cooked_asset && is_procedural_tone_asset(asset->source_path)) {
             auto tone = load_procedural_tone_asset(asset->source_path, desc_.sample_rate);
             if (!tone) {
                 (void)mixer_.stop(logical_voice.value());
@@ -149,7 +163,11 @@ class MiniaudioSystem final : public IAudioSystem {
                 backend_voice->sound_initialized = result == MA_SUCCESS;
             }
         } else {
-            flags |= event->streaming ? MA_SOUND_FLAG_STREAM : MA_SOUND_FLAG_DECODE;
+            // Self-contained cooked buffers cannot use miniaudio's file-stream flag. They remain
+            // registered once by logical ID and decode through the resource manager.
+            flags |= use_cooked_asset
+                         ? MA_SOUND_FLAG_DECODE
+                         : (event->streaming ? MA_SOUND_FLAG_STREAM : MA_SOUND_FLAG_DECODE);
             result = ma_sound_init_from_file(&engine_, path.c_str(), flags, group(event->bus),
                                              nullptr, &backend_voice->sound);
             backend_voice->sound_initialized = result == MA_SUCCESS;
@@ -287,6 +305,9 @@ class MiniaudioSystem final : public IAudioSystem {
         auto result = mixer_.stats();
         result.device_reinitializations = device_reinitializations_;
         result.device_failures = device_failures_;
+        result.cached_assets = static_cast<std::uint32_t>(cached_assets_.size());
+        result.asset_cache_hits = asset_cache_hits_;
+        result.source_asset_loads = source_asset_loads_;
         return result;
     }
 
@@ -300,6 +321,12 @@ class MiniaudioSystem final : public IAudioSystem {
     }
 
   private:
+    struct CachedAudioAsset {
+        std::vector<std::uint8_t> encoded;
+        std::vector<float> decoded_mono;
+        bool registered = false;
+    };
+
     struct BackendVoice {
         ma_sound sound{};
         ma_audio_buffer buffer{};
@@ -307,6 +334,107 @@ class MiniaudioSystem final : public IAudioSystem {
         bool sound_initialized = false;
         bool buffer_initialized = false;
     };
+
+    [[nodiscard]] core::Status prepare_cooked_asset(const SoundEventDefinition& event) {
+        if (const auto existing = cached_assets_.find(event.asset_id);
+            existing != cached_assets_.end()) {
+            ++asset_cache_hits_;
+            return core::Status::ok();
+        }
+        auto payload = desc_.cooked_assets->load_payload(event.asset_id);
+        if (!payload) {
+            return core::Status::failure(
+                payload.error().code,
+                "failed to load cooked audio asset '" + event.asset_id + "': " +
+                    payload.error().message);
+        }
+        if ((payload.value().kind != assets::AssetKind::sound &&
+             payload.value().kind != assets::AssetKind::music) ||
+            payload.value().profile != "production") {
+            return core::Status::failure(
+                "audio.invalid_cooked_asset",
+                "audio event requires a production-cooked sound or music asset: " +
+                    event.asset_id);
+        }
+        const auto container = payload.value().metadata.find("audio.container");
+        const auto runtime_format = payload.value().metadata.find("audio.runtime_format");
+        if (container == payload.value().metadata.end() ||
+            runtime_format == payload.value().metadata.end()) {
+            return core::Status::failure(
+                "audio.invalid_cooked_asset",
+                "cooked audio asset is missing its container or runtime format: " +
+                    event.asset_id);
+        }
+
+        CachedAudioAsset cached;
+        cached.encoded = std::move(payload).value().bytes;
+        const auto [inserted, was_inserted] =
+            cached_assets_.emplace(event.asset_id, std::move(cached));
+        if (!was_inserted) {
+            ++asset_cache_hits_;
+            return core::Status::ok();
+        }
+
+        auto* resource_manager = ma_engine_get_resource_manager(&engine_);
+        ma_result registered = MA_ERROR;
+        if (container->second == "tone" &&
+            runtime_format->second == "heartstead.audio.procedural_tone.v1") {
+            const auto manifest = std::string_view{
+                reinterpret_cast<const char*>(inserted->second.encoded.data()),
+                inserted->second.encoded.size()};
+            auto tone = load_procedural_tone_asset(
+                manifest, desc_.sample_rate, std::filesystem::path(event.asset_id));
+            if (!tone) {
+                cached_assets_.erase(inserted);
+                return core::Status::failure(
+                    tone.error().code,
+                    "failed to materialize cooked tone '" + event.asset_id + "': " +
+                        tone.error().message);
+            }
+            inserted->second.decoded_mono = std::move(tone).value().mono_samples;
+            registered = ma_resource_manager_register_decoded_data(
+                resource_manager, inserted->first.c_str(), inserted->second.decoded_mono.data(),
+                static_cast<ma_uint64>(inserted->second.decoded_mono.size()), ma_format_f32, 1,
+                desc_.sample_rate);
+        } else if ((container->second == "wav" || container->second == "flac" ||
+                    container->second == "ogg") &&
+                   runtime_format->second == "heartstead.audio.container.v1") {
+            registered = ma_resource_manager_register_encoded_data(
+                resource_manager, inserted->first.c_str(), inserted->second.encoded.data(),
+                inserted->second.encoded.size());
+        } else {
+            cached_assets_.erase(inserted);
+            return core::Status::failure(
+                "audio.unsupported_cooked_asset",
+                "unsupported cooked audio runtime format for '" + event.asset_id + "': " +
+                    runtime_format->second + " (" + container->second + ')');
+        }
+        if (registered != MA_SUCCESS) {
+            cached_assets_.erase(inserted);
+            const auto error = miniaudio_error(
+                "audio.asset_registration_failed",
+                "miniaudio could not register cooked audio asset '" + event.asset_id + "'",
+                registered);
+            return core::Status::failure(error.code, error.message);
+        }
+        inserted->second.registered = true;
+        return core::Status::ok();
+    }
+
+    void unregister_cached_assets() noexcept {
+        if (!engine_initialized_) {
+            cached_assets_.clear();
+            return;
+        }
+        auto* resource_manager = ma_engine_get_resource_manager(&engine_);
+        for (auto& [logical_id, asset] : cached_assets_) {
+            if (asset.registered) {
+                (void)ma_resource_manager_unregister_data(resource_manager, logical_id.c_str());
+                asset.registered = false;
+            }
+        }
+        cached_assets_.clear();
+    }
 
     static void data_callback(ma_device* device, void* output, const void* input,
                               ma_uint32 frame_count) {
@@ -494,12 +622,15 @@ class MiniaudioSystem final : public IAudioSystem {
     ma_sound_group sfx_group_{};
     ma_sound_group ambient_group_{};
     std::unordered_map<std::uint64_t, std::unique_ptr<BackendVoice>> voices_;
+    std::unordered_map<std::string, CachedAudioAsset> cached_assets_;
     std::atomic<bool> device_reinitialize_requested_{false};
     std::atomic<bool> shutting_down_{false};
     std::atomic<bool> suppress_device_notification_{false};
     AudioDeviceState device_state_ = AudioDeviceState::unavailable;
     std::uint64_t device_reinitializations_ = 0;
     std::uint64_t device_failures_ = 0;
+    std::uint64_t asset_cache_hits_ = 0;
+    std::uint64_t source_asset_loads_ = 0;
     float retry_elapsed_seconds_ = 0.0F;
     float device_retry_seconds_ = 1.0F;
     bool context_initialized_ = false;
