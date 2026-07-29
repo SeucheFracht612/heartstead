@@ -54,7 +54,7 @@ build followed by the commands above produced the authoritative result.
       audio, window, and platform resources.
 - [x] `[Automated]` `main.cpp` contains launch configuration and composition only; gameplay
       features are not manually integrated there.
-- [ ] `[Native]` the diagnostic overlay shows session mode, connection state, authoritative tick,
+- [x] `[Native]` the diagnostic overlay shows session mode, connection state, authoritative tick,
       presentation tick, and last runtime error.
 
 ## Deterministic Foundation environment
@@ -92,7 +92,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [ ] `[Native]` first- and third-person camera modes can be selected explicitly.
 - [ ] `[Both]` the third-person camera shortens its boom before entering solid terrain.
 - [ ] `[Native]` the camera restores its desired distance smoothly after an obstruction clears.
-- [ ] `[Native]` the controller overlay displays position, velocity, requested movement, actual
+- [x] `[Native]` the controller overlay displays position, velocity, requested movement, actual
       displacement, grounded state, ground normal/state, controller mode, step result, supporting
       body/block, and pending terrain-collision revision.
 - [ ] `[Native]` controller geometry and contact debug drawing can be toggled independently of the
@@ -225,6 +225,11 @@ Recorded 2026-07-29:
   and continues without validation rather than emitting a startup warning.
 - ten consecutive `heartstead_dev_game --native-frames 30 --no-save` launches passed. X11 cursor
   capture retains and retries transient map/focus/grab requests instead of aborting startup.
+- a native default-window capture verified that top-left UI pixel coordinates remain upright:
+  Foundation diagnostics render at the top-left, the authored bottom-aligned vitals/hotbar render
+  at the bottom, and the session, controller, derived-world, feedback, audio, and error lines are
+  legible. `heartstead_ui_renderer_tests` fixes the coordinate contract at the top-left, center,
+  and bottom-right NDC points.
 - `heartstead_dev_game_save_smoke` creates a missing slot, verifies a periodic generation commit,
   clean-shutdown commit, and staged-generation cleanup, then reopens and recommits the same slot.
 - `heartstead_runtime_spine_tests`

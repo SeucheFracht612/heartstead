@@ -154,5 +154,9 @@ class UiRenderer {
 [[nodiscard]] core::Status validate_ui_vertex(const UiVertex& vertex) noexcept;
 [[nodiscard]] core::Status validate_ui_scissor(UiScissorRect scissor,
                                                rhi::RenderExtent extent) noexcept;
+// UI pixel coordinates use a top-left origin. The renderer's positive-height viewport maps
+// Vulkan NDC (-1, -1) to that same top-left corner.
+[[nodiscard]] math::Vec2f ui_pixel_position_to_ndc(math::Vec2f position_pixels,
+                                                   rhi::RenderExtent extent) noexcept;
 
 } // namespace heartstead::renderer

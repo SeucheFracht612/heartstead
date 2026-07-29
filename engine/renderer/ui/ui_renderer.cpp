@@ -52,6 +52,14 @@ core::Status validate_ui_scissor(UiScissorRect scissor, rhi::RenderExtent extent
     return core::Status::ok();
 }
 
+math::Vec2f ui_pixel_position_to_ndc(math::Vec2f position_pixels,
+                                     rhi::RenderExtent extent) noexcept {
+    return {
+        position_pixels.x * 2.0F / static_cast<float>(extent.width) - 1.0F,
+        position_pixels.y * 2.0F / static_cast<float>(extent.height) - 1.0F,
+    };
+}
+
 UiRenderer::UiRenderer(rhi::IRenderDevice& device, rhi::RenderResourceHandle pipeline)
     : device_(&device), pipeline_(pipeline) {}
 
@@ -256,11 +264,8 @@ core::Result<UiFrameCommands> UiRenderer::build_frame(UiFrameCommands scratch) {
         const auto& batch = batches_[batch_index];
         for (std::uint32_t index = 0; index < batch.vertex_count; ++index) {
             const auto& vertex = vertices_[batch.first_vertex + index];
-            const auto ndc_x = vertex.position_pixels.x * 2.0F / static_cast<float>(extent_.width) -
-                               1.0F;
-            const auto ndc_y = 1.0F - vertex.position_pixels.y * 2.0F /
-                                          static_cast<float>(extent_.height);
-            gpu_vertices_.push_back({{ndc_x, ndc_y}, {vertex.uv.x, vertex.uv.y},
+            const auto position = ui_pixel_position_to_ndc(vertex.position_pixels, extent_);
+            gpu_vertices_.push_back({{position.x, position.y}, {vertex.uv.x, vertex.uv.y},
                                      {vertex.color[0], vertex.color[1], vertex.color[2],
                                       vertex.color[3]},
                                      batch.texture_layer, 0});

@@ -122,10 +122,21 @@ void test_ui_validation() {
     assert(ui.shutdown());
 }
 
+void test_ui_pixel_coordinates_use_top_left_origin() {
+    constexpr renderer::rhi::RenderExtent extent{640, 360};
+    const auto top_left = renderer::ui_pixel_position_to_ndc({0.0F, 0.0F}, extent);
+    const auto center = renderer::ui_pixel_position_to_ndc({320.0F, 180.0F}, extent);
+    const auto bottom_right = renderer::ui_pixel_position_to_ndc({640.0F, 360.0F}, extent);
+    assert(top_left == math::Vec2f(-1.0F, -1.0F));
+    assert(center == math::Vec2f(0.0F, 0.0F));
+    assert(bottom_right == math::Vec2f(1.0F, 1.0F));
+}
+
 } // namespace
 
 int main() {
     test_ui_geometry_scissors_and_capacity();
     test_ui_validation();
+    test_ui_pixel_coordinates_use_top_left_origin();
     return 0;
 }

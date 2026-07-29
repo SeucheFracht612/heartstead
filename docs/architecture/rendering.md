@@ -190,6 +190,8 @@ Implemented foundation:
   - UI vertices use an asserted 36-byte ABI with explicit position, UV, color, and integer atlas
     layer locations; the built-in two-layer sRGB atlas provides a white primitive layer and a
     deterministic 5x7 fallback diagnostic font
+  - screen-space positions use a top-left pixel origin and map to the backend's positive-height
+    Vulkan viewport without an extra Y inversion, keeping anchors and glyph rows upright
   - clipping is a per-draw RHI scissor validated against the current framebuffer before either
     backend executes it; the Vulkan backend programs the dynamic scissor immediately before the
     indexed draw
