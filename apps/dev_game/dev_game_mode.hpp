@@ -16,6 +16,7 @@ namespace heartstead::dev_game {
 struct DevGameModeConfig {
     const content::ContentValidationReport* content_report = nullptr;
     std::filesystem::path cooked_asset_root;
+    std::optional<std::filesystem::path> save_root;
     std::optional<net::TransportEndpoint> connect_endpoint;
     bool headless = false;
 };

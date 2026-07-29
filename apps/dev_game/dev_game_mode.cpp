@@ -6,6 +6,7 @@
 #include "engine/movement/player_camera.hpp"
 #include "engine/movement/player_input.hpp"
 #include "engine/renderer/environment/day_night.hpp"
+#include "engine/save/save_database.hpp"
 #include "game/features/animals/wandering_animal_module.hpp"
 #include "game/features/interaction/voxel_raycast.hpp"
 #include "game/foundation/foundation_world.hpp"
@@ -165,12 +166,10 @@ synchronize_demo_resources(const game::GameRuntime& runtime, renderer::Renderer&
 
 [[nodiscard]] core::Status start_runtime(game::GameRuntime& runtime,
                                          const content::ContentValidationReport& content_report,
-                                         const DevGameModeConfig& options) {
-    auto metadata = content::save_metadata_from_content_report(content_report, "development",
-                                                               game::foundation::world_seed);
-    if (!metadata) {
-        return core::Status::failure(metadata.error().code, metadata.error().message);
-    }
+                                         const DevGameModeConfig& options,
+                                         const save::FileSaveDatabase* save_database,
+                                         bool& loaded_existing_save) {
+    loaded_existing_save = false;
     game::RuntimeConfiguration config;
     config.create_server = !options.connect_endpoint.has_value();
     config.create_client = true;
@@ -182,6 +181,28 @@ synchronize_demo_resources(const game::GameRuntime& runtime, renderer::Renderer&
     config.physics_backend =
         options.headless ? physics::PhysicsBackend::headless : physics::PhysicsBackend::jolt;
     config.gameplay_modules.push_back(std::make_shared<game::animals::WanderingAnimalModule>());
+    if (save_database != nullptr) {
+        if (options.connect_endpoint.has_value()) {
+            return core::Status::failure(
+                "dev_game.remote_save_unsupported",
+                "a remote client cannot load or write the authoritative world save");
+        }
+        auto stats = save_database->stats();
+        if (!stats) {
+            return core::Status::failure(stats.error().code, stats.error().message);
+        }
+        if (stats.value().has_snapshot) {
+            auto status = runtime.start_session_from_save(std::move(config), *save_database);
+            loaded_existing_save = status.is_ok();
+            return status;
+        }
+    }
+
+    auto metadata = content::save_metadata_from_content_report(
+        content_report, "Foundation Slice 0.1", game::foundation::world_seed);
+    if (!metadata) {
+        return core::Status::failure(metadata.error().code, metadata.error().message);
+    }
     game::SessionRequest request;
     request.metadata = std::move(metadata).value();
     return runtime.start_session(config, std::move(request));
@@ -195,6 +216,9 @@ struct DevGameMode::Impl {
     DevGameModeConfig config;
     game::GameRuntime runtime;
     bool runtime_started = false;
+    std::optional<save::FileSaveDatabase> save_database;
+    bool loaded_existing_save = false;
+    bool wrote_save = false;
     game::ModelPresentationSystem model_presentation;
     bool model_presentation_initialized = false;
     std::optional<renderer::CpuParticleSystem> particle_system;
@@ -242,7 +266,17 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
         return core::Status::failure(runtime.error().code, runtime.error().message);
     }
     state.runtime = std::move(runtime).value();
-    auto status = start_runtime(state.runtime, *state.config.content_report, state.config);
+    if (state.config.save_root.has_value()) {
+        if (state.config.save_root->empty()) {
+            return core::Status::failure("dev_game.invalid_save_root",
+                                         "development save root must not be empty");
+        }
+        state.save_database.emplace(*state.config.save_root);
+    }
+    auto status =
+        start_runtime(state.runtime, *state.config.content_report, state.config,
+                      state.save_database.has_value() ? &*state.save_database : nullptr,
+                      state.loaded_existing_save);
     if (!status) {
         return status;
     }
@@ -709,6 +743,14 @@ core::Status DevGameMode::shutdown(game::GameApplicationServices& services) {
     state.particle_system.reset();
     state.physical_resource_visuals.clear();
     if (state.runtime_started) {
+        if (state.save_database.has_value() && state.runtime.session() != nullptr &&
+            state.runtime.session()->server() != nullptr) {
+            auto status = state.runtime.save_to(*state.save_database);
+            if (status) {
+                state.wrote_save = true;
+            }
+            remember_failure(std::move(status));
+        }
         remember_failure(state.runtime.shutdown());
         state.runtime_started = false;
     }
@@ -719,7 +761,13 @@ std::string DevGameMode::summary() const {
     const auto& state = *implementation_;
     return "development runtime: frames=" + std::to_string(state.frame_count) +
            " authoritative_tick=" + std::to_string(state.authoritative_tick) +
-           " local_client=" + (state.local_client_connected ? "connected" : "offline");
+           " local_client=" + (state.local_client_connected ? "connected" : "offline") +
+           " save=" +
+           (state.wrote_save ? "written"
+                             : state.loaded_existing_save ? "loaded"
+                                                          : state.save_database.has_value()
+                                                                ? "new"
+                                                                : "disabled");
 }
 
 } // namespace heartstead::dev_game

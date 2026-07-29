@@ -20,6 +20,8 @@ struct LaunchOptions {
     bool headless = false;
     std::optional<std::uint64_t> maximum_frames;
     std::optional<net::TransportEndpoint> connect_endpoint;
+    std::optional<std::filesystem::path> save_root;
+    bool disable_persistence = false;
     bool help = false;
 };
 
@@ -72,10 +74,27 @@ parse_positive_frame_count(std::string_view value, std::string_view option) {
                                                             endpoint.error().message);
             }
             options.connect_endpoint = std::move(endpoint).value();
+        } else if (argument == "--save") {
+            if (index + 1 >= argc || std::string_view(argv[index + 1]).empty()) {
+                return core::Result<LaunchOptions>::failure(
+                    "dev_game.missing_save_path", "--save requires a directory path");
+            }
+            options.save_root = std::filesystem::path(argv[++index]);
+        } else if (argument == "--no-save") {
+            options.disable_persistence = true;
         } else {
             return core::Result<LaunchOptions>::failure("dev_game.unknown_option",
                                                         "unknown option: " + std::string(argument));
         }
+    }
+    if (options.disable_persistence && options.save_root.has_value()) {
+        return core::Result<LaunchOptions>::failure(
+            "dev_game.conflicting_save_options", "--save and --no-save cannot be used together");
+    }
+    if (options.connect_endpoint.has_value() && options.save_root.has_value()) {
+        return core::Result<LaunchOptions>::failure(
+            "dev_game.remote_save_unsupported",
+            "a remote client cannot own the authoritative world save");
     }
     return core::Result<LaunchOptions>::success(std::move(options));
 }
@@ -83,9 +102,11 @@ parse_positive_frame_count(std::string_view value, std::string_view option) {
 void print_usage(const char* executable, std::ostream& output) {
     output << "usage: " << executable
            << " [--headless] [--frames N] [--native-frames N]"
-              " [--connect ADDRESS:PORT]\n"
+              " [--connect ADDRESS:PORT] [--save DIRECTORY] [--no-save]\n"
            << "       --frames implies --headless for deterministic smoke runs\n"
-           << "       --native-frames bounds a real windowed smoke run\n";
+           << "       --native-frames bounds a real windowed smoke run\n"
+           << "       normal local launches persist to saves/foundation_slice_0_1\n"
+           << "       bounded/headless runs persist only when --save is supplied\n";
 }
 
 int fail(const core::Error& error) {
@@ -141,6 +162,14 @@ int main(int argc, char** argv) {
             std::filesystem::path{HEARTSTEAD_DEV_GAME_COOKED_ASSET_DIR};
         mode_config.connect_endpoint = options.connect_endpoint;
         mode_config.headless = options.headless;
+        if (!options.disable_persistence && !options.connect_endpoint.has_value()) {
+            if (options.save_root.has_value()) {
+                mode_config.save_root = options.save_root;
+            } else if (!options.headless && !options.maximum_frames.has_value()) {
+                mode_config.save_root =
+                    std::filesystem::path{HEARTSTEAD_SOURCE_ROOT} / "saves/foundation_slice_0_1";
+            }
+        }
 
         heartstead::game::GameApplication application(std::move(application_config));
         heartstead::dev_game::DevGameMode mode(std::move(mode_config));

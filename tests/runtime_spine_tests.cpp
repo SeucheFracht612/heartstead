@@ -1176,7 +1176,9 @@ void test_session_save_and_reload_restores_authoritative_state() {
     const auto clay = core::PrototypeId::parse("base:voxels/clay");
     assert(clay.has_value());
     const game::interaction::PlaceVoxelCommand placed_voxel{{10, 1, 8}, *clay};
+    constexpr world::BlockCoord removed_voxel{8, 0, 8};
     assert(session->submit_place_voxel(placed_voxel, 10));
+    assert(session->submit_remove_voxel({removed_voxel}, 11));
     movement::PlayerInputFrame input;
     input.tick = 1;
     input.sequence = 1;
@@ -1184,6 +1186,14 @@ void test_session_save_and_reload_restores_authoritative_state() {
     assert(session->submit_player_input(input, 10));
     auto frame = runtime.run_frame({16'667, 17});
     assert(frame && frame.value().server_ticks.size() == 1);
+    assert(frame.value().server_ticks.front().commands.command_reports.size() == 2);
+    assert(std::ranges::all_of(
+        frame.value().server_ticks.front().commands.command_reports,
+        [](const auto& command) { return command.success; }));
+    const auto removed_address = world::block_to_chunk_local(removed_voxel);
+    const auto removed_authoritative =
+        session->server()->world().chunks().get(removed_address.chunk, removed_address.local);
+    assert(removed_authoritative && removed_authoritative.value().is_air());
     const auto saved_player_position =
         session->server()->player_for_client(session->client()->client_id())->state.position;
 
@@ -1208,6 +1218,9 @@ void test_session_save_and_reload_restores_authoritative_state() {
     const auto headless_authoritative =
         session->server()->world().chunks().get(address.chunk, address.local);
     assert(headless_authoritative && !headless_authoritative.value().is_air());
+    const auto headless_removed =
+        session->server()->world().chunks().get(removed_address.chunk, removed_address.local);
+    assert(headless_removed && headless_removed.value().is_air());
     auto headless_snapshot = runtime.capture_save_snapshot();
     assert(headless_snapshot && !headless_snapshot.value().chunk_edits.empty());
     assert(runtime.shutdown());
@@ -1221,6 +1234,12 @@ void test_session_save_and_reload_restores_authoritative_state() {
     assert(authoritative && replicated);
     assert(!authoritative.value().is_air());
     assert(replicated.value() == authoritative.value());
+    const auto authoritative_removed =
+        session->server()->world().chunks().get(removed_address.chunk, removed_address.local);
+    const auto replicated_removed =
+        session->client()->world().chunks().get(removed_address.chunk, removed_address.local);
+    assert(authoritative_removed && authoritative_removed.value().is_air());
+    assert(replicated_removed && replicated_removed.value().is_air());
     const auto* restored_player =
         session->server()->player_for_client(session->client()->client_id());
     assert(restored_player != nullptr);
