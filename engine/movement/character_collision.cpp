@@ -445,9 +445,27 @@ VoxelCharacterCollisionWorld::depenetrate(const world::WorldPosition& position,
 core::Result<bool> VoxelCharacterCollisionWorld::has_support(const world::WorldPosition& position,
                                                              const CharacterShape& shape,
                                                              double probe_distance) {
+    auto support = supporting_voxel(position, shape, probe_distance);
+    if (!support) {
+        return core::Result<bool>::failure(support.error().code, support.error().message);
+    }
+    return core::Result<bool>::success(support.value().has_value());
+}
+
+core::Result<std::optional<CharacterCollisionBox>>
+VoxelCharacterCollisionWorld::supporting_voxel(const world::WorldPosition& position,
+                                               const CharacterShape& shape,
+                                               double probe_distance) const {
     if (!std::isfinite(probe_distance) || probe_distance <= 0.0 || probe_distance > 1.0) {
-        return core::Result<bool>::failure("character_collision.invalid_support_probe",
-                                           "support probe distance must be in (0, 1]");
+        return core::Result<std::optional<CharacterCollisionBox>>::failure(
+            "character_collision.invalid_support_probe",
+            "support probe distance must be in (0, 1]");
+    }
+    auto shape_status = shape.validate();
+    if (!position.is_valid() || !shape_status) {
+        return core::Result<std::optional<CharacterCollisionBox>>::failure(
+            "character_collision.invalid_support_query",
+            "support query requires a valid position and character shape");
     }
     const auto bounds = character_local_bounds(position, position.anchor, shape);
     const auto inset = std::min(0.02, shape.width * 0.1);
@@ -456,10 +474,32 @@ core::Result<bool> VoxelCharacterCollisionWorld::has_support(const world::WorldP
         {bounds.max.x - inset, bounds.min.y + collision_epsilon, bounds.max.z - inset}};
     auto boxes = collision_boxes(position.anchor, probe);
     if (!boxes) {
-        return core::Result<bool>::failure(boxes.error().code, boxes.error().message);
+        return core::Result<std::optional<CharacterCollisionBox>>::failure(boxes.error().code,
+                                                                           boxes.error().message);
     }
-    return core::Result<bool>::success(std::ranges::any_of(
-        boxes.value(), [&probe](const auto& box) { return bounds_overlap(probe, box.bounds); }));
+    const CharacterCollisionBox* best = nullptr;
+    double best_top = -std::numeric_limits<double>::infinity();
+    double best_overlap_area = 0.0;
+    for (const auto& box : boxes.value()) {
+        if (!bounds_overlap(probe, box.bounds)) {
+            continue;
+        }
+        const auto overlap_x = std::max(0.0, std::min(probe.max.x, box.bounds.max.x) -
+                                                 std::max(probe.min.x, box.bounds.min.x));
+        const auto overlap_z = std::max(0.0, std::min(probe.max.z, box.bounds.max.z) -
+                                                 std::max(probe.min.z, box.bounds.min.z));
+        const auto overlap_area = overlap_x * overlap_z;
+        const auto top = box.bounds.max.y;
+        if (best == nullptr || top > best_top + collision_epsilon ||
+            (std::abs(top - best_top) <= collision_epsilon && overlap_area > best_overlap_area)) {
+            best = &box;
+            best_top = top;
+            best_overlap_area = overlap_area;
+        }
+    }
+    return core::Result<std::optional<CharacterCollisionBox>>::success(
+        best == nullptr ? std::optional<CharacterCollisionBox>{}
+                        : std::optional<CharacterCollisionBox>{*best});
 }
 
 core::Result<std::optional<LedgeProbeResult>>

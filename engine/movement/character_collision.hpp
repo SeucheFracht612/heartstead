@@ -94,15 +94,17 @@ class VoxelCharacterCollisionWorld final : public ICharacterCollisionWorld {
     [[nodiscard]] core::Result<bool> has_support(const world::WorldPosition& position,
                                                  const CharacterShape& shape,
                                                  double probe_distance = 0.05) override;
+    [[nodiscard]] core::Result<std::optional<CharacterCollisionBox>>
+    supporting_voxel(const world::WorldPosition& position, const CharacterShape& shape,
+                     double probe_distance = 0.05) const;
     [[nodiscard]] core::Result<std::optional<LedgeProbeResult>>
     probe_ledge(const world::WorldPosition& position, const CharacterShape& shape,
                 math::Vec3d forward, double maximum_height, double reach = 0.7) override;
     [[nodiscard]] core::Result<bool>
     touches_occupancy(const world::WorldPosition& position, const CharacterShape& shape,
                       world::BlockLogicalOccupancy occupancy) override;
-    [[nodiscard]] core::Result<double>
-    fluid_submersion(const world::WorldPosition& position,
-                     const CharacterShape& shape) override;
+    [[nodiscard]] core::Result<double> fluid_submersion(const world::WorldPosition& position,
+                                                        const CharacterShape& shape) override;
     [[nodiscard]] core::Result<bool> touches_tag(const world::WorldPosition& position,
                                                  const CharacterShape& shape,
                                                  std::string_view tag) override;

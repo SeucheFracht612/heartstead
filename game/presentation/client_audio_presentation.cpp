@@ -7,7 +7,7 @@
 namespace heartstead::game {
 
 core::Status ClientAudioPresentationConfig::validate() const {
-    if (!core::PrototypeId::parse(footstep_event_id).has_value() ||
+    if (!core::PrototypeId::parse(default_footstep_event_id).has_value() ||
         !core::PrototypeId::parse(ambient_event_id).has_value()) {
         return core::Status::failure(
             "client_audio.invalid_event",
@@ -28,8 +28,8 @@ core::Status ClientAudioPresentationConfig::validate() const {
 
 ClientAudioPresentation::ClientAudioPresentation(ClientAudioPresentationConfig config)
     : config_(std::move(config)),
-      footstep_event_id_(
-          core::PrototypeId::parse(config_.footstep_event_id).value_or(core::PrototypeId{})),
+      default_footstep_event_id_(core::PrototypeId::parse(config_.default_footstep_event_id)
+                                     .value_or(core::PrototypeId{})),
       ambient_event_id_(
           core::PrototypeId::parse(config_.ambient_event_id).value_or(core::PrototypeId{})) {}
 
@@ -53,6 +53,8 @@ core::Status ClientAudioPresentation::initialize(audio::IAudioSystem& audio) {
 core::Status ClientAudioPresentation::update(audio::IAudioSystem& audio,
                                              const movement::PlayerControllerState& player,
                                              const movement::PlayerCameraFrame& camera,
+                                             const world::ChunkDatabase& chunks,
+                                             const world::VoxelPalette& palette,
                                              float delta_seconds) {
     if (!initialized_) {
         return core::Status::failure("client_audio.not_initialized",
@@ -84,8 +86,24 @@ core::Status ClientAudioPresentation::update(audio::IAudioSystem& audio,
 
     const auto planar_speed = std::sqrt((player.velocity.x * player.velocity.x) +
                                         (player.velocity.z * player.velocity.z));
-    if (player.grounded && planar_speed >= config_.minimum_footstep_speed) {
+    const auto walking =
+        player.locomotion_animation.kind == animation::LocomotionAnimationKind::walk ||
+        player.locomotion_animation.kind == animation::LocomotionAnimationKind::run;
+    if (player.grounded && walking && planar_speed >= config_.minimum_footstep_speed) {
         walked_distance_meters_ += planar_speed * static_cast<double>(delta_seconds);
+        movement::VoxelCharacterCollisionWorld collision(chunks, palette);
+        const movement::CharacterShape shape{0.6, player.crouched ? 1.2 : 1.8};
+        auto support = collision.supporting_voxel(player.position, shape, 0.12);
+        if (!support) {
+            return core::Status::failure(support.error().code, support.error().message);
+        }
+        auto footstep_event = default_footstep_event_id_;
+        const auto uses_surface_sound =
+            support.value().has_value() && support.value()->voxel != nullptr &&
+            support.value()->voxel->interaction.footstep_sound.has_value();
+        if (uses_surface_sound) {
+            footstep_event = *support.value()->voxel->interaction.footstep_sound;
+        }
         std::uint32_t emitted = 0;
         while (walked_distance_meters_ >= config_.footstep_stride_meters &&
                emitted < config_.maximum_footsteps_per_update) {
@@ -93,7 +111,7 @@ core::Status ClientAudioPresentation::update(audio::IAudioSystem& audio,
             emitter.position = player.position;
             emitter.velocity = listener.velocity;
             emitter.forward = listener.forward;
-            auto voice = audio.play({footstep_event_id_, emitter, 1.0F, 1.0F});
+            auto voice = audio.play({footstep_event, emitter, 1.0F, 1.0F});
             if (!voice) {
                 if (voice.error().code == "audio.voice_limit") {
                     ++stats_.dropped_footsteps;
@@ -102,6 +120,11 @@ core::Status ClientAudioPresentation::update(audio::IAudioSystem& audio,
                 }
             } else {
                 ++stats_.emitted_footsteps;
+                if (uses_surface_sound) {
+                    ++stats_.surface_footsteps;
+                } else {
+                    ++stats_.default_footsteps;
+                }
             }
             walked_distance_meters_ -= config_.footstep_stride_meters;
             ++emitted;

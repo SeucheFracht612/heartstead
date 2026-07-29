@@ -242,7 +242,7 @@ void test_game_runtime_starts_from_aggregate_content() {
     assert(runtime.value().startup_report().material_asset_reference_count ==
            report.material_assets.references.size());
     assert(runtime.value().startup_report().sound_event_count == report.sound_events.size());
-    assert(runtime.value().startup_report().sound_event_count == 8);
+    assert(runtime.value().startup_report().sound_event_count == 9);
     auto audio = runtime.value().create_audio_system(heartstead::audio::AudioBackend::null_backend);
     assert(audio);
     assert(audio.value()->backend() == heartstead::audio::AudioBackend::null_backend);

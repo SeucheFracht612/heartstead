@@ -196,13 +196,27 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
     const auto fire_ember = core::PrototypeId::parse("base:particles/fire_ember");
     const auto splash = core::PrototypeId::parse("base:particles/splash");
     const auto clay = core::PrototypeId::parse("base:voxels/clay");
-    if (!fire_ember || !splash || !clay) {
+    const auto player_prototype = core::PrototypeId::parse("base:entities/player");
+    if (!fire_ember || !splash || !clay || !player_prototype) {
         return core::Status::failure("dev_game.invalid_base_prototype",
-                                     "base particle or clay prototype id is invalid");
+                                     "base particle, voxel, or player prototype id is invalid");
     }
     state.fire_ember = *fire_ember;
     state.splash = *splash;
     state.clay = *clay;
+
+    const auto* player_visual =
+        state.config.content_report->visual_definitions.find_for_entity(*player_prototype);
+    const auto* default_footstep =
+        player_visual == nullptr ? nullptr : player_visual->sound("footstep_default");
+    if (default_footstep == nullptr) {
+        return core::Status::failure(
+            "dev_game.missing_player_footstep",
+            "the player visual must declare a sounds.footstep_default event");
+    }
+    game::ClientAudioPresentationConfig audio_presentation_config;
+    audio_presentation_config.default_footstep_event_id = default_footstep->value();
+    state.audio_presentation = game::ClientAudioPresentation(std::move(audio_presentation_config));
 
     auto audio_system = state.runtime.create_audio_system(audio::AudioBackend::miniaudio);
     if (!audio_system) {
@@ -365,6 +379,8 @@ DevGameMode::update(game::GameApplicationServices& services,
             camera_frame.error().code, camera_frame.error().message);
     }
     status = state.audio_presentation.update(*audio, player->state, camera_frame.value(),
+                                             state.runtime.session()->client()->world().chunks(),
+                                             state.config.content_report->voxel_palette,
                                              frame.delta_seconds());
     if (!status) {
         return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,

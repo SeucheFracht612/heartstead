@@ -1,0 +1,13 @@
+kind = "sound_event"
+id = "base:audio/stone_footstep"
+display_name = "Stone footstep"
+asset = "base:sounds/footsteps/stone_step.tone"
+bus = "sfx"
+gain = 0.85
+minimum_distance = 1.0
+maximum_distance = 24.0
+priority = 160
+maximum_instances = 12
+spatialized = true
+looping = false
+streaming = false

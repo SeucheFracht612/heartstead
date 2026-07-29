@@ -107,8 +107,7 @@ void test_only_accepted_edits_emit_data_driven_feedback() {
     const std::vector<world::VoxelChangeRecord> legacy_removal{
         {{3, 2, 3}, legacy_cell, air, {}, 1},
     };
-    assert(
-        presentation.present(legacy_removal, palette, particles.value(), *audio_system.value()));
+    assert(presentation.present(legacy_removal, palette, particles.value(), *audio_system.value()));
     assert(particles.value().stats().queued_events == 2);
     assert(audio_system.value()->stats().played_voices == 3);
     assert(presentation.stats().fallback_uses == 2);
@@ -126,6 +125,10 @@ void test_foundation_voxels_resolve_feedback_resources() {
         assert(definition->interaction.place_sound.has_value());
         assert(report.sound_events.find(*definition->interaction.break_sound) != nullptr);
         assert(report.sound_events.find(*definition->interaction.place_sound) != nullptr);
+        if (!definition->collision_bounds.empty()) {
+            assert(definition->interaction.footstep_sound.has_value());
+            assert(report.sound_events.find(*definition->interaction.footstep_sound) != nullptr);
+        }
     }
 }
 

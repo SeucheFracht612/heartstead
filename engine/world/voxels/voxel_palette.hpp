@@ -6,8 +6,8 @@
 #include "engine/world/blocks/block_model.hpp"
 #include "engine/world/voxels/voxel_chunk.hpp"
 
-#include <cstddef>
 #include <compare>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -34,6 +34,7 @@ struct VoxelInteractionDefinition {
     std::optional<core::PrototypeId> break_particle;
     std::optional<core::PrototypeId> break_sound;
     std::optional<core::PrototypeId> place_sound;
+    std::optional<core::PrototypeId> footstep_sound;
 
     [[nodiscard]] core::Status validate() const;
 };
@@ -74,8 +75,7 @@ struct VoxelPaletteManifest {
     std::vector<VoxelPaletteManifestEntry> entries;
 
     [[nodiscard]] core::Status validate() const;
-    [[nodiscard]] const VoxelPaletteManifestEntry*
-    find_by_type(std::uint16_t type) const noexcept;
+    [[nodiscard]] const VoxelPaletteManifestEntry* find_by_type(std::uint16_t type) const noexcept;
     [[nodiscard]] const VoxelPaletteManifestEntry*
     find_by_prototype(const core::PrototypeId& prototype_id) const noexcept;
 };

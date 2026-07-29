@@ -259,6 +259,13 @@ void test_walk_jump_dash_and_step() {
     assert(step_move);
     assert(step_move.value().stepped);
     assert(step_move.value().position.approximate_global().y > 1.45);
+    auto support =
+        collision.supporting_voxel(world::WorldPosition{8.5, 1.5, 2.5}, {0.6, 1.8}, 0.08);
+    assert(support && support.value().has_value());
+    assert(support.value()->block == (world::BlockCoord{8, 1, 2}));
+    assert(support.value()->voxel != nullptr);
+    assert(support.value()->voxel->prototype_id ==
+           core::PrototypeId::parse("test:voxels/half").value());
 
     auto recovered = collision.depenetrate(world::WorldPosition{8.5, 1.25, 2.5}, {0.6, 1.8});
     assert(recovered);

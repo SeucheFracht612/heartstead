@@ -247,25 +247,27 @@ validate_interaction_references(const VoxelDefinition& definition,
         }
         auto status = prototypes.require_kind(*reference, kind);
         if (!status) {
-            return core::Status::failure(
-                status.error().code,
-                definition.prototype_id.value() + ": " + std::string(field_name) + ": " +
-                    status.error().message);
+            return core::Status::failure(status.error().code, definition.prototype_id.value() +
+                                                                  ": " + std::string(field_name) +
+                                                                  ": " + status.error().message);
         }
         return core::Status::ok();
     };
 
     auto status = require_kind(definition.interaction.break_particle,
-                               modding::PrototypeKinds::particle,
-                               "interaction.break_particle");
+                               modding::PrototypeKinds::particle, "interaction.break_particle");
     if (!status) {
         return status;
     }
-    status = require_kind(definition.interaction.break_sound,
-                          modding::PrototypeKinds::sound_event, "interaction.break_sound");
-    return status ? require_kind(definition.interaction.place_sound,
-                                 modding::PrototypeKinds::sound_event,
-                                 "interaction.place_sound")
+    status = require_kind(definition.interaction.break_sound, modding::PrototypeKinds::sound_event,
+                          "interaction.break_sound");
+    if (!status) {
+        return status;
+    }
+    status = require_kind(definition.interaction.place_sound, modding::PrototypeKinds::sound_event,
+                          "interaction.place_sound");
+    return status ? require_kind(definition.interaction.footstep_sound,
+                                 modding::PrototypeKinds::sound_event, "interaction.footstep_sound")
                   : status;
 }
 
@@ -274,7 +276,8 @@ validate_interaction_references(const VoxelDefinition& definition,
 core::Status VoxelInteractionDefinition::validate() const {
     if ((break_particle.has_value() && !break_particle->is_valid()) ||
         (break_sound.has_value() && !break_sound->is_valid()) ||
-        (place_sound.has_value() && !place_sound->is_valid())) {
+        (place_sound.has_value() && !place_sound->is_valid()) ||
+        (footstep_sound.has_value() && !footstep_sound->is_valid())) {
         return core::Status::failure(
             "voxel_palette.invalid_interaction_reference",
             "voxel interaction feedback references must be valid prototype ids");
@@ -443,8 +446,7 @@ const BlockModelDefinition* VoxelPalette::model_for_type(std::uint16_t type) con
 
 std::uint16_t VoxelPalette::mesh_invalidation_radius(VoxelCell cell) const noexcept {
     const auto* definition = find_by_type(cell.type);
-    if (definition != nullptr &&
-        definition->logical_occupancy == BlockLogicalOccupancy::fluid) {
+    if (definition != nullptr && definition->logical_occupancy == BlockLogicalOccupancy::fluid) {
         return 1;
     }
     const auto* model = model_for_type(cell.type);
@@ -453,8 +455,7 @@ std::uint16_t VoxelPalette::mesh_invalidation_radius(VoxelCell cell) const noexc
 
 std::uint16_t VoxelPalette::neighbor_dependency_radius(VoxelCell cell) const noexcept {
     const auto* definition = find_by_type(cell.type);
-    if (definition != nullptr &&
-        definition->logical_occupancy == BlockLogicalOccupancy::fluid) {
+    if (definition != nullptr && definition->logical_occupancy == BlockLogicalOccupancy::fluid) {
         return 1;
     }
     const auto* model = model_for_type(cell.type);
@@ -484,9 +485,8 @@ VoxelPaletteManifest VoxelPalette::manifest() const {
 }
 
 core::Status VoxelPaletteManifest::validate() const {
-    std::vector<bool> used_types(static_cast<std::size_t>(
-                                     std::numeric_limits<std::uint16_t>::max()) +
-                                 1U);
+    std::vector<bool> used_types(
+        static_cast<std::size_t>(std::numeric_limits<std::uint16_t>::max()) + 1U);
     std::vector<std::string> used_prototypes;
     used_prototypes.reserve(entries.size());
     for (const auto& entry : entries) {
@@ -522,8 +522,8 @@ VoxelPaletteManifest::find_by_type(std::uint16_t type) const noexcept {
 
 const VoxelPaletteManifestEntry*
 VoxelPaletteManifest::find_by_prototype(const core::PrototypeId& prototype_id) const noexcept {
-    const auto found = std::ranges::find(entries, prototype_id,
-                                         &VoxelPaletteManifestEntry::prototype_id);
+    const auto found =
+        std::ranges::find(entries, prototype_id, &VoxelPaletteManifestEntry::prototype_id);
     return found == entries.end() ? nullptr : &*found;
 }
 
@@ -585,19 +585,21 @@ voxel_definition_from_prototype(const modding::GenericPrototype& prototype, std:
     definition.light_absorption = absorption.value();
     definition.metadata_required = metadata.value();
 
-    auto break_particle =
-        parse_optional_prototype_id(prototype, "interaction.break_particle");
+    auto break_particle = parse_optional_prototype_id(prototype, "interaction.break_particle");
     auto break_sound = parse_optional_prototype_id(prototype, "interaction.break_sound");
     auto place_sound = parse_optional_prototype_id(prototype, "interaction.place_sound");
-    if (!break_particle || !break_sound || !place_sound) {
+    auto footstep_sound = parse_optional_prototype_id(prototype, "interaction.footstep_sound");
+    if (!break_particle || !break_sound || !place_sound || !footstep_sound) {
         const auto* error = !break_particle ? &break_particle.error()
                             : !break_sound  ? &break_sound.error()
-                                            : &place_sound.error();
+                            : !place_sound  ? &place_sound.error()
+                                            : &footstep_sound.error();
         return core::Result<VoxelDefinition>::failure(error->code, error->message);
     }
     definition.interaction.break_particle = std::move(break_particle).value();
     definition.interaction.break_sound = std::move(break_sound).value();
     definition.interaction.place_sound = std::move(place_sound).value();
+    definition.interaction.footstep_sound = std::move(footstep_sound).value();
 
     const std::vector<math::Bounds3f> full_bounds{{{0.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 1.0F}}};
     const auto no_collision = occupancy.value() == BlockLogicalOccupancy::decorative ||
@@ -664,8 +666,7 @@ voxel_palette_from_prototypes(const modding::PrototypeRegistry& prototypes) {
         }
         auto status = validate_interaction_references(definition.value(), prototypes);
         if (!status) {
-            return core::Result<VoxelPalette>::failure(status.error().code,
-                                                       status.error().message);
+            return core::Result<VoxelPalette>::failure(status.error().code, status.error().message);
         }
         status = palette.add(std::move(definition).value());
         if (!status) {
@@ -696,8 +697,7 @@ voxel_palette_from_prototypes(const modding::PrototypeRegistry& prototypes,
     for (const auto* model : block_models.value().definitions()) {
         auto status = palette.add_block_model(*model);
         if (!status) {
-            return core::Result<VoxelPalette>::failure(status.error().code,
-                                                       status.error().message);
+            return core::Result<VoxelPalette>::failure(status.error().code, status.error().message);
         }
     }
 
@@ -730,17 +730,15 @@ voxel_palette_from_prototypes(const modding::PrototypeRegistry& prototypes,
         }
         auto status = palette.add(std::move(definition));
         if (!status) {
-            return core::Result<VoxelPalette>::failure(status.error().code,
-                                                       status.error().message);
+            return core::Result<VoxelPalette>::failure(status.error().code, status.error().message);
         }
         highest_type = std::max(highest_type, entry.type);
     }
 
     if (append_new_prototypes) {
         auto voxel_prototypes = prototypes.prototypes_of_kind(modding::PrototypeKinds::voxel);
-        std::ranges::sort(voxel_prototypes, {}, [](const auto* prototype) {
-            return prototype->id.value();
-        });
+        std::ranges::sort(voxel_prototypes, {},
+                          [](const auto* prototype) { return prototype->id.value(); });
         std::uint32_t next_type = static_cast<std::uint32_t>(highest_type) + 1U;
         for (const auto* prototype : voxel_prototypes) {
             if (persisted_manifest.find_by_prototype(prototype->id) != nullptr) {
@@ -751,8 +749,8 @@ voxel_palette_from_prototypes(const modding::PrototypeRegistry& prototypes,
                     "voxel_palette.too_many_voxels",
                     "new voxel prototypes do not fit after the persisted palette");
             }
-            auto definition = voxel_definition_from_prototype(
-                *prototype, static_cast<std::uint16_t>(next_type));
+            auto definition =
+                voxel_definition_from_prototype(*prototype, static_cast<std::uint16_t>(next_type));
             if (!definition) {
                 return core::Result<VoxelPalette>::failure(definition.error().code,
                                                            definition.error().message);
