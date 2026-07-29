@@ -335,6 +335,34 @@ void test_local_runtime_advances_authority_through_loopback() {
     assert(runtime.session() == nullptr);
 }
 
+void test_client_command_result_history_is_bounded() {
+    const auto report = content::ContentValidation::validate(source_root());
+    assert(!report.has_errors());
+    auto runtime = make_runtime(report);
+    game::RuntimeConfiguration config;
+    config.fixed_step = {60, 4, 250'000};
+    assert(runtime.start_session(config, make_session_request(report)));
+
+    constexpr auto overflow_count = 32U;
+    const auto command_count =
+        static_cast<std::uint32_t>(game::client_command_result_history_capacity) + overflow_count;
+    for (std::uint32_t index = 0; index < command_count; ++index) {
+        assert(runtime.submit_command("missing.foundation_command", "", 10));
+    }
+    auto frame = runtime.run_frame({16'667, 17});
+    assert(frame);
+    assert(frame.value().client.command_result_count == command_count);
+    assert(frame.value().client.retained_command_result_count ==
+           game::client_command_result_history_capacity);
+    assert(frame.value().client.dropped_command_result_count == overflow_count);
+    const auto history = runtime.session()->client()->command_results();
+    assert(history.size() == game::client_command_result_history_capacity);
+    assert(history.front().sequence == overflow_count + 1U);
+    assert(history.back().sequence == command_count);
+    assert(!history.back().success);
+    assert(runtime.shutdown());
+}
+
 void test_selected_scenario_drives_authoritative_bootstrap() {
     const auto report = content::ContentValidation::validate(source_root());
     assert(!report.has_errors());
@@ -1695,6 +1723,7 @@ void test_runtime_configuration_rejects_invalid_compositions() {
 
 int main() {
     test_local_runtime_advances_authority_through_loopback();
+    test_client_command_result_history_is_bounded();
     test_selected_scenario_drives_authoritative_bootstrap();
     test_session_rejects_unknown_or_wrong_kind_scenarios();
     test_dedicated_headless_runtime_uses_same_scheduler();

@@ -86,6 +86,12 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render
     const auto result_count = static_cast<std::uint32_t>(results.size());
     command_results_.insert(command_results_.end(), std::make_move_iterator(results.begin()),
                             std::make_move_iterator(results.end()));
+    std::uint32_t dropped_command_result_count = 0;
+    if (command_results_.size() > client_command_result_history_capacity) {
+        const auto dropped = command_results_.size() - client_command_result_history_capacity;
+        dropped_command_result_count = static_cast<std::uint32_t>(dropped);
+        command_results_.erase(command_results_.begin(), command_results_.begin() + dropped);
+    }
     auto movement_messages =
         session_.drain_replication_messages(movement::movement_snapshot_payload_type);
     auto legacy_movement_messages =
@@ -228,6 +234,8 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render
     ClientRuntimeStats stats;
     stats.received_message_count = messages_since_sync_;
     stats.command_result_count = result_count;
+    stats.retained_command_result_count = static_cast<std::uint32_t>(command_results_.size());
+    stats.dropped_command_result_count = dropped_command_result_count;
     stats.movement_snapshot_count = movement_snapshot_count;
     stats.entity_motion_snapshot_count = entity_motion_snapshot_count;
     stats.entity_motion_tombstone_count = static_cast<std::uint32_t>(entity_motion_removals.size());

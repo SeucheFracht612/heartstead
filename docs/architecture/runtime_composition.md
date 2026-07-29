@@ -86,8 +86,9 @@ renderer pipeline described in `chunk_meshing.md` and `renderer_v1_handoff.md`.
 
 The client representations are separate:
 
-- `ClientRuntime` owns accepted replicated chunks, player snapshots, command results, and protocol
-  state. It owns no GPU resources.
+- `ClientRuntime` owns accepted replicated chunks, player snapshots, a bounded 256-entry recent
+  command-result window, and protocol state. It owns no GPU resources; overflow drops the oldest
+  diagnostic result and is reported in frame statistics.
 - `PresentationWorld` retains client-only object proxies by replicated source ID, remembers previous
   and current exact transforms, and applies revision checks and explicit removals.
 - `RenderSnapshot` is an immutable-by-ownership value extracted for a frame. It contains exact

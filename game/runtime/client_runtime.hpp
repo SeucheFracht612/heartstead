@@ -23,9 +23,13 @@
 
 namespace heartstead::game {
 
+inline constexpr std::size_t client_command_result_history_capacity = 256;
+
 struct ClientRuntimeStats {
     std::uint32_t received_message_count = 0;
     std::uint32_t command_result_count = 0;
+    std::uint32_t retained_command_result_count = 0;
+    std::uint32_t dropped_command_result_count = 0;
     std::uint32_t movement_snapshot_count = 0;
     std::uint32_t entity_motion_snapshot_count = 0;
     std::uint32_t entity_motion_tombstone_count = 0;

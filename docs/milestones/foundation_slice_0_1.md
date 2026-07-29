@@ -228,6 +228,8 @@ Recorded 2026-07-29:
   - `test_session_load_restores_persisted_missing_voxel_palette`
   - `test_authoritative_player_input_moves_and_replicates` verifies the local prediction path
     retains the latest controller diagnostics exposed to the Foundation overlay
+  - `test_client_command_result_history_is_bounded` verifies long edit sessions retain only the
+    newest 256 accept/reject diagnostics and report every discarded oldest result
 - `heartstead_movement_controller_tests`
   - `test_snapshot_prediction_camera_and_load` verifies first-/third-person body visibility,
     immediate collision-safe boom retraction, and gradual time-based restoration to the desired
