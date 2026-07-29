@@ -120,6 +120,21 @@ namespace {
                                        std::string(key) + " must be true or false");
 }
 
+[[nodiscard]] core::Result<std::optional<core::PrototypeId>>
+parse_optional_prototype_id(const modding::GenericPrototype& prototype, std::string_view key) {
+    const auto* value = field(prototype, key);
+    if (value == nullptr || value->empty()) {
+        return core::Result<std::optional<core::PrototypeId>>::success(std::nullopt);
+    }
+    const auto parsed = core::PrototypeId::parse(*value);
+    if (!parsed) {
+        return core::Result<std::optional<core::PrototypeId>>::failure(
+            "voxel_palette.invalid_reference",
+            prototype.id.value() + ": " + std::string(key) + " must be a prototype id");
+    }
+    return core::Result<std::optional<core::PrototypeId>>::success(*parsed);
+}
+
 [[nodiscard]] core::Result<math::Bounds3f> parse_bounds(std::string_view value,
                                                         std::string_view key) {
     const auto parts = split(value, ',');
@@ -222,7 +237,50 @@ parse_occlusion(const modding::GenericPrototype& prototype, BlockLogicalOccupanc
     return core::Status::ok();
 }
 
+[[nodiscard]] core::Status
+validate_interaction_references(const VoxelDefinition& definition,
+                                const modding::PrototypeRegistry& prototypes) {
+    const auto require_kind = [&](const std::optional<core::PrototypeId>& reference,
+                                  std::string_view kind, std::string_view field_name) {
+        if (!reference.has_value()) {
+            return core::Status::ok();
+        }
+        auto status = prototypes.require_kind(*reference, kind);
+        if (!status) {
+            return core::Status::failure(
+                status.error().code,
+                definition.prototype_id.value() + ": " + std::string(field_name) + ": " +
+                    status.error().message);
+        }
+        return core::Status::ok();
+    };
+
+    auto status = require_kind(definition.interaction.break_particle,
+                               modding::PrototypeKinds::particle,
+                               "interaction.break_particle");
+    if (!status) {
+        return status;
+    }
+    status = require_kind(definition.interaction.break_sound,
+                          modding::PrototypeKinds::sound_event, "interaction.break_sound");
+    return status ? require_kind(definition.interaction.place_sound,
+                                 modding::PrototypeKinds::sound_event,
+                                 "interaction.place_sound")
+                  : status;
+}
+
 } // namespace
+
+core::Status VoxelInteractionDefinition::validate() const {
+    if ((break_particle.has_value() && !break_particle->is_valid()) ||
+        (break_sound.has_value() && !break_sound->is_valid()) ||
+        (place_sound.has_value() && !place_sound->is_valid())) {
+        return core::Status::failure(
+            "voxel_palette.invalid_interaction_reference",
+            "voxel interaction feedback references must be valid prototype ids");
+    }
+    return core::Status::ok();
+}
 
 core::Status VoxelDefinition::validate() const {
     if (type == air_type) {
@@ -270,7 +328,7 @@ core::Status VoxelDefinition::validate() const {
         return core::Status::failure("voxel_palette.invalid_full_occlusion",
                                      "only fully occupying blocks may declare full-cube occlusion");
     }
-    return core::Status::ok();
+    return interaction.validate();
 }
 
 core::Status VoxelPalette::add(VoxelDefinition definition) {
@@ -527,6 +585,20 @@ voxel_definition_from_prototype(const modding::GenericPrototype& prototype, std:
     definition.light_absorption = absorption.value();
     definition.metadata_required = metadata.value();
 
+    auto break_particle =
+        parse_optional_prototype_id(prototype, "interaction.break_particle");
+    auto break_sound = parse_optional_prototype_id(prototype, "interaction.break_sound");
+    auto place_sound = parse_optional_prototype_id(prototype, "interaction.place_sound");
+    if (!break_particle || !break_sound || !place_sound) {
+        const auto* error = !break_particle ? &break_particle.error()
+                            : !break_sound  ? &break_sound.error()
+                                            : &place_sound.error();
+        return core::Result<VoxelDefinition>::failure(error->code, error->message);
+    }
+    definition.interaction.break_particle = std::move(break_particle).value();
+    definition.interaction.break_sound = std::move(break_sound).value();
+    definition.interaction.place_sound = std::move(place_sound).value();
+
     const std::vector<math::Bounds3f> full_bounds{{{0.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 1.0F}}};
     const auto no_collision = occupancy.value() == BlockLogicalOccupancy::decorative ||
                               occupancy.value() == BlockLogicalOccupancy::fluid;
@@ -590,7 +662,12 @@ voxel_palette_from_prototypes(const modding::PrototypeRegistry& prototypes) {
             return core::Result<VoxelPalette>::failure(definition.error().code,
                                                        definition.error().message);
         }
-        auto status = palette.add(std::move(definition).value());
+        auto status = validate_interaction_references(definition.value(), prototypes);
+        if (!status) {
+            return core::Result<VoxelPalette>::failure(status.error().code,
+                                                       status.error().message);
+        }
+        status = palette.add(std::move(definition).value());
         if (!status) {
             return core::Result<VoxelPalette>::failure(status.error().code, status.error().message);
         }
@@ -637,6 +714,11 @@ voxel_palette_from_prototypes(const modding::PrototypeRegistry& prototypes,
                                                            materialized.error().message);
             }
             definition = std::move(materialized).value();
+            auto status = validate_interaction_references(definition, prototypes);
+            if (!status) {
+                return core::Result<VoxelPalette>::failure(status.error().code,
+                                                           status.error().message);
+            }
         } else {
             definition.type = entry.type;
             definition.prototype_id = entry.prototype_id;
@@ -675,7 +757,12 @@ voxel_palette_from_prototypes(const modding::PrototypeRegistry& prototypes,
                 return core::Result<VoxelPalette>::failure(definition.error().code,
                                                            definition.error().message);
             }
-            auto status = palette.add(std::move(definition).value());
+            auto status = validate_interaction_references(definition.value(), prototypes);
+            if (!status) {
+                return core::Result<VoxelPalette>::failure(status.error().code,
+                                                           status.error().message);
+            }
+            status = palette.add(std::move(definition).value());
             if (!status) {
                 return core::Result<VoxelPalette>::failure(status.error().code,
                                                            status.error().message);

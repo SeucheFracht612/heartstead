@@ -18,6 +18,7 @@ target_sources(
     presentation/model_presentation_system.cpp
     presentation/particle_presentation.cpp
     presentation/presentation_world.cpp
+    presentation/voxel_interaction_presentation.cpp
     runtime/client_runtime.cpp
     runtime/game_inspection.cpp
     runtime/game_runtime.cpp
@@ -45,6 +46,7 @@ target_sources(
       presentation/particle_presentation.hpp
       presentation/presentation_world.hpp
       presentation/render_snapshot.hpp
+      presentation/voxel_interaction_presentation.hpp
       runtime/client_runtime.hpp
       runtime/game_inspection.hpp
       runtime/game_runtime.hpp

@@ -181,6 +181,17 @@ target_link_libraries(heartstead_particle_presentation_tests PRIVATE Heartstead:
 heartstead_configure_test_target(heartstead_particle_presentation_tests)
 heartstead_register_unit_test(heartstead_particle_presentation_tests)
 
+add_executable(heartstead_voxel_interaction_presentation_tests
+               voxel_interaction_presentation_tests.cpp)
+target_link_libraries(heartstead_voxel_interaction_presentation_tests
+                      PRIVATE Heartstead::GameRuntime)
+target_compile_definitions(
+  heartstead_voxel_interaction_presentation_tests
+  PRIVATE HEARTSTEAD_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+heartstead_configure_test_target(heartstead_voxel_interaction_presentation_tests)
+heartstead_register_unit_test(heartstead_voxel_interaction_presentation_tests)
+
 function(heartstead_add_smoke_test test_name target_name)
   if(TARGET ${target_name})
     add_test(NAME ${test_name} COMMAND $<TARGET_FILE:${target_name}> ${ARGN})

@@ -30,6 +30,14 @@ enum class BlockOcclusionBehavior {
     full_cube,
 };
 
+struct VoxelInteractionDefinition {
+    std::optional<core::PrototypeId> break_particle;
+    std::optional<core::PrototypeId> break_sound;
+    std::optional<core::PrototypeId> place_sound;
+
+    [[nodiscard]] core::Status validate() const;
+};
+
 struct VoxelDefinition {
     static constexpr std::uint16_t air_type = 0;
 
@@ -47,6 +55,7 @@ struct VoxelDefinition {
     BlockOcclusionBehavior occlusion = BlockOcclusionBehavior::full_cube;
     std::uint8_t light_emission = 0;
     std::uint8_t light_absorption = 255;
+    VoxelInteractionDefinition interaction;
     bool metadata_required = false;
     bool missing_prototype = false;
 

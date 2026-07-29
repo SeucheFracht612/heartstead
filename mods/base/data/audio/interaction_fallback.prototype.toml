@@ -1,0 +1,13 @@
+kind = "sound_event"
+id = "base:audio/interaction_fallback"
+display_name = "Interaction fallback"
+asset = "base:sounds/effects/interaction_fallback.tone"
+bus = "sfx"
+gain = 0.55
+minimum_distance = 1.0
+maximum_distance = 24.0
+priority = 192
+maximum_instances = 8
+spatialized = true
+looping = false
+streaming = false

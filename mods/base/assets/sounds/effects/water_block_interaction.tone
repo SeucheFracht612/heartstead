@@ -1,0 +1,7 @@
+wave = "noise"
+frequency_hz = 310
+amplitude = 0.16
+duration_ms = 190
+attack_ms = 5
+release_ms = 170
+seed = 1463898706

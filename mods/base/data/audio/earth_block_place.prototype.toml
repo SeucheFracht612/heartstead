@@ -1,0 +1,13 @@
+kind = "sound_event"
+id = "base:audio/earth_block_place"
+display_name = "Earth block place"
+asset = "base:sounds/effects/earth_block_place.tone"
+bus = "sfx"
+gain = 0.8
+minimum_distance = 1.0
+maximum_distance = 24.0
+priority = 176
+maximum_instances = 16
+spatialized = true
+looping = false
+streaming = false

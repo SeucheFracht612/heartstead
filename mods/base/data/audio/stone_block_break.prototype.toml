@@ -1,0 +1,13 @@
+kind = "sound_event"
+id = "base:audio/stone_block_break"
+display_name = "Stone block break"
+asset = "base:sounds/effects/stone_block_break.tone"
+bus = "sfx"
+gain = 0.9
+minimum_distance = 1.0
+maximum_distance = 28.0
+priority = 176
+maximum_instances = 16
+spatialized = true
+looping = false
+streaming = false

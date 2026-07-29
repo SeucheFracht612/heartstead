@@ -1,0 +1,13 @@
+kind = "sound_event"
+id = "base:audio/water_block_interaction"
+display_name = "Water block interaction"
+asset = "base:sounds/effects/water_block_interaction.tone"
+bus = "sfx"
+gain = 0.75
+minimum_distance = 1.0
+maximum_distance = 24.0
+priority = 176
+maximum_instances = 16
+spatialized = true
+looping = false
+streaming = false

@@ -12,6 +12,7 @@
 #include "game/presentation/client_audio_presentation.hpp"
 #include "game/presentation/model_presentation_system.hpp"
 #include "game/presentation/particle_presentation.hpp"
+#include "game/presentation/voxel_interaction_presentation.hpp"
 #include "game/runtime/game_runtime.hpp"
 #include "game/ui/game_ui.hpp"
 
@@ -199,12 +200,12 @@ struct DevGameMode::Impl {
     std::optional<renderer::CpuParticleSystem> particle_system;
     renderer::ParticleSystemConfig particle_config;
     game::ParticlePresentation particle_presentation;
+    game::VoxelInteractionPresentation voxel_interaction_presentation;
     bool particle_presentation_initialized = false;
     renderer::ParticleEmitterId fire_emitter;
     std::uint64_t particle_seed = 1;
     bool was_swimming = false;
     core::PrototypeId fire_ember;
-    core::PrototypeId block_break_puff;
     core::PrototypeId splash;
     core::PrototypeId clay;
     game::ClientAudioPresentation audio_presentation;
@@ -280,15 +281,13 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
     state.particle_presentation_initialized = true;
 
     const auto fire_ember = core::PrototypeId::parse("base:particles/fire_ember");
-    const auto block_break_puff = core::PrototypeId::parse("base:particles/block_break_puff");
     const auto splash = core::PrototypeId::parse("base:particles/splash");
     const auto clay = core::PrototypeId::parse("base:voxels/clay");
-    if (!fire_ember || !block_break_puff || !splash || !clay) {
+    if (!fire_ember || !splash || !clay) {
         return core::Status::failure("dev_game.invalid_base_prototype",
                                      "base particle or clay prototype id is invalid");
     }
     state.fire_ember = *fire_ember;
-    state.block_break_puff = *block_break_puff;
     state.splash = *splash;
     state.clay = *clay;
 
@@ -499,25 +498,12 @@ DevGameMode::update(game::GameApplicationServices& services,
     }
     state.was_swimming = swimming;
 
-    for (const auto& edit : state.runtime.session()->client()->accepted_voxel_edits()) {
-        if (edit.previous.is_air() || !edit.current.is_air()) {
-            continue;
-        }
-        auto puff_position = world::WorldPosition::from_anchor(edit.position, {0.5, 0.5, 0.5});
-        if (!puff_position) {
-            return core::Result<game::GameApplicationFrameOutput>::failure(
-                puff_position.error().code, puff_position.error().message);
-        }
-        status = state.particle_system->queue_event({state.block_break_puff,
-                                                     puff_position.value(),
-                                                     {0.0F, 1.0F, 0.0F},
-                                                     {},
-                                                     18,
-                                                     state.particle_seed++});
-        if (!status) {
-            return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
-                                                                           status.error().message);
-        }
+    status = state.voxel_interaction_presentation.present(
+        state.runtime.session()->client()->accepted_voxel_edits(),
+        state.config.content_report->voxel_palette, *state.particle_system, *audio);
+    if (!status) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
+                                                                       status.error().message);
     }
 
     auto selection = game::interaction::raycast_voxels(
