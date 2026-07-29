@@ -1,12 +1,14 @@
 #include "engine/assets/cooked_asset_store.hpp"
 #include "engine/assets/model_asset.hpp"
 #include "engine/content/content_validation.hpp"
+#include "engine/core/logging.hpp"
 #include "engine/renderer/rhi/render_device.hpp"
 #include "game/presentation/model_presentation_system.hpp"
 
 #include <cassert>
 #include <cstdint>
 #include <filesystem>
+#include <string>
 #include <string_view>
 #include <unordered_set>
 #include <utility>
@@ -57,12 +59,14 @@ int main() {
     const auto content =
         content::ContentValidation::validate(std::filesystem::path{HEARTSTEAD_TEST_SOURCE_DIR});
     assert(!content.has_errors());
-    assert(content.visual_definitions.size() == 2);
+    assert(content.visual_definitions.size() == 3);
     const auto player = core::PrototypeId::parse("base:entities/player");
     const auto animal = core::PrototypeId::parse("base:entities/test_animal");
-    assert(player && animal);
+    const auto fallback = core::PrototypeId::parse("base:visuals/fallback");
+    assert(player && animal && fallback);
     assert(content.visual_definitions.find_for_entity(*player) != nullptr);
     assert(content.visual_definitions.find_for_entity(*animal) != nullptr);
+    assert(content.visual_definitions.find(*fallback) != nullptr);
 
     auto store =
         assets::CookedAssetStore::load(std::filesystem::path{HEARTSTEAD_TEST_COOKED_ASSET_DIR});
@@ -100,8 +104,8 @@ int main() {
     game::ModelPresentationSystem models;
     assert(models.initialize(renderer, content.visual_definitions,
                              std::filesystem::path{HEARTSTEAD_TEST_COOKED_ASSET_DIR}));
-    assert(models.stats().definition_count == 2);
-    assert(models.stats().loaded_model_count == 2);
+    assert(models.stats().definition_count == 3);
+    assert(models.stats().loaded_model_count == 3);
 
     game::RenderSnapshot snapshot;
     snapshot.simulation_tick = 10;
@@ -119,10 +123,29 @@ int main() {
     assert(renderer.stats().retained_objects == 2);
     assert(renderer.stats().retained_skin_palettes == 1);
 
+    std::vector<std::string> warnings;
+    core::set_log_sink([&](core::LogLevel level, std::string_view message) {
+        if (level == core::LogLevel::warning) {
+            warnings.emplace_back(message);
+        }
+    });
+    snapshot.objects.push_back(make_object(3, "missing:entities/ghost", 1.5));
+    synchronized = models.synchronize(renderer, snapshot);
+    assert(synchronized);
+    assert(synchronized.value().fallback_entity_count == 1);
+    assert(synchronized.value().unresolved_visual_count == 1);
+    assert(renderer.render(camera));
+    assert(renderer.stats().retained_objects == 3);
+    synchronized = models.synchronize(renderer, snapshot);
+    core::reset_log_sink();
+    assert(synchronized);
+    assert(warnings.size() == 1);
+    assert(warnings.front().find("missing:entities/ghost") != std::string::npos);
+
     snapshot.objects.clear();
     synchronized = models.synchronize(renderer, snapshot);
     assert(synchronized);
-    assert(synchronized.value().models.removed_entities == 2);
+    assert(synchronized.value().models.removed_entities == 3);
     assert(models.shutdown(renderer));
     assert(renderer.shutdown());
     return 0;

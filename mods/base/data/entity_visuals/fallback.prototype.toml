@@ -1,0 +1,7 @@
+kind = "entity_visual"
+id = "base:visuals/fallback"
+display_name = "Fallback Visual"
+entity = "base:entities/missing_visual_marker"
+model = "base:models/entities/fallback_marker.gltf"
+bounds_padding = "0.10"
+cast_shadow = "false"

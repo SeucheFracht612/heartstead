@@ -46,6 +46,13 @@ Implemented foundation:
   - persist stable save id, prototype id, kind, sleeping state, opaque entity state, and transform
   - keep runtime handles and session net ids out of permanent save data
 
+- `entity_visual` presentation definitions
+  - bind entity prototypes to production-cooked static or skinned models
+  - map locomotion roles to unique authored clip names
+  - are synchronized for replicated scene objects by `ModelPresentationSystem`
+  - use the cooked `base:visuals/fallback` marker and renderer error material for an unresolved
+    entity prototype, logging each unresolved ID once
+
 - `PhysicalResourceRecord`
   - represents compound dynamic resources such as felled trees without turning every segment into
     a separate physics body

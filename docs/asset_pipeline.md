@@ -477,13 +477,16 @@ flat normal texture, error material, and error mesh.
 - A model primitive without an imported material uses the renderer error material.
 - An absent voxel surface sound uses the player visual's default footstep.
 - Absent optional voxel break/place feedback uses the interaction fallback.
+- An entity with no registered visual uses `base:visuals/fallback`, whose visible primitive binds
+  the named renderer error material. The unresolved entity prototype ID is logged once per
+  presentation-system lifetime.
 - Invalid prototype references fail content validation.
 - An invalid image, model, or named clip fails production cooking/presentation initialization with
   the logical asset ID and reason.
 
-There is not yet a complete unknown-entity fallback presentation: a missing/uncooked model or an
-unregistered entity visual is a validation/startup error or remains unpresented. Do not rely on a
-fallback model for final content.
+A missing or uncookable model referenced by a declared visual remains a validation/startup error.
+The unknown-entity fallback is a diagnostic safety net, not a substitute for delivering a valid
+model.
 
 ## Delivery checklist
 

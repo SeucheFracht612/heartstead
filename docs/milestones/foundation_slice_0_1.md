@@ -173,7 +173,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [x] `[Automated]` removed entities release their presentation instances while cached assets remain
       valid for other users.
 - [ ] `[Both]` footstep sounds follow locomotion timing and resolve from the supporting voxel.
-- [ ] `[Automated]` an unknown visual definition presents the fallback model/material and reports
+- [x] `[Automated]` an unknown visual definition presents the fallback model/material and reports
       the unresolved visual ID once.
 
 ## Persistence
@@ -223,7 +223,8 @@ Recorded 2026-07-29:
   - `test_typed_gltf_import_and_codec`
   - `test_base_storybook_player_asset`
 - `heartstead_model_presentation_system_tests` validates cooked manifest closure, every declared
-  visual model, every named clip and sound reference, static/skinned insertion, and removal.
+  visual model, every named clip and sound reference, static/skinned insertion, removal, and
+  one-diagnostic-per-ID fallback presentation for an unknown visual.
 - `heartstead_headless_session_tests`
   - `test_foundation_scene_objects_resolve_visual_definitions`
 

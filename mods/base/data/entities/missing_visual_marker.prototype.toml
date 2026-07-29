@@ -1,0 +1,5 @@
+kind = "entity"
+id = "base:entities/missing_visual_marker"
+display_name = "Missing Visual Marker"
+persistent = "false"
+entity_kind = "temporary_physics"

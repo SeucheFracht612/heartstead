@@ -3,6 +3,7 @@
 #include "engine/assets/asset_cooker.hpp"
 #include "engine/assets/cooked_asset_store.hpp"
 #include "engine/assets/model_asset.hpp"
+#include "engine/core/logging.hpp"
 
 #include <algorithm>
 #include <ranges>
@@ -45,13 +46,20 @@ void add_stats(AnimatedModelPresentationStats& total,
 
 } // namespace
 
-core::Status
-ModelPresentationSystem::initialize(renderer::Renderer& renderer,
-                                    const entities::VisualDefinitionRegistry& visual_definitions,
-                                    const std::filesystem::path& cooked_asset_root) {
+core::Status ModelPresentationSystem::initialize(
+    renderer::Renderer& renderer, const entities::VisualDefinitionRegistry& visual_definitions,
+    const std::filesystem::path& cooked_asset_root, ModelPresentationSystemConfig config) {
     if (initialized_) {
         return core::Status::failure("model_presentation.already_initialized",
                                      "model presentation system cannot be initialized twice");
+    }
+    const auto fallback_visual_id = core::PrototypeId::parse(config.fallback_visual_id);
+    const auto* fallback_definition =
+        fallback_visual_id ? visual_definitions.find(*fallback_visual_id) : nullptr;
+    if (fallback_definition == nullptr) {
+        return core::Status::failure("model_presentation.missing_fallback_visual",
+                                     "model presentation requires a declared fallback visual: " +
+                                         config.fallback_visual_id);
     }
     auto store = assets::CookedAssetStore::load(cooked_asset_root);
     if (!store) {
@@ -87,13 +95,14 @@ ModelPresentationSystem::initialize(renderer::Renderer& renderer,
             }
         }
 
-        AnimatedModelPresentationConfig config;
-        config.asset_id = definition.model_asset;
-        config.visual_prototype = definition.entity_prototype;
-        config.model = model;
-        config.animated_bounds = model.bounds.expanded(definition.bounds_padding);
-        config.flags = definition.cast_shadow ? renderer::RenderObjectFlags::cast_shadow
-                                              : renderer::RenderObjectFlags::none;
+        AnimatedModelPresentationConfig presentation_config;
+        presentation_config.asset_id = definition.model_asset;
+        presentation_config.visual_prototype = definition.entity_prototype;
+        presentation_config.model = model;
+        presentation_config.animated_bounds = model.bounds.expanded(definition.bounds_padding);
+        presentation_config.flags = definition.cast_shadow
+                                        ? renderer::RenderObjectFlags::cast_shadow
+                                        : renderer::RenderObjectFlags::none;
         const auto has_skinned_primitives =
             std::ranges::any_of(model.primitives, [](const assets::ModelPrimitive& primitive) {
                 return primitive.skin != assets::no_model_index;
@@ -119,7 +128,7 @@ ModelPresentationSystem::initialize(renderer::Renderer& renderer,
                 rollback();
                 return core::Status::failure(clips.error().code, clips.error().message);
             }
-            config.locomotion_clips = clips.value();
+            presentation_config.locomotion_clips = clips.value();
         } else if (!definition.animation_clips.empty()) {
             rollback();
             return core::Status::failure("model_presentation.static_model_has_animations",
@@ -129,13 +138,21 @@ ModelPresentationSystem::initialize(renderer::Renderer& renderer,
 
         PresentationEntry entry;
         entry.visual_id = definition.id;
-        auto status = entry.presentation.initialize(renderer, std::move(config));
+        entry.is_fallback = definition.id == *fallback_visual_id;
+        auto status = entry.presentation.initialize(renderer, std::move(presentation_config));
         if (!status) {
             rollback();
             return status;
         }
         presentations_.push_back(std::move(entry));
     }
+    known_visual_prototypes_.clear();
+    known_visual_prototypes_.reserve(visual_definitions.size());
+    for (const auto& definition : visual_definitions.definitions()) {
+        known_visual_prototypes_.insert(definition.entity_prototype.value());
+    }
+    unresolved_visuals_.clear();
+    fallback_visual_prototype_ = fallback_definition->entity_prototype;
     stats_.definition_count = static_cast<std::uint32_t>(presentations_.size());
     stats_.loaded_model_count = static_cast<std::uint32_t>(model_cache.size());
     initialized_ = true;
@@ -152,8 +169,29 @@ ModelPresentationSystem::synchronize(renderer::Renderer& renderer, const RenderS
     ModelPresentationSystemStats frame_stats;
     frame_stats.definition_count = stats_.definition_count;
     frame_stats.loaded_model_count = stats_.loaded_model_count;
+    RenderSnapshot fallback_snapshot = snapshot;
+    fallback_snapshot.objects.clear();
+    for (const auto& object : snapshot.objects) {
+        const auto& prototype = object.visual_prototype.value();
+        const bool is_declared = known_visual_prototypes_.contains(prototype);
+        if (is_declared && object.visual_prototype != fallback_visual_prototype_) {
+            continue;
+        }
+        auto fallback_object = object;
+        fallback_object.visual_prototype = fallback_visual_prototype_;
+        fallback_snapshot.objects.push_back(std::move(fallback_object));
+        if (!is_declared && unresolved_visuals_.insert(prototype).second) {
+            core::log(core::LogLevel::warning,
+                      "model_presentation.unresolved_visual: using fallback visual for " +
+                          prototype);
+        }
+    }
+    frame_stats.fallback_entity_count =
+        static_cast<std::uint32_t>(fallback_snapshot.objects.size());
+    frame_stats.unresolved_visual_count = static_cast<std::uint32_t>(unresolved_visuals_.size());
     for (auto& entry : presentations_) {
-        auto synchronized = entry.presentation.synchronize(renderer, snapshot);
+        auto synchronized = entry.presentation.synchronize(
+            renderer, entry.is_fallback ? fallback_snapshot : snapshot);
         if (!synchronized) {
             return core::Result<ModelPresentationSystemStats>::failure(
                 synchronized.error().code, synchronized.error().message);
@@ -173,6 +211,9 @@ core::Status ModelPresentationSystem::shutdown(renderer::Renderer& renderer) {
         }
     }
     presentations_.clear();
+    known_visual_prototypes_.clear();
+    unresolved_visuals_.clear();
+    fallback_visual_prototype_ = {};
     stats_ = {};
     initialized_ = false;
     return first_failure;
