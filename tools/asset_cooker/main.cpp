@@ -14,7 +14,6 @@
 #include <iostream>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -214,40 +213,12 @@ int main(int argc, char** argv) {
             }
         }
         if (include_entity_visuals || !only_logical_ids.empty()) {
-            assets::AssetCatalog filtered;
-            std::vector<std::string> pending;
-            pending.reserve(only_logical_ids.size());
-            for (const auto& logical_id : only_logical_ids) {
-                const auto* selected = catalog.find_active(logical_id);
-                if (selected == nullptr) {
-                    core::log(core::LogLevel::error, "selected asset is not active: " + logical_id);
-                    return 1;
-                }
-                pending.push_back(selected->logical_id);
+            auto filtered = assets::select_asset_dependency_closure(catalog, only_logical_ids);
+            if (!filtered) {
+                core::log(core::LogLevel::error, filtered.error().message);
+                return 1;
             }
-            std::unordered_set<std::string> included;
-            while (!pending.empty()) {
-                auto logical_id = std::move(pending.back());
-                pending.pop_back();
-                if (!included.insert(logical_id).second) {
-                    continue;
-                }
-                const auto* record = catalog.find_active(logical_id);
-                if (record == nullptr) {
-                    core::log(core::LogLevel::error,
-                              "selected asset dependency is not active: " + logical_id);
-                    return 1;
-                }
-                auto status = filtered.add(*record);
-                if (!status) {
-                    core::log(core::LogLevel::error, status.error().message);
-                    return 1;
-                }
-                for (const auto& dependency : record->dependencies) {
-                    pending.push_back(assets::asset_logical_id(dependency));
-                }
-            }
-            catalog = std::move(filtered);
+            catalog = std::move(filtered).value();
         }
 
         assets::AssetCookConfig cook_config;

@@ -9,6 +9,7 @@
 #include <fstream>
 #include <span>
 #include <system_error>
+#include <unordered_set>
 
 namespace heartstead::assets {
 
@@ -505,6 +506,35 @@ core::Status discover_asset_dependencies(AssetCatalog& catalog) {
         }
     }
     return core::Status::ok();
+}
+
+core::Result<AssetCatalog>
+select_asset_dependency_closure(const AssetCatalog& catalog,
+                                std::span<const std::string> logical_ids) {
+    AssetCatalog filtered;
+    std::vector<std::string> pending(logical_ids.begin(), logical_ids.end());
+    std::unordered_set<std::string> included;
+    while (!pending.empty()) {
+        auto logical_id = std::move(pending.back());
+        pending.pop_back();
+        if (!included.insert(logical_id).second) {
+            continue;
+        }
+        const auto* record = catalog.find_active(logical_id);
+        if (record == nullptr) {
+            return core::Result<AssetCatalog>::failure(
+                "asset_catalog.missing_selected_dependency",
+                "selected asset or dependency is not active: " + logical_id);
+        }
+        auto status = filtered.add(*record);
+        if (!status) {
+            return core::Result<AssetCatalog>::failure(status.error().code, status.error().message);
+        }
+        for (const auto& dependency : record->dependencies) {
+            pending.push_back(asset_logical_id(dependency));
+        }
+    }
+    return core::Result<AssetCatalog>::success(std::move(filtered));
 }
 
 } // namespace heartstead::assets

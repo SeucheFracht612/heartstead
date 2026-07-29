@@ -255,11 +255,37 @@ std::string minimal_external_gltf_text() {
     return text;
 }
 
+std::string minimal_external_textured_gltf_text(std::string_view alpha_mode = "OPAQUE") {
+    auto text = minimal_external_gltf_text();
+    const auto indices = text.find("\"indices\":1");
+    assert(indices != std::string::npos);
+    text.insert(indices + std::string_view{"\"indices\":1"}.size(), ",\"material\":0");
+    const auto buffers = text.find("],\"buffers\"");
+    assert(buffers != std::string::npos);
+    text.insert(buffers + 1, ",\"materials\":[{\"name\":\"paint\",\"pbrMetallicRoughness\":{"
+                             "\"baseColorFactor\":[0.25,0.5,0.75,0.8],"
+                             "\"baseColorTexture\":{\"index\":0}},\"alphaMode\":\"" +
+                                 std::string(alpha_mode) +
+                                 "\",\"doubleSided\":true}],\"textures\":[{\"source\":0}],"
+                                 "\"images\":[{\"name\":\"paint\",\"uri\":\"albedo.png\"}]");
+    return text;
+}
+
 std::vector<std::uint8_t> minimal_triangle_buffer_bytes() {
     return {
         0x00, 0x00, 0x00, 0xbf, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00,
+    };
+}
+
+std::vector<std::uint8_t> one_pixel_png_bytes() {
+    return {
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+        0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00,
+        0x00, 0xb5, 0x1c, 0x0c, 0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78,
+        0xda, 0x63, 0x64, 0xf8, 0x0f, 0x00, 0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66,
+        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     };
 }
 
@@ -1789,6 +1815,91 @@ void test_resource_pack_discovery_and_asset_catalog() {
 
     auto invalid_decode = heartstead::assets::CookedAssetManifestTextCodec::decode("bad\n");
     assert(!invalid_decode);
+}
+
+void test_filtered_model_dependency_cooking() {
+    const auto root = make_temp_root();
+    const auto assets_root = root / "assets";
+    const auto model_path = assets_root / "models/props/textured.gltf";
+    const auto buffer_path = assets_root / "models/props/triangle.bin";
+    const auto image_path = assets_root / "models/props/albedo.png";
+    write_text(model_path, minimal_external_textured_gltf_text());
+    write_bytes(buffer_path, minimal_triangle_buffer_bytes());
+    write_bytes(image_path, minimal_png_bytes());
+
+    const auto build_catalog = [&] {
+        heartstead::assets::AssetCatalog catalog;
+        const auto indexed = heartstead::assets::AssetCatalogBuilder::index_directory(
+            catalog, assets_root, "base", heartstead::assets::AssetSourceKind::mod, "base", 0);
+        assert(!indexed.has_errors());
+        const auto dependencies = heartstead::assets::discover_asset_dependencies(catalog);
+        assert(dependencies);
+        return catalog;
+    };
+
+    auto catalog = build_catalog();
+    const std::vector<std::string> selected_ids{"base:models/props/textured.gltf"};
+    auto filtered = heartstead::assets::select_asset_dependency_closure(catalog, selected_ids);
+    assert(filtered);
+    assert(filtered.value().active_count() == 3);
+    assert(filtered.value().find_active("base:models/props/textured.gltf") != nullptr);
+    assert(filtered.value().find_active("base:models/props/triangle.bin") != nullptr);
+    assert(filtered.value().find_active("base:models/props/albedo.png") != nullptr);
+
+    heartstead::assets::AssetCookConfig first_config;
+    first_config.backend = heartstead::assets::AssetCookBackend::production_converters;
+    first_config.output_root = root / "cooked_first";
+    auto first_cook = heartstead::assets::AssetCooker::cook(filtered.value(), first_config);
+    assert(first_cook);
+    assert(first_cook.value().cooked_file_count == 3);
+    const auto* first_model =
+        first_cook.value().manifest.find_active("base:models/props/textured.gltf");
+    assert(first_model != nullptr);
+    assert(first_model->dependencies.size() == 2);
+    const auto first_model_source_hash = first_model->source_hash;
+    const auto first_model_cooked_hash = first_model->cooked_hash;
+    auto first_store = heartstead::assets::CookedAssetStore::load(first_config.output_root);
+    assert(first_store);
+    auto first_payload = first_store.value().load_payload("base:models/props/textured.gltf");
+    assert(first_payload);
+    auto first_runtime_model = heartstead::assets::decode_model_asset(first_payload.value().bytes);
+    assert(first_runtime_model);
+    assert(first_runtime_model.value().images.size() == 1);
+    assert(first_runtime_model.value().images.front().width == 2);
+    assert(first_runtime_model.value().materials.front().base_color_image == 0);
+
+    write_bytes(image_path, one_pixel_png_bytes());
+    auto changed_catalog = build_catalog();
+    auto changed_filtered =
+        heartstead::assets::select_asset_dependency_closure(changed_catalog, selected_ids);
+    assert(changed_filtered);
+    heartstead::assets::AssetCookConfig changed_config = first_config;
+    changed_config.output_root = root / "cooked_changed";
+    auto changed_cook =
+        heartstead::assets::AssetCooker::cook(changed_filtered.value(), changed_config);
+    assert(changed_cook);
+    const auto* changed_model =
+        changed_cook.value().manifest.find_active("base:models/props/textured.gltf");
+    assert(changed_model != nullptr);
+    assert(changed_model->source_hash == first_model_source_hash);
+    assert(changed_model->cooked_hash != first_model_cooked_hash);
+
+    write_text(model_path, minimal_external_textured_gltf_text("BLEND"));
+    auto blend_catalog = build_catalog();
+    auto blend_filtered =
+        heartstead::assets::select_asset_dependency_closure(blend_catalog, selected_ids);
+    assert(blend_filtered);
+    heartstead::assets::AssetCookConfig blend_config = first_config;
+    blend_config.output_root = root / "cooked_blend";
+    auto blend_cook = heartstead::assets::AssetCooker::cook(blend_filtered.value(), blend_config);
+    assert(!blend_cook);
+    assert(blend_cook.error().code == "asset_cooker.invalid_model");
+    assert(blend_cook.error().message.find("base:models/props/textured.gltf") != std::string::npos);
+    assert(blend_cook.error().message.find("gltf_import.unsupported_alpha_blend") !=
+           std::string::npos);
+    assert(blend_cook.error().message.find("not alpha blend") != std::string::npos);
+
+    std::filesystem::remove_all(root);
 }
 
 void test_headless_platform() {
@@ -14779,6 +14890,7 @@ int main() {
     test_virtual_file_system();
     test_math_primitives();
     test_resource_pack_discovery_and_asset_catalog();
+    test_filtered_model_dependency_cooking();
     test_headless_platform();
     test_renderer_rhi();
     test_physics_world();

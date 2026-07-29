@@ -139,8 +139,8 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 ## Asset Pipeline V1
 
 - [x] `[Automated]` the Foundation manifest closes over every transitive asset dependency.
-- [ ] `[Automated]` filtered model cooking also cooks required external or generated image assets.
-- [ ] `[Automated]` changing a dependency changes the dependent cooked record/hash.
+- [x] `[Automated]` filtered model cooking also cooks required external or generated image assets.
+- [x] `[Automated]` changing a dependency changes the dependent cooked record/hash.
 - [x] `[Automated]` PNG and JPEG sources cook to versioned RGBA8 texture assets.
 - [ ] `[Automated]` base-color texture RGB is uploaded as sRGB and material factors remain linear.
 - [ ] `[Both]` one textured static glTF/GLB prop renders through the catalog and cooked store.
@@ -148,7 +148,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [ ] `[Both]` per-primitive base-color material assignment is preserved and visible.
 - [ ] `[Both]` opaque and alpha-mask material modes behave correctly.
 - [ ] `[Both]` double-sided material state behaves correctly.
-- [ ] `[Automated]` unsupported blend materials fail cooking with the logical asset ID and reason.
+- [x] `[Automated]` unsupported blend materials fail cooking with the logical asset ID and reason.
 - [x] `[Automated]` animation mappings resolve unique authored clip names, never numeric indices.
 - [x] `[Automated]` missing or duplicate mapped animation names produce a clear validation error.
 - [ ] `[Automated]` WAV and Ogg Vorbis sources cook to the versioned runtime audio representation.
@@ -221,6 +221,11 @@ Recorded 2026-07-29:
   - `test_session_save_and_reload_restores_authoritative_state`
   - `test_foundation_save_rejects_incompatible_layout`
   - `test_session_file_load_preserves_missing_prototypes`
+- `heartstead_engine_tests`
+  - `test_filtered_model_dependency_cooking`
+    - selects the model's external buffer and image dependency closure
+    - proves an external image change alters the dependent model's cooked hash
+    - verifies alpha-blend rejection includes the logical model ID and importer reason
 - `heartstead_voxel_interaction_presentation_tests`
   - `test_only_accepted_edits_emit_data_driven_feedback`
   - `test_foundation_voxels_resolve_feedback_resources`

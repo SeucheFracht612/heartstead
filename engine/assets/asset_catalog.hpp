@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -102,5 +103,8 @@ class AssetCatalogBuilder {
 [[nodiscard]] std::string asset_logical_id(const VirtualPath& path);
 [[nodiscard]] core::Result<std::filesystem::path> asset_logical_path(std::string_view logical_id);
 [[nodiscard]] core::Status discover_asset_dependencies(AssetCatalog& catalog);
+[[nodiscard]] core::Result<AssetCatalog>
+select_asset_dependency_closure(const AssetCatalog& catalog,
+                                std::span<const std::string> logical_ids);
 
 } // namespace heartstead::assets
