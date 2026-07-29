@@ -233,8 +233,8 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
     audio_presentation_config.default_footstep_event_id = default_footstep->value();
     state.audio_presentation = game::ClientAudioPresentation(std::move(audio_presentation_config));
 
-    auto audio_system = state.runtime.create_audio_system(
-        audio::AudioBackend::miniaudio, {}, false, &*state.cooked_assets);
+    auto audio_system = state.runtime.create_audio_system(audio::AudioBackend::miniaudio, {}, false,
+                                                          &*state.cooked_assets);
     if (!audio_system) {
         return core::Status::failure(audio_system.error().code, audio_system.error().message);
     }
@@ -420,7 +420,7 @@ DevGameMode::update(game::GameApplicationServices& services,
     };
     auto camera_frame =
         state.camera_rig.evaluate(player->state, state.camera_perspective, frame.extent.width,
-                                  frame.extent.height, &camera_collision);
+                                  frame.extent.height, &camera_collision, frame.delta_seconds());
     if (!camera_frame) {
         return core::Result<game::GameApplicationFrameOutput>::failure(
             camera_frame.error().code, camera_frame.error().message);
@@ -611,6 +611,10 @@ DevGameMode::update(game::GameApplicationServices& services,
                          : "first-person")
                  << " [F1] | geometry " << (state.debug_geometry_visible ? "on" : "off")
                  << " [F4]\n"
+                 << "boom " << camera_frame.value().actual_boom_distance << " / "
+                 << camera_frame.value().desired_boom_distance
+                 << (camera_frame.value().boom_obstructed ? " obstructed" : "")
+                 << (camera_frame.value().boom_restoring ? " restoring" : "") << '\n'
                  << "position " << position.x << ", " << position.y << ", " << position.z << '\n'
                  << "velocity " << player->state.velocity.x << ", " << player->state.velocity.y
                  << ", " << player->state.velocity.z << '\n'
@@ -622,7 +626,7 @@ DevGameMode::update(game::GameApplicationServices& services,
             renderer::UiQuadDesc panel;
             panel.minimum_pixels = {12.0F, 12.0F};
             panel.maximum_pixels = {
-                std::min(510.0F, static_cast<float>(frame.extent.width) - 12.0F), 112.0F};
+                std::min(510.0F, static_cast<float>(frame.extent.width) - 12.0F), 126.0F};
             panel.color = {0.015F, 0.025F, 0.04F, 0.88F};
             status = ui->submit_quad(panel);
             if (status) {

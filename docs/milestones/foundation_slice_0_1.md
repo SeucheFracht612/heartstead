@@ -226,6 +226,10 @@ Recorded 2026-07-29:
   - `test_foundation_save_rejects_incompatible_layout`
   - `test_session_file_load_preserves_missing_prototypes`
   - `test_session_load_restores_persisted_missing_voxel_palette`
+- `heartstead_movement_controller_tests`
+  - `test_snapshot_prediction_camera_and_load` verifies first-/third-person body visibility,
+    immediate collision-safe boom retraction, and gradual time-based restoration to the desired
+    distance after the voxel obstruction clears
 - `heartstead_engine_tests`
   - `test_filtered_model_dependency_cooking`
     - selects the model's external buffer and image dependency closure

@@ -8,6 +8,11 @@ namespace heartstead::movement {
 
 namespace {
 
+struct CameraConstraint {
+    double safe_fraction = 1.0;
+    bool obstructed = false;
+};
+
 [[nodiscard]] std::optional<double> segment_aabb_entry(math::Vec3d start, math::Vec3d delta,
                                                        math::Bounds3d bounds) noexcept {
     double entry = 0.0;
@@ -35,7 +40,7 @@ namespace {
     return std::clamp(entry, 0.0, 1.0);
 }
 
-[[nodiscard]] core::Result<world::WorldPosition> constrain_third_person_camera(
+[[nodiscard]] core::Result<CameraConstraint> constrain_third_person_camera(
     const world::WorldPosition& pivot, const world::WorldPosition& desired,
     const PlayerCameraCollisionContext& collision, double radius, double clearance) {
     const auto start = pivot.local_offset;
@@ -43,7 +48,7 @@ namespace {
     const auto delta = desired_local - start;
     const auto distance = math::length(delta);
     if (distance <= 1.0e-12) {
-        return core::Result<world::WorldPosition>::success(desired);
+        return core::Result<CameraConstraint>::success({1.0, false});
     }
 
     const auto minimum = math::component_min(start, desired_local) - math::splat(radius);
@@ -56,7 +61,7 @@ namespace {
         maximum.x > maximum_offset || maximum.y > maximum_offset || maximum.z > maximum_offset ||
         maximum.x - minimum.x > maximum_query_span || maximum.y - minimum.y > maximum_query_span ||
         maximum.z - minimum.z > maximum_query_span) {
-        return core::Result<world::WorldPosition>::failure(
+        return core::Result<CameraConstraint>::failure(
             "player_camera.collision_query_too_large",
             "third-person camera collision query exceeds its safe local range");
     }
@@ -75,8 +80,8 @@ namespace {
             for (auto z = min_offset.z; z <= max_offset.z; ++z) {
                 auto block = world::checked_block_coord_offset(pivot.anchor, {x, y, z});
                 if (!block) {
-                    return core::Result<world::WorldPosition>::failure(block.error().code,
-                                                                       block.error().message);
+                    return core::Result<CameraConstraint>::failure(block.error().code,
+                                                                   block.error().message);
                 }
                 const auto address = world::block_to_chunk_local(block.value());
                 const auto* chunk = collision.chunks.find(address.chunk);
@@ -85,8 +90,8 @@ namespace {
                 if (chunk != nullptr) {
                     auto cell = chunk->get(address.local);
                     if (!cell) {
-                        return core::Result<world::WorldPosition>::failure(cell.error().code,
-                                                                           cell.error().message);
+                        return core::Result<CameraConstraint>::failure(cell.error().code,
+                                                                       cell.error().message);
                     }
                     if (cell.value().is_air()) {
                         continue;
@@ -124,7 +129,7 @@ namespace {
     const auto safe_fraction =
         obstructed ? std::max(0.0, nearest_entry - std::min(clearance / distance, nearest_entry))
                    : 1.0;
-    return world::WorldPosition::from_anchor(pivot.anchor, start + delta * safe_fraction);
+    return core::Result<CameraConstraint>::success({safe_fraction, obstructed});
 }
 
 } // namespace
@@ -134,10 +139,10 @@ core::Status PlayerCameraConfig::validate() const {
         !std::isfinite(roll_eye_height) || !std::isfinite(third_person_distance) ||
         !std::isfinite(third_person_height) || !std::isfinite(third_person_shoulder) ||
         !std::isfinite(collision_radius) || !std::isfinite(collision_clearance) ||
-        standing_eye_height <= 0.0 || crouch_eye_height <= 0.0 || roll_eye_height <= 0.0 ||
-        third_person_distance <= 0.0 || crouch_eye_height > standing_eye_height ||
-        roll_eye_height > crouch_eye_height || collision_radius <= 0.0 ||
-        collision_clearance < 0.0) {
+        !std::isfinite(third_person_restore_speed) || standing_eye_height <= 0.0 ||
+        crouch_eye_height <= 0.0 || roll_eye_height <= 0.0 || third_person_distance <= 0.0 ||
+        crouch_eye_height > standing_eye_height || roll_eye_height > crouch_eye_height ||
+        collision_radius <= 0.0 || collision_clearance < 0.0 || third_person_restore_speed <= 0.0) {
         return core::Status::failure("player_camera.invalid_config",
                                      "player camera dimensions are invalid");
     }
@@ -155,7 +160,7 @@ PlayerCameraRig::PlayerCameraRig(PlayerCameraConfig config) : config_(config) {}
 core::Result<PlayerCameraFrame>
 PlayerCameraRig::evaluate(const PlayerControllerState& player, PlayerCameraPerspective perspective,
                           std::uint32_t viewport_width, std::uint32_t viewport_height,
-                          const PlayerCameraCollisionContext* collision) const {
+                          const PlayerCameraCollisionContext* collision, double delta_seconds) {
     auto config_status = config_.validate();
     if (!config_status || !player.position.is_valid() || viewport_width == 0 ||
         viewport_height == 0) {
@@ -163,6 +168,10 @@ PlayerCameraRig::evaluate(const PlayerControllerState& player, PlayerCameraPersp
             !config_status ? config_status.error().code : "player_camera.invalid_viewport",
             !config_status ? config_status.error().message
                            : "player camera viewport and player position must be valid");
+    }
+    if (!std::isfinite(delta_seconds) || delta_seconds < 0.0) {
+        return core::Result<PlayerCameraFrame>::failure(
+            "player_camera.invalid_delta", "player camera delta must be finite and non-negative");
     }
     constexpr double degrees_to_radians = 3.14159265358979323846 / 180.0;
     const auto yaw = static_cast<double>(player.yaw_centidegrees) * 0.01 * degrees_to_radians;
@@ -186,13 +195,14 @@ PlayerCameraRig::evaluate(const PlayerControllerState& player, PlayerCameraPersp
         return core::Result<PlayerCameraFrame>::failure(camera_position.error().code,
                                                         camera_position.error().message);
     }
+    auto pivot = world::WorldPosition::from_anchor(player.position.anchor,
+                                                   player.position.local_offset + pivot_offset);
+    if (!pivot) {
+        return core::Result<PlayerCameraFrame>::failure(pivot.error().code, pivot.error().message);
+    }
+    double allowed_boom_fraction = 1.0;
+    bool boom_obstructed = false;
     if (perspective == PlayerCameraPerspective::third_person && collision != nullptr) {
-        auto pivot = world::WorldPosition::from_anchor(player.position.anchor,
-                                                       player.position.local_offset + pivot_offset);
-        if (!pivot) {
-            return core::Result<PlayerCameraFrame>::failure(pivot.error().code,
-                                                            pivot.error().message);
-        }
         auto constrained =
             constrain_third_person_camera(pivot.value(), camera_position.value(), *collision,
                                           config_.collision_radius, config_.collision_clearance);
@@ -200,7 +210,36 @@ PlayerCameraRig::evaluate(const PlayerControllerState& player, PlayerCameraPersp
             return core::Result<PlayerCameraFrame>::failure(constrained.error().code,
                                                             constrained.error().message);
         }
-        camera_position = std::move(constrained);
+        allowed_boom_fraction = constrained.value().safe_fraction;
+        boom_obstructed = constrained.value().obstructed;
+    }
+    const auto desired_boom_delta =
+        camera_position.value().relative_to(pivot.value().anchor) - pivot.value().local_offset;
+    const auto desired_boom_distance = math::length(desired_boom_delta);
+    bool boom_restoring = false;
+    if (perspective == PlayerCameraPerspective::third_person) {
+        if (!boom_initialized_) {
+            boom_fraction_ = allowed_boom_fraction;
+            boom_initialized_ = true;
+        } else if (allowed_boom_fraction <= boom_fraction_) {
+            boom_fraction_ = allowed_boom_fraction;
+        } else {
+            const auto restore_fraction =
+                desired_boom_distance <= 1.0e-12
+                    ? 1.0
+                    : config_.third_person_restore_speed * delta_seconds / desired_boom_distance;
+            boom_fraction_ = std::min(allowed_boom_fraction, boom_fraction_ + restore_fraction);
+            boom_restoring = boom_fraction_ < allowed_boom_fraction;
+        }
+        camera_position = world::WorldPosition::from_anchor(
+            pivot.value().anchor, pivot.value().local_offset + desired_boom_delta * boom_fraction_);
+        if (!camera_position) {
+            return core::Result<PlayerCameraFrame>::failure(camera_position.error().code,
+                                                            camera_position.error().message);
+        }
+    } else {
+        boom_fraction_ = 1.0;
+        boom_initialized_ = false;
     }
 
     PlayerCameraFrame frame;
@@ -229,6 +268,12 @@ PlayerCameraRig::evaluate(const PlayerControllerState& player, PlayerCameraPersp
     frame.body.crouched = player.crouched;
     frame.body.rolling = player.mode == PlayerControllerMode::rolling;
     frame.body.local_body_visible = perspective == PlayerCameraPerspective::third_person;
+    if (perspective == PlayerCameraPerspective::third_person) {
+        frame.desired_boom_distance = desired_boom_distance;
+        frame.actual_boom_distance = desired_boom_distance * boom_fraction_;
+        frame.boom_obstructed = boom_obstructed;
+        frame.boom_restoring = boom_restoring;
+    }
     return core::Result<PlayerCameraFrame>::success(frame);
 }
 

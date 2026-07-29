@@ -20,6 +20,7 @@ struct PlayerCameraConfig {
     double third_person_shoulder = 0.35;
     double collision_radius = 0.18;
     double collision_clearance = 0.05;
+    double third_person_restore_speed = 6.0;
     float vertical_fov_degrees = 80.0F;
     float near_plane = 0.05F;
     float far_plane = 2048.0F;
@@ -50,6 +51,10 @@ struct PlayerCameraFrame {
     math::Mat4f projection;
     math::Mat4f view_projection;
     PlayerBodyRigPose body;
+    double desired_boom_distance = 0.0;
+    double actual_boom_distance = 0.0;
+    bool boom_obstructed = false;
+    bool boom_restoring = false;
 };
 
 class PlayerCameraRig {
@@ -59,10 +64,13 @@ class PlayerCameraRig {
     [[nodiscard]] core::Result<PlayerCameraFrame>
     evaluate(const PlayerControllerState& player, PlayerCameraPerspective perspective,
              std::uint32_t viewport_width, std::uint32_t viewport_height,
-             const PlayerCameraCollisionContext* collision = nullptr) const;
+             const PlayerCameraCollisionContext* collision = nullptr,
+             double delta_seconds = 1.0 / 60.0);
 
   private:
     PlayerCameraConfig config_;
+    double boom_fraction_ = 1.0;
+    bool boom_initialized_ = false;
 };
 
 } // namespace heartstead::movement

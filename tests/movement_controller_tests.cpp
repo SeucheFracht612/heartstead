@@ -348,6 +348,10 @@ void test_snapshot_prediction_camera_and_load() {
     assert(frame);
     assert(frame.value().view_projection.is_finite());
     assert(!frame.value().body.local_body_visible);
+    auto invalid_camera_delta = camera.evaluate(
+        state, movement::PlayerCameraPerspective::first_person, 1280, 720, nullptr, -0.001);
+    assert(!invalid_camera_delta);
+    assert(invalid_camera_delta.error().code == "player_camera.invalid_delta");
     auto third = camera.evaluate(state, movement::PlayerCameraPerspective::third_person, 1280, 720);
     assert(third);
     assert(third.value().body.local_body_visible);
@@ -356,13 +360,36 @@ void test_snapshot_prediction_camera_and_load() {
     assert(camera_chunk.set({2, 1, 1}, {1, 0, 0, 0}));
     assert(camera_chunk.set({2, 2, 1}, {1, 0, 0, 0}));
     assert(camera_chunk.set({2, 3, 1}, {1, 0, 0, 0}));
+    (void)yard.chunks.get_or_create({0, 0, -1});
     const movement::PlayerCameraCollisionContext camera_collision{yard.chunks, yard.palette};
     auto constrained = camera.evaluate(state, movement::PlayerCameraPerspective::third_person, 1280,
                                        720, &camera_collision);
     assert(constrained);
+    assert(constrained.value().boom_obstructed);
+    assert(!constrained.value().boom_restoring);
+    assert(constrained.value().actual_boom_distance < constrained.value().desired_boom_distance);
     assert(constrained.value().position.approximate_global().z >
            third.value().position.approximate_global().z + 3.0);
     assert(constrained.value().position.approximate_global().z > 2.18);
+
+    assert(camera_chunk.set({2, 1, 1}, world::VoxelCell::air()));
+    assert(camera_chunk.set({2, 2, 1}, world::VoxelCell::air()));
+    assert(camera_chunk.set({2, 3, 1}, world::VoxelCell::air()));
+    auto restoring = camera.evaluate(state, movement::PlayerCameraPerspective::third_person, 1280,
+                                     720, &camera_collision);
+    assert(restoring);
+    assert(!restoring.value().boom_obstructed);
+    assert(restoring.value().boom_restoring);
+    assert(restoring.value().actual_boom_distance > constrained.value().actual_boom_distance);
+    assert(restoring.value().actual_boom_distance < restoring.value().desired_boom_distance);
+    for (std::uint32_t frame_index = 0; frame_index < 120; ++frame_index) {
+        restoring = camera.evaluate(state, movement::PlayerCameraPerspective::third_person, 1280,
+                                    720, &camera_collision);
+        assert(restoring);
+    }
+    assert(!restoring.value().boom_restoring);
+    assert(std::abs(restoring.value().actual_boom_distance -
+                    restoring.value().desired_boom_distance) < 0.0001);
 
     movement::RemotePlayerInterpolator interpolator;
     auto remote_a = snapshot;

@@ -103,6 +103,9 @@ Implemented foundation:
     impulses
   - ladder, fluid, unloaded-chunk, and ledge queries deliberately remain voxel-semantic queries;
     swimming movement is present while M3 will add buoyancy and currents
+  - the third-person camera sweeps a radius against each voxel prototype's declared collision
+    bounds, retracts immediately when the safe boom distance shrinks, and restores outward at a
+    time-based speed after space clears; unloaded chunks remain conservative solid occluders
   - `dev_game` selects Jolt for interactive sessions while deterministic headless smoke runs and
     dedicated-server fixtures retain the reference backend
   - pressing F5 in `dev_game` throws a physical log from the camera and renders its synchronized
