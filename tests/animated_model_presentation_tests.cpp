@@ -37,7 +37,18 @@ heartstead::assets::ModelAsset make_animated_model() {
         {"mesh", assets::no_model_index, {}},
         {"joint", assets::no_model_index, {}},
     };
-    model.primitives = {{"body", 0, 3, 0, 3, 0, 0}};
+    model.primitives = {{"body", 0, 3, 0, 3, 0, 0, 0}};
+    model.images = {{"body_color",
+                     2,
+                     2,
+                     {255, 64, 32, 255, 32, 255, 64, 255, 32, 64, 255, 255, 255, 255, 255, 0}}};
+    assets::ModelMaterial material;
+    material.name = "body_material";
+    material.base_color_image = 0;
+    material.alpha_mode = assets::ModelAlphaMode::mask;
+    material.alpha_cutoff = 0.25F;
+    material.double_sided = true;
+    model.materials.push_back(material);
     model.skins = {{"body_skin", 1, {1}, {math::Mat4f::identity()}}};
     model.animations = {
         make_translation_clip("idle", {}),

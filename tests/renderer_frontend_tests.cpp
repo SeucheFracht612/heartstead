@@ -660,7 +660,7 @@ void test_renderer_frontend_submits_headless_frames() {
     // Ten shader modules, eleven prewarmed pipelines, sky geometry, four fallback textures,
     // terrain/UI arrays, one shared sampler, one material-table buffer, static arenas/instances,
     // a skin-matrix ring, and buffered debug/UI geometry.
-    assert(initialized_resource_count == 39);
+    assert(initialized_resource_count == 43);
 
     renderer::rhi::RenderEnvironmentData invalid_environment;
     invalid_environment.fog_end = invalid_environment.fog_start;
@@ -770,9 +770,9 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(renderer_stats.drawn_chunks == 1);
     assert(renderer_stats.draw_calls == 2);
     assert(renderer_stats.pipeline_switches == 2);
-    assert(renderer_stats.resident_textures == 6);
+    assert(renderer_stats.resident_textures == 7);
     assert(renderer_stats.runtime_materials == 256);
-    assert(renderer_stats.resident_pipelines == 11);
+    assert(renderer_stats.resident_pipelines == 12);
     assert(renderer_stats.resident_texture_bytes > 0);
     assert(renderer_stats.vertices > 0);
     assert(renderer_stats.triangles > 0);

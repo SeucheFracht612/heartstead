@@ -249,9 +249,8 @@ core::Status RenderScene::upsert_object(const RenderObjectProxy& object) {
         if (previous_parent.is_valid()) {
             auto& previous_parent_slot = objects_[previous_parent.index - 1U];
             if (previous_parent_slot.child_count == 0) {
-                return core::Status::failure(
-                    "render_scene.invalid_child_count",
-                    "render object hierarchy child count is inconsistent");
+                return core::Status::failure("render_scene.invalid_child_count",
+                                             "render object hierarchy child count is inconsistent");
             }
             --previous_parent_slot.child_count;
         }
@@ -277,9 +276,8 @@ core::Status RenderScene::remove_object(RenderObjectId id) {
     if (slot.proxy.parent.is_valid()) {
         auto& parent_slot = objects_[slot.proxy.parent.index - 1U];
         if (parent_slot.child_count == 0) {
-            return core::Status::failure(
-                "render_scene.invalid_child_count",
-                "render object hierarchy child count is inconsistent");
+            return core::Status::failure("render_scene.invalid_child_count",
+                                         "render object hierarchy child count is inconsistent");
         }
         --parent_slot.child_count;
     }
@@ -444,16 +442,20 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
             continue;
         }
         RenderObjectInstance instance{
-            object.id,    object.mesh,       object.material, object.skin_palette,
-            object.layer, transform.value(), bounds,          object.color,
-            object.sprite_frame};
+            object.id,         object.mesh, object.material, object.skin_palette, object.layer,
+            transform.value(), bounds,      object.color,    object.sprite_frame};
         auto batch =
             std::ranges::find_if(frame.batches, [&object](const RenderInstanceBatch& value) {
                 return value.mesh == object.mesh && value.material == object.material &&
-                       value.layer == object.layer;
+                       value.layer == object.layer &&
+                       value.two_sided == any(object.flags & RenderObjectFlags::two_sided);
             });
         if (batch == frame.batches.end()) {
-            frame.batches.push_back({object.mesh, object.material, object.layer, {}});
+            frame.batches.push_back({object.mesh,
+                                     object.material,
+                                     object.layer,
+                                     any(object.flags & RenderObjectFlags::two_sided),
+                                     {}});
             batch = std::prev(frame.batches.end());
         }
         batch->instances.push_back(std::move(instance));
@@ -466,6 +468,9 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
                           }
                           if (left.material != right.material) {
                               return left.material < right.material;
+                          }
+                          if (left.two_sided != right.two_sided) {
+                              return left.two_sided < right.two_sided;
                           }
                           return left.mesh < right.mesh;
                       });

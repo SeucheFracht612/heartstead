@@ -148,6 +148,7 @@ struct RenderInstanceBatch {
     RenderMeshHandle mesh;
     MaterialRuntimeHandle material;
     RenderLayer layer = RenderLayer::opaque;
+    bool two_sided = false;
     std::vector<RenderObjectInstance> instances;
 };
 

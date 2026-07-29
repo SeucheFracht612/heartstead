@@ -1,6 +1,7 @@
 #include "engine/renderer/materials/material_runtime_cache.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <exception>
 #include <limits>
@@ -8,6 +9,15 @@
 #include <utility>
 
 namespace heartstead::renderer {
+
+namespace {
+
+[[nodiscard]] std::size_t next_surface_table_capacity(std::size_t required) noexcept {
+    constexpr std::size_t minimum = 4096;
+    return std::max(minimum, std::bit_ceil(required));
+}
+
+} // namespace
 
 struct MaterialRuntimeCache::Record {
     std::uint32_t generation = 1;
@@ -33,8 +43,7 @@ core::Result<MaterialRuntimeHandle> MaterialRuntimeCache::upsert(MaterialRuntime
         return record.occupied && record.desc.id == desc.id;
     });
     if (existing != records_.end()) {
-        if (existing->desc.domain != desc.domain ||
-            existing->desc.voxel_type != desc.voxel_type) {
+        if (existing->desc.domain != desc.domain || existing->desc.voxel_type != desc.voxel_type) {
             return core::Result<MaterialRuntimeHandle>::failure(
                 "material_runtime.identity_change_rejected",
                 "resident material cannot change its stable domain or material-table index");
@@ -48,6 +57,12 @@ core::Result<MaterialRuntimeHandle> MaterialRuntimeCache::upsert(MaterialRuntime
                 return core::Result<MaterialRuntimeHandle>::failure(status.error().code,
                                                                     status.error().message);
             }
+        } else {
+            surface_table_[existing->view.material_index] = gpu_surface_material(desc);
+            if (surface_table_revision_ == std::numeric_limits<std::uint64_t>::max()) {
+                std::terminate();
+            }
+            ++surface_table_revision_;
         }
         existing->desc = std::move(desc);
         if (existing->view.revision == std::numeric_limits<std::uint64_t>::max()) {
@@ -91,8 +106,22 @@ core::Result<MaterialRuntimeHandle> MaterialRuntimeCache::upsert(MaterialRuntime
     record.view.id = record.desc.id;
     record.view.domain = record.desc.domain;
     record.view.voxel_type = record.desc.voxel_type;
-    record.view.material_index =
-        record.desc.domain == MaterialRuntimeDomain::voxel ? record.desc.voxel_type : 0;
+    record.view.material_index = record.desc.domain == MaterialRuntimeDomain::voxel
+                                     ? record.desc.voxel_type
+                                     : static_cast<std::uint32_t>(surface_table_.size());
+    if (record.desc.domain == MaterialRuntimeDomain::surface) {
+        if (surface_table_.size() >= std::numeric_limits<std::uint32_t>::max()) {
+            record = {};
+            return core::Result<MaterialRuntimeHandle>::failure(
+                "material_runtime.too_many_surface_materials",
+                "surface material-table index overflow");
+        }
+        surface_table_.push_back(gpu_surface_material(record.desc));
+        if (surface_table_revision_ == std::numeric_limits<std::uint64_t>::max()) {
+            std::terminate();
+        }
+        ++surface_table_revision_;
+    }
     record.view.revision = 1;
     update_stats();
     return core::Result<MaterialRuntimeHandle>::success(record.view.handle);
@@ -100,6 +129,58 @@ core::Result<MaterialRuntimeHandle> MaterialRuntimeCache::upsert(MaterialRuntime
 
 core::Status MaterialRuntimeCache::synchronize_gpu() {
     auto status = gpu_table_.synchronize(table_);
+    if (!status) {
+        update_stats();
+        return status;
+    }
+    if (stats_.surface_gpu_table.resident_revision != surface_table_revision_) {
+        const auto bytes = std::as_bytes(std::span<const GpuSurfaceMaterial>{surface_table_});
+        if (bytes.empty()) {
+            return core::Status::failure(
+                "material_runtime.surface_table_empty",
+                "surface material table requires at least the renderer fallback material");
+        }
+        auto destination = surface_gpu_table_buffer_;
+        auto destination_capacity = surface_gpu_table_capacity_;
+        bool replacement = false;
+        if (!destination.is_valid() || bytes.size() > destination_capacity) {
+            destination_capacity = next_surface_table_capacity(bytes.size());
+            auto created = device_.create_buffer(
+                {rhi::RenderBufferUsage::storage, destination_capacity,
+                 "gpu_surface_material_table", rhi::RenderBufferMemory::device_local});
+            if (!created) {
+                return core::Status::failure(created.error().code, created.error().message);
+            }
+            destination = created.value().handle;
+            replacement = true;
+        }
+        const rhi::RenderBufferWrite write{destination, 0, bytes};
+        auto uploaded =
+            device_.upload_buffer_batch(std::span<const rhi::RenderBufferWrite>{&write, 1});
+        if (!uploaded) {
+            if (replacement) {
+                (void)device_.release_resource(destination);
+            }
+            return core::Status::failure(uploaded.error().code, uploaded.error().message);
+        }
+        if (replacement) {
+            const auto old = surface_gpu_table_buffer_;
+            surface_gpu_table_buffer_ = destination;
+            surface_gpu_table_capacity_ = destination_capacity;
+            if (old.is_valid()) {
+                status = device_.release_resource(old);
+                if (!status) {
+                    return status;
+                }
+            }
+        }
+        stats_.surface_gpu_table.material_count = surface_table_.size();
+        stats_.surface_gpu_table.resident_bytes = bytes.size();
+        stats_.surface_gpu_table.capacity_bytes = surface_gpu_table_capacity_;
+        stats_.surface_gpu_table.resident_revision = surface_table_revision_;
+        ++stats_.surface_gpu_table.upload_count;
+        stats_.surface_gpu_table.uploaded_bytes += bytes.size();
+    }
     update_stats();
     return status;
 }
@@ -122,8 +203,38 @@ MaterialRuntimeCache::write_gpu_table_descriptor(const core::PrototypeId& pipeli
     return core::Status::ok();
 }
 
+core::Status
+MaterialRuntimeCache::write_gpu_surface_table_descriptor(const core::PrototypeId& pipeline_material,
+                                                         std::string binding_name) {
+    if (!surface_gpu_table_buffer_.is_valid()) {
+        return core::Status::failure(
+            "material_runtime.surface_gpu_table_not_ready",
+            "GPU surface material table must be synchronized before binding");
+    }
+    const rhi::RenderDescriptorWrite write{pipeline_material, std::move(binding_name),
+                                           surface_gpu_table_buffer_, 0,
+                                           stats_.surface_gpu_table.resident_bytes};
+    auto written =
+        device_.write_descriptors(std::span<const rhi::RenderDescriptorWrite>{&write, 1});
+    if (!written) {
+        return core::Status::failure(written.error().code, written.error().message);
+    }
+    return core::Status::ok();
+}
+
 core::Status MaterialRuntimeCache::shutdown() {
     auto status = gpu_table_.shutdown();
+    if (surface_gpu_table_buffer_.is_valid()) {
+        auto surface_status = device_.release_resource(surface_gpu_table_buffer_);
+        if (!surface_status && status) {
+            status = surface_status;
+        }
+    }
+    surface_gpu_table_buffer_ = {};
+    surface_gpu_table_capacity_ = 0;
+    surface_table_.clear();
+    surface_table_revision_ = 1;
+    stats_.surface_gpu_table = {};
     records_.clear();
     table_ = BlockRenderTable{};
     update_stats();
@@ -147,6 +258,10 @@ const BlockRenderTable& MaterialRuntimeCache::block_render_table() const noexcep
 
 rhi::RenderResourceHandle MaterialRuntimeCache::gpu_table_buffer() const noexcept {
     return gpu_table_.buffer();
+}
+
+rhi::RenderResourceHandle MaterialRuntimeCache::surface_gpu_table_buffer() const noexcept {
+    return surface_gpu_table_buffer_;
 }
 
 const MaterialRuntimeCacheStats& MaterialRuntimeCache::stats() const noexcept {
@@ -250,15 +365,18 @@ const std::string* TerrainTextureArrayBuilder::layer_id(std::uint32_t layer) con
 
 core::Status validate_material_runtime_desc(const MaterialRuntimeDesc& desc) {
     if (!desc.id.is_valid()) {
-        return core::Status::failure(
-            "material_runtime.invalid_identity",
-            "runtime material requires a valid prototype id");
+        return core::Status::failure("material_runtime.invalid_identity",
+                                     "runtime material requires a valid prototype id");
     }
     if ((desc.domain == MaterialRuntimeDomain::voxel && desc.voxel_type == 0) ||
         (desc.domain == MaterialRuntimeDomain::surface && desc.voxel_type != 0)) {
         return core::Status::failure(
             "material_runtime.invalid_domain",
             "voxel materials require a non-air voxel type and surface materials require type zero");
+    }
+    if (!std::isfinite(desc.alpha_cutoff) || desc.alpha_cutoff < 0.0F || desc.alpha_cutoff > 1.0F) {
+        return core::Status::failure("material_runtime.invalid_alpha_cutoff",
+                                     "material alpha cutoff must be finite and in zero to one");
     }
     for (const auto value : desc.base_color) {
         if (!std::isfinite(value) || value < 0.0F || value > 1.0F) {
@@ -285,6 +403,15 @@ GpuVoxelMaterial gpu_voxel_material(const MaterialRuntimeDesc& desc) noexcept {
     result.emissive_strength = desc.emissive_strength;
     result.roughness = desc.roughness;
     result.animation_frame_time = desc.animation_frame_time;
+    return result;
+}
+
+GpuSurfaceMaterial gpu_surface_material(const MaterialRuntimeDesc& desc) noexcept {
+    GpuSurfaceMaterial result;
+    result.base_color_texture = desc.surface_texture;
+    result.flags = static_cast<std::uint32_t>(desc.flags);
+    result.alpha_cutoff = desc.alpha_cutoff;
+    std::ranges::copy(desc.base_color, result.base_color);
     return result;
 }
 

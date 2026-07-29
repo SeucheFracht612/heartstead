@@ -33,6 +33,7 @@ layout(location = 1) out vec3 fragment_world_position;
 layout(location = 2) out vec2 fragment_uv;
 layout(location = 3) out vec4 fragment_color;
 layout(location = 4) flat out uint fragment_layer;
+layout(location = 5) flat out uint fragment_material;
 
 void main() {
     GpuObjectInstance instance = object_instances.instances[gl_InstanceIndex];
@@ -57,4 +58,5 @@ void main() {
     fragment_uv = in_uv;
     fragment_color = instance.color;
     fragment_layer = instance.metadata.x;
+    fragment_material = instance.metadata.w;
 }

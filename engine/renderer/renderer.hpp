@@ -5,6 +5,7 @@
 #include "engine/renderer/assets/mesh_manager.hpp"
 #include "engine/renderer/assets/sampler_cache.hpp"
 #include "engine/renderer/assets/shader_manager.hpp"
+#include "engine/renderer/assets/surface_texture_array.hpp"
 #include "engine/renderer/assets/texture_manager.hpp"
 #include "engine/renderer/chunks/chunk_render_system.hpp"
 #include "engine/renderer/debug/debug_renderer.hpp"
@@ -28,6 +29,8 @@
 #include <chrono>
 #include <memory>
 #include <span>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -93,6 +96,12 @@ struct RendererFallbackResources {
     }
 };
 
+struct ModelRenderMaterialBinding {
+    MaterialRuntimeHandle material;
+    RenderLayer layer = RenderLayer::opaque;
+    RenderObjectFlags flags = RenderObjectFlags::none;
+};
+
 class Renderer {
   public:
     Renderer() = default;
@@ -140,6 +149,13 @@ class Renderer {
     [[nodiscard]] core::Result<RenderMeshHandle>
     create_model_primitive(std::string id, const assets::ModelAsset& model,
                            std::uint32_t primitive_index);
+    [[nodiscard]] core::Result<std::uint32_t>
+    create_surface_texture(std::string id, std::uint32_t width, std::uint32_t height,
+                           std::span<const std::uint8_t> rgba8);
+    [[nodiscard]] core::Result<MaterialRuntimeHandle>
+    create_surface_material(MaterialRuntimeDesc desc);
+    [[nodiscard]] core::Result<std::vector<ModelRenderMaterialBinding>>
+    create_model_materials(std::string_view asset_id, const assets::ModelAsset& model);
     [[nodiscard]] core::Status release_static_mesh(RenderMeshHandle handle);
     [[nodiscard]] core::Status
     reload_terrain_shaders(std::span<const std::uint32_t> vertex_spirv,
@@ -178,6 +194,7 @@ class Renderer {
     [[nodiscard]] core::Status
     create_scene_pipelines(std::span<const std::uint32_t> vertex_spirv,
                            std::span<const std::uint32_t> fragment_spirv);
+    [[nodiscard]] core::Status bind_scene_surface_resources();
     [[nodiscard]] core::Status
     create_debug_pipelines(std::span<const std::uint32_t> vertex_spirv,
                            std::span<const std::uint32_t> fragment_spirv);
@@ -192,7 +209,7 @@ class Renderer {
     TerrainPipelineSet terrain_pipelines_{};
     std::array<GraphicsPipelineKey, 4> terrain_pipeline_keys_{};
     ScenePipelineSet scene_pipelines_{};
-    std::array<GraphicsPipelineKey, 3> scene_pipeline_keys_{};
+    std::array<GraphicsPipelineKey, 6> scene_pipeline_keys_{};
     DebugPipelineSet debug_pipelines_{};
     std::array<GraphicsPipelineKey, 2> debug_pipeline_keys_{};
     rhi::RenderResourceHandle ui_pipeline_{};
@@ -203,9 +220,11 @@ class Renderer {
     ShaderProgramHandle debug_shader_program_;
     ShaderProgramHandle ui_shader_program_;
     TextureHandle terrain_texture_array_;
+    std::unique_ptr<SurfaceTextureArray> surface_texture_array_;
     TextureHandle ui_texture_atlas_;
     MaterialRuntimeHandle fallback_material_;
     rhi::RenderResourceHandle terrain_sampler_;
+    rhi::RenderResourceHandle surface_sampler_;
     std::unique_ptr<ShaderManager> shader_manager_;
     std::unique_ptr<SamplerCache> sampler_cache_;
     std::unique_ptr<TextureManager> texture_manager_;

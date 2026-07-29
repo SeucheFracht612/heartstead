@@ -294,9 +294,7 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
     animated_model_config.model = std::move(character_model).value();
     animated_model_config.locomotion_clips = {0, 1, 2, 9};
     animated_model_config.animated_bounds = animated_model_config.model.bounds.expanded(0.4F);
-    animated_model_config.flags =
-        renderer::RenderObjectFlags::cast_shadow | renderer::RenderObjectFlags::two_sided;
-    animated_model_config.color = {0.76F, 0.39F, 0.20F, 1.0F};
+    animated_model_config.flags = renderer::RenderObjectFlags::cast_shadow;
     status = state.animated_models.initialize(*renderer, std::move(animated_model_config));
     if (!status) {
         return status;
@@ -313,8 +311,7 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
     animal_model_config.model = std::move(animal_model).value();
     animal_model_config.locomotion_clips = {0, 1, 2, 9};
     animal_model_config.animated_bounds = animal_model_config.model.bounds.expanded(0.4F);
-    animal_model_config.flags =
-        renderer::RenderObjectFlags::cast_shadow | renderer::RenderObjectFlags::two_sided;
+    animal_model_config.flags = renderer::RenderObjectFlags::cast_shadow;
     animal_model_config.color = {0.83F, 0.70F, 0.42F, 1.0F};
     status = state.animated_animals.initialize(*renderer, std::move(animal_model_config));
     if (!status) {

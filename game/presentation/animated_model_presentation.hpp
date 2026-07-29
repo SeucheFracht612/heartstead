@@ -54,6 +54,9 @@ class AnimatedModelPresentation final {
     struct PrimitiveBinding {
         std::uint32_t primitive_index = 0;
         renderer::RenderMeshHandle mesh;
+        renderer::MaterialRuntimeHandle material;
+        renderer::RenderLayer layer = renderer::RenderLayer::opaque;
+        renderer::RenderObjectFlags flags = renderer::RenderObjectFlags::none;
     };
 
     struct PrimitiveVisual {

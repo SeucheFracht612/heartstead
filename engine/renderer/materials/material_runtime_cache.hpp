@@ -28,8 +28,10 @@ struct MaterialRuntimeDesc {
     std::uint32_t side_texture = 0;
     std::uint32_t top_texture = 0;
     std::uint32_t bottom_texture = 0;
+    std::uint32_t surface_texture = 0;
     VoxelMaterialFlags flags = VoxelMaterialFlags::none;
     std::array<float, 4> base_color{1.0F, 1.0F, 1.0F, 1.0F};
+    float alpha_cutoff = 0.5F;
     float emissive_strength = 0.0F;
     float roughness = 1.0F;
     float animation_frame_time = 0.0F;
@@ -50,7 +52,22 @@ struct MaterialRuntimeCacheStats {
     std::size_t resident_material_count = 0;
     std::uint64_t table_revision = 0;
     GpuMaterialTableStats gpu_table{};
+    GpuMaterialTableStats surface_gpu_table{};
 };
+
+struct GpuSurfaceMaterial {
+    std::uint32_t base_color_texture = 0;
+    std::uint32_t flags = 0;
+    float alpha_cutoff = 0.5F;
+    float padding = 0.0F;
+    float base_color[4]{1.0F, 1.0F, 1.0F, 1.0F};
+
+    friend bool operator==(const GpuSurfaceMaterial&, const GpuSurfaceMaterial&) = default;
+};
+
+static_assert(sizeof(GpuSurfaceMaterial) == 32);
+static_assert(offsetof(GpuSurfaceMaterial, base_color_texture) == 0);
+static_assert(offsetof(GpuSurfaceMaterial, base_color) == 16);
 
 class MaterialRuntimeCache {
   public:
@@ -65,12 +82,16 @@ class MaterialRuntimeCache {
     [[nodiscard]] core::Status
     write_gpu_table_descriptor(const core::PrototypeId& pipeline_material,
                                std::string binding_name);
+    [[nodiscard]] core::Status
+    write_gpu_surface_table_descriptor(const core::PrototypeId& pipeline_material,
+                                       std::string binding_name);
     [[nodiscard]] core::Status shutdown();
 
     [[nodiscard]] const MaterialRuntimeView* find(MaterialRuntimeHandle handle) const noexcept;
     [[nodiscard]] const MaterialRuntimeView* find(const core::PrototypeId& id) const noexcept;
     [[nodiscard]] const BlockRenderTable& block_render_table() const noexcept;
     [[nodiscard]] rhi::RenderResourceHandle gpu_table_buffer() const noexcept;
+    [[nodiscard]] rhi::RenderResourceHandle surface_gpu_table_buffer() const noexcept;
     [[nodiscard]] const MaterialRuntimeCacheStats& stats() const noexcept;
 
   private:
@@ -83,6 +104,10 @@ class MaterialRuntimeCache {
     rhi::IRenderDevice& device_;
     BlockRenderTable table_;
     GpuMaterialTable gpu_table_;
+    std::vector<GpuSurfaceMaterial> surface_table_;
+    std::uint64_t surface_table_revision_ = 1;
+    rhi::RenderResourceHandle surface_gpu_table_buffer_;
+    std::size_t surface_gpu_table_capacity_ = 0;
     std::vector<Record> records_;
     MaterialRuntimeCacheStats stats_{};
 };
@@ -112,5 +137,6 @@ class TerrainTextureArrayBuilder {
 
 [[nodiscard]] core::Status validate_material_runtime_desc(const MaterialRuntimeDesc& desc);
 [[nodiscard]] GpuVoxelMaterial gpu_voxel_material(const MaterialRuntimeDesc& desc) noexcept;
+[[nodiscard]] GpuSurfaceMaterial gpu_surface_material(const MaterialRuntimeDesc& desc) noexcept;
 
 } // namespace heartstead::renderer

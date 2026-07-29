@@ -74,14 +74,14 @@ core::Status AnimatedModelPresentationConfig::validate() const {
     if (!status) {
         return status;
     }
-    if (asset_id.empty() || !visual_prototype.is_valid() || !material.is_valid() ||
-        !animated_bounds.is_valid() || !finite_color(color) ||
+    if (asset_id.empty() || !visual_prototype.is_valid() || !animated_bounds.is_valid() ||
+        !finite_color(color) ||
         std::ranges::none_of(model.primitives, [](const assets::ModelPrimitive& primitive) {
             return primitive.skin != assets::no_model_index;
         })) {
         return core::Status::failure(
             "animated_model_presentation.invalid_config",
-            "animated presentation requires an id, prototype, material, bounds, and skinned mesh");
+            "animated presentation requires an id, prototype, bounds, and skinned mesh");
     }
     return core::Status::ok();
 }
@@ -92,12 +92,19 @@ core::Status AnimatedModelPresentation::initialize(renderer::Renderer& renderer,
         return core::Status::failure("animated_model_presentation.already_initialized",
                                      "animated model presentation is already initialized");
     }
-    if (!config.material.is_valid()) {
-        config.material = renderer.fallback_material();
-    }
     auto status = config.validate();
     if (!status) {
         return status;
+    }
+
+    std::vector<renderer::ModelRenderMaterialBinding> model_materials;
+    if (!config.material.is_valid()) {
+        auto created_materials = renderer.create_model_materials(config.asset_id, config.model);
+        if (!created_materials) {
+            return core::Status::failure(created_materials.error().code,
+                                         created_materials.error().message);
+        }
+        model_materials = std::move(created_materials).value();
     }
 
     std::vector<PrimitiveBinding> uploaded;
@@ -113,7 +120,22 @@ core::Status AnimatedModelPresentation::initialize(renderer::Renderer& renderer,
             }
             return core::Status::failure(mesh.error().code, mesh.error().message);
         }
-        uploaded.push_back({index, mesh.value()});
+        PrimitiveBinding binding;
+        binding.primitive_index = index;
+        binding.mesh = mesh.value();
+        binding.material = config.material;
+        binding.layer = config.layer;
+        binding.flags = config.flags;
+        if (!binding.material.is_valid() && primitive.material != assets::no_model_index) {
+            const auto& model_material = model_materials[primitive.material];
+            binding.material = model_material.material;
+            binding.layer = model_material.layer;
+            binding.flags = binding.flags | model_material.flags;
+        }
+        if (!binding.material.is_valid()) {
+            binding.material = renderer.fallback_material();
+        }
+        uploaded.push_back(binding);
     }
 
     config_ = std::move(config);
@@ -218,11 +240,11 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
                 object.previous_transform = previous_transform.value();
                 object.current_transform = current_transform.value();
                 object.mesh = binding.mesh;
-                object.material = config_.material;
+                object.material = binding.material;
                 object.local_bounds = config_.animated_bounds;
                 object.skin_palette = palette_id;
-                object.layer = config_.layer;
-                object.flags = config_.flags;
+                object.layer = binding.layer;
+                object.flags = binding.flags;
                 if (source.teleported) {
                     object.flags = object.flags | renderer::RenderObjectFlags::teleport;
                 }
@@ -272,11 +294,11 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
             object_update.object.previous_transform = previous_transform.value();
             object_update.object.current_transform = current_transform.value();
             object_update.object.mesh = binding.mesh;
-            object_update.object.material = config_.material;
+            object_update.object.material = binding.material;
             object_update.object.local_bounds = config_.animated_bounds;
             object_update.object.skin_palette = visual.palette;
-            object_update.object.layer = config_.layer;
-            object_update.object.flags = config_.flags;
+            object_update.object.layer = binding.layer;
+            object_update.object.flags = binding.flags;
             if (source.teleported) {
                 object_update.object.flags =
                     object_update.object.flags | renderer::RenderObjectFlags::teleport;

@@ -2,6 +2,7 @@
 
 #include "engine/core/result.hpp"
 #include "engine/renderer/assets/mesh_manager.hpp"
+#include "engine/renderer/materials/material_runtime_cache.hpp"
 #include "engine/renderer/rhi/render_frame_plan.hpp"
 #include "engine/renderer/scene/render_scene.hpp"
 
@@ -27,9 +28,13 @@ struct ScenePipelineSet {
     rhi::RenderResourceHandle opaque;
     rhi::RenderResourceHandle alpha_tested;
     rhi::RenderResourceHandle transparent;
+    rhi::RenderResourceHandle opaque_two_sided;
+    rhi::RenderResourceHandle alpha_tested_two_sided;
+    rhi::RenderResourceHandle transparent_two_sided;
 
     [[nodiscard]] bool is_valid() const noexcept;
-    [[nodiscard]] rhi::RenderResourceHandle for_layer(RenderLayer layer) const noexcept;
+    [[nodiscard]] rhi::RenderResourceHandle for_layer(RenderLayer layer,
+                                                      bool two_sided) const noexcept;
 };
 
 struct SceneRenderConfig {
@@ -62,8 +67,9 @@ struct SceneDrawCommands {
 
 class SceneRenderSystem {
   public:
-    SceneRenderSystem(rhi::IRenderDevice& device, MeshManager& meshes, ScenePipelineSet pipelines,
-                      core::PrototypeId pipeline_material);
+    SceneRenderSystem(rhi::IRenderDevice& device, MeshManager& meshes,
+                      MaterialRuntimeCache& materials, MaterialRuntimeHandle fallback_material,
+                      ScenePipelineSet pipelines, core::PrototypeId pipeline_material);
     ~SceneRenderSystem();
 
     SceneRenderSystem(const SceneRenderSystem&) = delete;
@@ -88,6 +94,8 @@ class SceneRenderSystem {
 
     rhi::IRenderDevice* device_ = nullptr;
     MeshManager* meshes_ = nullptr;
+    MaterialRuntimeCache* materials_ = nullptr;
+    MaterialRuntimeHandle fallback_material_;
     ScenePipelineSet pipelines_{};
     core::PrototypeId pipeline_material_;
     SceneRenderConfig config_{};

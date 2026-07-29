@@ -17,17 +17,20 @@ namespace {
 } // namespace
 
 bool ScenePipelineSet::is_valid() const noexcept {
-    return opaque.is_valid() && alpha_tested.is_valid() && transparent.is_valid();
+    return opaque.is_valid() && alpha_tested.is_valid() && transparent.is_valid() &&
+           opaque_two_sided.is_valid() && alpha_tested_two_sided.is_valid() &&
+           transparent_two_sided.is_valid();
 }
 
-rhi::RenderResourceHandle ScenePipelineSet::for_layer(RenderLayer layer) const noexcept {
+rhi::RenderResourceHandle ScenePipelineSet::for_layer(RenderLayer layer,
+                                                      bool two_sided) const noexcept {
     switch (layer) {
     case RenderLayer::opaque:
-        return opaque;
+        return two_sided ? opaque_two_sided : opaque;
     case RenderLayer::alpha_tested:
-        return alpha_tested;
+        return two_sided ? alpha_tested_two_sided : alpha_tested;
     case RenderLayer::transparent:
-        return transparent;
+        return two_sided ? transparent_two_sided : transparent;
     }
     return {};
 }
@@ -48,9 +51,12 @@ core::Status SceneRenderConfig::validate() const {
 }
 
 SceneRenderSystem::SceneRenderSystem(rhi::IRenderDevice& device, MeshManager& meshes,
+                                     MaterialRuntimeCache& materials,
+                                     MaterialRuntimeHandle fallback_material,
                                      ScenePipelineSet pipelines,
                                      core::PrototypeId pipeline_material)
-    : device_(&device), meshes_(&meshes), pipelines_(pipelines),
+    : device_(&device), meshes_(&meshes), materials_(&materials),
+      fallback_material_(fallback_material), pipelines_(pipelines),
       pipeline_material_(std::move(pipeline_material)) {}
 
 SceneRenderSystem::~SceneRenderSystem() {
@@ -224,7 +230,11 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
             gpu.metadata[0] = static_cast<std::uint32_t>(instance.layer);
             gpu.metadata[1] = skin_matrix_offset;
             gpu.metadata[2] = skin_matrix_count;
-            gpu.metadata[3] = instance.sprite_frame;
+            const auto* material = materials_->find(batch.material);
+            if (material == nullptr || material->domain != MaterialRuntimeDomain::surface) {
+                material = materials_->find(fallback_material_);
+            }
+            gpu.metadata[3] = material == nullptr ? 0U : material->material_index;
             instance_scratch_.push_back(gpu);
         }
         const auto accepted = instance_scratch_.size() - first_instance_in_segment;
@@ -243,7 +253,7 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
                 "scene mesh or instance offset exceeds RHI range");
         }
         rhi::RenderDrawCommand draw;
-        draw.pipeline = pipelines_.for_layer(batch.layer);
+        draw.pipeline = pipelines_.for_layer(batch.layer, batch.two_sided);
         draw.vertex_buffer = mesh->vertices.buffer;
         draw.index_buffer = mesh->indices.buffer;
         draw.index_count = mesh->index_count;

@@ -1,5 +1,6 @@
 #include "engine/renderer/assets/sampler_cache.hpp"
 #include "engine/renderer/assets/shader_manager.hpp"
+#include "engine/renderer/assets/surface_texture_array.hpp"
 #include "engine/renderer/assets/texture_manager.hpp"
 #include "engine/renderer/materials/material_runtime_cache.hpp"
 #include "engine/renderer/materials/pipeline_cache.hpp"
@@ -330,6 +331,36 @@ void test_srgb_mip_generation() {
     assert(overflow_status.error().code == "texture_manager.extent_overflow");
 }
 
+void test_surface_texture_array_resizes_and_reuses_layers() {
+    renderer::rhi::RenderDeviceDesc device_desc;
+    auto device = renderer::rhi::create_render_device(device_desc);
+    assert(device);
+    const auto baseline = device.value()->live_resource_count();
+    renderer::TextureManager textures(*device.value());
+    renderer::SurfaceTextureArray surface(textures);
+    assert(surface.initialize({2, 2, 8}));
+    assert(surface.layer_count() == 4);
+    assert(surface.fallbacks().error == 0);
+    assert(surface.fallbacks().white == 1);
+    assert(surface.fallbacks().normal == 2);
+    const std::array<std::uint8_t, 8> pixels{255, 0, 0, 255, 0, 0, 255, 128};
+    auto layer = surface.add("base:test/non_square", 1, 2, pixels);
+    assert(layer && layer.value() == 4);
+    assert(surface.add("base:test/non_square", 1, 2, pixels).value() == layer.value());
+    assert(surface.synchronize());
+    assert(surface.texture_view() != nullptr);
+    assert(surface.texture_view()->array_layers == 5);
+    assert(device.value()->live_resource_count() == baseline + 1);
+    auto changed = pixels;
+    changed[0] = 0;
+    auto conflict = surface.add("base:test/non_square", 1, 2, changed);
+    assert(!conflict);
+    assert(conflict.error().code == "terrain_texture_array.layer_id_conflict");
+    assert(surface.shutdown());
+    assert(textures.shutdown());
+    assert(device.value()->live_resource_count() == baseline);
+}
+
 void test_material_table_updates_without_mesh_changes() {
     renderer::rhi::RenderDeviceDesc device_desc;
     auto device = renderer::rhi::create_render_device(device_desc);
@@ -383,10 +414,14 @@ void test_material_table_updates_without_mesh_changes() {
     assert(materials.block_render_table().revision() == revision);
     assert(materials.synchronize_gpu());
     assert(materials.gpu_table_buffer().is_valid());
+    assert(materials.surface_gpu_table_buffer().is_valid());
     assert(materials.stats().gpu_table.material_count == 2);
     assert(materials.stats().gpu_table.upload_count == 1);
+    assert(materials.stats().surface_gpu_table.material_count == 1);
+    assert(materials.stats().surface_gpu_table.upload_count == 1);
     const auto table_buffer = materials.gpu_table_buffer();
-    assert(device.value()->live_resource_count() == baseline + 1);
+    const auto surface_table_buffer = materials.surface_gpu_table_buffer();
+    assert(device.value()->live_resource_count() == baseline + 2);
 
     auto pipeline_material = core::PrototypeId::parse("base:materials/terrain_pipeline");
     assert(pipeline_material);
@@ -395,14 +430,19 @@ void test_material_table_updates_without_mesh_changes() {
     layout.shader_template = {"base", "shaders/terrain.frag"};
     layout.descriptors.push_back(
         {"voxel_materials", renderer::rhi::RenderDescriptorKind::storage_buffer, 0, true});
+    layout.descriptors.push_back(
+        {"surface_materials", renderer::rhi::RenderDescriptorKind::storage_buffer, 1, true});
     assert(device.value()->bind_pipeline_layout(layout));
     assert(materials.write_gpu_table_descriptor(pipeline_material.value(), "voxel_materials"));
+    assert(materials.write_gpu_surface_table_descriptor(pipeline_material.value(),
+                                                        "surface_materials"));
 
     material.base_color = {0.8F, 0.9F, 0.7F, 1.0F};
     assert(materials.upsert(material).value() == handle.value());
     assert(materials.find(handle.value())->revision == 2);
     assert(materials.synchronize_gpu());
     assert(materials.gpu_table_buffer() == table_buffer);
+    assert(materials.surface_gpu_table_buffer() == surface_table_buffer);
     assert(materials.stats().gpu_table.upload_count == 2);
     assert(materials.stats().gpu_table.resident_revision ==
            materials.block_render_table().revision());
@@ -421,6 +461,7 @@ int main() {
     test_push_constant_stage_coverage_requires_every_stage();
     test_texture_arrays_mips_fallbacks_and_sampler_cache();
     test_srgb_mip_generation();
+    test_surface_texture_array_resizes_and_reuses_layers();
     test_material_table_updates_without_mesh_changes();
     return 0;
 }

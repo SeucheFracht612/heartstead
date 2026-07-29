@@ -100,6 +100,7 @@ target_sources(
     renderer/assets/sampler_cache.cpp
     renderer/assets/mesh_manager.cpp
     renderer/assets/shader_manager.cpp
+    renderer/assets/surface_texture_array.cpp
     renderer/assets/texture_manager.cpp
     renderer/materials/material_asset_validation.cpp
     renderer/materials/block_render_table.cpp
@@ -306,6 +307,7 @@ target_sources(
       renderer/assets/mesh_manager.hpp
       renderer/assets/sampler_cache.hpp
       renderer/assets/shader_manager.hpp
+      renderer/assets/surface_texture_array.hpp
       renderer/assets/texture_manager.hpp
       renderer/materials/material_asset_validation.hpp
       renderer/materials/block_render_table.hpp
