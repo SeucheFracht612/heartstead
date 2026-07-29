@@ -1,6 +1,7 @@
 #include "engine/content/content_validation.hpp"
 #include "engine/entities/physical_resource.hpp"
 #include "engine/net/command_payload.hpp"
+#include "engine/world/chunks/chunk_edit_delta_codec.hpp"
 #include "engine/world/fluids/fluid_state.hpp"
 #include "game/foundation/foundation_world.hpp"
 #include "game/runtime/game_inspection.hpp"
@@ -11,8 +12,10 @@
 #include <cassert>
 #include <chrono>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace heartstead;
 
@@ -1224,6 +1227,7 @@ void test_session_save_and_reload_restores_authoritative_state() {
     assert(persisted);
     assert(!persisted.value().chunk_edits.empty());
     assert(!persisted.value().entities.empty());
+    assert(persisted.value().voxel_palette.entries == report.voxel_palette.manifest().entries);
     assert(runtime.shutdown());
 
     game::RuntimeConfiguration headless_config;
@@ -1232,6 +1236,10 @@ void test_session_save_and_reload_restores_authoritative_state() {
     assert(runtime.start_session_from_save(headless_config, database));
     session = runtime.session();
     assert(session != nullptr && session->server() != nullptr && session->client() == nullptr);
+    assert(session->server()->world().voxel_palette_manifest().entries ==
+           persisted.value().voxel_palette.entries);
+    assert(session->server()->voxel_palette().manifest().entries ==
+           persisted.value().voxel_palette.entries);
     const auto address = world::block_to_chunk_local(placed_voxel.position);
     const auto headless_authoritative =
         session->server()->world().chunks().get(address.chunk, address.local);
@@ -1264,6 +1272,66 @@ void test_session_save_and_reload_restores_authoritative_state() {
     assert(restored_player->state.position == saved_player_position);
     assert(session->client()->local_player_snapshot() != nullptr);
     assert(session->client()->local_player_snapshot()->state.position == saved_player_position);
+    assert(runtime.shutdown());
+    std::filesystem::remove_all(save_root);
+}
+
+void test_boundary_voxel_edits_survive_restart() {
+    const auto report = content::ContentValidation::validate(source_root());
+    assert(!report.has_errors());
+    auto runtime = make_runtime(report);
+    assert(runtime.start_session({}, make_session_request(report)));
+    auto* session = runtime.session();
+    assert(session != nullptr && session->server() != nullptr && session->client() != nullptr);
+    auto* player = session->server()->player_for_client(session->client()->client_id());
+    assert(player != nullptr);
+    player->state.position = {29.5, 1.0, 7.5};
+    player->state.velocity = {};
+    player->state.grounded = true;
+    player->state.mode = movement::PlayerControllerMode::grounded;
+
+    assert(session->submit_remove_voxel({game::foundation::boundary_edit_upper}, 10));
+    assert(session->submit_remove_voxel({game::foundation::boundary_edit_lower}, 11));
+    auto frame = runtime.run_frame({16'667, 17});
+    assert(frame && frame.value().server_ticks.size() == 1);
+    assert(frame.value().server_ticks.front().commands.command_reports.size() == 2);
+    assert(std::ranges::all_of(frame.value().server_ticks.front().commands.command_reports,
+                               [](const auto& command) { return command.success; }));
+
+    const auto save_root =
+        std::filesystem::temp_directory_path() / "heartstead-boundary-save-reload-test";
+    std::filesystem::remove_all(save_root);
+    const save::FileSaveDatabase database(save_root);
+    assert(runtime.save_to(database));
+    auto persisted = database.read_snapshot();
+    assert(persisted);
+    const auto upper_chunk = world::chunk_coord_for_block(game::foundation::boundary_edit_upper);
+    const auto lower_chunk = world::chunk_coord_for_block(game::foundation::boundary_edit_lower);
+    assert(upper_chunk != lower_chunk);
+    assert(std::ranges::any_of(persisted.value().chunk_edits,
+                               [&](const auto& edit) { return edit.coord == upper_chunk; }));
+    assert(std::ranges::any_of(persisted.value().chunk_edits,
+                               [&](const auto& edit) { return edit.coord == lower_chunk; }));
+    assert(runtime.shutdown());
+
+    game::RuntimeConfiguration headless;
+    headless.create_client = false;
+    headless.headless = true;
+    assert(runtime.start_session_from_save(headless, database));
+    session = runtime.session();
+    assert(session != nullptr && session->server() != nullptr);
+    for (const auto position :
+         {game::foundation::boundary_edit_upper, game::foundation::boundary_edit_lower}) {
+        const auto address = world::block_to_chunk_local(position);
+        const auto cell = session->server()->world().chunks().get(address.chunk, address.local);
+        assert(cell && cell.value().is_air());
+    }
+    auto reloaded_snapshot = runtime.capture_save_snapshot();
+    assert(reloaded_snapshot);
+    assert(std::ranges::any_of(reloaded_snapshot.value().chunk_edits,
+                               [&](const auto& edit) { return edit.coord == upper_chunk; }));
+    assert(std::ranges::any_of(reloaded_snapshot.value().chunk_edits,
+                               [&](const auto& edit) { return edit.coord == lower_chunk; }));
     assert(runtime.shutdown());
     std::filesystem::remove_all(save_root);
 }
@@ -1328,6 +1396,60 @@ void test_session_file_load_preserves_missing_prototypes() {
     assert(server->world().missing_prototypes().size() == 1);
     assert(server->world().missing_prototypes().front().original_prototype_id ==
            removed_build_piece.prototype_id);
+    assert(runtime.shutdown());
+    std::filesystem::remove_all(save_root);
+}
+
+void test_session_load_restores_persisted_missing_voxel_palette() {
+    const auto report = content::ContentValidation::validate(source_root());
+    assert(!report.has_errors());
+    auto runtime = make_runtime(report);
+    assert(runtime.start_session({}, make_session_request(report)));
+    auto snapshot = runtime.capture_save_snapshot();
+    assert(snapshot);
+    assert(runtime.shutdown());
+
+    assert(!snapshot.value().voxel_palette.entries.empty());
+    const auto highest_type = std::ranges::max(snapshot.value().voxel_palette.entries, {},
+                                               &world::VoxelPaletteManifestEntry::type);
+    assert(highest_type.type < std::numeric_limits<std::uint16_t>::max());
+    const auto missing_type = static_cast<std::uint16_t>(highest_type.type + 1U);
+    const auto missing_id = core::PrototypeId::parse("removed:voxels/legacy_masonry");
+    assert(missing_id);
+    snapshot.value().voxel_palette.entries.push_back({missing_type, *missing_id});
+
+    constexpr world::BlockCoord missing_position{10, 1, 8};
+    const auto address = world::block_to_chunk_local(missing_position);
+    world::VoxelEditRecord missing_edit{
+        address.chunk, address.local, {}, world::VoxelCell{missing_type, 0}};
+    const std::vector<const world::VoxelEditRecord*> edits{&missing_edit};
+    snapshot.value().chunk_edits.push_back(
+        {address.chunk, world::ChunkEditDeltaTextCodec::encode(address.chunk, edits)});
+
+    const auto save_root =
+        std::filesystem::temp_directory_path() / "heartstead-runtime-missing-voxel-test";
+    std::filesystem::remove_all(save_root);
+    const save::FileSaveDatabase database(save_root);
+    assert(database.write_snapshot(snapshot.value()));
+
+    game::RuntimeConfiguration headless;
+    headless.create_client = false;
+    headless.headless = true;
+    assert(runtime.start_session_from_save(headless, database));
+    const auto* server = runtime.session()->server();
+    assert(server != nullptr);
+    const auto* missing = server->voxel_palette().find_by_type(missing_type);
+    assert(missing != nullptr);
+    assert(missing->prototype_id == *missing_id);
+    assert(missing->missing_prototype);
+    assert(missing->terrain_material == "missing");
+    assert(missing->display_name.find(missing_id->value()) != std::string::npos);
+    const auto restored = server->world().chunks().get(address.chunk, address.local);
+    assert(restored && restored.value().type == missing_type);
+    auto round_trip = runtime.capture_save_snapshot();
+    assert(round_trip);
+    const auto* persisted_missing = round_trip.value().voxel_palette.find_by_type(missing_type);
+    assert(persisted_missing != nullptr && persisted_missing->prototype_id == *missing_id);
     assert(runtime.shutdown());
     std::filesystem::remove_all(save_root);
 }
@@ -1584,8 +1706,10 @@ int main() {
     test_runtime_relights_and_replicates_chunk_light();
     test_runtime_simulates_and_replicates_voxel_fluid();
     test_session_save_and_reload_restores_authoritative_state();
+    test_boundary_voxel_edits_survive_restart();
     test_foundation_save_rejects_incompatible_layout();
     test_session_file_load_preserves_missing_prototypes();
+    test_session_load_restores_persisted_missing_voxel_palette();
     test_gameplay_modules_extend_runtime_through_registration_contract();
     test_replication_tombstone_removes_presentation_proxy();
     test_feature_registries_reject_missing_callbacks();

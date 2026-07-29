@@ -182,9 +182,9 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [x] `[Automated]` an existing Foundation save slot reopens instead of creating another baseline.
 - [x] `[Automated]` player position survives clean save and restart.
 - [ ] `[Both]` removed and placed voxels survive clean save and restart.
-- [ ] `[Automated]` edits on both sides of a chunk boundary survive restart.
-- [ ] `[Automated]` the active voxel palette manifest is preserved and validated on load.
-- [ ] `[Automated]` a missing voxel prototype follows the existing missing-prototype recovery path.
+- [x] `[Automated]` edits on both sides of a chunk boundary survive restart.
+- [x] `[Automated]` the active voxel palette manifest is preserved and validated on load.
+- [x] `[Automated]` a missing voxel prototype follows the existing missing-prototype recovery path.
 - [x] `[Automated]` an incompatible Foundation layout version fails clearly rather than applying
       edit deltas to an unrelated baseline.
 - [x] `[Automated]` periodic dirty save and clean-shutdown save use the transactional generation
@@ -219,8 +219,10 @@ Recorded 2026-07-29:
   - `test_typed_voxel_commands_validate_and_replicate`
   - `test_boundary_voxel_edit_rebuilds_collision_and_removes_support`
   - `test_session_save_and_reload_restores_authoritative_state`
+  - `test_boundary_voxel_edits_survive_restart`
   - `test_foundation_save_rejects_incompatible_layout`
   - `test_session_file_load_preserves_missing_prototypes`
+  - `test_session_load_restores_persisted_missing_voxel_palette`
 - `heartstead_engine_tests`
   - `test_filtered_model_dependency_cooking`
     - selects the model's external buffer and image dependency closure

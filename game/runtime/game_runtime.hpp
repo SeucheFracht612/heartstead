@@ -140,6 +140,7 @@ class GameRuntime {
     GameRuntimeStartupReport startup_report_;
     std::shared_ptr<const modding::PrototypeRegistry> prototypes_;
     std::shared_ptr<const world::VoxelPalette> voxel_palette_;
+    std::shared_ptr<const world::VoxelPalette> session_voxel_palette_;
     std::shared_ptr<const assets::AssetCatalog> assets_;
     std::shared_ptr<const audio::SoundEventRegistry> sound_events_;
     std::unique_ptr<RuntimeSession> session_;

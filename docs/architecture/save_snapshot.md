@@ -64,6 +64,13 @@ imported. That path applies to an already resident baseline; if no chunk exists,
 one. Normal streamed world loading must generate the deterministic baseline first and use
 `insert_generated_with_saved_edits` so the first saved `previous` cell is checked against it.
 
+Opening a saved game also materializes a session-owned `VoxelPalette` from the persisted palette
+manifest before the server or client world is created. Existing numeric voxel types therefore keep
+their saved prototype assignments, prototypes introduced by the current content set are appended,
+and prototypes that no longer exist resolve to named missing-voxel definitions. Rendering,
+collision, selection, command validation, and subsequent saves all consume that same restored
+palette for the lifetime of the session.
+
 `SaveBinaryCodec` can encode and decode the current `SaveSnapshot` as a versioned binary
 payload with explicit typed sections. It is the first binary backend foundation; a later
 database save system should preserve the same section boundaries.

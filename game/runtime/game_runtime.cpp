@@ -482,11 +482,23 @@ core::Status GameRuntime::start_session(RuntimeConfiguration config, SessionRequ
     if (request.scenario_id.empty()) {
         request.scenario_id = startup_report_.selected_scenario_id;
     }
+    auto session_palette = voxel_palette_;
+    if (request.initial_snapshot.has_value()) {
+        auto restored_palette = world::voxel_palette_from_prototypes(
+            *prototypes_, request.initial_snapshot->voxel_palette, true);
+        if (!restored_palette) {
+            return core::Status::failure(restored_palette.error().code,
+                                         restored_palette.error().message);
+        }
+        session_palette =
+            std::make_shared<world::VoxelPalette>(std::move(restored_palette).value());
+    }
     auto created = RuntimeSession::create(std::move(config), std::move(request), *prototypes_,
-                                          *voxel_palette_);
+                                          *session_palette);
     if (!created) {
         return core::Status::failure(created.error().code, created.error().message);
     }
+    session_voxel_palette_ = std::move(session_palette);
     session_ = std::move(created).value();
     return core::Status::ok();
 }
@@ -586,6 +598,7 @@ core::Status GameRuntime::shutdown() {
     }
     auto status = session_->shutdown();
     session_.reset();
+    session_voxel_palette_.reset();
     return status;
 }
 

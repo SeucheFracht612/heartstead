@@ -707,6 +707,10 @@ const world::WorldState& ServerRuntime::world() const noexcept {
     return world_;
 }
 
+const world::VoxelPalette& ServerRuntime::voxel_palette() const noexcept {
+    return *desc_.voxel_palette;
+}
+
 entities::EntityWorld& ServerRuntime::entities() noexcept {
     return entities_;
 }

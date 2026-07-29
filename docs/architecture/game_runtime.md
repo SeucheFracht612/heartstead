@@ -34,6 +34,8 @@ Implemented foundation:
   - grants scenario starting items once for each newly created persistent player inventory, while
     preserving an existing inventory when a saved player reconnects
   - restores the saved scenario automatically and rejects explicit save/scenario mismatches
+  - restores saved voxel type assignments into a session-owned palette, appends newly introduced
+    prototypes, and represents removed prototypes with named missing-voxel definitions
   - verifies that required engine-level prototype families are present, including materials
     and scenarios
   - registers the default Heartstead script host API surface for server runtime, client runtime,
