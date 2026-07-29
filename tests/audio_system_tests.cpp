@@ -4,6 +4,7 @@
 #include "engine/audio/audio_mixer.hpp"
 #include "engine/audio/audio_system.hpp"
 #include "engine/audio/sound_event.hpp"
+#include "engine/core/logging.hpp"
 #include "engine/debug/inspection.hpp"
 #include "engine/modding/generic_prototype.hpp"
 
@@ -13,6 +14,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <vector>
 
 namespace {
@@ -150,6 +152,62 @@ void test_cone_attenuation_and_priority_stealing() {
     assert(!rejected);
     assert(rejected.error().code == "audio.voice_limit");
     assert(mixer.stats().rejected_voices == 1);
+}
+
+void test_missing_event_uses_named_fallback_once_per_request_and_reports_once_per_id() {
+    audio::SoundEventRegistry registry;
+    auto fallback = event("test:audio/fallback");
+    fallback.spatialized = true;
+    assert(registry.add(fallback));
+
+    audio::AudioMixerConfig config;
+    config.maximum_voices = 8;
+    config.fallback_event_id = "test:audio/fallback";
+    audio::AudioMixer mixer(registry, config);
+
+    std::vector<std::string> warnings;
+    core::set_log_sink([&warnings](core::LogLevel level, std::string_view message) {
+        if (level == core::LogLevel::warning) {
+            warnings.emplace_back(message);
+        }
+    });
+    audio::AudioEmitterState emitter;
+    emitter.position = position(3, 4, 5);
+    const auto missing_id = id("test:audio/not_registered");
+    auto first = mixer.play({missing_id, emitter});
+    auto second = mixer.play({missing_id, emitter});
+    core::reset_log_sink();
+
+    assert(first);
+    assert(second);
+    assert(mixer.snapshot(first.value())->event_id == id("test:audio/fallback"));
+    assert(mixer.snapshot(second.value())->event_id == id("test:audio/fallback"));
+    assert(mixer.stats().fallback_voices == 2);
+    assert(mixer.stats().fallback_diagnostics == 1);
+    assert(mixer.stats().played_voices == 2);
+    assert(mixer.stats().rejected_voices == 0);
+    assert(warnings.size() == 1);
+    assert(warnings.front().find("test:audio/not_registered") != std::string::npos);
+    assert(warnings.front().find("test:audio/fallback") != std::string::npos);
+
+    audio::AudioMixer no_fallback(registry, {8, 0.02F, ""});
+    auto rejected = no_fallback.play({id("test:audio/still_missing"), emitter});
+    assert(!rejected);
+    assert(rejected.error().code == "audio.event_missing");
+    assert(no_fallback.stats().fallback_voices == 0);
+    assert(no_fallback.stats().rejected_voices == 1);
+
+    auto invalid_request = mixer.play({});
+    assert(!invalid_request);
+    assert(invalid_request.error().code == "audio.event_missing");
+    assert(mixer.stats().fallback_voices == 2);
+    assert(mixer.stats().fallback_diagnostics == 1);
+
+    audio::AudioMixerConfig invalid;
+    invalid.fallback_event_id = "not-a-logical-id";
+    const auto invalid_status = invalid.validate();
+    assert(!invalid_status);
+    assert(invalid_status.error().code == "audio_mixer.invalid_fallback_event");
 }
 
 void test_null_backend_owns_logical_voices() {
@@ -310,6 +368,7 @@ void test_miniaudio_backend_and_owner_thread_device_rebuild() {
     desc.assets = &assets;
     desc.cooked_assets = &cooked_store.value();
     desc.use_null_output_device = true;
+    desc.mixer.fallback_event_id = "test:audio/miniaudio_tone";
     auto system = audio::create_audio_system(desc);
     assert(system);
     assert(system.value()->backend() == audio::AudioBackend::miniaudio);
@@ -336,6 +395,17 @@ void test_miniaudio_backend_and_owner_thread_device_rebuild() {
     assert(system.value()->stats().cached_assets == 2);
     assert(system.value()->stats().asset_cache_hits == 1);
     assert(system.value()->stats().source_asset_loads == 0);
+    auto fallback_voice =
+        system.value()->play({id("test:audio/missing_tone"), tone_emitter, 1.0F, 1.0F});
+    assert(fallback_voice);
+    auto fallback_snapshot = system.value()->voice_snapshot(fallback_voice.value());
+    assert(fallback_snapshot.has_value());
+    assert(fallback_snapshot->event_id == id("test:audio/miniaudio_tone"));
+    assert(system.value()->stats().fallback_voices == 1);
+    assert(system.value()->stats().cached_assets == 2);
+    assert(system.value()->stats().asset_cache_hits == 2);
+    assert(system.value()->stats().source_asset_loads == 0);
+    assert(system.value()->stop(fallback_voice.value()));
     assert(system.value()->stop(tone_voice.value()));
     assert(system.value()->stop(replacement.value()));
     system.value().reset();
@@ -348,6 +418,7 @@ int main() {
     test_sound_event_prototype_resolution();
     test_floating_origin_spatial_math_and_gain_ramps();
     test_cone_attenuation_and_priority_stealing();
+    test_missing_event_uses_named_fallback_once_per_request_and_reports_once_per_id();
     test_null_backend_owns_logical_voices();
     test_miniaudio_backend_and_owner_thread_device_rebuild();
     return 0;

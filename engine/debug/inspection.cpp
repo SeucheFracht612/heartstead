@@ -944,6 +944,8 @@ InspectionData Inspector::inspect(const audio::AudioSystemStats& stats) {
     add_field(data, "stopped_voices", std::to_string(stats.stopped_voices));
     add_field(data, "stolen_voices", std::to_string(stats.stolen_voices));
     add_field(data, "rejected_voices", std::to_string(stats.rejected_voices));
+    add_field(data, "fallback_voices", std::to_string(stats.fallback_voices));
+    add_field(data, "fallback_diagnostics", std::to_string(stats.fallback_diagnostics));
     add_field(data, "device_reinitializations", std::to_string(stats.device_reinitializations));
     add_field(data, "device_failures", std::to_string(stats.device_failures));
     add_field(data, "cached_assets", std::to_string(stats.cached_assets));

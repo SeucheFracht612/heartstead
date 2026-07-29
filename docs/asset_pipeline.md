@@ -482,6 +482,10 @@ flat normal texture, error material, and error mesh.
 - An absent voxel surface sound uses the player visual's default footstep.
 - Absent optional voxel break/place feedback uses the interaction fallback and logs the voxel ID,
   missing role, and selected fallback once per presentation-system lifetime.
+- A runtime request for an unregistered sound event uses
+  `base:audio/interaction_fallback`. The request keeps its emitter, while the fallback supplies the
+  cooked asset and playback policy. The audio diagnostics report the missing and fallback IDs once
+  per distinct missing ID.
 - An entity with no registered visual uses `base:visuals/fallback`, whose visible primitive binds
   the named renderer error material. The unresolved entity prototype ID is logged once per
   presentation-system lifetime.
@@ -490,8 +494,9 @@ flat normal texture, error material, and error mesh.
   the logical asset ID and reason.
 
 A missing or uncookable model referenced by a declared visual remains a validation/startup error.
-The unknown-entity fallback is a diagnostic safety net, not a substitute for delivering a valid
-model.
+Likewise, a declared sound event with a missing or uncookable asset is a content error rather than
+a fallback case. Runtime fallbacks are diagnostic safety nets, not substitutes for delivering
+valid definitions and assets.
 
 ## Delivery checklist
 

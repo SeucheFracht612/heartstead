@@ -1,8 +1,11 @@
 #include "engine/audio/audio_mixer.hpp"
 
+#include "engine/core/logging.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <string>
 
 namespace heartstead::audio {
 
@@ -64,21 +67,44 @@ core::Status AudioMixerConfig::validate() const {
             "audio_mixer.invalid_gain_ramp",
             "audio mixer gain ramp duration must be finite and non-negative");
     }
+    if (!fallback_event_id.empty() && !core::PrototypeId::parse(fallback_event_id).has_value()) {
+        return core::Status::failure(
+            "audio_mixer.invalid_fallback_event",
+            "audio mixer fallback event must be empty or a logical namespace:path id");
+    }
     return core::Status::ok();
 }
 
 AudioMixer::AudioMixer(const SoundEventRegistry& events, AudioMixerConfig config)
-    : events_(&events), config_(config) {
-    stats_.maximum_voices = config.maximum_voices;
+    : events_(&events), config_(std::move(config)),
+      fallback_event_id_(core::PrototypeId::parse(config_.fallback_event_id)) {
+    stats_.maximum_voices = config_.maximum_voices;
     stats_.master_gain = 1.0F;
 }
 
 core::Result<AudioVoiceId> AudioMixer::play(const AudioPlayRequest& request) {
-    const auto* event = events_->find(request.event_id);
-    if (event == nullptr) {
+    if (!request.event_id.is_valid()) {
         ++stats_.rejected_voices;
         return core::Result<AudioVoiceId>::failure("audio.event_missing",
-                                                   "audio event prototype is not registered");
+                                                   "audio event prototype id is invalid");
+    }
+    const auto* event = events_->find(request.event_id);
+    bool using_fallback = false;
+    if (event == nullptr) {
+        event = fallback_event_id_.has_value() ? events_->find(*fallback_event_id_) : nullptr;
+        if (event == nullptr) {
+            ++stats_.rejected_voices;
+            return core::Result<AudioVoiceId>::failure(
+                "audio.event_missing",
+                "audio event prototype is not registered and no configured fallback is available");
+        }
+        using_fallback = true;
+        if (reported_missing_events_.insert(request.event_id.value()).second) {
+            ++stats_.fallback_diagnostics;
+            core::log(core::LogLevel::warning, "audio event '" + request.event_id.value() +
+                                                   "' is not registered; using fallback event '" +
+                                                   event->prototype_id.value() + "'");
+        }
     }
     if (!non_negative_finite(request.gain) || !std::isfinite(request.pitch) ||
         request.pitch <= 0.0F) {
@@ -128,6 +154,7 @@ core::Result<AudioVoiceId> AudioMixer::play(const AudioPlayRequest& request) {
     by_id_.emplace(voice.id.value(), voices_.size());
     voices_.push_back(std::move(voice));
     ++stats_.played_voices;
+    stats_.fallback_voices += using_fallback ? 1U : 0U;
     stats_.active_voices = static_cast<std::uint32_t>(voices_.size());
     return core::Result<AudioVoiceId>::success(voices_.back().id);
 }

@@ -8,7 +8,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace heartstead::audio {
@@ -16,6 +18,7 @@ namespace heartstead::audio {
 struct AudioMixerConfig {
     std::uint32_t maximum_voices = 128;
     float gain_ramp_seconds = 0.02F;
+    std::string fallback_event_id = "base:audio/interaction_fallback";
 
     [[nodiscard]] core::Status validate() const;
 };
@@ -67,6 +70,8 @@ class AudioMixer {
     std::unordered_map<std::uint64_t, std::size_t> by_id_;
     std::uint64_t next_voice_id_ = 1;
     std::uint64_t next_sequence_ = 1;
+    std::optional<core::PrototypeId> fallback_event_id_;
+    std::unordered_set<std::string> reported_missing_events_;
     AudioSystemStats stats_{};
 };
 

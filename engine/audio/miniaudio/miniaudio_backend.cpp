@@ -113,7 +113,16 @@ class MiniaudioSystem final : public IAudioSystem {
             return logical_voice;
         }
         prune_inactive_backend_voices();
-        const auto* event = desc_.events->find(request.event_id);
+        const auto logical_snapshot = mixer_.snapshot(logical_voice.value());
+        if (!logical_snapshot.has_value()) {
+            if (mixer_.is_active(logical_voice.value())) {
+                (void)mixer_.stop(logical_voice.value());
+            }
+            return core::Result<AudioVoiceId>::failure(
+                "audio.voice_state_missing",
+                "audio mixer accepted a voice without retaining its resolved event state");
+        }
+        const auto* event = desc_.events->find(logical_snapshot->event_id);
         const auto* asset = event == nullptr || desc_.assets == nullptr
                                 ? nullptr
                                 : desc_.assets->find_active(event->asset_id);

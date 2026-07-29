@@ -61,6 +61,25 @@ supporting full or partial voxel and selects `interaction.footstep_sound`; an ab
 uses `sounds.footstep_default` from the player visual. The audio system must be shut down before its
 runtime because these registries are borrowed for the system lifetime.
 
+## Runtime fallback
+
+`AudioMixerConfig::fallback_event_id` defaults to `base:audio/interaction_fallback`. When playback
+requests an unregistered event ID and that configured fallback exists, the mixer creates the voice
+from the fallback definition. The production backend then resolves the asset from the accepted
+voice snapshot, so it loads and plays the fallback's cooked payload rather than retrying the
+original missing ID.
+
+The fallback keeps its own spatialization, bus, gain, priority, and instance-limit policy. The base
+fallback is positional, so a missing positional event still needs the request's emitter. Set the
+configuration ID to an empty string to make missing events fail with `audio.event_missing`, which
+is useful for isolated validation tests.
+
+Fallback use is not silent: the mixer logs the missing and selected event IDs once per distinct
+missing ID for its lifetime. `AudioSystemStats::fallback_voices` counts accepted fallback voices
+and `fallback_diagnostics` counts the deduplicated warnings. This protects a running session from a
+late or stale playback request; it does not make an invalid declared `sound_event` valid. Missing
+or wrong-kind asset references still fail aggregate content validation before startup.
+
 ## Playback and device recovery
 
 The production backend uses miniaudio's high-level engine/resource-manager APIs. Cooked assets are
@@ -94,8 +113,9 @@ Primary references:
 ## Verification
 
 - `heartstead_audio_system_tests` covers asset resolution, floating-origin spatial math, gain
-  ramps, direction cones, priority stealing, rejected voices, procedural PCM, the real miniaudio
-  null device, device-loss recovery, and offline rendering.
+  ramps, direction cones, priority stealing, rejected voices, deduplicated named-event fallback,
+  fallback playback from a production-cooked payload, procedural PCM, the real miniaudio null
+  device, device-loss recovery, and offline rendering.
 - `heartstead_client_audio_presentation_tests` covers exact far-origin listener updates, grounded
   distance-based footsteps, partial-voxel surface selection, default footsteps, and ambient-loop
   lifecycle through the logical null backend.

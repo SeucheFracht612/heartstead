@@ -153,6 +153,8 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [x] `[Automated]` missing or duplicate mapped animation names produce a clear validation error.
 - [x] `[Automated]` WAV and Ogg Vorbis sources cook to the versioned runtime audio representation.
 - [ ] `[Both]` at least one positional emitter plays a cooked sound asset.
+- [x] `[Automated]` an unregistered runtime sound event resolves to the named fallback and the real
+      audio backend plays its production-cooked payload.
 - [x] `[Automated]` runtime model, texture, material, animation, and audio resources are cached by
       stable logical asset ID.
 - [ ] `[Both]` missing texture, material, model, animation, and sound assets each use their named
@@ -246,6 +248,8 @@ Recorded 2026-07-29:
 - `heartstead_audio_system_tests`
   - production-cooks WAV and procedural-tone fixtures, deletes both sources, plays the cooked
     payloads (including a positional tone), and verifies stable logical-ID cache reuse
+  - verifies a missing event resolves to the configured named fallback, warns once per missing ID,
+    exposes fallback counters, and plays the fallback's cooked payload through miniaudio
 - `heartstead_renderer_frontend_tests`
   - `test_renderer_frontend_submits_headless_frames` verifies model base-color textures use an
     sRGB image view while base-color factors reach the GPU surface-material record unchanged, and

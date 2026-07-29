@@ -79,6 +79,8 @@ struct AudioSystemStats {
     std::uint64_t stopped_voices = 0;
     std::uint64_t stolen_voices = 0;
     std::uint64_t rejected_voices = 0;
+    std::uint64_t fallback_voices = 0;
+    std::uint64_t fallback_diagnostics = 0;
     std::uint64_t device_reinitializations = 0;
     std::uint64_t device_failures = 0;
     std::uint32_t cached_assets = 0;
