@@ -1,11 +1,13 @@
 #include "game/features/interaction/voxel_commands.hpp"
 
+#include "engine/items/item_prototype.hpp"
 #include "engine/net/command_payload.hpp"
 #include "engine/world/voxel_change.hpp"
 #include "engine/world/world_state.hpp"
 
 #include <charconv>
 #include <cmath>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -71,6 +73,92 @@ validate_voxel_interaction_reach_impl(world::BlockCoord position,
                                      "voxel target is outside the player's interaction reach");
     }
     return core::Status::ok();
+}
+
+struct PreparedResourceGrant {
+    world::InventoryRecord* inventory = nullptr;
+    items::ItemStack stack;
+    std::optional<std::size_t> merge_index;
+};
+
+[[nodiscard]] core::Result<std::optional<PreparedResourceGrant>>
+prepare_resource_grant(world::VoxelCell previous, core::SaveId inventory_owner,
+                       const net::CommandExecutionContext& context) {
+    if (context.voxel_palette == nullptr) {
+        return core::Result<std::optional<PreparedResourceGrant>>::failure(
+            "voxel_command.missing_palette",
+            "voxel removal requires the authoritative voxel palette");
+    }
+    const auto* voxel = context.voxel_palette->find_by_type(previous.type);
+    if (voxel == nullptr) {
+        return core::Result<std::optional<PreparedResourceGrant>>::failure(
+            "voxel_command.unknown_voxel",
+            "removed voxel type is not present in the authoritative palette");
+    }
+    if (!voxel->interaction.break_resource_item.has_value()) {
+        return core::Result<std::optional<PreparedResourceGrant>>::success(std::nullopt);
+    }
+    if (!inventory_owner.is_valid() || context.world_state == nullptr) {
+        return core::Result<std::optional<PreparedResourceGrant>>::failure(
+            "voxel_command.missing_inventory",
+            "voxel resource reward requires an authoritative player inventory");
+    }
+    auto* inventory = context.world_state->inventories().find(inventory_owner);
+    if (inventory == nullptr) {
+        return core::Result<std::optional<PreparedResourceGrant>>::failure(
+            "voxel_command.missing_inventory",
+            "voxel resource reward inventory is not loaded");
+    }
+    if (context.prototypes == nullptr) {
+        return core::Result<std::optional<PreparedResourceGrant>>::failure(
+            "voxel_command.missing_prototypes",
+            "voxel resource reward requires the authoritative prototype registry");
+    }
+    const auto* prototype = context.prototypes->find(*voxel->interaction.break_resource_item);
+    if (prototype == nullptr) {
+        return core::Result<std::optional<PreparedResourceGrant>>::failure(
+            "voxel_command.missing_resource_item",
+            "voxel resource reward prototype is not loaded: " +
+                voxel->interaction.break_resource_item->value());
+    }
+    auto definition = items::item_definition_from_prototype(*prototype);
+    if (!definition) {
+        return core::Result<std::optional<PreparedResourceGrant>>::failure(
+            definition.error().code, definition.error().message);
+    }
+    auto stack = definition.value().create_stack(1);
+    if (!stack) {
+        return core::Result<std::optional<PreparedResourceGrant>>::failure(
+            stack.error().code, stack.error().message);
+    }
+
+    PreparedResourceGrant grant;
+    grant.inventory = inventory;
+    grant.stack = std::move(stack).value();
+    for (std::size_t index = 0; index < inventory->stacks.size(); ++index) {
+        const auto& candidate = inventory->stacks[index];
+        if (candidate.can_merge_with(grant.stack) && candidate.remaining_capacity() != 0) {
+            grant.merge_index = index;
+            break;
+        }
+    }
+    return core::Result<std::optional<PreparedResourceGrant>>::success(std::move(grant));
+}
+
+void commit_resource_grant(PreparedResourceGrant grant, core::SaveId inventory_owner,
+                           world::BlockCoord position, world::WorldOperation& operation) {
+    if (grant.merge_index.has_value()) {
+        ++grant.inventory->stacks[*grant.merge_index].count;
+    } else {
+        grant.inventory->stacks.push_back(std::move(grant.stack));
+    }
+    (void)operation.record_mutation("grant voxel resource item");
+    operation.emit_event(
+        {std::string(voxel_resource_granted_event_type), inventory_owner,
+         (grant.merge_index.has_value()
+              ? grant.inventory->stacks[*grant.merge_index].prototype_id.value()
+              : grant.inventory->stacks.back().prototype_id.value()) +
+             '@' + encode_position(position)});
 }
 
 [[nodiscard]] core::Status commit_voxel(world::BlockCoord position, world::VoxelCell next,
@@ -224,6 +312,7 @@ core::Status execute_place_voxel(const PlaceVoxelCommand& command,
 
 core::Status execute_remove_voxel(const RemoveVoxelCommand& command,
                                   const movement::PlayerControllerState& player,
+                                  core::SaveId inventory_owner,
                                   const net::CommandEnvelope& envelope,
                                   const net::CommandExecutionContext& context,
                                   world::WorldOperation& operation) {
@@ -248,7 +337,20 @@ core::Status execute_remove_voxel(const RemoveVoxelCommand& command,
         return core::Status::failure("voxel_command.target_empty",
                                      "voxel removal target is already empty");
     }
-    return commit_voxel(command.position, world::VoxelCell::air(), envelope, context, operation);
+    auto resource_grant = prepare_resource_grant(previous.value(), inventory_owner, context);
+    if (!resource_grant) {
+        return core::Status::failure(resource_grant.error().code,
+                                     resource_grant.error().message);
+    }
+    status = commit_voxel(command.position, world::VoxelCell::air(), envelope, context, operation);
+    if (!status) {
+        return status;
+    }
+    if (resource_grant.value().has_value()) {
+        commit_resource_grant(std::move(*resource_grant.value()), inventory_owner, command.position,
+                              operation);
+    }
+    return core::Status::ok();
 }
 
 } // namespace heartstead::game::interaction

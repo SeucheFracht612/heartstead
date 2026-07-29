@@ -220,7 +220,8 @@ net::TransportMessage make_entity_motion_snapshot_message(const EntityMotionSnap
 core::Result<EntityMotionSnapshot>
 entity_motion_snapshot_from_transport(const net::TransportEnvelope& envelope) {
     if (envelope.message.kind != net::TransportMessageKind::replication ||
-        envelope.message.channel != net::TransportChannel::unreliable ||
+        (envelope.message.channel != net::TransportChannel::unreliable &&
+         envelope.message.channel != net::TransportChannel::reliable) ||
         envelope.message.payload_type != entity_motion_snapshot_payload_type) {
         return core::Result<EntityMotionSnapshot>::failure(
             "entity_motion_snapshot.invalid_transport",

@@ -41,6 +41,8 @@ int main() {
     assert(transported);
     assert(transported.value() == snapshot);
     envelope.message.channel = net::TransportChannel::reliable;
+    assert(entities::entity_motion_snapshot_from_transport(envelope));
+    envelope.message.kind = net::TransportMessageKind::command;
     assert(!entities::entity_motion_snapshot_from_transport(envelope));
 
     envelope.message =

@@ -990,6 +990,43 @@ core::Status ServerRuntime::initialize_new_world_scenario() {
         }
         ++cargo_offset;
     }
+    for (const auto& placement : desc_.scenario.scene_entities) {
+        const auto* prototype = desc_.prototypes->find(placement.prototype_id);
+        if (prototype == nullptr) {
+            return core::Status::failure(
+                "server_runtime.scene_entity_missing",
+                "scenario scene entity prototype is not loaded: " +
+                    placement.prototype_id.value());
+        }
+        auto definition = entities::entity_definition_from_prototype(*prototype);
+        if (!definition) {
+            return core::Status::failure(definition.error().code, definition.error().message);
+        }
+        auto runtime_handle = world_.runtime_handles().reserve();
+        auto net_id = world_.entity_net_ids().reserve();
+        if (!runtime_handle || !net_id) {
+            const auto& error = !runtime_handle ? runtime_handle.error() : net_id.error();
+            return core::Status::failure(error.code, error.message);
+        }
+        core::SaveId save_id;
+        if (definition.value().persistent) {
+            auto allocated_save_id = world_.save_ids().reserve();
+            if (!allocated_save_id) {
+                return core::Status::failure(allocated_save_id.error().code,
+                                             allocated_save_id.error().message);
+            }
+            save_id = allocated_save_id.value();
+        }
+        auto record = definition.value().create_record(runtime_handle.value(), net_id.value(),
+                                                       save_id, placement.transform);
+        if (!record) {
+            return core::Status::failure(record.error().code, record.error().message);
+        }
+        status = world_.entities().insert(std::move(record).value());
+        if (!status) {
+            return status;
+        }
+    }
     return ensure_spawn_area();
 }
 
@@ -1459,6 +1496,32 @@ core::Status ServerRuntime::send_initial_chunks(core::NetId client_id) {
             if (!status) {
                 return status;
             }
+        }
+    }
+    for (const auto* record : world_.entities().records()) {
+        if (record->kind == entities::EntityKind::player || !record->net_id.is_valid()) {
+            continue;
+        }
+        entities::EntityMotionSnapshot snapshot;
+        snapshot.entity_net_id = record->net_id;
+        snapshot.prototype_id = record->prototype_id;
+        snapshot.previous_transform = record->transform;
+        snapshot.current_transform = record->transform;
+        snapshot.simulation_tick = 0;
+        auto status = snapshot.validate();
+        if (!status) {
+            return status;
+        }
+        auto sequence = reserve_custom_replication_sequence();
+        if (!sequence) {
+            return core::Status::failure(sequence.error().code, sequence.error().message);
+        }
+        auto message = entities::make_entity_motion_snapshot_message(
+            snapshot, sequence.value(), current_time_ms_);
+        message.channel = net::TransportChannel::reliable;
+        status = host_.send_replication_message(client_id, std::move(message));
+        if (!status) {
+            return status;
         }
     }
     const auto* local_player = player_for_client(client_id);

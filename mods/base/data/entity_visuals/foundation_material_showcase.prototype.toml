@@ -1,0 +1,7 @@
+kind = "entity_visual"
+id = "base:visuals/foundation_material_showcase"
+display_name = "Foundation Material Showcase Visual"
+entity = "base:entities/foundation_material_showcase"
+model = "base:models/props/foundation_material_showcase.gltf"
+bounds_padding = "0.10"
+cast_shadow = "true"

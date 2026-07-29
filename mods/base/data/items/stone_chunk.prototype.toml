@@ -1,0 +1,6 @@
+kind = "item"
+id = "base:items/stone_chunk"
+display_name = "Stone Chunk"
+stack_limit = "64"
+mass_grams = "1800"
+tags = "resource,stone,foundation"

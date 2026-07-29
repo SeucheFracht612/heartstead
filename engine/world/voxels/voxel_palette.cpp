@@ -254,7 +254,13 @@ validate_interaction_references(const VoxelDefinition& definition,
         return core::Status::ok();
     };
 
-    auto status = require_kind(definition.interaction.break_particle,
+    auto status = require_kind(definition.interaction.break_resource_item,
+                               modding::PrototypeKinds::item,
+                               "interaction.break_resource_item");
+    if (!status) {
+        return status;
+    }
+    status = require_kind(definition.interaction.break_particle,
                                modding::PrototypeKinds::particle, "interaction.break_particle");
     if (!status) {
         return status;
@@ -274,7 +280,8 @@ validate_interaction_references(const VoxelDefinition& definition,
 } // namespace
 
 core::Status VoxelInteractionDefinition::validate() const {
-    if ((break_particle.has_value() && !break_particle->is_valid()) ||
+    if ((break_resource_item.has_value() && !break_resource_item->is_valid()) ||
+        (break_particle.has_value() && !break_particle->is_valid()) ||
         (break_sound.has_value() && !break_sound->is_valid()) ||
         (place_sound.has_value() && !place_sound->is_valid()) ||
         (footstep_sound.has_value() && !footstep_sound->is_valid())) {
@@ -585,17 +592,22 @@ voxel_definition_from_prototype(const modding::GenericPrototype& prototype, std:
     definition.light_absorption = absorption.value();
     definition.metadata_required = metadata.value();
 
+    auto break_resource_item =
+        parse_optional_prototype_id(prototype, "interaction.break_resource_item");
     auto break_particle = parse_optional_prototype_id(prototype, "interaction.break_particle");
     auto break_sound = parse_optional_prototype_id(prototype, "interaction.break_sound");
     auto place_sound = parse_optional_prototype_id(prototype, "interaction.place_sound");
     auto footstep_sound = parse_optional_prototype_id(prototype, "interaction.footstep_sound");
-    if (!break_particle || !break_sound || !place_sound || !footstep_sound) {
-        const auto* error = !break_particle ? &break_particle.error()
-                            : !break_sound  ? &break_sound.error()
-                            : !place_sound  ? &place_sound.error()
-                                            : &footstep_sound.error();
+    if (!break_resource_item || !break_particle || !break_sound || !place_sound ||
+        !footstep_sound) {
+        const auto* error = !break_resource_item ? &break_resource_item.error()
+                            : !break_particle    ? &break_particle.error()
+                            : !break_sound       ? &break_sound.error()
+                            : !place_sound       ? &place_sound.error()
+                                                 : &footstep_sound.error();
         return core::Result<VoxelDefinition>::failure(error->code, error->message);
     }
+    definition.interaction.break_resource_item = std::move(break_resource_item).value();
     definition.interaction.break_particle = std::move(break_particle).value();
     definition.interaction.break_sound = std::move(break_sound).value();
     definition.interaction.place_sound = std::move(place_sound).value();

@@ -59,7 +59,7 @@ int main() {
     const auto content =
         content::ContentValidation::validate(std::filesystem::path{HEARTSTEAD_TEST_SOURCE_DIR});
     assert(!content.has_errors());
-    assert(content.visual_definitions.size() == 3);
+    assert(content.visual_definitions.size() == 4);
     const auto player = core::PrototypeId::parse("base:entities/player");
     const auto animal = core::PrototypeId::parse("base:entities/test_animal");
     const auto fallback = core::PrototypeId::parse("base:visuals/fallback");
@@ -85,6 +85,23 @@ int main() {
         assert(model);
         if (definition.id == *fallback) {
             fallback_primitive_count = model.value().primitives.size();
+        }
+        if (definition.model_asset ==
+            "base:models/props/foundation_material_showcase.gltf") {
+            assert(model.value().primitives.size() == 3);
+            assert(model.value().materials.size() == 3);
+            assert(model.value().images.size() == 3);
+            assert(model.value().primitives[0].material == 0);
+            assert(model.value().primitives[1].material == 1);
+            assert(model.value().primitives[2].material == 2);
+            assert(model.value().materials[0].alpha_mode ==
+                   assets::ModelAlphaMode::opaque);
+            assert(model.value().materials[1].alpha_mode ==
+                   assets::ModelAlphaMode::opaque);
+            assert(model.value().materials[2].alpha_mode ==
+                   assets::ModelAlphaMode::mask);
+            assert(model.value().materials[2].alpha_cutoff == 0.5F);
+            assert(model.value().materials[2].double_sided);
         }
         for (const auto& [role, clip_name] : definition.animation_clips) {
             (void)role;
@@ -137,23 +154,25 @@ int main() {
     game::ModelPresentationSystem models;
     assert(models.initialize(renderer, content.visual_definitions,
                              std::filesystem::path{HEARTSTEAD_TEST_COOKED_ASSET_DIR}));
-    assert(models.stats().definition_count == 3);
-    assert(models.stats().loaded_model_count == 3);
+    assert(models.stats().definition_count == 4);
+    assert(models.stats().loaded_model_count == 4);
 
     game::RenderSnapshot snapshot;
     snapshot.simulation_tick = 10;
     snapshot.objects.push_back(make_object(1, "base:entities/player", -0.75));
     snapshot.objects.push_back(make_object(2, "base:entities/test_animal", 0.75));
+    snapshot.objects.push_back(
+        make_object(4, "base:entities/foundation_material_showcase", 0.0));
     auto synchronized = models.synchronize(renderer, snapshot);
     assert(synchronized);
-    assert(synchronized.value().models.inserted_entities == 2);
+    assert(synchronized.value().models.inserted_entities == 3);
     assert(synchronized.value().models.evaluated_poses == 1);
     assert(synchronized.value().models.uploaded_palettes == 1);
 
     renderer::RenderCamera camera;
     assert(camera.set_aspect_ratio(640.0F / 360.0F));
     assert(renderer.render(camera));
-    assert(renderer.stats().retained_objects == 2);
+    assert(renderer.stats().retained_objects == 5);
     assert(renderer.stats().retained_skin_palettes == 1);
 
     std::vector<std::string> warnings;
@@ -168,7 +187,7 @@ int main() {
     assert(synchronized.value().fallback_entity_count == 1);
     assert(synchronized.value().unresolved_visual_count == 1);
     assert(renderer.render(camera));
-    assert(renderer.stats().retained_objects == 3);
+    assert(renderer.stats().retained_objects == 6);
     synchronized = models.synchronize(renderer, snapshot);
     core::reset_log_sink();
     assert(synchronized);
@@ -178,8 +197,74 @@ int main() {
     snapshot.objects.clear();
     synchronized = models.synchronize(renderer, snapshot);
     assert(synchronized);
-    assert(synchronized.value().models.removed_entities == 3);
+    assert(synchronized.value().models.removed_entities == 4);
     assert(models.shutdown(renderer));
     assert(renderer.shutdown());
+
+    entities::VisualDefinitionRegistry fallback_probes;
+    assert(fallback_probes.add(*fallback_definition));
+    auto missing_model = *content.visual_definitions.find_for_entity(*animal);
+    missing_model.id = *core::PrototypeId::parse("test:visuals/missing_model");
+    missing_model.entity_prototype =
+        *core::PrototypeId::parse("test:entities/missing_model");
+    missing_model.model_asset = "test:models/missing.gltf";
+    assert(fallback_probes.add(std::move(missing_model)));
+    auto missing_animation = *content.visual_definitions.find_for_entity(*player);
+    missing_animation.id = *core::PrototypeId::parse("test:visuals/missing_animation");
+    missing_animation.entity_prototype =
+        *core::PrototypeId::parse("test:entities/missing_animation");
+    missing_animation.animation_clips["walk"] = "MissingWalk";
+    assert(fallback_probes.add(std::move(missing_animation)));
+
+    renderer::Renderer fallback_renderer;
+    initialize_renderer(fallback_renderer);
+    game::ModelPresentationSystem fallback_models;
+    warnings.clear();
+    core::set_log_sink([&](core::LogLevel level, std::string_view message) {
+        if (level == core::LogLevel::warning) {
+            warnings.emplace_back(message);
+        }
+    });
+    assert(fallback_models.initialize(
+        fallback_renderer, fallback_probes,
+        std::filesystem::path{HEARTSTEAD_TEST_COOKED_ASSET_DIR}));
+    core::reset_log_sink();
+    assert(fallback_models.stats().definition_count == 3);
+    assert(fallback_models.stats().loaded_model_count == 2);
+    assert(fallback_models.stats().fallback_model_definition_count == 1);
+    assert(fallback_models.stats().fallback_animation_mapping_count == 1);
+    assert(fallback_models.stats().load_diagnostic_count == 2);
+    assert(warnings.size() == 2);
+    const auto diagnostics = fallback_models.load_diagnostics();
+    assert(diagnostics.size() == 2);
+    assert(diagnostics[0].logical_id == "test:models/missing.gltf");
+    assert(diagnostics[0].source_path == "<missing>");
+    assert(diagnostics[0].cooked_path == "<missing>");
+    assert(diagnostics[0].failing_dependency == "test:models/missing.gltf");
+    assert(diagnostics[0].fallback_used == fallback_definition->model_asset);
+    assert(diagnostics[1].logical_id ==
+           "base:models/entities/storybook_player.gltf");
+    assert(diagnostics[1].source_path != "<missing>");
+    assert(diagnostics[1].cooked_path != "<missing>");
+    assert(diagnostics[1].failing_dependency ==
+           "test:visuals/missing_animation#animations/walk");
+    assert(diagnostics[1].fallback_used == "idle=idle");
+
+    game::RenderSnapshot fallback_snapshot;
+    fallback_snapshot.simulation_tick = 20;
+    fallback_snapshot.objects.push_back(
+        make_object(10, "test:entities/missing_model", -0.5));
+    auto animated_fallback =
+        make_object(11, "test:entities/missing_animation", 0.5);
+    animated_fallback.current_locomotion.kind =
+        animation::LocomotionAnimationKind::walk;
+    fallback_snapshot.objects.push_back(std::move(animated_fallback));
+    auto fallback_synchronized =
+        fallback_models.synchronize(fallback_renderer, fallback_snapshot);
+    assert(fallback_synchronized);
+    assert(fallback_synchronized.value().models.inserted_entities == 2);
+    assert(fallback_synchronized.value().models.evaluated_poses == 1);
+    assert(fallback_models.shutdown(fallback_renderer));
+    assert(fallback_renderer.shutdown());
     return 0;
 }

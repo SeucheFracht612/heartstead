@@ -1,8 +1,24 @@
 #include "engine/scenarios/scenario.hpp"
 
+#include <cmath>
 #include <string>
 
 namespace heartstead::scenarios {
+
+core::Status ScenarioEntityPlacement::validate() const {
+    if (!prototype_id.is_valid()) {
+        return core::Status::failure("scenario_definition.invalid_scene_entity",
+                                     "scenario scene entity prototype id must be valid");
+    }
+    if (!transform.position.is_valid() || !transform.rotation_degrees.is_finite() ||
+        !transform.scale.is_finite() || transform.scale.x <= 0.0 || transform.scale.y <= 0.0 ||
+        transform.scale.z <= 0.0) {
+        return core::Status::failure(
+            "scenario_definition.invalid_scene_transform",
+            "scenario scene entity position, rotation, and positive scale must be valid");
+    }
+    return core::Status::ok();
+}
 
 core::Status ScenarioDefinition::validate() const {
     if (!prototype_id.is_valid()) {
@@ -23,6 +39,12 @@ core::Status ScenarioDefinition::validate() const {
         if (!cargo.is_valid()) {
             return core::Status::failure("scenario_definition.invalid_starting_cargo",
                                          "scenario starting cargo id must be valid");
+        }
+    }
+    for (const auto& placement : scene_entities) {
+        auto status = placement.validate();
+        if (!status) {
+            return status;
         }
     }
     for (const auto& tag : tags) {

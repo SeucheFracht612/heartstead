@@ -2,6 +2,7 @@
 
 #include "engine/core/ids.hpp"
 #include "engine/core/result.hpp"
+#include "engine/world/coords/world_position.hpp"
 
 #include <string>
 #include <string_view>
@@ -15,12 +16,20 @@ enum class ScenarioSpawnMode {
     debug,
 };
 
+struct ScenarioEntityPlacement {
+    core::PrototypeId prototype_id;
+    world::WorldTransform transform;
+
+    [[nodiscard]] core::Status validate() const;
+};
+
 struct ScenarioDefinition {
     core::PrototypeId prototype_id;
     std::string start_region;
     ScenarioSpawnMode spawn_mode = ScenarioSpawnMode::homestead;
     std::vector<core::PrototypeId> starting_items;
     std::vector<core::PrototypeId> starting_cargo;
+    std::vector<ScenarioEntityPlacement> scene_entities;
     std::vector<std::string> tags;
 
     [[nodiscard]] core::Status validate() const;

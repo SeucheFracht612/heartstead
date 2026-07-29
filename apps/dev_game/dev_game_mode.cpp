@@ -695,6 +695,15 @@ DevGameMode::update(game::GameApplicationServices& services,
             const auto& render_stats = renderer->stats();
             const auto feedback_stats = state.voxel_interaction_presentation.stats();
             const auto audio_stats = audio->stats();
+            std::string asset_failure_text = "none";
+            const auto asset_diagnostics = state.model_presentation.load_diagnostics();
+            if (!asset_diagnostics.empty()) {
+                const auto& latest = asset_diagnostics.back();
+                asset_failure_text = latest.logical_id + " source=" + latest.source_path +
+                                     " cooked=" + latest.cooked_path + " dependency=" +
+                                     latest.failing_dependency + " fallback=" +
+                                     latest.fallback_used;
+            }
             std::string selection_text = "none";
             if (selection.value().hit.has_value()) {
                 const auto& hit = *selection.value().hit;
@@ -772,6 +781,11 @@ DevGameMode::update(game::GameApplicationServices& services,
                  << model_stats.value().models.uploaded_palettes << " fallback/unresolved "
                  << model_stats.value().fallback_entity_count << '/'
                  << model_stats.value().unresolved_visual_count << '\n'
+                 << "asset fallbacks model/animation "
+                 << model_stats.value().fallback_model_definition_count << '/'
+                 << model_stats.value().fallback_animation_mapping_count << " diagnostics "
+                 << model_stats.value().load_diagnostic_count << '\n'
+                 << "asset last " << asset_failure_text << '\n'
                  << "terrain chunks " << render_stats.loaded_chunks << '/'
                  << render_stats.resident_chunks << " queue " << render_stats.mesh_pending_chunks
                  << '/' << render_stats.upload_pending_chunks << " failed "
@@ -794,7 +808,7 @@ DevGameMode::update(game::GameApplicationServices& services,
             panel.minimum_pixels = {12.0F, 12.0F};
             panel.maximum_pixels = {
                 std::min(620.0F, static_cast<float>(frame.extent.width) - 12.0F),
-                std::min(300.0F, static_cast<float>(frame.extent.height) - 12.0F)};
+                std::min(324.0F, static_cast<float>(frame.extent.height) - 12.0F)};
             panel.color = {0.015F, 0.025F, 0.04F, 0.88F};
             status = ui->submit_quad(panel);
             if (status) {

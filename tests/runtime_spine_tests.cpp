@@ -385,6 +385,16 @@ void test_selected_scenario_drives_authoritative_bootstrap() {
     assert(world.cargo().count() == 1);
     const auto cargo = world.cargo().records();
     assert(cargo.front()->prototype_id == *core::PrototypeId::parse("base:cargo/heavy_log"));
+    const auto showcase = core::PrototypeId::parse(
+        "base:entities/foundation_material_showcase");
+    assert(showcase);
+    const auto scene_entities = world.entities().records();
+    const auto scene_entity = std::ranges::find(
+        scene_entities, showcase.value(),
+        [](const entities::EntityRecord* record) { return record->prototype_id; });
+    assert(scene_entity != scene_entities.end());
+    assert((*scene_entity)->persistent);
+    assert((*scene_entity)->transform.position == (world::WorldPosition{8.5, 1.0, 12.5}));
 
     const auto* player = session->server()->player_for_client(session->client()->client_id());
     assert(player != nullptr);
@@ -871,11 +881,17 @@ void test_authoritative_player_input_moves_and_replicates() {
     assert(snapshot->last_processed_input_sequence == 1);
     auto render_snapshot = runtime.capture_render_snapshot();
     assert(render_snapshot);
-    assert(render_snapshot.value().objects.size() == 1);
-    assert(render_snapshot.value().objects.front().source_net_id == player_net_id);
-    assert(render_snapshot.value().objects.front().current_transform.position ==
-           player_after->state.position);
-    assert(render_snapshot.value().objects.front().previous_transform.position == start);
+    assert(render_snapshot.value().objects.size() == 2);
+    const auto player_object = std::ranges::find(
+        render_snapshot.value().objects, player_net_id,
+        [](const game::RenderObjectSnapshot& object) { return object.source_net_id; });
+    assert(player_object != render_snapshot.value().objects.end());
+    assert(player_object->current_transform.position == player_after->state.position);
+    assert(player_object->previous_transform.position == start);
+    assert(std::ranges::any_of(render_snapshot.value().objects, [](const auto& object) {
+        return object.visual_prototype.value() ==
+               "base:entities/foundation_material_showcase";
+    }));
 
     auto repeated = runtime.run_frame({16'667, 34});
     assert(repeated && repeated.value().server_ticks.size() == 1);
@@ -1010,7 +1026,25 @@ void test_typed_voxel_commands_validate_and_replicate() {
     const auto fluid_regions_before =
         session->server()->chunk_fluids().stats().dirty_regions_consumed;
     const auto clay = core::PrototypeId::parse("base:voxels/clay");
+    const auto raw_clay = core::PrototypeId::parse("base:items/raw_clay");
     assert(clay.has_value());
+    assert(raw_clay.has_value());
+    const auto item_count = [](const world::InventoryRecord& inventory,
+                               const core::PrototypeId& prototype_id) {
+        std::uint32_t count = 0;
+        for (const auto& stack : inventory.stacks) {
+            if (stack.prototype_id == prototype_id) {
+                count += stack.count;
+            }
+        }
+        return count;
+    };
+    auto* player = session->server()->player_for_client(session->client()->client_id());
+    assert(player != nullptr);
+    const auto* starting_inventory =
+        session->server()->world().inventories().find(player->save_id);
+    assert(starting_inventory != nullptr);
+    const auto starting_raw_clay = item_count(*starting_inventory, *raw_clay);
     const game::interaction::PlaceVoxelCommand place{{9, 1, 8}, *clay};
     assert(session->submit_place_voxel(place, 10));
     auto placed = runtime.run_frame({16'667, 17});
@@ -1073,6 +1107,20 @@ void test_typed_voxel_commands_validate_and_replicate() {
     assert(session->client()->accepted_voxel_edits().size() == 1);
     assert(!session->client()->accepted_voxel_edits().front().previous.is_air());
     assert(session->client()->accepted_voxel_edits().front().current.is_air());
+    const auto& removal_report =
+        removed.value().server_ticks.front().commands.command_reports.front();
+    assert(removal_report.success);
+    assert(removal_report.events.size() == 2);
+    assert(std::ranges::any_of(removal_report.events, [](const auto& event) {
+        return event.type == game::interaction::voxel_resource_granted_event_type;
+    }));
+    const auto* authoritative_inventory =
+        session->server()->world().inventories().find(player->save_id);
+    const auto* replicated_inventory =
+        session->client()->world().inventories().find(player->save_id);
+    assert(authoritative_inventory != nullptr && replicated_inventory != nullptr);
+    assert(item_count(*authoritative_inventory, *raw_clay) == starting_raw_clay + 1);
+    assert(item_count(*replicated_inventory, *raw_clay) == starting_raw_clay + 1);
 
     assert(session->submit_remove_voxel({place.position}, 60));
     auto duplicate_removal = runtime.run_frame({16'667, 102});
@@ -1084,8 +1132,12 @@ void test_typed_voxel_commands_validate_and_replicate() {
                .commands.command_reports.front()
                .error_code == "voxel_command.target_empty");
     assert(session->client()->accepted_voxel_edits().empty());
+    authoritative_inventory =
+        session->server()->world().inventories().find(player->save_id);
+    assert(authoritative_inventory != nullptr);
+    assert(item_count(*authoritative_inventory, *raw_clay) == starting_raw_clay + 1);
 
-    auto* player = session->server()->player_for_client(session->client()->client_id());
+    player = session->server()->player_for_client(session->client()->client_id());
     assert(player != nullptr);
     player->state.position = {31.5, 1.0, 31.5};
     const game::interaction::PlaceVoxelCommand unloaded{{32, 1, 31}, *clay};
@@ -1249,6 +1301,16 @@ void test_session_save_and_reload_restores_authoritative_state() {
     assert(removed_authoritative && removed_authoritative.value().is_air());
     const auto saved_player_position =
         session->server()->player_for_client(session->client()->client_id())->state.position;
+    const auto grass_tuft = core::PrototypeId::parse("base:items/grass_tuft");
+    assert(grass_tuft.has_value());
+    const auto player_save_id =
+        session->server()->player_for_client(session->client()->client_id())->save_id;
+    const auto* saved_inventory =
+        session->server()->world().inventories().find(player_save_id);
+    assert(saved_inventory != nullptr);
+    assert(std::ranges::any_of(saved_inventory->stacks, [&](const auto& stack) {
+        return stack.prototype_id == *grass_tuft && stack.count == 1;
+    }));
 
     const auto save_root =
         std::filesystem::temp_directory_path() / "heartstead-runtime-save-reload-test";
@@ -1272,6 +1334,12 @@ void test_session_save_and_reload_restores_authoritative_state() {
            persisted.value().voxel_palette.entries);
     assert(session->server()->voxel_palette().manifest().entries ==
            persisted.value().voxel_palette.entries);
+    const auto* restored_inventory =
+        session->server()->world().inventories().find(player_save_id);
+    assert(restored_inventory != nullptr);
+    assert(std::ranges::any_of(restored_inventory->stacks, [&](const auto& stack) {
+        return stack.prototype_id == *grass_tuft && stack.count == 1;
+    }));
     const auto address = world::block_to_chunk_local(placed_voxel.position);
     const auto headless_authoritative =
         session->server()->world().chunks().get(address.chunk, address.local);
@@ -1508,7 +1576,7 @@ void test_gameplay_modules_extend_runtime_through_registration_contract() {
     assert(module_report.system_count == 1);
     assert(module_report.serializer_count == 3);
     assert(module_report.persistence_count == 1);
-    assert(module_report.replication_count == 2);
+    assert(module_report.replication_count == 3);
     assert(module_report.presentation_adapter_count == 1);
     const auto* service = server->domain_services().find<ITestFeatureService>();
     assert(service != nullptr && service->value() == 42);
@@ -1529,7 +1597,7 @@ void test_gameplay_modules_extend_runtime_through_registration_contract() {
     assert(module->client_visible && module->client_revision == 1);
     assert(server->world().mod_states().find("test", "feature_visible") != nullptr);
     const auto render_snapshot = runtime.capture_render_snapshot();
-    assert(render_snapshot && render_snapshot.value().objects.size() == 2);
+    assert(render_snapshot && render_snapshot.value().objects.size() == 3);
     assert(runtime.session()->presentation()->find_object(core::NetId::from_value(9'001)) !=
            nullptr);
     auto save_snapshot = runtime.capture_save_snapshot();
@@ -1583,7 +1651,7 @@ void test_gameplay_modules_extend_runtime_through_registration_contract() {
     assert(runtime.session()->server()->world().mod_states().find("test", "feature_visible") !=
            nullptr);
     const auto restored_render_snapshot = runtime.capture_render_snapshot();
-    assert(restored_render_snapshot && restored_render_snapshot.value().objects.size() == 2);
+    assert(restored_render_snapshot && restored_render_snapshot.value().objects.size() == 3);
     assert(runtime.shutdown());
 }
 
@@ -1622,7 +1690,7 @@ void test_replication_tombstone_removes_presentation_proxy() {
     auto appeared = runtime.run_frame({16'667, 17});
     assert(appeared);
     auto snapshot = runtime.capture_render_snapshot();
-    assert(snapshot && snapshot.value().objects.size() == 2);
+    assert(snapshot && snapshot.value().objects.size() == 3);
     assert(session->presentation()->find_object(second_player_net_id) != nullptr);
 
     assert(server->disconnect_client(second_client.value()));
@@ -1636,7 +1704,7 @@ void test_replication_tombstone_removes_presentation_proxy() {
     assert(disappeared.value().presentation.removed_objects == 1);
     assert(server->events().entity_destroyed.size() == 1);
     snapshot = runtime.capture_render_snapshot();
-    assert(snapshot && snapshot.value().objects.size() == 1);
+    assert(snapshot && snapshot.value().objects.size() == 2);
     assert(session->presentation()->find_object(second_player_net_id) == nullptr);
     assert(runtime.shutdown());
 }

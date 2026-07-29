@@ -31,6 +31,7 @@ enum class BlockOcclusionBehavior {
 };
 
 struct VoxelInteractionDefinition {
+    std::optional<core::PrototypeId> break_resource_item;
     std::optional<core::PrototypeId> break_particle;
     std::optional<core::PrototypeId> break_sound;
     std::optional<core::PrototypeId> place_sound;

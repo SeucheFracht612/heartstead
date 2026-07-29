@@ -2,6 +2,7 @@
 
 #include "engine/core/ids.hpp"
 #include "engine/renderer/materials/material_prototype_loader.hpp"
+#include "engine/scenarios/scenario_prototype.hpp"
 #include "engine/simulation/fire_prototype.hpp"
 #include "engine/workpieces/pattern_library.hpp"
 #include "engine/workpieces/workpiece_grid.hpp"
@@ -431,6 +432,22 @@ void validate_scenario(PrototypeSemanticValidationResult& result, const GenericP
                                      PrototypeKinds::item, false);
     (void)validate_prototype_id_list(result, prototype, registry, "starting_cargo",
                                      PrototypeKinds::cargo, false);
+    if (field(prototype, "scene_entities") == nullptr) {
+        return;
+    }
+    auto scenario = scenarios::scenario_definition_from_prototype(prototype);
+    if (!scenario) {
+        add_error(result, prototype, scenario.error().code, scenario.error().message);
+        return;
+    }
+    for (const auto& placement : scenario.value().scene_entities) {
+        const auto* entity = registry.find(placement.prototype_id);
+        if (entity == nullptr || entity->kind != PrototypeKinds::entity) {
+            add_error(result, prototype, "prototype_semantic.invalid_reference",
+                      "scene_entities references a missing or non-entity prototype: " +
+                          placement.prototype_id.value());
+        }
+    }
 }
 
 } // namespace

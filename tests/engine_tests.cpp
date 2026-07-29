@@ -5698,6 +5698,17 @@ void test_prototype_registry() {
 }
 
 void test_voxel_palette() {
+    heartstead::modding::GenericPrototype raw_clay;
+    raw_clay.kind = std::string(heartstead::modding::PrototypeKinds::item);
+    raw_clay.id = heartstead::core::PrototypeId::parse("base:items/raw_clay").value();
+    raw_clay.display_name = "Raw Clay";
+    raw_clay.fields = {
+        {"kind", "item"},
+        {"id", "base:items/raw_clay"},
+        {"display_name", "Raw Clay"},
+        {"stack_limit", "64"},
+    };
+
     heartstead::modding::GenericPrototype clay;
     clay.kind = std::string(heartstead::modding::PrototypeKinds::voxel);
     clay.id = heartstead::core::PrototypeId::parse("base:voxels/clay").value();
@@ -5706,6 +5717,7 @@ void test_voxel_palette() {
         {"kind", "voxel"},         {"id", "base:voxels/clay"},
         {"display_name", "Clay"},  {"terrain_material", "clay"},
         {"mining_tool", "shovel"}, {"tags", "soil,crafting_source"},
+        {"interaction.break_resource_item", "base:items/raw_clay"},
     };
 
     heartstead::modding::GenericPrototype stone = clay;
@@ -5717,7 +5729,7 @@ void test_voxel_palette() {
     stone.fields["mining_tool"] = "pick";
 
     heartstead::modding::PrototypeRegistry registry;
-    auto build = registry.build({stone, clay});
+    auto build = registry.build({stone, clay, raw_clay});
     assert(!build.has_errors());
 
     auto palette = heartstead::world::voxel_palette_from_prototypes(registry);
@@ -5729,6 +5741,8 @@ void test_voxel_palette() {
     assert(palette.value().type_for(clay_id).value() == 1);
     assert(palette.value().type_for(stone_id).value() == 2);
     assert(palette.value().find_by_type(1)->prototype_id == clay_id);
+    assert(palette.value().find_by_type(1)->interaction.break_resource_item ==
+           raw_clay.id);
     assert(palette.value().find_by_prototype(stone_id)->terrain_material == "stone");
     auto clay_cell = palette.value().cell_for(clay_id, 3);
     assert(clay_cell);
@@ -13372,9 +13386,12 @@ void test_scenario_prototype_materialization() {
     const auto scenario_id = heartstead::core::PrototypeId::parse("base:scenarios/homestead");
     const auto clay_id = heartstead::core::PrototypeId::parse("base:items/raw_clay");
     const auto heavy_log_id = heartstead::core::PrototypeId::parse("base:cargo/heavy_log");
+    const auto showcase_id =
+        heartstead::core::PrototypeId::parse("base:entities/foundation_material_showcase");
     assert(scenario_id);
     assert(clay_id);
     assert(heavy_log_id);
+    assert(showcase_id);
 
     heartstead::modding::GenericPrototype prototype;
     prototype.kind = std::string(heartstead::modding::PrototypeKinds::scenario);
@@ -13384,6 +13401,9 @@ void test_scenario_prototype_materialization() {
     prototype.fields.emplace("spawn_mode", "homestead");
     prototype.fields.emplace("starting_items", "base:items/raw_clay");
     prototype.fields.emplace("starting_cargo", "base:cargo/heavy_log");
+    prototype.fields.emplace(
+        "scene_entities",
+        "base:entities/foundation_material_showcase@8.5:1.0:12.5:180.0:0.75");
     prototype.fields.emplace("tags", "co_op,settlement_start");
 
     auto definition = heartstead::scenarios::scenario_definition_from_prototype(prototype);
@@ -13397,6 +13417,13 @@ void test_scenario_prototype_materialization() {
     assert(definition.value().starting_items.front() == clay_id.value());
     assert(definition.value().starting_cargo.size() == 1);
     assert(definition.value().starting_cargo.front() == heavy_log_id.value());
+    assert(definition.value().scene_entities.size() == 1);
+    assert(definition.value().scene_entities.front().prototype_id == showcase_id.value());
+    assert(definition.value().scene_entities.front().transform.position ==
+           (heartstead::world::WorldPosition{8.5, 1.0, 12.5}));
+    assert(definition.value().scene_entities.front().transform.rotation_degrees.y == 180.0);
+    assert(definition.value().scene_entities.front().transform.scale ==
+           (heartstead::math::Vec3d{0.75, 0.75, 0.75}));
     assert(definition.value().tags.size() == 2);
 
     prototype.fields["spawn_mode"] = "somewhere";
@@ -13412,6 +13439,14 @@ void test_scenario_prototype_materialization() {
     prototype.fields["starting_items"] = "not-a-prototype";
     auto invalid_item = heartstead::scenarios::scenario_definition_from_prototype(prototype);
     assert(!invalid_item);
+
+    prototype.fields["starting_items"] = "base:items/raw_clay";
+    prototype.fields["scene_entities"] =
+        "base:entities/foundation_material_showcase@8.5:bad:12.5:0.0:1.0";
+    auto invalid_scene_entity =
+        heartstead::scenarios::scenario_definition_from_prototype(prototype);
+    assert(!invalid_scene_entity);
+    assert(invalid_scene_entity.error().code == "scenario_prototype.invalid_scene_entity");
 }
 
 void test_entity_identity() {

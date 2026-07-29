@@ -1,0 +1,5 @@
+kind = "entity"
+id = "base:entities/foundation_material_showcase"
+display_name = "Foundation Material Showcase"
+persistent = "true"
+entity_kind = "temporary_physics"

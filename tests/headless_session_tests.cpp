@@ -28,7 +28,11 @@ void test_local_headless_session_advances_shared_runtime() {
     assert(report.value().last_frame.authoritative_world_tick == 1);
     assert(harness.value()->runtime().session()->client() != nullptr);
     auto snapshot = harness.value()->runtime().capture_render_snapshot();
-    assert(snapshot && snapshot.value().objects.size() == 1);
+    assert(snapshot && snapshot.value().objects.size() == 2);
+    assert(std::ranges::any_of(snapshot.value().objects, [](const auto& object) {
+        return object.visual_prototype ==
+               *core::PrototypeId::parse("base:entities/foundation_material_showcase");
+    }));
     assert(harness.value()->shutdown());
 }
 
@@ -110,7 +114,7 @@ void test_foundation_scene_objects_resolve_visual_definitions() {
     assert(report);
     auto snapshot = harness.value()->runtime().capture_render_snapshot();
     assert(snapshot);
-    assert(snapshot.value().objects.size() == 2);
+    assert(snapshot.value().objects.size() == 3);
     for (const auto& object : snapshot.value().objects) {
         const auto* visual = content.visual_definitions.find_for_entity(object.visual_prototype);
         assert(visual != nullptr);

@@ -1,0 +1,6 @@
+kind = "item"
+id = "base:items/dirt_clod"
+display_name = "Dirt Clod"
+stack_limit = "64"
+mass_grams = "850"
+tags = "resource,soil,foundation"

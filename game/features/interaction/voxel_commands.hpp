@@ -16,6 +16,8 @@ namespace heartstead::game::interaction {
 
 inline constexpr std::string_view place_voxel_command_type = "voxel.place";
 inline constexpr std::string_view remove_voxel_command_type = "voxel.remove";
+inline constexpr std::string_view voxel_resource_granted_event_type =
+    "inventory.voxel_resource_granted.v1";
 inline constexpr double maximum_voxel_interaction_reach = 6.0;
 
 struct PlaceVoxelCommand {
@@ -49,6 +51,7 @@ execute_place_voxel(const PlaceVoxelCommand& command, const movement::PlayerCont
 
 [[nodiscard]] core::Status execute_remove_voxel(const RemoveVoxelCommand& command,
                                                 const movement::PlayerControllerState& player,
+                                                core::SaveId inventory_owner,
                                                 const net::CommandEnvelope& envelope,
                                                 const net::CommandExecutionContext& context,
                                                 world::WorldOperation& operation);
