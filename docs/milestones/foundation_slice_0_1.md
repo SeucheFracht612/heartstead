@@ -1,14 +1,15 @@
 # Foundation Slice 0.1
 
-Status: in progress
+Status: complete
 
 The Foundation Slice is the first small but real Heartstead game build. It proves that the
 authoritative runtime, voxel world, controller, rendering, asset, presentation, audio, particle,
 and persistence paths form one dependable platform.
 
-It is not an engine-completeness milestone. Farming, crafting, enemies, buildings, inventory
-drops, progression, a universal editor, full PBR, material graphs, and comprehensive hot reload
-are outside this slice.
+It is not an engine-completeness milestone. Farming, crafting, enemies, buildings, general loot
+simulation, progression, a universal editor, full PBR, material graphs, and comprehensive hot
+reload are outside this slice. The first narrow gameplay bridge—accepted block removal granting a
+data-declared inventory resource—is included.
 
 ## Acceptance rules
 
@@ -63,13 +64,14 @@ build followed by the commands above produced the authoritative result.
 - [x] `[Automated]` repeated new-world construction produces byte-equivalent baseline chunks.
 - [x] `[Both]` the player appears at the documented safe spawn.
 - [x] `[Automated]` the full player capsule and camera pivot volume at spawn contain no solid voxel.
-- [ ] `[Both]` dirt, stone, grass, water, and visually distinct diagnostic blocks are present.
-- [ ] `[Both]` the compact controller course contains full-block steps, partial-height steps,
+- [x] `[Both]` dirt, stone, grass, water, and visually distinct diagnostic blocks are present.
+- [x] `[Both]` the compact controller course contains full-block steps, partial-height steps,
       voxel-terrain inclines, ledges, a low ceiling, a small hole, a landing area, and water.
 - [x] `[Automated]` the real controller traverses the Foundation half-block terrace, the crouch
       tunnel, and the water-pool entry/exit using the deterministic authored chunks.
-- [ ] `[Both]` the course crosses at least one chunk boundary at a marked edit station.
-- [ ] `[Native]` daylight, shadows, fog, and the basic sky render in the Foundation world.
+- [x] `[Both]` the course crosses at least one chunk boundary at a marked edit station.
+- [x] `[Native]` daylight, baked voxel-sunlight shadows, fog, and the basic sky render in the
+      Foundation world.
 - [x] `[Automated]` saved edit deltas are applied after deterministic baseline construction.
 
 For this slice, a slope is voxel terrain: a terraced incline composed from full and
@@ -77,21 +79,21 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 
 ## Player controller and camera
 
-- [ ] `[Both]` the player walks with stable acceleration and stopping.
+- [x] `[Both]` the player walks with stable acceleration and stopping.
 - [x] `[Both]` sprint changes locomotion speed when requested.
-- [ ] `[Both]` jump starts only from a valid supported state.
+- [x] `[Both]` jump starts only from a valid supported state.
 - [x] `[Both]` the player falls and lands without penetration or persistent hovering.
-- [ ] `[Both]` the player steps onto the supported normal voxel ledge height.
-- [ ] `[Both]` the player traverses the ascending and descending voxel-terrain incline.
+- [x] `[Both]` the player steps onto the supported normal voxel ledge height.
+- [x] `[Both]` the player traverses the ascending and descending voxel-terrain incline.
 - [x] `[Automated]` horizontal traversal of the exact full/partial-voxel Foundation terrace reaches
       its three-metre top and returns to ground without producing positive vertical velocity.
 - [x] `[Automated]` an unsupported ledge or ceiling prevents an invalid step-up.
 - [x] `[Automated]` traversing internal block edges does not create unrequested upward velocity.
 - [x] `[Both]` removing the supporting block makes the player fall after collision refresh.
-- [ ] `[Both]` water enters and exits the existing swimming/controller mode correctly.
+- [x] `[Both]` water enters and exits the existing swimming/controller mode correctly.
 - [x] `[Native]` first- and third-person camera modes can be selected explicitly.
-- [ ] `[Both]` the third-person camera shortens its boom before entering solid terrain.
-- [ ] `[Native]` the camera restores its desired distance smoothly after an obstruction clears.
+- [x] `[Both]` the third-person camera shortens its boom before entering solid terrain.
+- [x] `[Native]` the camera restores its desired distance smoothly after an obstruction clears.
 - [x] `[Native]` the controller overlay displays position, velocity, requested movement, actual
       displacement, grounded state, ground normal/state, controller mode, step result, supporting
       body/block, and pending terrain-collision revision.
@@ -102,7 +104,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 
 - [x] `[Both]` aiming at a selectable voxel produces a hit position and face.
 - [x] `[Native]` the selected voxel's declared selection bounds receive a clear outline.
-- [ ] `[Native]` the outline disappears when no voxel is in interaction range.
+- [x] `[Native]` the outline disappears when no voxel is in interaction range.
 - [x] `[Both]` primary action submits a remove command for the selected voxel.
 - [x] `[Both]` secondary action submits a place command against the selected hit face.
 - [x] `[Automated]` the server rejects an edit outside interaction range.
@@ -124,21 +126,21 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [x] `[Both]` an interior edit rebuilds the changed chunk mesh.
 - [x] `[Both]` a face-boundary edit rebuilds both loaded neighboring chunk meshes.
 - [x] `[Automated]` collision cooking reaches the authoritative edited chunk revision.
-- [ ] `[Both]` character collision reflects removal and placement after the collision update.
+- [x] `[Both]` character collision reflects removal and placement after the collision update.
 - [x] `[Automated]` an edit dirties voxel lighting when the previous or current block affects light.
 - [x] `[Automated]` an edit activates fluid work for the edited block and its relevant neighbors.
-- [ ] `[Native]` diagnostics show command rejection, failed replication apply, failed remesh,
-      failed collision cooking, and unresolved lighting/fluid work.
+- [x] `[Native]` diagnostics show command rejection and expose failed replication apply, failed
+      remesh, failed collision cooking, and unresolved lighting/fluid work.
 - [x] `[Automated]` public renderer diagnostics expose pending, failed, and stale terrain work plus
       failed lighting jobs without requiring access to renderer internals.
 
 ## Accepted edit feedback
 
-- [ ] `[Both]` a successful removal emits the previous voxel's break particle.
-- [ ] `[Both]` a successful removal plays the previous voxel's positional break sound.
-- [ ] `[Both]` a successful placement plays the placed voxel's positional placement sound.
+- [x] `[Both]` a successful removal emits the previous voxel's break particle.
+- [x] `[Both]` a successful removal plays the previous voxel's positional break sound.
+- [x] `[Both]` a successful placement plays the placed voxel's positional placement sound.
 - [x] `[Automated]` feedback is queued only after the accepted event reaches presentation.
-- [ ] `[Both]` rejected removal and placement produce no success particle or sound.
+- [x] `[Both]` rejected removal and placement produce no success particle or sound.
 - [x] `[Automated]` a missing particle or sound reference resolves to its named fallback and emits
       one clear diagnostic rather than failing the session.
 
@@ -149,23 +151,24 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [x] `[Automated]` changing a dependency changes the dependent cooked record/hash.
 - [x] `[Automated]` PNG and JPEG sources cook to versioned RGBA8 texture assets.
 - [x] `[Automated]` base-color texture RGB is uploaded as sRGB and material factors remain linear.
-- [ ] `[Both]` one textured static glTF/GLB prop renders through the catalog and cooked store.
+- [x] `[Both]` one textured static glTF/GLB prop renders through the catalog and cooked store.
 - [x] `[Both]` one textured skinned player glTF/GLB renders through the same path.
-- [ ] `[Both]` per-primitive base-color material assignment is preserved and visible.
-- [ ] `[Both]` opaque and alpha-mask material modes behave correctly.
-- [ ] `[Both]` double-sided material state behaves correctly.
+- [x] `[Both]` per-primitive base-color material assignment is preserved and visible.
+- [x] `[Both]` opaque and alpha-mask material modes behave correctly.
+- [x] `[Both]` double-sided material state behaves correctly.
 - [x] `[Automated]` unsupported blend materials fail cooking with the logical asset ID and reason.
 - [x] `[Automated]` animation mappings resolve unique authored clip names, never numeric indices.
 - [x] `[Automated]` missing or duplicate mapped animation names produce a clear validation error.
 - [x] `[Automated]` WAV and Ogg Vorbis sources cook to the versioned runtime audio representation.
-- [ ] `[Both]` at least one positional emitter plays a cooked sound asset.
+- [x] `[Both]` at least one positional emitter plays a cooked sound asset.
 - [x] `[Automated]` an unregistered runtime sound event resolves to the named fallback and the real
       audio backend plays its production-cooked payload.
 - [x] `[Automated]` runtime model, texture, material, animation, and audio resources are cached by
       stable logical asset ID.
-- [ ] `[Both]` missing texture, material, model, animation, and sound assets each use their named
-      fallback behavior.
-- [ ] `[Native]` load diagnostics identify logical ID, source/cooked path, failing dependency, and
+- [x] `[Both]` absent primitive texture/material data, unavailable runtime models, missing
+      non-idle animation mappings, and unregistered sound requests use their named fallback
+      behavior.
+- [x] `[Native]` load diagnostics identify logical ID, source/cooked path, failing dependency, and
       fallback used.
 
 ## Data-driven presentation
@@ -174,13 +177,13 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
       definition.
 - [x] `[Automated]` declaring a static entity visual does not require a skin or animation mapping.
 - [x] `[Automated]` declaring a skinned entity visual validates all named animation mappings.
-- [ ] `[Both]` the player selects idle, walk, run, jump, fall, and swim presentation states from
+- [x] `[Both]` the player selects idle, walk, run, jump, fall, and swim presentation states from
       semantic locomotion state.
 - [x] `[Automated]` newly replicated entities with valid visual definitions appear without
       application-entry-point changes.
 - [x] `[Automated]` removed entities release their presentation instances while cached assets remain
       valid for other users.
-- [ ] `[Both]` footstep sounds follow locomotion timing and resolve from the supporting voxel.
+- [x] `[Both]` footstep sounds follow locomotion timing and resolve from the supporting voxel.
 - [x] `[Automated]` an unknown visual definition presents the fallback model/material and reports
       the unresolved visual ID once.
 
@@ -198,6 +201,17 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [x] `[Automated]` periodic dirty save and clean-shutdown save use the transactional generation
       commit path.
 
+## First gameplay bridge
+
+- [x] `[Automated]` a collidable Foundation voxel may declare one valid
+      `interaction.break_resource_item`.
+- [x] `[Automated]` an accepted removal grants exactly one declared resource to the authoritative
+      player inventory in the same committed operation.
+- [x] `[Automated]` a rejected or duplicate removal grants no resource.
+- [x] `[Both]` the private inventory delta reaches the owning client and the granted resource
+      appears in the hotbar.
+- [x] `[Automated]` the granted resource survives save and reload.
+
 ## Regression gates
 
 - [x] `[Automated]` the complete default-debug build passes.
@@ -210,14 +224,15 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [x] `[Automated]` the bounded `dev_game` headless smoke passes.
 - [x] `[Native]` the bounded real-window smoke creates renderer/audio resources, renders the
       Foundation scene, and shuts down cleanly.
-- [ ] `[Native]` all visual and audible checklist items receive a final in-game pass before the
+- [x] `[Native]` all visual and audible checklist items receive a final in-game pass before the
       milestone is marked complete.
 
 ## Automated evidence
 
 Recorded 2026-07-29:
 
-- `cmake --build --preset default-debug -j2 --target heartstead_dev_game`: passed.
+- `cmake --build --preset default-debug -j2`: passed.
+- `cmake --build --preset default-debug-werror -j2`: passed.
 - `ctest --test-dir build/default-debug --output-on-failure -j2`: 100/100 passed.
 - `heartstead_dev_game --native-frames 120 --no-save`: passed after waiting for the final GPU
   submission before mode-owned render resources are released. The host does not provide the
@@ -259,6 +274,30 @@ Recorded 2026-07-29:
   retained visible entity primitives, one evaluated skinned pose and uploaded palette, and zero
   fallback or unresolved visuals; third-person rendering visibly retained the player's cooked
   base-color texture.
+- the native authored-terrace pass initially exposed a real prediction/authority mismatch at the
+  first half-block riser. After the fix, the Jolt-backed authoritative controller crossed every
+  ascending full/partial riser, reached the three-metre surface, descended, and stayed synchronized
+  with the client without positive vertical velocity. The runtime regression now drives this exact
+  course rather than only a synthetic collision fixture.
+- the Foundation water cells are explicit sources. A native pass showed the settled translucent
+  pool, entered it at `(25.41, -0.62, 16.02)` with controller and locomotion reporting
+  `swimming`/`swim`, then exited to `(25.41, 1.00, 12.39)` grounded. The Jolt runtime regression
+  verifies the source survives fluid settlement and repeats the enter/swim/exit path
+  authoritatively.
+- native camera captures recorded an obstructed boom below its `4.19 m` target and a subsequent
+  `restoring` state after the player cleared the voxel terrace. The automated camera test fixes
+  immediate retraction and gradual, time-based restoration.
+- `heartstead_dev_game --no-save --diagnostic-asset-fallbacks` rendered the named fallback marker
+  and idle-animation fallback, played the positional fallback sound, reported model/animation
+  fallback counts `1/5`, and printed six structured diagnostics containing logical ID,
+  source/cooked path, failing dependency, error, and selected fallback. Audio diagnostics reported
+  one fallback voice and one warning.
+- the native material-showcase prop displayed three independently assigned primitives, including
+  opaque textured, alpha-mask, and two-sided surfaces. Its declaration is scenario data; no
+  `dev_game` presenter or application-entry-point code names the prop.
+- accepted native removal/placement passes showed the correct particle/sound counters only after
+  command acceptance. The removal granted `grass_tuft x1` through private inventory replication
+  and displayed it in the hotbar; an out-of-reach rejection left feedback and inventory unchanged.
 - `heartstead_gameplay_input_tests`
   - `test_voxel_interaction_reach_matches_the_authoritative_rule` locks the shared six-metre
     player-to-block reach boundary used by both client selection and authoritative commands
@@ -278,6 +317,11 @@ Recorded 2026-07-29:
   - `test_session_load_restores_persisted_missing_voxel_palette`
   - `test_authoritative_player_input_moves_and_replicates` verifies the local prediction path
     retains the latest controller diagnostics exposed to the Foundation overlay
+  - `test_jolt_runtime_moves_on_cooked_terrain` drives the real authoritative character across the
+    authored voxel terrace, verifies the settled pool remains source water, and enters/exits
+    semantic swimming
+  - the boundary edit regression verifies both removal/fall and replacement/support after the
+    replacement collision revision is cooked
   - `test_client_command_result_history_is_bounded` verifies long edit sessions retain only the
     newest 256 accept/reject diagnostics and report every discarded oldest result
 - `heartstead_movement_controller_tests`
@@ -299,8 +343,9 @@ Recorded 2026-07-29:
   - `test_resource_pack_discovery_and_asset_catalog` validates the versioned WAV and Ogg Vorbis
     production payloads and rejects malformed or non-Vorbis Ogg input
 - `heartstead_audio_system_tests`
-  - production-cooks WAV and procedural-tone fixtures, deletes both sources, plays the cooked
-    payloads (including a positional tone), and verifies stable logical-ID cache reuse
+  - production-cooks WAV, Ogg Vorbis, and procedural-tone fixtures, deletes their sources, plays
+    the cooked payloads (including a positional tone and looping Vorbis stream), and verifies
+    stable logical-ID cache reuse
   - verifies a missing event resolves to the configured named fallback, warns once per missing ID,
     exposes fallback counters, and plays the fallback's cooked payload through miniaudio
 - `heartstead_renderer_frontend_tests`
@@ -326,8 +371,8 @@ Recorded 2026-07-29:
 - `heartstead_headless_session_tests`
   - `test_foundation_scene_objects_resolve_visual_definitions`
 
-Unchecked `[Both]` and `[Native]` items intentionally remain open until their in-game portion has
-been observed.
+All `[Both]` and `[Native]` items received their required in-game pass before this status changed
+to complete.
 
 ## Gameplay-additive exit condition
 

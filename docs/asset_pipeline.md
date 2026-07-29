@@ -472,6 +472,18 @@ For a short automated startup check:
 
 The bounded check proves startup/resource creation/shutdown, not artistic correctness.
 
+For a deliberate native fallback review:
+
+```bash
+./build/default-debug/apps/dev_game/heartstead_dev_game \
+  --no-save --diagnostic-asset-fallbacks
+```
+
+This opt-in probe adds a missing-model visual, a skinned visual with only its required idle
+mapping, and an unregistered positional sound request. The overlay and log identify the missing
+logical ID, source/cooked path, failing dependency, and selected fallback. It never changes the
+authoritative Foundation scene or save.
+
 ## Fallbacks and failure behavior
 
 Current named renderer resources include an error checker texture, white texture, black texture,
@@ -489,14 +501,17 @@ flat normal texture, error material, and error mesh.
 - An entity with no registered visual uses `base:visuals/fallback`, whose visible primitive binds
   the named renderer error material. The unresolved entity prototype ID is logged once per
   presentation-system lifetime.
+- A declared runtime visual whose model record is absent from the cooked store uses the fallback
+  visual's model and records its logical ID, source/cooked path, dependency, error, and fallback.
+- A missing or invalid non-idle locomotion mapping uses the visual's required named `idle` mapping
+  and emits the same structured diagnostic. The required idle mapping itself cannot fall back.
 - Invalid prototype references fail content validation.
-- An invalid image, model, or named clip fails production cooking/presentation initialization with
-  the logical asset ID and reason.
 
-A missing or uncookable model referenced by a declared visual remains a validation/startup error.
+An invalid image or model source, a missing asset-catalog dependency, the fallback model itself, or
+the required idle clip remains a validation/cook/startup error with the logical ID and reason.
 Likewise, a declared sound event with a missing or uncookable asset is a content error rather than
-a fallback case. Runtime fallbacks are diagnostic safety nets, not substitutes for delivering
-valid definitions and assets.
+a fallback case. Runtime fallbacks cover unavailable runtime records and requests; they are
+diagnostic safety nets, not substitutes for delivering valid definitions and assets.
 
 ## Delivery checklist
 

@@ -101,6 +101,10 @@ Implemented foundation:
   - Jolt uses a foot-anchored capsule, a configured 50-degree slope limit, `ExtendedUpdate`
     stair-walking/floor-stick behavior, penetration recovery, stance resize checks, and dynamic-body
     impulses
+  - cooked voxel chunks are Jolt compound bodies; when `CharacterVirtual` stalls at a convex
+    floor/riser subshape seam, the exact voxel solver may propose a terrain step, but the candidate
+    is accepted only after Jolt validates the complete character shape at that position; a tight
+    voxel-support probe suppresses transient false-airborne states without creating ledge hover
   - ladder, fluid, unloaded-chunk, and ledge queries deliberately remain voxel-semantic queries;
     swimming movement is present while M3 will add buoyancy and currents
   - the third-person camera sweeps a radius against each voxel prototype's declared collision

@@ -52,6 +52,10 @@ The frontier is reconstructible rather than saved: loading a chunk containing fl
 neighbor beside fluid, activates its fluid cells and six-neighbor halo. The authoritative cells
 are sufficient to resume exactly.
 
+The deterministic Foundation pool is authored from explicit source cells. This keeps the
+controller course filled after the live fluid frontier settles instead of making a one-time finite
+volume part of the test fixture.
+
 ## Presentation and interaction
 
 Fluid cells bypass the cube greedy path. The fluid extractor emits:
