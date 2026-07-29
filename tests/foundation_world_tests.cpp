@@ -1,4 +1,7 @@
 #include "engine/content/content_validation.hpp"
+#include "engine/movement/character_collision.hpp"
+#include "engine/movement/player_controller.hpp"
+#include "engine/movement/player_input.hpp"
 #include "engine/world/fluids/fluid_state.hpp"
 #include "game/foundation/foundation_world.hpp"
 
@@ -103,9 +106,152 @@ void test_foundation_world_is_deterministic_and_voxel_native() {
     assert(cell_at(first, {31, 0, 7}).type != *grass_type);
 }
 
+void test_foundation_voxel_terrace_is_traversable_without_vertical_boosts() {
+    const auto source_root = std::filesystem::path(HEARTSTEAD_TEST_SOURCE_DIR);
+    const auto content = content::ContentValidation::validate(source_root);
+    assert(!content.has_errors());
+
+    world::ChunkDatabase chunks;
+    assert(game::foundation::build_world(chunks, content.voxel_palette));
+    movement::VoxelCharacterCollisionWorld collision(chunks, content.voxel_palette);
+    movement::PlayerController controller;
+    movement::PlayerControllerState state;
+    state.position = {4.5, 1.0, 12.5};
+    state.fall_origin = state.position;
+    state.scripted_start = state.position;
+    state.scripted_target = state.position;
+    state.mode = movement::PlayerControllerMode::grounded;
+    state.grounded = true;
+
+    double maximum_height = state.position.approximate_global().y;
+    bool reached_top = false;
+    bool returned_to_ground = false;
+    bool stepped = false;
+    for (std::uint64_t tick = 1; tick <= 240; ++tick) {
+        movement::PlayerInputFrame input;
+        input.tick = tick;
+        input.sequence = tick;
+        input.move_z = 32'767;
+        auto result = controller.tick(state, input, {}, collision);
+        assert(result);
+        state = result.value().state;
+        const auto position = state.position.approximate_global();
+        maximum_height = std::max(maximum_height, position.y);
+        stepped |= result.value().diagnostics.stepped;
+        assert(state.velocity.y <= 0.0001);
+        reached_top |= position.z >= 17.5 && position.z <= 21.0 && position.y >= 2.99;
+        returned_to_ground |= position.z >= 24.5 && position.y <= 1.01 && state.grounded;
+        if (returned_to_ground) {
+            break;
+        }
+    }
+
+    assert(stepped);
+    assert(reached_top);
+    assert(maximum_height >= 2.99 && maximum_height <= 3.01);
+    assert(returned_to_ground);
+}
+
+void test_foundation_pool_enters_and_exits_swimming_mode() {
+    const auto source_root = std::filesystem::path(HEARTSTEAD_TEST_SOURCE_DIR);
+    const auto content = content::ContentValidation::validate(source_root);
+    assert(!content.has_errors());
+
+    world::ChunkDatabase chunks;
+    assert(game::foundation::build_world(chunks, content.voxel_palette));
+    movement::VoxelCharacterCollisionWorld collision(chunks, content.voxel_palette);
+    movement::PlayerController controller;
+    movement::PlayerControllerState state;
+    state.position = {26.5, 1.0, 12.5};
+    state.fall_origin = state.position;
+    state.scripted_start = state.position;
+    state.scripted_target = state.position;
+    state.mode = movement::PlayerControllerMode::grounded;
+    state.grounded = true;
+
+    const auto jump = movement::input_button_bit(movement::PlayerInputButton::jump);
+    bool entered = false;
+    bool exited = false;
+    for (std::uint64_t tick = 1; tick <= 360; ++tick) {
+        movement::PlayerInputFrame input;
+        input.tick = tick;
+        input.sequence = tick;
+        input.move_z = entered ? -32'767 : 32'767;
+        if (entered) {
+            input.held_buttons = jump;
+        }
+        auto result = controller.tick(state, input, {}, collision);
+        assert(result);
+        state = result.value().state;
+        entered |= state.mode == movement::PlayerControllerMode::swimming;
+        exited = entered && state.mode != movement::PlayerControllerMode::swimming &&
+                 state.position.approximate_global().z < 13.9;
+        if (exited) {
+            break;
+        }
+    }
+
+    assert(entered);
+    assert(exited);
+}
+
+void test_foundation_low_ceiling_blocks_standing_and_allows_crouching() {
+    const auto source_root = std::filesystem::path(HEARTSTEAD_TEST_SOURCE_DIR);
+    const auto content = content::ContentValidation::validate(source_root);
+    assert(!content.has_errors());
+
+    world::ChunkDatabase chunks;
+    assert(game::foundation::build_world(chunks, content.voxel_palette));
+    movement::VoxelCharacterCollisionWorld collision(chunks, content.voxel_palette);
+    movement::PlayerController controller;
+    const auto initial_state = [] {
+        movement::PlayerControllerState state;
+        state.position = {15.5, 1.0, 12.5};
+        state.fall_origin = state.position;
+        state.scripted_start = state.position;
+        state.scripted_target = state.position;
+        state.mode = movement::PlayerControllerMode::grounded;
+        state.grounded = true;
+        return state;
+    };
+
+    auto standing = initial_state();
+    for (std::uint64_t tick = 1; tick <= 120; ++tick) {
+        movement::PlayerInputFrame input;
+        input.tick = tick;
+        input.sequence = tick;
+        input.move_z = 32'767;
+        auto result = controller.tick(standing, input, {}, collision);
+        assert(result);
+        standing = result.value().state;
+    }
+    assert(standing.position.approximate_global().z < 13.7);
+
+    auto crouching = initial_state();
+    const auto crouch = movement::input_button_bit(movement::PlayerInputButton::crouch);
+    for (std::uint64_t tick = 1; tick <= 300; ++tick) {
+        movement::PlayerInputFrame input;
+        input.tick = tick;
+        input.sequence = tick;
+        input.move_z = 32'767;
+        input.held_buttons = crouch;
+        auto result = controller.tick(crouching, input, {}, collision);
+        assert(result);
+        crouching = result.value().state;
+        if (crouching.position.approximate_global().z > 20.5) {
+            break;
+        }
+    }
+    assert(crouching.crouched);
+    assert(crouching.position.approximate_global().z > 20.5);
+}
+
 } // namespace
 
 int main() {
     test_foundation_world_is_deterministic_and_voxel_native();
+    test_foundation_voxel_terrace_is_traversable_without_vertical_boosts();
+    test_foundation_pool_enters_and_exits_swimming_mode();
+    test_foundation_low_ceiling_blocks_standing_and_allows_crouching();
     return 0;
 }

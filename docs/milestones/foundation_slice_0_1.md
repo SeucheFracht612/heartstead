@@ -66,6 +66,8 @@ build followed by the commands above produced the authoritative result.
 - [ ] `[Both]` dirt, stone, grass, water, and visually distinct diagnostic blocks are present.
 - [ ] `[Both]` the compact controller course contains full-block steps, partial-height steps,
       voxel-terrain inclines, ledges, a low ceiling, a small hole, a landing area, and water.
+- [x] `[Automated]` the real controller traverses the Foundation half-block terrace, the crouch
+      tunnel, and the water-pool entry/exit using the deterministic authored chunks.
 - [ ] `[Both]` the course crosses at least one chunk boundary at a marked edit station.
 - [ ] `[Native]` daylight, shadows, fog, and the basic sky render in the Foundation world.
 - [x] `[Automated]` saved edit deltas are applied after deterministic baseline construction.
@@ -81,6 +83,8 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [ ] `[Both]` the player falls and lands without penetration or persistent hovering.
 - [ ] `[Both]` the player steps onto the supported normal voxel ledge height.
 - [ ] `[Both]` the player traverses the ascending and descending voxel-terrain incline.
+- [x] `[Automated]` horizontal traversal of the exact full/partial-voxel Foundation terrace reaches
+      its three-metre top and returns to ground without producing positive vertical velocity.
 - [x] `[Automated]` an unsupported ledge or ceiling prevents an invalid step-up.
 - [x] `[Automated]` traversing internal block edges does not create unrequested upward velocity.
 - [ ] `[Both]` removing the supporting block makes the player fall after collision refresh.
@@ -240,6 +244,11 @@ Recorded 2026-07-29:
     distance after the voxel obstruction clears
   - `test_walk_jump_dash_and_step` verifies controller tick diagnostics preserve the collision
     solver's requested/applied displacement and report a voxel-native partial-block step
+- `heartstead_foundation_world_tests`
+  - drives the controller over the exact ascending/descending full-and-half-block terrace and
+    rejects any horizontal-input upward velocity
+  - verifies the Foundation pool enters and exits swimming mode through movement controls
+  - verifies the low ceiling blocks a standing capsule while a crouched player traverses it
 - `heartstead_engine_tests`
   - `test_filtered_model_dependency_cooking`
     - selects the model's external buffer and image dependency closure
