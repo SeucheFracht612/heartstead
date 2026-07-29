@@ -1,5 +1,6 @@
 #include "engine/assets/asset_cooker.hpp"
 
+#include "engine/assets/image_asset.hpp"
 #include "engine/assets/model_asset.hpp"
 #include "engine/audio/procedural_tone.hpp"
 #include "engine/core/file_io.hpp"
@@ -1023,6 +1024,24 @@ void add_model_runtime_metadata(CookedAssetMetadataFields& metadata, const Model
     add_metadata(metadata, "model.animations", model.animations.size());
 }
 
+void add_texture_runtime_metadata(CookedAssetMetadataFields& metadata, const ImageAsset& image,
+                                  std::string_view source_container) {
+    metadata.erase(std::remove_if(metadata.begin(), metadata.end(),
+                                  [](const auto& field) {
+                                      return field.first == "texture.container" ||
+                                             field.first == "texture.width" ||
+                                             field.first == "texture.height";
+                                  }),
+                   metadata.end());
+    add_metadata(metadata, "texture.source_container", std::string(source_container));
+    add_metadata(metadata, "texture.container", "rgba8");
+    add_metadata(metadata, "texture.runtime_format", "heartstead.texture.rgba8.v1");
+    add_metadata(metadata, "texture.width", image.width);
+    add_metadata(metadata, "texture.height", image.height);
+    add_metadata(metadata, "texture.channels", 4);
+    add_metadata(metadata, "texture.color_space", "unspecified");
+}
+
 [[nodiscard]] std::vector<std::uint8_t>
 build_cooked_payload_bytes(const CookedAssetRecord& cooked, const AssetRecord& source,
                            AssetCookBackend backend, std::string_view profile,
@@ -1191,6 +1210,7 @@ core::Result<AssetCookResult> AssetCooker::cook(const AssetCatalog& catalog,
         }
         std::vector<std::uint8_t> converted_bytes;
         std::optional<ModelAsset> imported_model;
+        std::optional<ImageAsset> imported_texture;
         const std::vector<std::uint8_t>* runtime_bytes = &source_bytes.value();
         if (config.backend == AssetCookBackend::production_converters &&
             source->kind == AssetKind::model) {
@@ -1213,6 +1233,29 @@ core::Result<AssetCookResult> AssetCooker::cook(const AssetCatalog& catalog,
             imported_model = std::move(imported).value();
             converted_bytes = std::move(encoded).value();
             runtime_bytes = &converted_bytes;
+        } else if (config.backend == AssetCookBackend::production_converters &&
+                   source->kind == AssetKind::texture) {
+            const auto extension = lower_ascii(source->source_path.extension().generic_string());
+            if (extension == ".png" || extension == ".jpg" || extension == ".jpeg") {
+                ImageAssetLimits image_limits;
+                image_limits.maximum_decoded_bytes = config.maximum_source_bytes;
+                auto decoded = decode_png_or_jpeg(source_bytes.value(), image_limits);
+                if (!decoded) {
+                    return core::Result<AssetCookResult>::failure(
+                        "asset_cooker.invalid_texture",
+                        "production texture decode failed for " + source->logical_id + ": " +
+                            decoded.error().code + ": " + decoded.error().message);
+                }
+                imported_texture = std::move(decoded).value();
+                converted_bytes = std::move(imported_texture->rgba8);
+                runtime_bytes = &converted_bytes;
+            } else {
+                auto status = validate_production_source_payload(*source, source_bytes.value());
+                if (!status) {
+                    return core::Result<AssetCookResult>::failure(status.error().code,
+                                                                  status.error().message);
+                }
+            }
         } else if (config.backend == AssetCookBackend::production_converters) {
             auto status = validate_production_source_payload(*source, source_bytes.value());
             if (!status) {
@@ -1225,6 +1268,11 @@ core::Result<AssetCookResult> AssetCooker::cook(const AssetCatalog& catalog,
                             : CookedAssetMetadataFields{};
         if (imported_model.has_value()) {
             add_model_runtime_metadata(metadata, *imported_model);
+        }
+        if (imported_texture.has_value()) {
+            const auto extension = lower_ascii(source->source_path.extension().generic_string());
+            add_texture_runtime_metadata(metadata, *imported_texture,
+                                         extension == ".png" ? "png" : "jpeg");
         }
 
         const auto payload = build_cooked_payload_bytes(
@@ -1329,7 +1377,7 @@ std::string_view asset_cook_pipeline_name(AssetKind kind, AssetCookBackend backe
     if (backend == AssetCookBackend::production_converters) {
         switch (kind) {
         case AssetKind::texture:
-            return "texture_png_ktx2_jpeg_converter_v1";
+            return "texture_png_ktx2_jpeg_converter_v2";
         case AssetKind::model:
             return "model_gltf_runtime_converter_v3";
         case AssetKind::shader:

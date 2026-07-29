@@ -100,7 +100,7 @@ Implemented foundation:
   - uses explicit development passthrough backends for textures, models, shaders,
     audio, materials, fonts, UI, localization, and data assets
   - exposes a partial production backend for data-like assets, material payloads, converted
-    glTF/GLB runtime models, validated PNG/KTX2/JPEG texture payloads, validated SPIR-V shader
+    glTF/GLB runtime models, decoded PNG/JPEG RGBA8 textures, validated KTX2 payloads, SPIR-V shader
     payloads, validated WAV/OGG/FLAC audio payloads, and validated SFNT font payloads while
     rejecting unsupported source formats with explicit validation errors
   - emits production metadata for media payloads, such as texture dimensions, glTF/GLB container

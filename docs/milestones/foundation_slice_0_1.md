@@ -141,7 +141,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [x] `[Automated]` the Foundation manifest closes over every transitive asset dependency.
 - [ ] `[Automated]` filtered model cooking also cooks required external or generated image assets.
 - [ ] `[Automated]` changing a dependency changes the dependent cooked record/hash.
-- [ ] `[Automated]` PNG and JPEG sources cook to versioned RGBA8 texture assets.
+- [x] `[Automated]` PNG and JPEG sources cook to versioned RGBA8 texture assets.
 - [ ] `[Automated]` base-color texture RGB is uploaded as sRGB and material factors remain linear.
 - [ ] `[Both]` one textured static glTF/GLB prop renders through the catalog and cooked store.
 - [ ] `[Both]` one textured skinned player glTF/GLB renders through the same path.

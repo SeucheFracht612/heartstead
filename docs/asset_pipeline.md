@@ -21,7 +21,7 @@ finished source file
 | --- | --- | --- |
 | Static or skinned model | glTF 2.0 `.glb` or `.gltf` | Fully cooked and rendered through an `entity_visual` |
 | Model base-color texture | 8-bit `.png`; `.jpg`/`.jpeg` for opaque art | Decoded to RGBA8, cooked with the model, and sampled by the model shader |
-| Standalone texture | `.png`, `.jpg`, `.jpeg` | Production-cookable, but not yet bindable to terrain, UI, or particles through contributor data |
+| Standalone texture | `.png`, `.jpg`, `.jpeg` | Decoded to a versioned RGBA8 payload, but not yet bindable to terrain, UI, or particles through contributor data |
 | Prebuilt texture container | `.ktx2` | Container validation/cooking only; not a model-texture or runtime-transcoding path yet |
 | Short sound effect | PCM/float `.wav` | Playable through a `sound_event`; mono 48 kHz is recommended for positional sound |
 | Long ambience or music | `.flac` or PCM `.wav` | Playable through a `sound_event`; set `streaming = true` |
@@ -253,7 +253,8 @@ Real-time assets should remain far below these ceilings.
 The production cooker recognizes `.png`, `.jpg`, `.jpeg`, and `.ktx2`.
 
 - PNG/JPEG are the usable input formats for model base color.
-- Standalone PNG/JPEG assets can be catalogued and production-cooked.
+- Standalone PNG/JPEG assets are decoded and production-cooked as bounded, versioned RGBA8
+  payloads. Their color space remains unspecified until a material consumer binds them.
 - KTX2 receives bounded container validation, but there is no runtime Basis/KTX transcode path.
 
 The current terrain palette, UI atlas, and particle materials are renderer-generated. A standalone

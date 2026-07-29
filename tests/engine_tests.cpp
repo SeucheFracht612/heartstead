@@ -161,20 +161,45 @@ std::vector<std::uint8_t> minimal_flac_bytes() {
     return bytes;
 }
 
+std::vector<std::uint8_t> decode_base64_for_test(std::string_view encoded) {
+    constexpr std::string_view alphabet =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::vector<std::uint8_t> decoded;
+    std::uint32_t bits = 0;
+    std::uint32_t bit_count = 0;
+    for (const auto character : encoded) {
+        if (character == '=') {
+            break;
+        }
+        const auto value = alphabet.find(character);
+        assert(value != std::string_view::npos);
+        bits = (bits << 6U) | static_cast<std::uint32_t>(value);
+        bit_count += 6U;
+        if (bit_count >= 8U) {
+            bit_count -= 8U;
+            decoded.push_back(static_cast<std::uint8_t>((bits >> bit_count) & 0xFFU));
+        }
+    }
+    return decoded;
+}
+
 std::vector<std::uint8_t> minimal_png_bytes() {
-    return {
-        0x89, 'P',  'N',  'G',  0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00,
-        0x0D, 'I',  'H',  'D',  'R',  0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
-        0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    };
+    return decode_base64_for_test(
+        "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAG0lEQVR4nGPYF2Hw/90Wn/"
+        "8M3+6t+x9jovwfAF7UCmZhHBP2AAAAAElFTkSuQmCC");
 }
 
 std::vector<std::uint8_t> minimal_jpeg_bytes() {
-    return {
-        0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x01, 0x00, 0x01, 0x03, 0x01,
-        0x11, 0x00, 0x02, 0x11, 0x00, 0x03, 0x11, 0x00, 0xFF, 0xDA, 0x00, 0x0C, 0x03,
-        0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x00, 0x3F, 0x00, 0xFF, 0xD9,
-    };
+    return decode_base64_for_test(
+        "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsN"
+        "DhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQU"
+        "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wgARCAAJAAkDAREAAhEBAxEB/8QA"
+        "FgABAQEAAAAAAAAAAAAAAAAAAAII/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAAB1MWA"
+        "f//EABQQAQAAAAAAAAAAAAAAAAAAACD/2gAIAQEAAQUCH//EABQRAQAAAAAAAAAAAAAAAAAAACD/2gAI"
+        "AQMBAT8BH//EABQRAQAAAAAAAAAAAAAAAAAAACD/2gAIAQIBAT8BH//EABUQAQEAAAAAAAAAAAAAAAAA"
+        "ACDh/9oACAEBAAY/AqP/xAAXEAEAAwAAAAAAAAAAAAAAAAABICEx/9oACAEBAAE/IVAbMYP/2gAMAwEA"
+        "AgADAAAAEBJP/8QAFBEBAAAAAAAAAAAAAAAAAAAAIP/aAAgBAwEBPxAf/8QAFBEBAAAAAAAAAAAAAAAA"
+        "AAAAIP/aAAgBAgEBPxAf/8QAGBABAAMBAAAAAAAAAAAAAAAAASAhQfD/2gAIAQEAAT8QckAVVm9eQ//Z");
 }
 
 void append_le_u32(std::vector<std::uint8_t>& bytes, std::uint32_t value) {
@@ -775,7 +800,7 @@ void test_resource_pack_discovery_and_asset_catalog() {
         heartstead::assets::AssetCookBackend::production_converters);
     assert(production_texture_pipeline.available);
     assert(production_texture_pipeline.converts_source_format);
-    assert(production_texture_pipeline.name == "texture_png_ktx2_jpeg_converter_v1");
+    assert(production_texture_pipeline.name == "texture_png_ktx2_jpeg_converter_v2");
     const auto production_model_pipeline = heartstead::assets::asset_cook_pipeline_info(
         heartstead::assets::AssetKind::model,
         heartstead::assets::AssetCookBackend::production_converters);
@@ -986,7 +1011,10 @@ void test_resource_pack_discovery_and_asset_catalog() {
     production_texture_cook_config.output_root = root / "production_texture_cooked_assets";
     auto production_texture_cook = heartstead::assets::AssetCooker::cook(
         production_texture_catalog, production_texture_cook_config);
-    assert(production_texture_cook);
+    if (!production_texture_cook) {
+        throw std::runtime_error(production_texture_cook.error().code + ": " +
+                                 production_texture_cook.error().message);
+    }
     assert(production_texture_cook.value().manifest.profile == "production");
     assert(production_texture_cook.value().cooked_file_count == 3);
     const auto* production_png_record =
@@ -1003,10 +1031,11 @@ void test_resource_pack_discovery_and_asset_catalog() {
     assert(production_jpeg_record->kind == heartstead::assets::AssetKind::texture);
     assert(read_text(production_texture_cook_config.output_root /
                      production_png_record->cooked_relative_path)
-               .find("backend=texture_png_ktx2_jpeg_converter_v1") != std::string::npos);
+               .find("backend=texture_png_ktx2_jpeg_converter_v2") != std::string::npos);
     assert(read_text(production_texture_cook_config.output_root /
                      production_png_record->cooked_relative_path)
-               .find("meta.texture.width=1") != std::string::npos);
+               .find("meta.texture.runtime_format=heartstead.texture.rgba8.v1") !=
+           std::string::npos);
     auto production_texture_store =
         heartstead::assets::CookedAssetStore::load(production_texture_cook_config.output_root);
     assert(production_texture_store);
@@ -1014,13 +1043,18 @@ void test_resource_pack_discovery_and_asset_catalog() {
         production_texture_store.value().load_payload("base:textures/items/raw_clay.png");
     assert(production_png_payload);
     assert(production_png_payload.value().kind == heartstead::assets::AssetKind::texture);
-    assert(production_png_payload.value().backend == "texture_png_ktx2_jpeg_converter_v1");
+    assert(production_png_payload.value().backend == "texture_png_ktx2_jpeg_converter_v2");
     assert(production_png_payload.value().profile == "production");
-    assert(production_png_payload.value().metadata.at("texture.container") == "png");
-    assert(production_png_payload.value().metadata.at("texture.width") == "1");
-    assert(production_png_payload.value().metadata.at("texture.height") == "1");
+    assert(production_png_payload.value().metadata.at("texture.source_container") == "png");
+    assert(production_png_payload.value().metadata.at("texture.container") == "rgba8");
+    assert(production_png_payload.value().metadata.at("texture.runtime_format") ==
+           "heartstead.texture.rgba8.v1");
+    assert(production_png_payload.value().metadata.at("texture.width") == "2");
+    assert(production_png_payload.value().metadata.at("texture.height") == "2");
+    assert(production_png_payload.value().metadata.at("texture.channels") == "4");
+    assert(production_png_payload.value().metadata.at("texture.color_space") == "unspecified");
     assert(production_png_payload.value().metadata.at("texture.color_type") == "6");
-    assert(production_png_payload.value().bytes.size() == minimal_png_bytes().size());
+    assert(production_png_payload.value().bytes.size() == 2U * 2U * 4U);
     auto production_ktx2_payload =
         production_texture_store.value().load_payload("base:textures/voxels/clay.ktx2");
     assert(production_ktx2_payload);
@@ -1031,10 +1065,16 @@ void test_resource_pack_discovery_and_asset_catalog() {
         production_texture_store.value().load_payload("base:textures/ui/settlement_icon.jpeg");
     assert(production_jpeg_payload);
     assert(production_jpeg_payload.value().kind == heartstead::assets::AssetKind::texture);
-    assert(production_jpeg_payload.value().backend == "texture_png_ktx2_jpeg_converter_v1");
-    assert(production_jpeg_payload.value().metadata.at("texture.container") == "jpeg");
+    assert(production_jpeg_payload.value().backend == "texture_png_ktx2_jpeg_converter_v2");
+    assert(production_jpeg_payload.value().metadata.at("texture.source_container") == "jpeg");
+    assert(production_jpeg_payload.value().metadata.at("texture.container") == "rgba8");
+    assert(production_jpeg_payload.value().metadata.at("texture.runtime_format") ==
+           "heartstead.texture.rgba8.v1");
+    assert(production_jpeg_payload.value().metadata.at("texture.width") == "9");
+    assert(production_jpeg_payload.value().metadata.at("texture.height") == "9");
+    assert(production_jpeg_payload.value().metadata.at("texture.channels") == "4");
     assert(production_jpeg_payload.value().metadata.at("texture.component_count") == "3");
-    assert(production_jpeg_payload.value().bytes.size() == minimal_jpeg_bytes().size());
+    assert(production_jpeg_payload.value().bytes.size() == 9U * 9U * 4U);
 
     const auto invalid_texture_assets = root / "invalid_texture_assets";
     write_text(invalid_texture_assets / "textures/bad.png", "not a png");
@@ -7610,7 +7650,7 @@ void test_debug_inspection() {
     assert(asset_pipeline_inspection.object_type == "asset_cook_pipeline");
     assert(asset_pipeline_inspection.state == "available");
     assert(asset_pipeline_inspection.find_field("pipeline")->value ==
-           "texture_png_ktx2_jpeg_converter_v1");
+           "texture_png_ktx2_jpeg_converter_v2");
     assert(asset_pipeline_inspection.find_field("converts_source_format")->value == "true");
     assert(asset_pipeline_inspection.issues.empty());
     auto asset_shader_pipeline_inspection =
