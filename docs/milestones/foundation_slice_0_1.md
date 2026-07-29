@@ -125,6 +125,8 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [x] `[Automated]` an edit activates fluid work for the edited block and its relevant neighbors.
 - [ ] `[Native]` diagnostics show command rejection, failed replication apply, failed remesh,
       failed collision cooking, and unresolved lighting/fluid work.
+- [x] `[Automated]` public renderer diagnostics expose pending, failed, and stale terrain work plus
+      failed lighting jobs without requiring access to renderer internals.
 
 ## Accepted edit feedback
 
@@ -254,6 +256,8 @@ Recorded 2026-07-29:
   - `test_renderer_frontend_submits_headless_frames` verifies model base-color textures use an
     sRGB image view while base-color factors reach the GPU surface-material record unchanged, and
     repeated logical model ids reuse material handles and texture-array layers
+  - verifies public renderer stats preserve terrain queue/failure/stale counters and failed
+    lighting-job counts used by the Foundation diagnostic overlay
 - `heartstead_mesh_manager_tests` verifies repeated stable ids share one mesh allocation, retain
   explicit ownership, and retire only after the final release
 - `heartstead_animated_model_presentation_tests` verifies two presenters can share one model mesh

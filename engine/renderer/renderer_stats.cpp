@@ -32,6 +32,7 @@ std::string format_renderer_stats(const RendererStats& stats) {
            << stats.voxel_relight_backlog_cells
            << " relight_changed=" << stats.voxel_relight_changed_chunks
            << " relight_stale=" << stats.voxel_relight_stale_results
+           << " relight_failed=" << stats.voxel_relight_failed_results
            << " relight_budget_overruns=" << stats.voxel_relight_apply_budget_overruns
            << " fluid=" << stats.voxel_fluid_snapshot_ms << '/' << stats.voxel_fluid_simulation_ms
            << '/' << stats.voxel_fluid_apply_ms << "ms"
@@ -41,12 +42,13 @@ std::string format_renderer_stats(const RendererStats& stats) {
            << " fluid_budget_exhaustions=" << stats.voxel_fluid_budget_exhaustions
            << " fluid_apply_budget_overruns=" << stats.voxel_fluid_apply_budget_overruns
            << " particles=" << stats.particle_active << '/' << stats.particle_emitters
-           << " particle_cpu=" << stats.particle_update_ms << '/'
-           << stats.particle_presentation_ms << "ms"
-           << " particle_groups=" << stats.particle_material_groups
-           << " particle_dropped=" << stats.particle_dropped
-           << " chunks=" << stats.visible_chunks << '/' << stats.resident_chunks << '/'
-           << stats.loaded_chunks << " draws=" << stats.draw_calls << '['
+           << " particle_cpu=" << stats.particle_update_ms << '/' << stats.particle_presentation_ms
+           << "ms" << " particle_groups=" << stats.particle_material_groups
+           << " particle_dropped=" << stats.particle_dropped << " chunks=" << stats.visible_chunks
+           << '/' << stats.resident_chunks << '/' << stats.loaded_chunks
+           << " chunk_queue=" << stats.mesh_pending_chunks << '/' << stats.upload_pending_chunks
+           << " chunk_failed=" << stats.mesh_failures << '/' << stats.upload_failures
+           << " chunk_stale=" << stats.stale_mesh_results << " draws=" << stats.draw_calls << '['
            << stats.opaque_terrain_draws << '/' << stats.alpha_tested_terrain_draws << '/'
            << stats.transparent_terrain_draws << ']' << " pipelines=" << stats.pipeline_switches
            << " textures=" << stats.resident_textures << '/' << stats.resident_texture_bytes

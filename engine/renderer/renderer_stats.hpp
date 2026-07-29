@@ -48,6 +48,9 @@ struct RendererStats {
     std::uint32_t loaded_chunks = 0;
     std::uint32_t mesh_pending_chunks = 0;
     std::uint32_t upload_pending_chunks = 0;
+    std::uint64_t mesh_failures = 0;
+    std::uint64_t upload_failures = 0;
+    std::uint64_t stale_mesh_results = 0;
     std::uint32_t resident_chunks = 0;
     std::uint32_t visible_chunks = 0;
     std::uint32_t culled_chunks = 0;
@@ -111,6 +114,7 @@ struct RendererStats {
     std::uint64_t voxel_relight_backlog_cells = 0;
     std::uint64_t voxel_relight_visited_cells = 0;
     std::uint64_t voxel_relight_stale_results = 0;
+    std::uint64_t voxel_relight_failed_results = 0;
     std::uint64_t voxel_relight_apply_budget_overruns = 0;
     std::uint64_t voxel_fluid_active_cells = 0;
     std::uint64_t voxel_fluid_processed_cells = 0;

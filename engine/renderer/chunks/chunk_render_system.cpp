@@ -669,6 +669,7 @@ core::Status ChunkRenderSystem::process_completed_meshes(world::WorldState& worl
         ++stats_.meshed_chunk_count;
         if (result.state == ChunkMeshResultState::failed || !result.mesh.has_value()) {
             ++stats_.failed_mesh_count;
+            ++stats_.total_failed_mesh_count;
             cache_->mark_failed(result.identity);
             requeue_latest(result.identity.coordinate);
             core::log(core::LogLevel::warning, "Asynchronous chunk mesh failed: " +
@@ -681,6 +682,7 @@ core::Status ChunkRenderSystem::process_completed_meshes(world::WorldState& worl
             !within_mesh_distance(result.identity.coordinate, camera) ||
             !mesh_result_is_current(result, world)) {
             ++stats_.stale_mesh_result_count;
+            ++stats_.total_stale_mesh_result_count;
             if (result.mesh.has_value()) {
                 mesh_scheduler_->recycle_mesh(std::move(*result.mesh));
             }
@@ -761,6 +763,7 @@ core::Status ChunkRenderSystem::schedule_mesh_jobs(world::WorldState& world,
         const auto halo = world::required_chunk_halo(chunk->cells(), *render_table_);
         if (!halo) {
             ++stats_.failed_mesh_count;
+            ++stats_.total_failed_mesh_count;
             cache_->mark_failed(pending.identity);
             pending.sequence = next_sequence_++;
             pending_meshes_.push_back(pending);
@@ -786,6 +789,7 @@ core::Status ChunkRenderSystem::schedule_mesh_jobs(world::WorldState& world,
         }();
         if (!snapshot) {
             ++stats_.failed_mesh_count;
+            ++stats_.total_failed_mesh_count;
             cache_->mark_failed(pending.identity);
             pending.sequence = next_sequence_++;
             pending_meshes_.push_back(pending);
@@ -890,6 +894,7 @@ core::Status ChunkRenderSystem::process_upload_queue(world::WorldState& world,
     }();
     if (!upload) {
         stats_.failed_upload_count += selected.size();
+        stats_.total_failed_upload_count += selected.size();
         for (auto& pending : selected) {
             pending.sequence = next_sequence_++;
             pending_uploads_.push_back(std::move(pending));

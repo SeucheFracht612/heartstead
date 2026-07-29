@@ -965,6 +965,7 @@ void Renderer::set_voxel_lighting_stats(const world::ChunkLightSystemStats& ligh
     stats_.voxel_relight_visited_cells =
         lighting.last_sunlight_queue_visits + lighting.last_block_light_queue_visits;
     stats_.voxel_relight_stale_results = lighting.stale_results;
+    stats_.voxel_relight_failed_results = lighting.failed_results;
     stats_.voxel_relight_apply_budget_overruns = lighting.apply_budget_overruns;
 }
 
@@ -1323,6 +1324,9 @@ void Renderer::update_frontend_stats(std::size_t loaded_chunk_count) noexcept {
     stats_.loaded_chunks = saturating_u32(loaded_chunk_count);
     stats_.mesh_pending_chunks = saturating_u32(chunks.pending_mesh_count);
     stats_.upload_pending_chunks = saturating_u32(chunks.pending_upload_count);
+    stats_.mesh_failures = chunks.total_failed_mesh_count;
+    stats_.upload_failures = chunks.total_failed_upload_count;
+    stats_.stale_mesh_results = chunks.total_stale_mesh_result_count;
     stats_.resident_chunks = saturating_u32(chunks.cache.resident_chunk_count);
     stats_.visible_chunks = saturating_u32(chunks.visible_chunk_count);
     stats_.culled_chunks = saturating_u32(chunks.culled_chunk_count);

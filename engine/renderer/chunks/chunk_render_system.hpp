@@ -50,6 +50,9 @@ struct ChunkRenderStats {
     std::size_t scheduled_mesh_count = 0;
     std::size_t cancelled_mesh_count = 0;
     std::size_t stale_mesh_result_count = 0;
+    std::uint64_t total_failed_mesh_count = 0;
+    std::uint64_t total_failed_upload_count = 0;
+    std::uint64_t total_stale_mesh_result_count = 0;
     std::size_t in_flight_mesh_count = 0;
     std::size_t snapshot_cells_copied = 0;
     std::size_t pooled_cpu_mesh_buffers = 0;

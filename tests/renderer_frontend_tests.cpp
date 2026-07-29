@@ -726,6 +726,7 @@ void test_renderer_frontend_submits_headless_frames() {
     lighting_stats.last_block_light_queue_visits = 40;
     lighting_stats.changed_chunks_this_update = 2;
     lighting_stats.stale_results = 3;
+    lighting_stats.failed_results = 2;
     lighting_stats.apply_budget_overruns = 1;
     retained_renderer.set_voxel_lighting_stats(lighting_stats);
 
@@ -813,6 +814,9 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(renderer_stats.loaded_chunks == 1);
     assert(renderer_stats.mesh_pending_chunks == 0);
     assert(renderer_stats.upload_pending_chunks == 0);
+    assert(renderer_stats.mesh_failures == 0);
+    assert(renderer_stats.upload_failures == 0);
+    assert(renderer_stats.stale_mesh_results == 0);
     assert(renderer_stats.resident_chunks == 1);
     assert(renderer_stats.visible_chunks == 1);
     assert(renderer_stats.drawn_chunks == 1);
@@ -832,8 +836,12 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(renderer_stats.voxel_relight_visited_cells == 340);
     assert(renderer_stats.voxel_relight_changed_chunks == 2);
     assert(renderer_stats.voxel_relight_stale_results == 3);
+    assert(renderer_stats.voxel_relight_failed_results == 2);
     assert(renderer_stats.voxel_relight_apply_budget_overruns == 1);
-    assert(renderer::format_renderer_stats(renderer_stats).contains("relight_cells=340/2048"));
+    const auto formatted_stats = renderer::format_renderer_stats(renderer_stats);
+    assert(formatted_stats.contains("relight_cells=340/2048"));
+    assert(formatted_stats.contains("relight_failed=2"));
+    assert(formatted_stats.contains("chunk_failed=0/0"));
 
     constexpr std::array<renderer::GpuStaticMeshVertex, 3> object_vertices{{
         {{-0.5F, -0.5F, 0.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 0.0F}},

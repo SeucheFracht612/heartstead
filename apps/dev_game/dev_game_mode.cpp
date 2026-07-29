@@ -676,6 +676,28 @@ DevGameMode::update(game::GameApplicationServices& services,
                 last_error_code = fault->code;
             }
 
+            const auto& render_stats = renderer->stats();
+            const auto feedback_stats = state.voxel_interaction_presentation.stats();
+            const auto audio_stats = audio->stats();
+            std::string lighting_text = "remote";
+            std::string fluid_text = "remote";
+            if (const auto* server = state.runtime.session()->server(); server != nullptr) {
+                const auto& lighting = server->chunk_lighting().stats();
+                std::ostringstream lighting_stream;
+                lighting_stream << "pending " << lighting.snapshot_pending_cell_count
+                                << " in-flight " << (lighting.solve_in_flight ? "yes" : "no")
+                                << " failed " << lighting.failed_results << " stale "
+                                << lighting.stale_results;
+                lighting_text = lighting_stream.str();
+
+                const auto& fluids = server->chunk_fluids().stats();
+                std::ostringstream fluid_stream;
+                fluid_stream << "active " << fluids.active_cell_count << " budget "
+                             << fluids.budget_exhaustions << " apply-overrun "
+                             << fluids.apply_budget_overruns;
+                fluid_text = fluid_stream.str();
+            }
+
             std::ostringstream text;
             text << std::fixed << std::setprecision(2) << "FOUNDATION DIAGNOSTICS [F3]\n"
                  << "session "
@@ -710,6 +732,20 @@ DevGameMode::update(game::GameApplicationServices& services,
                  << (support.value().has_value() ? "0,1,0" : "none") << '\n'
                  << "collision " << collision_text << " | player token "
                  << player->collision_world_revision << '\n'
+                 << "terrain chunks " << render_stats.loaded_chunks << '/'
+                 << render_stats.resident_chunks << " queue " << render_stats.mesh_pending_chunks
+                 << '/' << render_stats.upload_pending_chunks << " failed "
+                 << render_stats.mesh_failures << '/' << render_stats.upload_failures << " stale "
+                 << render_stats.stale_mesh_results << '\n'
+                 << "lighting " << lighting_text << '\n'
+                 << "fluid " << fluid_text << '\n'
+                 << "feedback remove/place " << feedback_stats.presented_removals << '/'
+                 << feedback_stats.presented_placements << " particles/sounds "
+                 << feedback_stats.emitted_particles << '/' << feedback_stats.emitted_sounds
+                 << " dropped " << feedback_stats.dropped_sounds << '\n'
+                 << "audio voices " << audio_stats.active_voices << " rejected "
+                 << audio_stats.rejected_voices << " fallback " << audio_stats.fallback_voices
+                 << " warnings " << audio_stats.fallback_diagnostics << '\n'
                  << "input " << player_input.move_x << ", " << player_input.move_z << " | selected "
                  << (selection.value().hit.has_value() ? "voxel" : "none") << '\n'
                  << "last command " << command_text << " | last error " << last_error_code;
@@ -718,7 +754,7 @@ DevGameMode::update(game::GameApplicationServices& services,
             panel.minimum_pixels = {12.0F, 12.0F};
             panel.maximum_pixels = {
                 std::min(620.0F, static_cast<float>(frame.extent.width) - 12.0F),
-                std::min(214.0F, static_cast<float>(frame.extent.height) - 12.0F)};
+                std::min(270.0F, static_cast<float>(frame.extent.height) - 12.0F)};
             panel.color = {0.015F, 0.025F, 0.04F, 0.88F};
             status = ui->submit_quad(panel);
             if (status) {
