@@ -4,6 +4,7 @@
 #include "engine/math/vector.hpp"
 #include "engine/world/chunks/chunk_database.hpp"
 #include "engine/world/coords/world_position.hpp"
+#include "engine/world/voxels/voxel_palette.hpp"
 
 #include <optional>
 
@@ -29,6 +30,7 @@ struct VoxelRaycastResult {
 };
 
 [[nodiscard]] core::Result<VoxelRaycastResult>
-raycast_voxels(const world::ChunkDatabase& chunks, const VoxelRay& ray);
+raycast_voxels(const world::ChunkDatabase& chunks, const VoxelRay& ray,
+               const world::VoxelPalette* palette = nullptr);
 
 } // namespace heartstead::game::interaction

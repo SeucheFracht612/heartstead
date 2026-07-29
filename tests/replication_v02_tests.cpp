@@ -4,6 +4,7 @@
 #include "engine/net/server_command.hpp"
 #include "engine/save/save_metadata.hpp"
 #include "engine/world/replication_delta.hpp"
+#include "engine/world/voxel_change.hpp"
 #include "engine/world/world_state.hpp"
 
 #include <algorithm>
@@ -267,10 +268,55 @@ void test_mixed_visibility_filters_events_ids_and_typed_state() {
     assert(rejected_filter.error().code == "replication_delta.recipient_filter_requires_resync");
 }
 
+void test_voxel_event_applies_before_observation_without_separate_delta() {
+    net::HostSession host(net::HostSessionConfig{
+        net::TransportHostDesc{
+            net::TransportBackend::in_memory,
+            net::InMemoryTransportHostConfig{core::NetId::from_value(70), 4096},
+        },
+        net::ReplicationRelevancePolicy{},
+    });
+    assert(host.start());
+    auto client_id = host.connect_client();
+    assert(client_id);
+    net::ClientSession client(client_id.value());
+    accept_welcome(host, client_id.value(), client);
+
+    world::WorldState state;
+    auto& chunk = state.chunks().get_or_create({0, 0, 0});
+    const world::VoxelChangeRecord change{
+        {2, 3, 4}, world::VoxelCell::air(), {1, 0}, chunk.identity(), chunk.content_revision() + 1,
+    };
+    net::ReplicationBatch batch;
+    batch.command_sequence = 1;
+    batch.replication_sequence = 1;
+    batch.source_client_id = client_id.value();
+    batch.command_type = "voxel.place";
+    batch.events.push_back({std::string(world::voxel_changed_event_type),
+                            {},
+                            world::VoxelChangeTextCodec::encode(change)});
+    assert(host.send_replication_message(client_id.value(),
+                                         net::make_replication_transport_message(batch, 10)));
+    auto messages = host.drain_client_messages(client_id.value());
+    assert(messages && messages.value().size() == 1);
+    assert(client.receive_server_message(messages.value().front()));
+
+    auto applied = world::apply_client_queued_replication_deltas(state, client);
+    assert(applied);
+    assert(applied.value().applied_delta_count == 1);
+    assert(applied.value().observed_events.size() == 1);
+    assert(applied.value().batches.size() == 1);
+    assert(applied.value().batches.front().state == "applied_event_delta");
+    const auto address = world::block_to_chunk_local(change.position);
+    const auto current = state.chunks().get(address.chunk, address.local);
+    assert(current && current.value() == change.current);
+}
+
 } // namespace
 
 int main() {
     test_two_clients_may_both_use_command_sequence_one();
     test_mixed_visibility_filters_events_ids_and_typed_state();
+    test_voxel_event_applies_before_observation_without_separate_delta();
     return 0;
 }

@@ -137,6 +137,16 @@ core::Result<FoundationWorldBuildStats> build_world(world::ChunkDatabase& chunks
                           swatch_cells[index], stats.voxel_writes);
     }
 
+    // Clay border markers identify an editable grass cell on the y=0/-1 chunk seam. This station
+    // makes cross-chunk remeshing and collision invalidation visible without enlarging the
+    // compact course.
+    if (status) {
+        status = fill_box(chunks, {27, 0, 5}, {31, 0, 9}, cells.value().clay, stats.voxel_writes);
+    }
+    if (status) {
+        status = set_block(chunks, boundary_edit_upper, cells.value().grass, stats.voxel_writes);
+    }
+
     // Voxel-native "slope": 0.5 m terraces made only from full and partial-height blocks.
     if (status) {
         status =

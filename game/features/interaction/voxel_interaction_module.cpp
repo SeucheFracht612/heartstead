@@ -8,23 +8,28 @@
 
 namespace heartstead::game::interaction {
 
-VoxelInteractionModule::VoxelInteractionModule(AuthoritativePlayerResolver resolve_player)
-    : resolve_player_(std::move(resolve_player)) {}
+VoxelInteractionModule::VoxelInteractionModule(AuthoritativePlayerResolver resolve_player,
+                                               VoxelPlacementValidator validate_placement)
+    : resolve_player_(std::move(resolve_player)),
+      validate_placement_(std::move(validate_placement)) {}
 
 std::string_view VoxelInteractionModule::module_id() const noexcept {
     return "base.voxel_interaction";
 }
 
 core::Status VoxelInteractionModule::register_commands(GameplayRegistrationContext& context) {
-    if (!resolve_player_) {
+    if (!resolve_player_ || !validate_placement_) {
         return core::Status::failure("voxel_interaction.missing_player_resolver",
-                                     "voxel interaction requires an authoritative player resolver");
+                                     "voxel interaction requires authoritative player and "
+                                     "placement validation");
     }
     auto status = context.commands.register_command(net::CommandDescriptor{
-        std::string(place_voxel_command_type), true, true,
-        [resolve_player = resolve_player_](const net::CommandEnvelope& command,
-                                           const net::CommandExecutionContext& command_context,
-                                           world::WorldOperation& operation) {
+        std::string(place_voxel_command_type),
+        true,
+        true,
+        [resolve_player = resolve_player_, validate_placement = validate_placement_](
+            const net::CommandEnvelope& command,
+            const net::CommandExecutionContext& command_context, world::WorldOperation& operation) {
             const auto* player = resolve_player(command.sender);
             if (player == nullptr) {
                 return core::Status::failure("server_runtime.player_not_connected",
@@ -35,14 +40,16 @@ core::Status VoxelInteractionModule::register_commands(GameplayRegistrationConte
                 return core::Status::failure(decoded.error().code, decoded.error().message);
             }
             return execute_place_voxel(decoded.value(), player->state, command, command_context,
-                                       operation);
+                                       operation, validate_placement);
         },
     });
     if (!status) {
         return status;
     }
     return context.commands.register_command(net::CommandDescriptor{
-        std::string(remove_voxel_command_type), true, true,
+        std::string(remove_voxel_command_type),
+        true,
+        true,
         [resolve_player = resolve_player_](const net::CommandEnvelope& command,
                                            const net::CommandExecutionContext& command_context,
                                            world::WorldOperation& operation) {

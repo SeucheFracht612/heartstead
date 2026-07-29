@@ -101,25 +101,25 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [ ] `[Native]` the outline disappears when no voxel is in interaction range.
 - [ ] `[Both]` primary action submits a remove command for the selected voxel.
 - [ ] `[Both]` secondary action submits a place command against the selected hit face.
-- [ ] `[Automated]` the server rejects an edit outside interaction range.
-- [ ] `[Automated]` the server rejects removal of an empty voxel.
-- [ ] `[Automated]` the server rejects placement into an occupied voxel.
-- [ ] `[Automated]` the server rejects placement intersecting an authoritative player capsule.
-- [ ] `[Automated]` the server rejects an edit targeting an unloaded chunk.
-- [ ] `[Automated]` the server accepts a valid edit and records exactly one semantic accepted event.
-- [ ] `[Automated]` a rejected edit records no accepted event.
-- [ ] `[Automated]` rapid duplicate removal accepts once and rejects subsequent empty-target edits.
+- [x] `[Automated]` the server rejects an edit outside interaction range.
+- [x] `[Automated]` the server rejects removal of an empty voxel.
+- [x] `[Automated]` the server rejects placement into an occupied voxel.
+- [x] `[Automated]` the server rejects placement intersecting an authoritative player capsule.
+- [x] `[Automated]` the server rejects an edit targeting an unloaded chunk.
+- [x] `[Automated]` the server accepts a valid edit and records exactly one semantic accepted event.
+- [x] `[Automated]` a rejected edit records no accepted event.
+- [x] `[Automated]` rapid duplicate removal accepts once and rejects subsequent empty-target edits.
 
 ## Replication and derived terrain updates
 
 - [ ] `[Automated]` an accepted server edit changes the authoritative chunk content revision.
 - [ ] `[Both]` the accepted edit appears in the local client voxel world.
-- [ ] `[Automated]` the accepted edit appears on a second connected client.
-- [ ] `[Automated]` the client applies the voxel mutation before dispatching its accepted-edit
+- [x] `[Automated]` the accepted edit appears on a second connected client.
+- [x] `[Automated]` the client applies the voxel mutation before dispatching its accepted-edit
       presentation event.
 - [ ] `[Both]` an interior edit rebuilds the changed chunk mesh.
 - [ ] `[Both]` a face-boundary edit rebuilds both loaded neighboring chunk meshes.
-- [ ] `[Automated]` collision cooking reaches the authoritative edited chunk revision.
+- [x] `[Automated]` collision cooking reaches the authoritative edited chunk revision.
 - [ ] `[Both]` character collision reflects removal and placement after the collision update.
 - [ ] `[Automated]` an edit dirties voxel lighting when the previous or current block affects light.
 - [ ] `[Automated]` an edit activates fluid work for the edited block and its relevant neighbors.

@@ -23,8 +23,8 @@ namespace {
     std::size_t start = 0;
     while (start <= text.size()) {
         const auto end = text.find('|', start);
-        fields.push_back(text.substr(start, end == std::string_view::npos ? text.size() - start
-                                                                         : end - start));
+        fields.push_back(
+            text.substr(start, end == std::string_view::npos ? text.size() - start : end - start));
         if (end == std::string_view::npos) {
             break;
         }
@@ -35,8 +35,7 @@ namespace {
             "voxel_command.invalid_position", "voxel command position must contain x, y, z");
     }
     world::BlockCoord result;
-    const auto parse = [](std::string_view field,
-                          std::int64_t& output) -> core::Status {
+    const auto parse = [](std::string_view field, std::int64_t& output) -> core::Status {
         const auto [end, error] =
             std::from_chars(field.data(), field.data() + field.size(), output);
         return error == std::errc{} && end == field.data() + field.size()
@@ -64,8 +63,8 @@ namespace {
     if (!center) {
         return core::Status::failure(center.error().code, center.error().message);
     }
-    const auto delta = center.value().relative_to(player.position.anchor) -
-                       player.position.local_offset;
+    const auto delta =
+        center.value().relative_to(player.position.anchor) - player.position.local_offset;
     if (math::length(delta) > 6.0) {
         return core::Status::failure("voxel_command.out_of_reach",
                                      "voxel target is outside the player's interaction reach");
@@ -91,15 +90,15 @@ namespace {
     if (!previous) {
         return core::Status::failure(previous.error().code, previous.error().message);
     }
-    auto status = context.world_state->chunks().set(
-        address.chunk, address.local, next, context.world_state->dirty_regions(),
-        *context.voxel_palette);
+    auto status = context.world_state->chunks().set(address.chunk, address.local, next,
+                                                    context.world_state->dirty_regions(),
+                                                    *context.voxel_palette);
     if (!status) {
         return status;
     }
     chunk = context.world_state->chunks().find(address.chunk);
     const world::VoxelChangeRecord change{position, previous.value(), next, chunk->identity(),
-                                           chunk->content_revision()};
+                                          chunk->content_revision()};
     status = operation.record_mutation("set terrain voxel");
     if (!status) {
         return status;
@@ -107,7 +106,8 @@ namespace {
     operation.record_derived_update("chunk_mesh");
     operation.record_derived_update("chunk_collision");
     operation.record_derived_update("chunk_lighting");
-    operation.emit_event({std::string(world::voxel_changed_event_type), {},
+    operation.emit_event({std::string(world::voxel_changed_event_type),
+                          {},
                           world::VoxelChangeTextCodec::encode(change)});
     operation.mark_replication_dirty();
     operation.mark_save_dirty();
@@ -175,7 +175,8 @@ core::Status execute_place_voxel(const PlaceVoxelCommand& command,
                                  const movement::PlayerControllerState& player,
                                  const net::CommandEnvelope& envelope,
                                  const net::CommandExecutionContext& context,
-                                 world::WorldOperation& operation) {
+                                 world::WorldOperation& operation,
+                                 const VoxelPlacementValidator& validate_placement) {
     auto status = validate_reach(command.position, player);
     if (!status) {
         return status;
@@ -193,6 +194,10 @@ core::Status execute_place_voxel(const PlaceVoxelCommand& command,
         return core::Status::failure("voxel_command.missing_world",
                                      "voxel placement requires an authoritative world");
     }
+    if (context.world_state->chunks().find(address.chunk) == nullptr) {
+        return core::Status::failure("voxel_command.chunk_not_loaded",
+                                     "voxel target chunk is not loaded");
+    }
     auto previous = context.world_state->chunks().get(address.chunk, address.local);
     if (!previous) {
         return core::Status::failure(previous.error().code, previous.error().message);
@@ -200,6 +205,12 @@ core::Status execute_place_voxel(const PlaceVoxelCommand& command,
     if (!previous.value().is_air()) {
         return core::Status::failure("voxel_command.target_occupied",
                                      "voxel placement target is already occupied");
+    }
+    if (validate_placement) {
+        status = validate_placement(command.position, cell.value());
+        if (!status) {
+            return status;
+        }
     }
     return commit_voxel(command.position, cell.value(), envelope, context, operation);
 }
@@ -218,6 +229,10 @@ core::Status execute_remove_voxel(const RemoveVoxelCommand& command,
                                      "voxel removal requires an authoritative world");
     }
     const auto address = world::block_to_chunk_local(command.position);
+    if (context.world_state->chunks().find(address.chunk) == nullptr) {
+        return core::Status::failure("voxel_command.chunk_not_loaded",
+                                     "voxel target chunk is not loaded");
+    }
     auto previous = context.world_state->chunks().get(address.chunk, address.local);
     if (!previous) {
         return core::Status::failure(previous.error().code, previous.error().message);

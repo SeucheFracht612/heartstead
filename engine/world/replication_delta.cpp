@@ -896,6 +896,11 @@ void count_updated(WorldReplicationDeltaApplyReport& report, std::uint32_t& sect
                                [](const auto& event) { return event.subject.is_valid(); });
 }
 
+[[nodiscard]] bool has_voxel_changed_event(const net::ReplicationBatch& batch) noexcept {
+    return std::ranges::any_of(
+        batch.events, [](const auto& event) { return event.type == voxel_changed_event_type; });
+}
+
 } // namespace
 
 WorldReplicationDeltaPlan plan_replication_delta(const WorldState& state,
@@ -1415,12 +1420,23 @@ core::Result<WorldClientReplicationApplyReport> apply_client_replication_deltas(
         batch_report.has_global_events = has_global_events(batch);
         batch_report.has_subject_events = has_subject_events(batch);
         report.total_event_count += batch_report.event_count;
-        report.observed_events.insert(report.observed_events.end(), batch.events.begin(),
-                                      batch.events.end());
 
         const auto delta = deltas_by_sequence.find(batch_report.replication_sequence);
         if (delta == deltas_by_sequence.end()) {
-            if (batch_report.has_subject_events) {
+            if (!batch_report.has_subject_events && has_voxel_changed_event(batch)) {
+                WorldReplicationDeltaSnapshot event_snapshot;
+                event_snapshot.plan = plan_replication_delta(state, batch);
+                auto applied = apply_replication_delta(state, event_snapshot);
+                if (!applied) {
+                    return core::Result<WorldClientReplicationApplyReport>::failure(
+                        applied.error().code, applied.error().message);
+                }
+                ++report.applied_delta_count;
+                report.total_applied_record_count += applied.value().applied_record_count;
+                batch_report.applied_delta = true;
+                batch_report.state = "applied_event_delta";
+                batch_report.delta_apply_report = std::move(applied).value();
+            } else if (batch_report.has_subject_events) {
                 batch_report.state = "pending_delta";
                 batch_report.skip_reason = "missing_delta_snapshot";
                 ++report.pending_delta_count;
@@ -1430,6 +1446,8 @@ core::Result<WorldClientReplicationApplyReport> apply_client_replication_deltas(
                 batch_report.skip_reason = "event_only";
                 ++report.observed_event_only_count;
             }
+            report.observed_events.insert(report.observed_events.end(), batch.events.begin(),
+                                          batch.events.end());
             report.batches.push_back(std::move(batch_report));
             continue;
         }
@@ -1469,6 +1487,8 @@ core::Result<WorldClientReplicationApplyReport> apply_client_replication_deltas(
         batch_report.state =
             applied.value().applied_record_count == 0 ? "applied_empty_delta" : "applied_delta";
         batch_report.delta_apply_report = std::move(applied).value();
+        report.observed_events.insert(report.observed_events.end(), batch.events.begin(),
+                                      batch.events.end());
         report.batches.push_back(std::move(batch_report));
     }
 

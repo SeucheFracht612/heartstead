@@ -2,6 +2,7 @@
 #include "engine/entities/physical_resource.hpp"
 #include "engine/net/command_payload.hpp"
 #include "engine/world/fluids/fluid_state.hpp"
+#include "game/foundation/foundation_world.hpp"
 #include "game/runtime/game_inspection.hpp"
 #include "game/runtime/game_runtime.hpp"
 
@@ -519,18 +520,53 @@ void test_two_remote_clients_predict_and_interpolate() {
     assert(immediate.relative_to(start.anchor).z > start.local_offset.z);
 
     game::RuntimeFrameStats second_frame;
-    for (std::uint32_t frame_index = 0; frame_index < 12; ++frame_index) {
+    bool observed_remote_movement = false;
+    for (std::uint32_t frame_index = 0; frame_index < 60; ++frame_index) {
         now_ms += 17;
         assert(server.run_frame({16'667, now_ms}));
         assert(first.run_frame({16'667, now_ms}));
         auto observed = second.run_frame({16'667, now_ms});
         assert(observed);
         second_frame = std::move(observed).value();
+        const auto* candidate = second.session()->client()->player_snapshot(first_player);
+        observed_remote_movement =
+            candidate != nullptr &&
+            candidate->state.position.relative_to(start.anchor).z > start.local_offset.z;
+        if (observed_remote_movement) {
+            break;
+        }
     }
     const auto* interpolated = second.session()->client()->player_snapshot(first_player);
     assert(interpolated != nullptr);
-    assert(interpolated->state.position.relative_to(start.anchor).z > start.local_offset.z);
+    assert(observed_remote_movement);
     assert(second_frame.client.interpolated_player_count >= 1);
+
+    constexpr world::BlockCoord remote_edit{9, 0, 8};
+    assert(first.session()->submit_remove_voxel({remote_edit}, now_ms));
+    bool first_observed_edit = false;
+    bool second_observed_edit = false;
+    for (std::uint32_t frame_index = 0; frame_index < 30; ++frame_index) {
+        now_ms += 17;
+        assert(server.run_frame({16'667, now_ms}));
+        assert(first.run_frame({16'667, now_ms}));
+        assert(second.run_frame({16'667, now_ms}));
+        first_observed_edit =
+            first_observed_edit || !first.session()->client()->accepted_voxel_edits().empty();
+        second_observed_edit =
+            second_observed_edit || !second.session()->client()->accepted_voxel_edits().empty();
+        if (first_observed_edit && second_observed_edit) {
+            break;
+        }
+    }
+    assert(first_observed_edit && second_observed_edit);
+    const auto edit_address = world::block_to_chunk_local(remote_edit);
+    const auto first_cell =
+        first.session()->client()->world().chunks().get(edit_address.chunk, edit_address.local);
+    const auto second_cell =
+        second.session()->client()->world().chunks().get(edit_address.chunk, edit_address.local);
+    assert(first_cell && first_cell.value().is_air());
+    assert(second_cell && second_cell.value().is_air());
+
     assert(server.shutdown());
     now_ms += 16'000;
     auto timed_out = first.run_frame({16'667, now_ms});
@@ -580,6 +616,98 @@ void test_jolt_runtime_moves_on_cooked_terrain() {
     assert(after != nullptr);
     assert(after->state.position.relative_to(start.anchor).z > start.local_offset.z + 4.0);
     assert(std::abs(after->state.position.approximate_global().y - 1.0) < 0.06);
+    assert(runtime.shutdown());
+}
+
+void test_boundary_voxel_edit_rebuilds_collision_and_removes_support() {
+    if (!physics::physics_backend_info(physics::PhysicsBackend::jolt).available) {
+        return;
+    }
+    const auto report = content::ContentValidation::validate(source_root());
+    assert(!report.has_errors());
+    auto runtime = make_runtime(report);
+    game::RuntimeConfiguration config;
+    config.physics_backend = physics::PhysicsBackend::jolt;
+    assert(runtime.start_session(config, make_session_request(report)));
+    auto* session = runtime.session();
+    assert(session != nullptr && session->server() != nullptr && session->client() != nullptr);
+
+    std::int64_t now_ms = 0;
+    for (std::uint32_t attempt = 0; attempt < 100; ++attempt) {
+        const auto* upper = session->server()->chunk_collision().find({0, 0, 0});
+        const auto* lower = session->server()->chunk_collision().find({0, -1, 0});
+        if (upper != nullptr && lower != nullptr) {
+            break;
+        }
+        now_ms += 17;
+        assert(runtime.run_frame({16'667, now_ms}));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const auto* upper_before = session->server()->chunk_collision().find({0, 0, 0});
+    const auto* lower_before = session->server()->chunk_collision().find({0, -1, 0});
+    assert(upper_before != nullptr && lower_before != nullptr);
+    const auto lower_body = lower_before->body_id;
+    const auto collision_revision_before = session->server()->chunk_collision().world_revision();
+
+    const auto client_id = session->client()->client_id();
+    auto* player = session->server()->player_for_client(client_id);
+    assert(player != nullptr);
+    player->state.position = {29.5, 1.0, 7.5};
+    player->state.velocity = {};
+    player->state.fall_origin = player->state.position;
+    player->state.scripted_start = player->state.position;
+    player->state.scripted_target = player->state.position;
+    player->state.mode = movement::PlayerControllerMode::grounded;
+    player->state.grounded = true;
+
+    auto& server_chunks = session->server()->world().chunks();
+    server_chunks.clear_all_dirty();
+    session->server()->world().dirty_regions().clear();
+    const auto upper_address = world::block_to_chunk_local(game::foundation::boundary_edit_upper);
+    const auto lower_address = world::block_to_chunk_local(game::foundation::boundary_edit_lower);
+    assert(upper_address.chunk == (world::ChunkCoord{0, 0, 0}));
+    assert(lower_address.chunk == (world::ChunkCoord{0, -1, 0}));
+
+    movement::PlayerInputFrame neutral;
+    neutral.tick = 1;
+    neutral.sequence = 1;
+    assert(session->submit_player_input(neutral, now_ms));
+    assert(session->submit_remove_voxel({game::foundation::boundary_edit_upper}, now_ms));
+    now_ms += 17;
+    auto edited = runtime.run_frame({16'667, now_ms});
+    assert(edited);
+    assert(edited.value().server_ticks.front().commands.command_reports.front().success);
+    assert(session->client()->accepted_voxel_edits().size() == 1);
+    assert(server_chunks.find(upper_address.chunk)->dirty().contains(world::ChunkDirtyFlag::mesh));
+    assert(server_chunks.find(lower_address.chunk)->dirty().contains(world::ChunkDirtyFlag::mesh));
+    const auto edited_chunk_revision = server_chunks.find(upper_address.chunk)->content_revision();
+
+    bool collision_applied = false;
+    bool player_fell = false;
+    for (std::uint64_t sequence = 2; sequence <= 120; ++sequence) {
+        neutral.tick = sequence;
+        neutral.sequence = sequence;
+        assert(session->submit_player_input(neutral, now_ms));
+        now_ms += 17;
+        assert(runtime.run_frame({16'667, now_ms}));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const auto* upper = session->server()->chunk_collision().find(upper_address.chunk);
+        collision_applied = upper != nullptr && upper->content_revision >= edited_chunk_revision;
+        player_fell =
+            session->server()->player_for_client(client_id)->state.position.approximate_global().y <
+            0.1;
+        if (collision_applied && player_fell) {
+            break;
+        }
+    }
+    assert(collision_applied);
+    assert(player_fell);
+    const auto* lower_after = session->server()->chunk_collision().find(lower_address.chunk);
+    assert(lower_after != nullptr && lower_after->body_id == lower_body);
+    assert(session->server()->chunk_collision().world_revision() > collision_revision_before);
+    const auto client_cell =
+        session->client()->world().chunks().get(upper_address.chunk, upper_address.local);
+    assert(client_cell && client_cell.value().is_air());
     assert(runtime.shutdown());
 }
 
@@ -851,6 +979,9 @@ void test_typed_voxel_commands_validate_and_replicate() {
     assert(!authoritative.value().is_air());
     assert(replicated.value() == authoritative.value());
     assert(placed.value().client.replication.total_applied_record_count == 1);
+    assert(session->client()->accepted_voxel_edits().size() == 1);
+    assert(session->client()->accepted_voxel_edits().front().position == place.position);
+    assert(session->client()->accepted_voxel_edits().front().current == replicated.value());
 
     assert(session->submit_place_voxel(place, 20));
     auto duplicate = runtime.run_frame({16'667, 34});
@@ -858,6 +989,7 @@ void test_typed_voxel_commands_validate_and_replicate() {
     assert(!duplicate.value().server_ticks.front().commands.command_reports.front().success);
     assert(duplicate.value().server_ticks.front().commands.command_reports.front().error_code ==
            "voxel_command.target_occupied");
+    assert(session->client()->accepted_voxel_edits().empty());
 
     const game::interaction::PlaceVoxelCommand far_away{{100, 1, 100}, *clay};
     assert(session->submit_place_voxel(far_away, 30));
@@ -866,14 +998,50 @@ void test_typed_voxel_commands_validate_and_replicate() {
     assert(!rejected.value().server_ticks.front().commands.command_reports.front().success);
     assert(rejected.value().server_ticks.front().commands.command_reports.front().error_code ==
            "voxel_command.out_of_reach");
+    assert(session->client()->accepted_voxel_edits().empty());
 
-    assert(session->submit_remove_voxel({place.position}, 40));
-    auto removed = runtime.run_frame({16'667, 68});
+    const game::interaction::PlaceVoxelCommand inside_player{{8, 1, 8}, *clay};
+    assert(session->submit_place_voxel(inside_player, 40));
+    auto intersecting = runtime.run_frame({16'667, 68});
+    assert(intersecting);
+    assert(!intersecting.value().server_ticks.front().commands.command_reports.front().success);
+    assert(intersecting.value().server_ticks.front().commands.command_reports.front().error_code ==
+           "voxel_command.intersects_player");
+    assert(session->client()->accepted_voxel_edits().empty());
+
+    assert(session->submit_remove_voxel({place.position}, 50));
+    auto removed = runtime.run_frame({16'667, 85});
     assert(removed);
     authoritative = session->server()->world().chunks().get(address.chunk, address.local);
     replicated = session->client()->world().chunks().get(address.chunk, address.local);
     assert(authoritative && authoritative.value().is_air());
     assert(replicated && replicated.value().is_air());
+    assert(session->client()->accepted_voxel_edits().size() == 1);
+    assert(!session->client()->accepted_voxel_edits().front().previous.is_air());
+    assert(session->client()->accepted_voxel_edits().front().current.is_air());
+
+    assert(session->submit_remove_voxel({place.position}, 60));
+    auto duplicate_removal = runtime.run_frame({16'667, 102});
+    assert(duplicate_removal);
+    assert(
+        !duplicate_removal.value().server_ticks.front().commands.command_reports.front().success);
+    assert(duplicate_removal.value()
+               .server_ticks.front()
+               .commands.command_reports.front()
+               .error_code == "voxel_command.target_empty");
+    assert(session->client()->accepted_voxel_edits().empty());
+
+    auto* player = session->server()->player_for_client(session->client()->client_id());
+    assert(player != nullptr);
+    player->state.position = {31.5, 1.0, 31.5};
+    const game::interaction::PlaceVoxelCommand unloaded{{32, 1, 31}, *clay};
+    assert(session->submit_place_voxel(unloaded, 70));
+    auto unloaded_edit = runtime.run_frame({16'667, 119});
+    assert(unloaded_edit);
+    assert(!unloaded_edit.value().server_ticks.front().commands.command_reports.front().success);
+    assert(unloaded_edit.value().server_ticks.front().commands.command_reports.front().error_code ==
+           "voxel_command.chunk_not_loaded");
+    assert(session->client()->accepted_voxel_edits().empty());
     assert(runtime.shutdown());
 }
 
@@ -1340,6 +1508,7 @@ int main() {
     test_external_listen_runtime_uses_true_remote_endpoint();
     test_two_remote_clients_predict_and_interpolate();
     test_jolt_runtime_moves_on_cooked_terrain();
+    test_boundary_voxel_edit_rebuilds_collision_and_removes_support();
     test_jolt_runtime_drops_settles_and_restores_physical_resource();
     test_authoritative_player_input_moves_and_replicates();
     test_transient_replication_budget_defers_latest_state();

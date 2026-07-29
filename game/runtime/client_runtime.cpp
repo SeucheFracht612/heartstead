@@ -42,6 +42,7 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render
     std::uint32_t interpolated_player_count = 0;
     double maximum_correction_distance = 0.0;
     player_tombstones_.clear();
+    accepted_voxel_edits_.clear();
     auto completed_chunks = apply_queued_chunk_snapshots();
     if (!completed_chunks) {
         return core::Result<ClientRuntimeStats>::failure(completed_chunks.error().code,
@@ -51,6 +52,21 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render
     if (!replication) {
         return core::Result<ClientRuntimeStats>::failure(replication.error().code,
                                                          replication.error().message);
+    }
+    for (const auto& event : replication.value().observed_events) {
+        if (event.type != world::voxel_changed_event_type) {
+            continue;
+        }
+        auto change = world::VoxelChangeTextCodec::decode(event.message);
+        if (!change) {
+            return core::Result<ClientRuntimeStats>::failure(change.error().code,
+                                                             change.error().message);
+        }
+        auto status = record_accepted_voxel_edit(std::move(change).value());
+        if (!status) {
+            return core::Result<ClientRuntimeStats>::failure(status.error().code,
+                                                             status.error().message);
+        }
     }
     ClientReplicationDispatchStats feature_replication;
     if (replication_registry_ != nullptr) {
@@ -361,6 +377,31 @@ std::vector<const entities::EntityMotionSnapshot*> ClientRuntime::entity_motion_
 
 std::span<const core::NetId> ClientRuntime::player_tombstones() const noexcept {
     return player_tombstones_;
+}
+
+std::span<const world::VoxelChangeRecord> ClientRuntime::accepted_voxel_edits() const noexcept {
+    return accepted_voxel_edits_;
+}
+
+core::Status ClientRuntime::record_accepted_voxel_edit(world::VoxelChangeRecord change) {
+    auto status = change.validate();
+    if (!status) {
+        return status;
+    }
+    const auto address = world::block_to_chunk_local(change.position);
+    auto current = world_.chunks().get(address.chunk, address.local);
+    if (!current) {
+        return core::Status::failure(
+            "client_runtime.accepted_voxel_chunk_missing",
+            "accepted voxel edit was dispatched before its client chunk existed");
+    }
+    if (current.value() != change.current) {
+        return core::Status::failure(
+            "client_runtime.accepted_voxel_not_applied",
+            "accepted voxel edit was dispatched before its client world mutation");
+    }
+    accepted_voxel_edits_.push_back(std::move(change));
+    return core::Status::ok();
 }
 
 void ClientRuntime::clear_command_results() noexcept {

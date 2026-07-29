@@ -93,6 +93,14 @@ void test_foundation_world_is_deterministic_and_voxel_native() {
     assert(cell_at(first, {25, -1, 15}).type == *water_type);
 
     assert(cell_at(first, {3, 0, 2}).type == *dirt_type);
+    assert(cell_at(first, game::foundation::boundary_edit_upper).type == *grass_type);
+    assert(cell_at(first, game::foundation::boundary_edit_lower).type == *dirt_type);
+    assert(world::chunk_coord_for_block(game::foundation::boundary_edit_upper) ==
+           (world::ChunkCoord{0, 0, 0}));
+    assert(world::chunk_coord_for_block(game::foundation::boundary_edit_lower) ==
+           (world::ChunkCoord{0, -1, 0}));
+    assert(cell_at(first, {27, 0, 7}).type != *grass_type);
+    assert(cell_at(first, {31, 0, 7}).type != *grass_type);
 }
 
 } // namespace

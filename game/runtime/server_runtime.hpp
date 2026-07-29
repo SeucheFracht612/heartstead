@@ -143,6 +143,8 @@ class ServerRuntime final {
     [[nodiscard]] core::Status initialize_new_world_scenario();
     [[nodiscard]] core::Status ensure_spawn_area();
     [[nodiscard]] core::Status grant_starting_inventory(core::SaveId owner_id);
+    [[nodiscard]] core::Status validate_voxel_placement(world::BlockCoord position,
+                                                        world::VoxelCell cell) const;
     [[nodiscard]] world::WorldPosition scenario_spawn_position() const noexcept;
     [[nodiscard]] core::Status spawn_player(core::NetId client_id);
     [[nodiscard]] core::Status remove_player_connection(core::NetId client_id);

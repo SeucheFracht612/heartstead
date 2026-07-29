@@ -82,6 +82,28 @@ void revoke_private_subject_access(net::HostSession& host, core::NetId client_id
     return bounds_match(lhs_definition, rhs_definition);
 }
 
+[[nodiscard]] double point_interval_distance(double point, double minimum,
+                                             double maximum) noexcept {
+    return point < minimum ? minimum - point : point > maximum ? point - maximum : 0.0;
+}
+
+[[nodiscard]] double interval_distance(double first_minimum, double first_maximum,
+                                       double second_minimum, double second_maximum) noexcept {
+    return first_maximum < second_minimum   ? second_minimum - first_maximum
+           : second_maximum < first_minimum ? first_minimum - second_maximum
+                                            : 0.0;
+}
+
+[[nodiscard]] bool capsule_overlaps_bounds(math::Vec3d feet, movement::CharacterShape shape,
+                                           math::Bounds3d bounds) noexcept {
+    const auto radius = shape.width * 0.5;
+    const auto dx = point_interval_distance(feet.x, bounds.min.x, bounds.max.x);
+    const auto dz = point_interval_distance(feet.z, bounds.min.z, bounds.max.z);
+    const auto dy = interval_distance(feet.y + radius, feet.y + shape.height - radius, bounds.min.y,
+                                      bounds.max.y);
+    return dx * dx + dy * dy + dz * dz < radius * radius;
+}
+
 [[nodiscard]] core::Result<std::vector<world::VoxelLightSource>>
 collect_fire_light_sources(const world::WorldState& state,
                            const modding::PrototypeRegistry& prototypes) {
@@ -497,7 +519,10 @@ core::Status ServerRuntime::initialize() {
         return status;
     }
     status = gameplay_modules_.add(std::make_shared<interaction::VoxelInteractionModule>(
-        [this](core::NetId client_id) { return player_for_client(client_id); }));
+        [this](core::NetId client_id) { return player_for_client(client_id); },
+        [this](world::BlockCoord position, world::VoxelCell cell) {
+            return validate_voxel_placement(position, cell);
+        }));
     if (!status) {
         return status;
     }
@@ -863,6 +888,34 @@ core::Status ServerRuntime::ensure_spawn_area() {
         pending_saved_voxel_edits_.clear();
     }
     spawn_area_initialized_ = true;
+    return core::Status::ok();
+}
+
+core::Status ServerRuntime::validate_voxel_placement(world::BlockCoord position,
+                                                     world::VoxelCell cell) const {
+    const auto* definition = desc_.voxel_palette->find_by_type(cell.type);
+    if (definition == nullptr) {
+        return core::Status::failure(
+            "voxel_command.unknown_placement_type",
+            "voxel placement collision validation requires a known voxel type");
+    }
+    for (const auto* player : players_.records()) {
+        const auto shape = player_controller_.shape_for(player->state);
+        const auto feet = player->state.position.relative_to(position);
+        for (const auto& source : definition->collision_bounds) {
+            const math::Bounds3d voxel_bounds{
+                {static_cast<double>(source.min.x), static_cast<double>(source.min.y),
+                 static_cast<double>(source.min.z)},
+                {static_cast<double>(source.max.x), static_cast<double>(source.max.y),
+                 static_cast<double>(source.max.z)},
+            };
+            if (capsule_overlaps_bounds(feet, shape, voxel_bounds)) {
+                return core::Status::failure(
+                    "voxel_command.intersects_player",
+                    "voxel placement would intersect an authoritative player capsule");
+            }
+        }
+    }
     return core::Status::ok();
 }
 

@@ -559,9 +559,31 @@ DevGameMode::update(game::GameApplicationServices& services,
     }
     state.was_swimming = swimming;
 
+    for (const auto& edit : state.runtime.session()->client()->accepted_voxel_edits()) {
+        if (edit.previous.is_air() || !edit.current.is_air()) {
+            continue;
+        }
+        auto puff_position = world::WorldPosition::from_anchor(edit.position, {0.5, 0.5, 0.5});
+        if (!puff_position) {
+            return core::Result<game::GameApplicationFrameOutput>::failure(
+                puff_position.error().code, puff_position.error().message);
+        }
+        status = state.particle_system->queue_event({state.block_break_puff,
+                                                     puff_position.value(),
+                                                     {0.0F, 1.0F, 0.0F},
+                                                     {},
+                                                     18,
+                                                     state.particle_seed++});
+        if (!status) {
+            return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
+                                                                           status.error().message);
+        }
+    }
+
     auto selection = game::interaction::raycast_voxels(
         state.runtime.session()->client()->world().chunks(),
-        {camera_frame.value().position, camera_frame.value().forward, 6.0});
+        {camera_frame.value().position, camera_frame.value().forward, 6.0},
+        &state.config.content_report->voxel_palette);
     if (!selection) {
         return core::Result<game::GameApplicationFrameOutput>::failure(selection.error().code,
                                                                        selection.error().message);
@@ -580,23 +602,6 @@ DevGameMode::update(game::GameApplicationServices& services,
             if (!status) {
                 return core::Result<game::GameApplicationFrameOutput>::failure(
                     status.error().code, status.error().message);
-            }
-            if (action_frame[input::InputAction::primary_action].pressed) {
-                auto puff_position = world::WorldPosition::from_anchor(hit->block, {0.5, 0.5, 0.5});
-                if (!puff_position) {
-                    return core::Result<game::GameApplicationFrameOutput>::failure(
-                        puff_position.error().code, puff_position.error().message);
-                }
-                status = state.particle_system->queue_event({state.block_break_puff,
-                                                             puff_position.value(),
-                                                             {0.0F, 1.0F, 0.0F},
-                                                             {},
-                                                             18,
-                                                             state.particle_seed++});
-                if (!status) {
-                    return core::Result<game::GameApplicationFrameOutput>::failure(
-                        status.error().code, status.error().message);
-                }
             }
         }
     }
@@ -619,9 +624,22 @@ DevGameMode::update(game::GameApplicationServices& services,
                 return core::Result<game::GameApplicationFrameOutput>::failure(
                     block_origin.error().code, block_origin.error().message);
             }
-            status = debug->submit_aabb(
-                block_origin.value(), {{0.01F, 0.01F, 0.01F}, {0.99F, 0.99F, 0.99F}},
-                {1.0F, 0.78F, 0.18F, 1.0F}, 0.0F, renderer::DebugDepthMode::overlay);
+            const auto* definition = state.config.content_report->voxel_palette.find_by_type(
+                selection.value().hit->cell.type);
+            if (definition == nullptr) {
+                status = debug->submit_aabb(
+                    block_origin.value(), {{0.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 1.0F}},
+                    {1.0F, 0.78F, 0.18F, 1.0F}, 0.0F, renderer::DebugDepthMode::overlay);
+            } else {
+                for (const auto& bounds : definition->selection_bounds) {
+                    status =
+                        debug->submit_aabb(block_origin.value(), bounds, {1.0F, 0.78F, 0.18F, 1.0F},
+                                           0.0F, renderer::DebugDepthMode::overlay);
+                    if (!status) {
+                        break;
+                    }
+                }
+            }
             if (!status) {
                 return core::Result<game::GameApplicationFrameOutput>::failure(
                     status.error().code, status.error().message);

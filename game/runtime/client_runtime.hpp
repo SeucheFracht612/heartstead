@@ -7,8 +7,9 @@
 #include "engine/net/client_session.hpp"
 #include "engine/world/chunks/chunk_replication.hpp"
 #include "engine/world/replication_delta.hpp"
-#include "engine/world/world_state.hpp"
+#include "engine/world/voxel_change.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
+#include "engine/world/world_state.hpp"
 #include "game/framework/gameplay_module.hpp"
 
 #include <array>
@@ -70,6 +71,8 @@ class ClientRuntime final {
     [[nodiscard]] std::vector<const entities::EntityMotionSnapshot*>
     entity_motion_snapshots() const;
     [[nodiscard]] std::span<const core::NetId> player_tombstones() const noexcept;
+    [[nodiscard]] std::span<const world::VoxelChangeRecord> accepted_voxel_edits() const noexcept;
+    [[nodiscard]] core::Status record_accepted_voxel_edit(world::VoxelChangeRecord change);
     void clear_command_results() noexcept;
 
   private:
@@ -97,6 +100,7 @@ class ClientRuntime final {
         remote_player_interpolators_;
     std::unordered_map<std::uint64_t, entities::EntityMotionSnapshot> entity_motion_snapshots_;
     std::vector<core::NetId> player_tombstones_;
+    std::vector<world::VoxelChangeRecord> accepted_voxel_edits_;
     core::NetId local_player_net_id_;
     std::map<world::ChunkCoord, ChunkSnapshotAssembly> chunk_snapshot_assemblies_;
     std::map<world::ChunkCoord, std::pair<world::ChunkIdentity, std::uint64_t>> remote_chunks_;

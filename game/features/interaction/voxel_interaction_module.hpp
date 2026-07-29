@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/movement/player_controller_store.hpp"
+#include "game/features/interaction/voxel_commands.hpp"
 #include "game/framework/gameplay_module.hpp"
 
 #include <functional>
@@ -12,18 +13,17 @@ using AuthoritativePlayerResolver =
 
 class VoxelInteractionModule final : public IGameplayModule {
   public:
-    explicit VoxelInteractionModule(AuthoritativePlayerResolver resolve_player);
+    VoxelInteractionModule(AuthoritativePlayerResolver resolve_player,
+                           VoxelPlacementValidator validate_placement);
 
     [[nodiscard]] std::string_view module_id() const noexcept override;
-    [[nodiscard]] core::Status
-    register_commands(GameplayRegistrationContext& context) override;
-    [[nodiscard]] core::Status
-    register_serializers(SerializationRegistry& registry) override;
-    [[nodiscard]] core::Status
-    register_replication(ReplicationRegistry& registry) override;
+    [[nodiscard]] core::Status register_commands(GameplayRegistrationContext& context) override;
+    [[nodiscard]] core::Status register_serializers(SerializationRegistry& registry) override;
+    [[nodiscard]] core::Status register_replication(ReplicationRegistry& registry) override;
 
   private:
     AuthoritativePlayerResolver resolve_player_;
+    VoxelPlacementValidator validate_placement_;
 };
 
 } // namespace heartstead::game::interaction
