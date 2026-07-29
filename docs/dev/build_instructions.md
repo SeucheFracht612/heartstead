@@ -137,8 +137,8 @@ window to exit. Resizing and minimizing the window preserve resident chunk buffe
 `VK_LAYER_KHRONOS_validation` is installed, it is enabled automatically; otherwise startup
 continues with a visible warning.
 
-The checked-in shader sources and production SPIR-V are under
-`apps/render_smoke/assets/shaders`. CMake detects `glslangValidator` (or the newer `glslang` binary)
+The shared, checked-in shader sources and production SPIR-V are under
+`engine/renderer/shaders/builtin`. CMake detects `glslangValidator` (or the newer `glslang` binary)
 and, when available, recompiles
 the GLSL into the build tree whenever a source changes. Otherwise it stages the checked-in SPIR-V,
 so release builds never require a runtime shader compiler. To regenerate and validate the
@@ -146,14 +146,15 @@ checked-in artifacts with external Khronos tools:
 
 ```bash
 for shader in \
+  sky.vert sky.frag \
   terrain.vert terrain.frag \
   static_mesh.vert static_mesh.frag \
   debug_line.vert debug_line.frag \
   ui.vert ui.frag; do
   glslangValidator -V --target-env vulkan1.0 \
-    "apps/render_smoke/assets/shaders/${shader}" \
-    -o "apps/render_smoke/assets/shaders/${shader}.spv"
-  spirv-val "apps/render_smoke/assets/shaders/${shader}.spv"
+    "engine/renderer/shaders/builtin/${shader}" \
+    -o "engine/renderer/shaders/builtin/${shader}.spv"
+  spirv-val "engine/renderer/shaders/builtin/${shader}.spv"
 done
 ```
 

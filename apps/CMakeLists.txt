@@ -1,7 +1,7 @@
 find_program(HEARTSTEAD_GLSLANG_VALIDATOR NAMES glslangValidator glslang)
 
 function(heartstead_attach_terrain_shader_assets target)
-  set(shader_source_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/render_smoke/assets/shaders")
+  set(shader_source_dir "${PROJECT_SOURCE_DIR}/engine/renderer/shaders/builtin")
   set(compiled_shader_dir "${CMAKE_CURRENT_BINARY_DIR}/${target}_compiled_shaders")
   set(sky_vertex_source "${shader_source_dir}/sky.vert")
   set(sky_fragment_source "${shader_source_dir}/sky.frag")
