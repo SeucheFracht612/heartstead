@@ -1,0 +1,217 @@
+# Foundation Slice 0.1
+
+Status: planned
+
+The Foundation Slice is the first small but real Heartstead game build. It proves that the
+authoritative runtime, voxel world, controller, rendering, asset, presentation, audio, particle,
+and persistence paths form one dependable platform.
+
+It is not an engine-completeness milestone. Farming, crafting, enemies, buildings, inventory
+drops, progression, a universal editor, full PBR, material graphs, and comprehensive hot reload
+are outside this slice.
+
+## Acceptance rules
+
+- Every checkbox describes an observable result, not an implementation task.
+- `[Automated]` items must have a named test or smoke command.
+- `[Native]` items require the real windowed renderer, input, audio, or a visual judgment.
+- `[Both]` items need an automated invariant plus a native verification.
+- A feature is not accepted solely because an isolated subsystem test passes. Its path through
+  `dev_game` must also work when the item is marked `[Both]`.
+- A rejected authoritative command must not produce success feedback.
+- The slice remains runnable at every milestone boundary.
+
+## Baseline
+
+Recorded 2026-07-29 before Foundation Slice implementation:
+
+```text
+cmake --build --preset default-debug -j2
+ctest --test-dir build/default-debug --output-on-failure -j2
+./build/default-debug/apps/dev_game/heartstead_dev_game --frames 3
+```
+
+Result:
+
+```text
+Build: passed
+Tests: 95/95 passed
+dev_game headless smoke: passed
+```
+
+The first partial-target test attempt was intentionally not treated as the baseline: three test
+executables had not been built and the dedicated-server smoke binary was stale. A complete preset
+build followed by the commands above produced the authoritative result.
+
+## Application and session
+
+- [ ] `[Automated]` `dev_game --frames 3` always creates a valid local authoritative session.
+- [ ] `[Automated]` a bounded remote-client smoke can connect to the dedicated server.
+- [ ] `[Automated]` headless `--frames` runs do not require a display or audio output device.
+- [ ] `[Native]` the native executable creates the window, renderer, audio system, input system,
+      and development mode without startup warnings.
+- [ ] `[Automated]` bounded shutdown releases the gameplay mode before application-owned renderer,
+      audio, window, and platform resources.
+- [ ] `[Automated]` `main.cpp` contains launch configuration and composition only; gameplay
+      features are not manually integrated there.
+- [ ] `[Native]` the diagnostic overlay shows session mode, connection state, authoritative tick,
+      presentation tick, and last runtime error.
+
+## Deterministic Foundation environment
+
+- [ ] `[Automated]` a new Foundation world records a stable scenario ID, layout version, and seed.
+- [ ] `[Automated]` repeated new-world construction produces byte-equivalent baseline chunks.
+- [ ] `[Both]` the player appears at the documented safe spawn.
+- [ ] `[Automated]` the full player capsule and camera pivot volume at spawn contain no solid voxel.
+- [ ] `[Both]` dirt, stone, grass, water, and visually distinct diagnostic blocks are present.
+- [ ] `[Both]` the compact controller course contains full-block steps, partial-height steps,
+      voxel-terrain inclines, ledges, a low ceiling, a small hole, a landing area, and water.
+- [ ] `[Both]` the course crosses at least one chunk boundary at a marked edit station.
+- [ ] `[Native]` daylight, shadows, fog, and the basic sky render in the Foundation world.
+- [ ] `[Automated]` saved edit deltas are applied after deterministic baseline construction.
+
+For this slice, a slope is voxel terrain: a terraced incline composed from full and
+partial-height voxel shapes. It is not an arbitrary rotated plane or hidden physics fixture.
+
+## Player controller and camera
+
+- [ ] `[Both]` the player walks with stable acceleration and stopping.
+- [ ] `[Both]` sprint changes locomotion speed when requested.
+- [ ] `[Both]` jump starts only from a valid supported state.
+- [ ] `[Both]` the player falls and lands without penetration or persistent hovering.
+- [ ] `[Both]` the player steps onto the supported normal voxel ledge height.
+- [ ] `[Both]` the player traverses the ascending and descending voxel-terrain incline.
+- [ ] `[Automated]` an unsupported ledge or ceiling prevents an invalid step-up.
+- [ ] `[Automated]` traversing internal block edges does not create unrequested upward velocity.
+- [ ] `[Both]` removing the supporting block makes the player fall after collision refresh.
+- [ ] `[Both]` water enters and exits the existing swimming/controller mode correctly.
+- [ ] `[Native]` first- and third-person camera modes can be selected explicitly.
+- [ ] `[Both]` the third-person camera shortens its boom before entering solid terrain.
+- [ ] `[Native]` the camera restores its desired distance smoothly after an obstruction clears.
+- [ ] `[Native]` the controller overlay displays position, velocity, requested movement, actual
+      displacement, grounded state, ground normal/state, controller mode, step result, supporting
+      body/block, and pending terrain-collision revision.
+- [ ] `[Native]` controller geometry and contact debug drawing can be toggled independently of the
+      text overlay.
+
+## Voxel selection and authoritative editing
+
+- [ ] `[Both]` aiming at a selectable voxel produces a hit position and face.
+- [ ] `[Native]` the selected voxel's declared selection bounds receive a clear outline.
+- [ ] `[Native]` the outline disappears when no voxel is in interaction range.
+- [ ] `[Both]` primary action submits a remove command for the selected voxel.
+- [ ] `[Both]` secondary action submits a place command against the selected hit face.
+- [ ] `[Automated]` the server rejects an edit outside interaction range.
+- [ ] `[Automated]` the server rejects removal of an empty voxel.
+- [ ] `[Automated]` the server rejects placement into an occupied voxel.
+- [ ] `[Automated]` the server rejects placement intersecting an authoritative player capsule.
+- [ ] `[Automated]` the server rejects an edit targeting an unloaded chunk.
+- [ ] `[Automated]` the server accepts a valid edit and records exactly one semantic accepted event.
+- [ ] `[Automated]` a rejected edit records no accepted event.
+- [ ] `[Automated]` rapid duplicate removal accepts once and rejects subsequent empty-target edits.
+
+## Replication and derived terrain updates
+
+- [ ] `[Automated]` an accepted server edit changes the authoritative chunk content revision.
+- [ ] `[Both]` the accepted edit appears in the local client voxel world.
+- [ ] `[Automated]` the accepted edit appears on a second connected client.
+- [ ] `[Automated]` the client applies the voxel mutation before dispatching its accepted-edit
+      presentation event.
+- [ ] `[Both]` an interior edit rebuilds the changed chunk mesh.
+- [ ] `[Both]` a face-boundary edit rebuilds both loaded neighboring chunk meshes.
+- [ ] `[Automated]` collision cooking reaches the authoritative edited chunk revision.
+- [ ] `[Both]` character collision reflects removal and placement after the collision update.
+- [ ] `[Automated]` an edit dirties voxel lighting when the previous or current block affects light.
+- [ ] `[Automated]` an edit activates fluid work for the edited block and its relevant neighbors.
+- [ ] `[Native]` diagnostics show command rejection, failed replication apply, failed remesh,
+      failed collision cooking, and unresolved lighting/fluid work.
+
+## Accepted edit feedback
+
+- [ ] `[Both]` a successful removal emits the previous voxel's break particle.
+- [ ] `[Both]` a successful removal plays the previous voxel's positional break sound.
+- [ ] `[Both]` a successful placement plays the placed voxel's positional placement sound.
+- [ ] `[Automated]` feedback is queued only after the accepted event reaches presentation.
+- [ ] `[Both]` rejected removal and placement produce no success particle or sound.
+- [ ] `[Automated]` a missing particle or sound reference resolves to its named fallback and emits
+      one clear diagnostic rather than failing the session.
+
+## Asset Pipeline V1
+
+- [ ] `[Automated]` the Foundation manifest closes over every transitive asset dependency.
+- [ ] `[Automated]` filtered model cooking also cooks required external or generated image assets.
+- [ ] `[Automated]` changing a dependency changes the dependent cooked record/hash.
+- [ ] `[Automated]` PNG and JPEG sources cook to versioned RGBA8 texture assets.
+- [ ] `[Automated]` base-color texture RGB is uploaded as sRGB and material factors remain linear.
+- [ ] `[Both]` one textured static glTF/GLB prop renders through the catalog and cooked store.
+- [ ] `[Both]` one textured skinned player glTF/GLB renders through the same path.
+- [ ] `[Both]` per-primitive base-color material assignment is preserved and visible.
+- [ ] `[Both]` opaque and alpha-mask material modes behave correctly.
+- [ ] `[Both]` double-sided material state behaves correctly.
+- [ ] `[Automated]` unsupported blend materials fail cooking with the logical asset ID and reason.
+- [ ] `[Automated]` animation mappings resolve unique authored clip names, never numeric indices.
+- [ ] `[Automated]` missing or duplicate mapped animation names produce a clear validation error.
+- [ ] `[Automated]` WAV and Ogg Vorbis sources cook to the versioned runtime audio representation.
+- [ ] `[Both]` at least one positional emitter plays a cooked sound asset.
+- [ ] `[Automated]` runtime model, texture, material, animation, and audio resources are cached by
+      stable logical asset ID.
+- [ ] `[Both]` missing texture, material, model, animation, and sound assets each use their named
+      fallback behavior.
+- [ ] `[Native]` load diagnostics identify logical ID, source/cooked path, failing dependency, and
+      fallback used.
+
+## Data-driven presentation
+
+- [ ] `[Automated]` every Foundation entity prototype resolves an `entity_visual` definition.
+- [ ] `[Automated]` declaring a static entity visual does not require a skin or animation mapping.
+- [ ] `[Automated]` declaring a skinned entity visual validates all named animation mappings.
+- [ ] `[Both]` the player selects idle, walk, run, jump, fall, and swim presentation states from
+      semantic locomotion state.
+- [ ] `[Automated]` newly replicated entities with valid visual definitions appear without
+      application-entry-point changes.
+- [ ] `[Automated]` removed entities release their presentation instances while cached assets remain
+      valid for other users.
+- [ ] `[Both]` footstep sounds follow locomotion timing and resolve from the supporting voxel.
+- [ ] `[Automated]` an unknown visual definition presents the fallback model/material and reports
+      the unresolved visual ID once.
+
+## Persistence
+
+- [ ] `[Automated]` a missing Foundation save slot creates a new deterministic world.
+- [ ] `[Automated]` an existing Foundation save slot reopens instead of creating another baseline.
+- [ ] `[Automated]` player position survives clean save and restart.
+- [ ] `[Both]` removed and placed voxels survive clean save and restart.
+- [ ] `[Automated]` edits on both sides of a chunk boundary survive restart.
+- [ ] `[Automated]` the active voxel palette manifest is preserved and validated on load.
+- [ ] `[Automated]` a missing voxel prototype follows the existing missing-prototype recovery path.
+- [ ] `[Automated]` an incompatible Foundation layout version fails clearly rather than applying
+      edit deltas to an unrelated baseline.
+- [ ] `[Automated]` periodic dirty save and clean-shutdown save use the transactional generation
+      commit path.
+
+## Regression gates
+
+- [ ] `[Automated]` the complete default-debug build passes.
+- [ ] `[Automated]` the complete default-debug CTest suite passes.
+- [ ] `[Automated]` the Foundation headless integration test starts a session, spawns a player,
+      submits an edit, advances ticks, verifies server and client state, saves, reloads, and
+      verifies the edit.
+- [ ] `[Automated]` the Foundation asset validation test cooks and loads all required assets and
+      resolves every presentation reference.
+- [ ] `[Automated]` the bounded `dev_game` headless smoke passes.
+- [ ] `[Native]` the bounded real-window smoke creates renderer/audio resources, renders the
+      Foundation scene, and shuts down cleanly.
+- [ ] `[Native]` all visual and audible checklist items receive a final in-game pass before the
+      milestone is marked complete.
+
+## Gameplay-additive exit condition
+
+The slice is complete only when:
+
+- adding a terrain block requires its voxel prototype, material/texture references, collision and
+  rendering properties, sound references, and optional particle reference, but no renderer code;
+- adding an entity requires its gameplay prototype, visual definition, model/materials, animation
+  mapping, and sound set, but no manual presenter in `dev_game`;
+- adding an interaction requires an input/request, authoritative command and validation, state
+  change, and presentation event, but no effect trigger in `main.cpp`.
+
