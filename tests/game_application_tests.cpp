@@ -1,0 +1,127 @@
+#include "game/application/game_application.hpp"
+
+#include <cassert>
+#include <cstdint>
+#include <string>
+
+namespace {
+
+using namespace heartstead;
+
+class RecordingMode final : public game::IGameApplicationMode {
+  public:
+    core::Status initialize(game::GameApplicationServices& services) override {
+        assert(services.headless());
+        assert(services.renderer() == nullptr);
+        assert(services.audio() == nullptr);
+        initialized = true;
+        return core::Status::ok();
+    }
+
+    core::Result<game::GameApplicationFrameOutput>
+    update(game::GameApplicationServices&, const game::GameApplicationFrame& frame) override {
+        assert(initialized);
+        assert(!shutdown_called);
+        assert(frame.headless);
+        assert(frame.input == nullptr);
+        assert(frame.delta_microseconds == 16'667);
+        assert(frame.now_milliseconds > previous_now_milliseconds);
+        previous_now_milliseconds = frame.now_milliseconds;
+        ++updates;
+        return core::Result<game::GameApplicationFrameOutput>::success({});
+    }
+
+    core::Status shutdown(game::GameApplicationServices& services) override {
+        assert(services.headless());
+        shutdown_called = true;
+        return core::Status::ok();
+    }
+
+    std::string summary() const override {
+        return "recording updates=" + std::to_string(updates);
+    }
+
+    bool initialized = false;
+    bool shutdown_called = false;
+    std::uint64_t updates = 0;
+    std::int64_t previous_now_milliseconds = -1;
+};
+
+class FailingMode final : public game::IGameApplicationMode {
+  public:
+    core::Status initialize(game::GameApplicationServices&) override {
+        initialized = true;
+        return core::Status::ok();
+    }
+
+    core::Result<game::GameApplicationFrameOutput>
+    update(game::GameApplicationServices&, const game::GameApplicationFrame&) override {
+        return core::Result<game::GameApplicationFrameOutput>::failure("test.mode_failure",
+                                                                        "expected mode failure");
+    }
+
+    core::Status shutdown(game::GameApplicationServices&) override {
+        shutdown_called = true;
+        return core::Status::ok();
+    }
+
+    std::string summary() const override {
+        return "failing";
+    }
+
+    bool initialized = false;
+    bool shutdown_called = false;
+};
+
+void test_headless_loop_and_lifecycle() {
+    game::GameApplicationConfig config;
+    config.headless = true;
+    config.maximum_frames = 3;
+    game::GameApplication application(config);
+    RecordingMode mode;
+
+    auto report = application.run(mode);
+    assert(report);
+    assert(report.value().headless);
+    assert(report.value().frame_count == 3);
+    assert(report.value().mode_summary == "recording updates=3");
+    assert(mode.initialized);
+    assert(mode.shutdown_called);
+    assert(mode.updates == 3);
+}
+
+void test_mode_failure_still_shuts_down() {
+    game::GameApplicationConfig config;
+    config.headless = true;
+    config.maximum_frames = 1;
+    game::GameApplication application(config);
+    FailingMode mode;
+
+    auto report = application.run(mode);
+    assert(!report);
+    assert(report.error().code == "test.mode_failure");
+    assert(mode.initialized);
+    assert(mode.shutdown_called);
+}
+
+void test_zero_frame_limit_is_rejected() {
+    game::GameApplicationConfig config;
+    config.headless = true;
+    config.maximum_frames = 0;
+    game::GameApplication application(config);
+    RecordingMode mode;
+
+    auto report = application.run(mode);
+    assert(!report);
+    assert(report.error().code == "game_application.invalid_frame_limit");
+    assert(!mode.initialized);
+}
+
+} // namespace
+
+int main() {
+    test_headless_loop_and_lifecycle();
+    test_mode_failure_still_shuts_down();
+    test_zero_frame_limit_is_rejected();
+    return 0;
+}

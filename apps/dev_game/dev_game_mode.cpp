@@ -1,0 +1,693 @@
+#include "apps/dev_game/dev_game_mode.hpp"
+
+#include "engine/assets/asset_cooker.hpp"
+#include "engine/assets/cooked_asset_store.hpp"
+#include "engine/assets/model_asset.hpp"
+#include "engine/content/content_validation.hpp"
+#include "engine/entities/physical_resource.hpp"
+#include "engine/input/input_action.hpp"
+#include "engine/movement/player_camera.hpp"
+#include "engine/movement/player_input.hpp"
+#include "engine/renderer/environment/day_night.hpp"
+#include "game/features/animals/wandering_animal_module.hpp"
+#include "game/features/interaction/voxel_raycast.hpp"
+#include "game/presentation/animated_model_presentation.hpp"
+#include "game/presentation/client_audio_presentation.hpp"
+#include "game/presentation/particle_presentation.hpp"
+#include "game/runtime/game_runtime.hpp"
+#include "game/ui/game_ui.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <utility>
+#include <vector>
+
+namespace heartstead::dev_game {
+
+namespace {
+
+struct DevPhysicalResourceVisual {
+    core::SaveId resource_id;
+    renderer::RenderObjectId render_id;
+    math::Transform3f transform;
+};
+
+[[nodiscard]] core::Result<renderer::RenderObjectProxy>
+physical_resource_proxy(const entities::PhysicalResourceRecord& resource,
+                        renderer::Renderer& renderer,
+                        const DevPhysicalResourceVisual* previous = nullptr) {
+    const auto origin = world::WorldPosition::from_anchor({}, {});
+    if (!origin) {
+        return core::Result<renderer::RenderObjectProxy>::failure(origin.error().code,
+                                                                  origin.error().message);
+    }
+    const auto global = resource.position.approximate_global();
+    renderer::RenderObjectProxy proxy;
+    proxy.id = previous == nullptr ? renderer::RenderObjectId{} : previous->render_id;
+    proxy.anchor = origin.value();
+    proxy.current_transform.position = {static_cast<float>(global.x), static_cast<float>(global.y),
+                                        static_cast<float>(global.z)};
+    proxy.current_transform.rotation_degrees = resource.rotation_degrees;
+    proxy.current_transform.scale = {1.2F, 0.4F, 0.4F};
+    proxy.previous_transform = previous == nullptr ? proxy.current_transform : previous->transform;
+    proxy.mesh = renderer.fallback_mesh();
+    proxy.material = {1, 1};
+    proxy.local_bounds = {{-0.5F, -0.5F, -0.5F}, {0.5F, 0.5F, 0.5F}};
+    proxy.flags = renderer::RenderObjectFlags::cast_shadow;
+    proxy.color = {0.42F, 0.20F, 0.07F, 1.0F};
+    return core::Result<renderer::RenderObjectProxy>::success(proxy);
+}
+
+[[nodiscard]] core::Status
+drop_demo_resource(game::GameRuntime& runtime, renderer::Renderer& renderer,
+                   const movement::PlayerCameraFrame& camera,
+                   std::vector<DevPhysicalResourceVisual>& visuals) {
+    auto* session = runtime.session();
+    auto* server = session == nullptr ? nullptr : session->server();
+    if (server == nullptr) {
+        return core::Status::failure("dev_game.server_missing",
+                                     "dropping a resource requires the local authority");
+    }
+    auto resource_id = server->world().save_ids().reserve();
+    if (!resource_id) {
+        return core::Status::failure(resource_id.error().code, resource_id.error().message);
+    }
+    auto position = world::WorldPosition::from_anchor(
+        camera.position.anchor,
+        camera.position.local_offset + camera.forward * 1.5 + math::Vec3d{0.0, -0.25, 0.0});
+    if (!position) {
+        return core::Status::failure(position.error().code, position.error().message);
+    }
+    entities::PhysicalResourceRecord resource;
+    resource.resource_id = resource_id.value();
+    resource.prototype_id = *core::PrototypeId::parse("base:entities/dropped_log");
+    resource.cargo_prototype_id = *core::PrototypeId::parse("base:cargo/heavy_log");
+    resource.position = position.value();
+    resource.kind = entities::PhysicalResourceKind::haulable_log;
+    resource.mass_grams = 12'000;
+    resource.volume_milliliters = 24'000;
+    resource.allowed_transport_modes = cargo::CargoTransportModes::of(
+        {cargo::CargoTransportMode::hand, cargo::CargoTransportMode::cart});
+    resource.segments.push_back({physics::ShapeKind::box, {}, {0.6F, 0.2F, 0.2F}, 0.5F, 0.5F});
+    const physics::Vec3 velocity{static_cast<float>(camera.forward.x * 4.0),
+                                 static_cast<float>(camera.forward.y * 4.0 + 1.5),
+                                 static_cast<float>(camera.forward.z * 4.0)};
+    auto status = server->drop_physical_resource(resource, velocity, {0.0F, 0.0F, 2.0F});
+    if (!status) {
+        return status;
+    }
+    const auto* dropped = server->world().physical_resources().find(resource_id.value());
+    if (dropped == nullptr) {
+        return core::Status::failure("dev_game.resource_missing",
+                                     "dropped resource was not retained by the authority");
+    }
+    auto proxy = physical_resource_proxy(*dropped, renderer);
+    if (!proxy) {
+        return core::Status::failure(proxy.error().code, proxy.error().message);
+    }
+    auto created = renderer.create_object(proxy.value());
+    if (!created) {
+        return core::Status::failure(created.error().code, created.error().message);
+    }
+    visuals.push_back({resource_id.value(), created.value(), proxy.value().current_transform});
+    return core::Status::ok();
+}
+
+[[nodiscard]] core::Status
+synchronize_demo_resources(const game::GameRuntime& runtime, renderer::Renderer& renderer,
+                           std::vector<DevPhysicalResourceVisual>& visuals) {
+    const auto* session = runtime.session();
+    const auto* server = session == nullptr ? nullptr : session->server();
+    if (server == nullptr) {
+        return core::Status::ok();
+    }
+    std::vector<renderer::RenderSceneUpdate> updates;
+    updates.reserve(visuals.size());
+    for (auto& visual : visuals) {
+        const auto* resource = server->world().physical_resources().find(visual.resource_id);
+        if (resource == nullptr) {
+            continue;
+        }
+        auto proxy = physical_resource_proxy(*resource, renderer, &visual);
+        if (!proxy) {
+            return core::Status::failure(proxy.error().code, proxy.error().message);
+        }
+        renderer::RenderSceneUpdate update;
+        update.kind = renderer::RenderSceneUpdateKind::upsert_object;
+        update.object = proxy.value();
+        updates.push_back(std::move(update));
+        visual.transform = proxy.value().current_transform;
+    }
+    return renderer.apply_scene_updates(updates);
+}
+
+[[nodiscard]] core::Result<assets::ModelAsset>
+load_storybook_player_model(const std::filesystem::path& cooked_asset_root) {
+    constexpr std::string_view logical_id = "base:models/entities/storybook_player.gltf";
+    auto store = assets::CookedAssetStore::load(cooked_asset_root);
+    if (!store) {
+        return core::Result<assets::ModelAsset>::failure(store.error().code, store.error().message);
+    }
+    auto payload = store.value().load_payload(logical_id);
+    if (!payload) {
+        return core::Result<assets::ModelAsset>::failure(payload.error().code,
+                                                         payload.error().message);
+    }
+    const auto production_model_pipeline = assets::asset_cook_pipeline_name(
+        assets::AssetKind::model, assets::AssetCookBackend::production_converters);
+    if (payload.value().kind != assets::AssetKind::model ||
+        payload.value().profile != "production" ||
+        payload.value().backend != production_model_pipeline) {
+        return core::Result<assets::ModelAsset>::failure(
+            "dev_game.invalid_character_asset",
+            "storybook player must be a production-cooked model asset");
+    }
+    return assets::decode_model_asset(payload.value().bytes);
+}
+
+[[nodiscard]] renderer::RenderCamera
+render_camera_from(const movement::PlayerCameraFrame& frame) {
+    renderer::RenderCamera camera;
+    camera.floating_origin = frame.floating_origin;
+    camera.local_position = {static_cast<float>(frame.position.local_offset.x),
+                             static_cast<float>(frame.position.local_offset.y),
+                             static_cast<float>(frame.position.local_offset.z)};
+    camera.view = frame.view;
+    camera.projection = frame.projection;
+    camera.view_projection = frame.view_projection;
+    camera.yaw_radians =
+        std::atan2(static_cast<float>(frame.forward.x), static_cast<float>(frame.forward.z));
+    camera.pitch_radians =
+        std::asin(std::clamp(static_cast<float>(frame.forward.y), -1.0F, 1.0F));
+    return camera;
+}
+
+[[nodiscard]] core::Status
+start_runtime(game::GameRuntime& runtime, const content::ContentValidationReport& content_report,
+              const DevGameModeConfig& options) {
+    auto metadata = content::save_metadata_from_content_report(content_report, "development",
+                                                               0x4845415254535445ULL);
+    if (!metadata) {
+        return core::Status::failure(metadata.error().code, metadata.error().message);
+    }
+    game::RuntimeConfiguration config;
+    config.create_server = !options.connect_endpoint.has_value();
+    config.create_client = true;
+    config.create_renderer = !options.headless;
+    config.create_audio = !options.headless;
+    config.use_in_memory_transport = !options.connect_endpoint.has_value();
+    config.remote_server_endpoint = options.connect_endpoint;
+    config.headless = options.headless;
+    config.physics_backend =
+        options.headless ? physics::PhysicsBackend::headless : physics::PhysicsBackend::jolt;
+    config.gameplay_modules.push_back(std::make_shared<game::animals::WanderingAnimalModule>());
+    game::SessionRequest request;
+    request.metadata = std::move(metadata).value();
+    return runtime.start_session(config, std::move(request));
+}
+
+} // namespace
+
+struct DevGameMode::Impl {
+    explicit Impl(DevGameModeConfig initial_config) : config(std::move(initial_config)) {}
+
+    DevGameModeConfig config;
+    game::GameRuntime runtime;
+    bool runtime_started = false;
+    game::AnimatedModelPresentation animated_models;
+    game::AnimatedModelPresentation animated_animals;
+    bool animated_models_initialized = false;
+    bool animated_animals_initialized = false;
+    std::optional<renderer::CpuParticleSystem> particle_system;
+    renderer::ParticleSystemConfig particle_config;
+    game::ParticlePresentation particle_presentation;
+    bool particle_presentation_initialized = false;
+    renderer::ParticleEmitterId fire_emitter;
+    std::uint64_t particle_seed = 1;
+    bool was_swimming = false;
+    core::PrototypeId fire_ember;
+    core::PrototypeId block_break_puff;
+    core::PrototypeId splash;
+    core::PrototypeId clay;
+    game::ClientAudioPresentation audio_presentation;
+    bool audio_presentation_initialized = false;
+    std::unique_ptr<game::GameUiLayer> game_ui;
+    input::InputActionMap actions = input::InputActionMap::gameplay_defaults();
+    movement::PlayerInputSampler input_sampler;
+    movement::PlayerCameraRig camera_rig;
+    std::vector<DevPhysicalResourceVisual> physical_resource_visuals;
+    std::uint64_t input_tick = 0;
+    std::uint64_t frame_count = 0;
+    std::uint64_t authoritative_tick = 0;
+    bool local_client_connected = false;
+};
+
+DevGameMode::DevGameMode(DevGameModeConfig config)
+    : implementation_(std::make_unique<Impl>(std::move(config))) {}
+
+DevGameMode::~DevGameMode() = default;
+
+core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
+    auto& state = *implementation_;
+    if (state.config.content_report == nullptr) {
+        return core::Status::failure("dev_game.missing_content",
+                                     "development mode requires validated content");
+    }
+    auto runtime = game::GameRuntime::initialize(game::GameRuntimeConfig{},
+                                                 *state.config.content_report);
+    if (!runtime) {
+        return core::Status::failure(runtime.error().code, runtime.error().message);
+    }
+    state.runtime = std::move(runtime).value();
+    auto status = start_runtime(state.runtime, *state.config.content_report, state.config);
+    if (!status) {
+        return status;
+    }
+    state.runtime_started = true;
+    if (state.config.headless) {
+        return core::Status::ok();
+    }
+
+    auto* renderer = services.renderer();
+    if (renderer == nullptr) {
+        return core::Status::failure("dev_game.renderer_missing",
+                                     "native development mode requires the application renderer");
+    }
+    auto character_model = load_storybook_player_model(state.config.cooked_asset_root);
+    if (!character_model) {
+        return core::Status::failure(character_model.error().code,
+                                     character_model.error().message);
+    }
+    game::AnimatedModelPresentationConfig animated_model_config;
+    animated_model_config.asset_id = "base:models/entities/storybook_player.gltf";
+    animated_model_config.visual_prototype = *core::PrototypeId::parse("base:entities/player");
+    animated_model_config.model = std::move(character_model).value();
+    animated_model_config.locomotion_clips = {0, 1, 2, 9};
+    animated_model_config.animated_bounds = animated_model_config.model.bounds.expanded(0.4F);
+    animated_model_config.flags =
+        renderer::RenderObjectFlags::cast_shadow | renderer::RenderObjectFlags::two_sided;
+    animated_model_config.color = {0.76F, 0.39F, 0.20F, 1.0F};
+    status = state.animated_models.initialize(*renderer, std::move(animated_model_config));
+    if (!status) {
+        return status;
+    }
+    state.animated_models_initialized = true;
+
+    auto animal_model = load_storybook_player_model(state.config.cooked_asset_root);
+    if (!animal_model) {
+        return core::Status::failure(animal_model.error().code, animal_model.error().message);
+    }
+    game::AnimatedModelPresentationConfig animal_model_config;
+    animal_model_config.asset_id = "base:models/entities/storybook_player.gltf#test_animal";
+    animal_model_config.visual_prototype = *core::PrototypeId::parse("base:entities/test_animal");
+    animal_model_config.model = std::move(animal_model).value();
+    animal_model_config.locomotion_clips = {0, 1, 2, 9};
+    animal_model_config.animated_bounds = animal_model_config.model.bounds.expanded(0.4F);
+    animal_model_config.flags =
+        renderer::RenderObjectFlags::cast_shadow | renderer::RenderObjectFlags::two_sided;
+    animal_model_config.color = {0.83F, 0.70F, 0.42F, 1.0F};
+    status = state.animated_animals.initialize(*renderer, std::move(animal_model_config));
+    if (!status) {
+        return status;
+    }
+    state.animated_animals_initialized = true;
+
+    state.particle_config.maximum_particles = 8'192;
+    state.particle_config.maximum_emitters = 64;
+    state.particle_config.maximum_queued_events = 1'024;
+    state.particle_config.maximum_spawns_per_update = 2'048;
+    auto particle_system = renderer::CpuParticleSystem::create(
+        state.particle_config, state.config.content_report->particle_prototypes);
+    if (!particle_system) {
+        return core::Status::failure(particle_system.error().code,
+                                     particle_system.error().message);
+    }
+    state.particle_system.emplace(std::move(particle_system).value());
+    status = state.particle_presentation.initialize(
+        *renderer, {.maximum_presented_particles = state.particle_config.maximum_particles});
+    if (!status) {
+        return status;
+    }
+    state.particle_presentation_initialized = true;
+
+    const auto fire_ember = core::PrototypeId::parse("base:particles/fire_ember");
+    const auto block_break_puff = core::PrototypeId::parse("base:particles/block_break_puff");
+    const auto splash = core::PrototypeId::parse("base:particles/splash");
+    const auto clay = core::PrototypeId::parse("base:voxels/clay");
+    if (!fire_ember || !block_break_puff || !splash || !clay) {
+        return core::Status::failure("dev_game.invalid_base_prototype",
+                                     "base particle or clay prototype id is invalid");
+    }
+    state.fire_ember = *fire_ember;
+    state.block_break_puff = *block_break_puff;
+    state.splash = *splash;
+    state.clay = *clay;
+
+    auto audio_system = state.runtime.create_audio_system(audio::AudioBackend::miniaudio);
+    if (!audio_system) {
+        return core::Status::failure(audio_system.error().code, audio_system.error().message);
+    }
+    status = services.install_audio_system(std::move(audio_system).value());
+    if (!status) {
+        return status;
+    }
+    status = state.audio_presentation.initialize(*services.audio());
+    if (!status) {
+        return status;
+    }
+    state.audio_presentation_initialized = true;
+
+    state.game_ui = std::make_unique<game::GameUiLayer>(
+        state.config.content_report->item_definitions,
+        state.config.content_report->entity_definitions, state.config.content_report->ui_skin);
+    status = state.game_ui->initialize();
+    if (!status) {
+        return status;
+    }
+    auto initial_ui = state.game_ui->synchronize(*state.runtime.session()->client());
+    if (!initial_ui) {
+        return core::Status::failure(initial_ui.error().code, initial_ui.error().message);
+    }
+    state.input_sampler.set_orientation(0.0, -2'000.0);
+    return services.set_cursor_capture(true);
+}
+
+core::Result<game::GameApplicationFrameOutput>
+DevGameMode::update(game::GameApplicationServices& services,
+                    const game::GameApplicationFrame& frame) {
+    auto& state = *implementation_;
+    ++state.frame_count;
+    if (!state.runtime_started || state.runtime.session() == nullptr) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(
+            "dev_game.runtime_not_started", "development runtime is not active");
+    }
+
+    if (state.config.headless) {
+        auto runtime_frame =
+            state.runtime.run_frame({frame.delta_microseconds, frame.now_milliseconds});
+        if (!runtime_frame) {
+            return core::Result<game::GameApplicationFrameOutput>::failure(
+                runtime_frame.error().code, runtime_frame.error().message);
+        }
+        state.authoritative_tick = runtime_frame.value().authoritative_world_tick;
+        state.local_client_connected = state.runtime.session()->client()->is_connected();
+        return core::Result<game::GameApplicationFrameOutput>::success({});
+    }
+
+    auto* renderer = services.renderer();
+    auto* audio = services.audio();
+    if (renderer == nullptr || audio == nullptr || frame.input == nullptr ||
+        state.game_ui == nullptr || !state.particle_system.has_value()) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(
+            "dev_game.native_services_missing",
+            "native development mode is missing renderer, audio, input, UI, or particles");
+    }
+
+    auto ui_input = state.game_ui->process_input(*frame.input, *state.runtime.session(),
+                                                frame.now_milliseconds);
+    if (!ui_input) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(
+            ui_input.error().code, ui_input.error().message);
+    }
+    if (ui_input.value().inventory_toggled) {
+        auto status = services.set_cursor_capture(!state.game_ui->inventory_open());
+        if (!status) {
+            return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
+                                                                           status.error().message);
+        }
+    }
+    state.actions.set_context(state.game_ui->inventory_open() ? input::InputContext::inventory
+                                                              : input::InputContext::gameplay);
+    const auto action_frame = state.actions.evaluate(*frame.input);
+    if (!ui_input.value().consumed.keyboard &&
+        action_frame[input::InputAction::close_or_pause].pressed) {
+        services.request_quit();
+    }
+
+    auto player_input = state.input_sampler.sample(*frame.input, ++state.input_tick);
+    const auto* previous_player = state.runtime.session()->client()->local_player_snapshot();
+    if (ui_input.value().consumed.blocks_gameplay && previous_player != nullptr) {
+        player_input.move_x = 0;
+        player_input.move_z = 0;
+        player_input.yaw_centidegrees = previous_player->state.yaw_centidegrees;
+        player_input.pitch_centidegrees = previous_player->state.pitch_centidegrees;
+        player_input.held_buttons = 0;
+        player_input.pressed_buttons = 0;
+    }
+    if (state.runtime.session()->client()->is_connected() && previous_player != nullptr) {
+        auto status =
+            state.runtime.session()->submit_player_input(player_input, frame.now_milliseconds);
+        if (!status) {
+            return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
+                                                                           status.error().message);
+        }
+    }
+
+    auto runtime_frame =
+        state.runtime.run_frame({frame.delta_microseconds, frame.now_milliseconds});
+    if (!runtime_frame) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(
+            runtime_frame.error().code, runtime_frame.error().message);
+    }
+    state.authoritative_tick = runtime_frame.value().authoritative_world_tick;
+    state.local_client_connected = state.runtime.session()->client()->is_connected();
+
+    auto synchronized_ui = state.game_ui->synchronize(*state.runtime.session()->client());
+    if (!synchronized_ui) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(
+            synchronized_ui.error().code, synchronized_ui.error().message);
+    }
+    if (const auto* server = state.runtime.session()->server(); server != nullptr) {
+        renderer->set_voxel_fluid_stats(server->chunk_fluids().stats());
+        renderer->set_voxel_lighting_stats(server->chunk_lighting().stats());
+    }
+    auto day_night = renderer::evaluate_day_night(
+        runtime_frame.value().authoritative_world_tick,
+        state.runtime.session()->config().world_time);
+    if (!day_night) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(
+            day_night.error().code, day_night.error().message);
+    }
+    auto status = renderer->set_environment(day_night.value().render);
+    if (!status) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
+                                                                       status.error().message);
+    }
+
+    const auto* player = state.runtime.session()->client()->local_player_snapshot();
+    if (player == nullptr || !frame.extent.is_valid()) {
+        return core::Result<game::GameApplicationFrameOutput>::success({});
+    }
+    auto camera_frame =
+        state.camera_rig.evaluate(player->state, movement::PlayerCameraPerspective::third_person,
+                                  frame.extent.width, frame.extent.height);
+    if (!camera_frame) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(
+            camera_frame.error().code, camera_frame.error().message);
+    }
+    status = state.audio_presentation.update(*audio, player->state, camera_frame.value(),
+                                             frame.delta_seconds());
+    if (!status) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
+                                                                       status.error().message);
+    }
+
+    if (!state.fire_emitter.is_valid()) {
+        auto fire_position = world::WorldPosition::from_anchor(
+            player->state.position.anchor,
+            player->state.position.local_offset + math::Vec3d{2.0, 0.35, 2.0});
+        if (!fire_position) {
+            return core::Result<game::GameApplicationFrameOutput>::failure(
+                fire_position.error().code, fire_position.error().message);
+        }
+        renderer::ParticleEmitterDesc emitter;
+        emitter.prototype_id = state.fire_ember;
+        emitter.position = fire_position.value();
+        emitter.lifetime_seconds = 3'600.0F;
+        emitter.rate_per_second = 18.0F;
+        emitter.burst_count = 8;
+        emitter.seed = state.particle_seed++;
+        auto created_emitter = state.particle_system->create_emitter(emitter);
+        if (!created_emitter) {
+            return core::Result<game::GameApplicationFrameOutput>::failure(
+                created_emitter.error().code, created_emitter.error().message);
+        }
+        state.fire_emitter = created_emitter.value();
+    }
+
+    const auto swimming = player->state.mode == movement::PlayerControllerMode::swimming;
+    if (swimming && !state.was_swimming) {
+        status = state.particle_system->queue_event(
+            {state.splash, player->state.position, {0.0F, 1.0F, 0.0F},
+             {static_cast<float>(player->state.velocity.x),
+              static_cast<float>(player->state.velocity.y),
+              static_cast<float>(player->state.velocity.z)},
+             24, state.particle_seed++});
+        if (!status) {
+            return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
+                                                                           status.error().message);
+        }
+    }
+    state.was_swimming = swimming;
+
+    if (action_frame[input::InputAction::primary_action].pressed ||
+        action_frame[input::InputAction::secondary_action].pressed) {
+        auto selection = game::interaction::raycast_voxels(
+            state.runtime.session()->client()->world().chunks(),
+            {camera_frame.value().position, camera_frame.value().forward, 6.0});
+        if (!selection) {
+            return core::Result<game::GameApplicationFrameOutput>::failure(
+                selection.error().code, selection.error().message);
+        }
+        const auto& hit = selection.value().hit;
+        if (hit.has_value()) {
+            if (action_frame[input::InputAction::primary_action].pressed) {
+                status = state.runtime.session()->submit_remove_voxel(
+                    {hit->block}, frame.now_milliseconds);
+            } else {
+                status = state.runtime.session()->submit_place_voxel(
+                    {hit->adjacent_block, state.clay}, frame.now_milliseconds);
+            }
+            if (!status) {
+                return core::Result<game::GameApplicationFrameOutput>::failure(
+                    status.error().code, status.error().message);
+            }
+            if (action_frame[input::InputAction::primary_action].pressed) {
+                auto puff_position =
+                    world::WorldPosition::from_anchor(hit->block, {0.5, 0.5, 0.5});
+                if (!puff_position) {
+                    return core::Result<game::GameApplicationFrameOutput>::failure(
+                        puff_position.error().code, puff_position.error().message);
+                }
+                status = state.particle_system->queue_event(
+                    {state.block_break_puff, puff_position.value(), {0.0F, 1.0F, 0.0F}, {}, 18,
+                     state.particle_seed++});
+                if (!status) {
+                    return core::Result<game::GameApplicationFrameOutput>::failure(
+                        status.error().code, status.error().message);
+                }
+            }
+        }
+    }
+
+    if (action_frame[input::InputAction::drop_item].pressed &&
+        state.runtime.session()->server() != nullptr) {
+        status = drop_demo_resource(state.runtime, *renderer, camera_frame.value(),
+                                    state.physical_resource_visuals);
+        if (!status) {
+            return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
+                                                                           status.error().message);
+        }
+    }
+
+    auto camera = render_camera_from(camera_frame.value());
+    status = state.particle_system->update(frame.delta_seconds());
+    if (!status) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
+                                                                       status.error().message);
+    }
+    status = renderer->synchronize_chunks(state.runtime.session()->client()->world(), camera);
+    if (!status) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
+                                                                       status.error().message);
+    }
+    status =
+        synchronize_demo_resources(state.runtime, *renderer, state.physical_resource_visuals);
+    if (!status) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
+                                                                       status.error().message);
+    }
+    auto render_snapshot = state.runtime.capture_render_snapshot();
+    if (!render_snapshot) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(
+            render_snapshot.error().code, render_snapshot.error().message);
+    }
+    auto animated_stats =
+        state.animated_models.synchronize(*renderer, render_snapshot.value());
+    if (!animated_stats) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(
+            animated_stats.error().code, animated_stats.error().message);
+    }
+    animated_stats = state.animated_animals.synchronize(*renderer, render_snapshot.value());
+    if (!animated_stats) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(
+            animated_stats.error().code, animated_stats.error().message);
+    }
+    auto particle_stats =
+        state.particle_presentation.synchronize(*renderer, *state.particle_system, camera);
+    if (!particle_stats) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(
+            particle_stats.error().code, particle_stats.error().message);
+    }
+    renderer->set_particle_stats(
+        state.particle_system->stats(), particle_stats.value().synchronize_ms,
+        particle_stats.value().material_groups, particle_stats.value().dropped_particles);
+    if (auto* ui = renderer->ui_renderer(); ui != nullptr) {
+        auto painted_ui = state.game_ui->paint(*ui, frame.extent);
+        if (!painted_ui) {
+            return core::Result<game::GameApplicationFrameOutput>::failure(
+                painted_ui.error().code, painted_ui.error().message);
+        }
+        renderer->set_ui_widget_stats(
+            state.game_ui->stats().layout_ms, state.game_ui->stats().paint_ms,
+            state.game_ui->stats().layout.widget_count);
+    }
+
+    game::GameApplicationFrameOutput output;
+    output.render = renderer::RenderFrameInput{
+        camera, static_cast<float>(runtime_frame.value().fixed_step.interpolation_alpha),
+        frame.delta_seconds()};
+    return core::Result<game::GameApplicationFrameOutput>::success(std::move(output));
+}
+
+core::Status DevGameMode::shutdown(game::GameApplicationServices& services) {
+    auto& state = *implementation_;
+    core::Status first_failure = core::Status::ok();
+    const auto remember_failure = [&first_failure](core::Status status) {
+        if (!status && first_failure) {
+            first_failure = std::move(status);
+        }
+    };
+
+    if (state.audio_presentation_initialized && services.audio() != nullptr) {
+        remember_failure(state.audio_presentation.shutdown(*services.audio()));
+        state.audio_presentation_initialized = false;
+    }
+    if (auto* renderer = services.renderer(); renderer != nullptr) {
+        if (state.particle_presentation_initialized) {
+            remember_failure(state.particle_presentation.shutdown(*renderer));
+            state.particle_presentation_initialized = false;
+        }
+        if (state.animated_models_initialized) {
+            remember_failure(state.animated_models.shutdown(*renderer));
+            state.animated_models_initialized = false;
+        }
+        if (state.animated_animals_initialized) {
+            remember_failure(state.animated_animals.shutdown(*renderer));
+            state.animated_animals_initialized = false;
+        }
+    }
+    state.game_ui.reset();
+    state.particle_system.reset();
+    state.physical_resource_visuals.clear();
+    if (state.runtime_started) {
+        remember_failure(state.runtime.shutdown());
+        state.runtime_started = false;
+    }
+    return first_failure;
+}
+
+std::string DevGameMode::summary() const {
+    const auto& state = *implementation_;
+    return "development runtime: frames=" + std::to_string(state.frame_count) +
+           " authoritative_tick=" + std::to_string(state.authoritative_tick) + " local_client=" +
+           (state.local_client_connected ? "connected" : "offline");
+}
+
+} // namespace heartstead::dev_game

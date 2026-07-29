@@ -1,4 +1,9 @@
-add_executable(heartstead_dev_game main.cpp)
+add_executable(
+  heartstead_dev_game
+  main.cpp
+  dev_game_mode.cpp
+  dev_game_mode.hpp
+)
 target_link_libraries(heartstead_dev_game PRIVATE Heartstead::GameRuntime)
 target_compile_definitions(
   heartstead_dev_game
