@@ -661,7 +661,8 @@ DevGameMode::update(game::GameApplicationServices& services,
                     const auto current_revision = chunk == nullptr ? 0U : chunk->content_revision();
                     const auto cooked_revision = body == nullptr ? 0U : body->content_revision;
                     const auto collision_ready =
-                        chunk != nullptr && body != nullptr && current_revision == cooked_revision;
+                        chunk != nullptr && body != nullptr &&
+                        !chunk->dirty().contains(world::ChunkDirtyFlag::collision);
                     collision_stream << " support " << cooked_revision << '/' << current_revision
                                      << (collision_ready ? " ready" : " pending");
                 }

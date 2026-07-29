@@ -80,14 +80,14 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [ ] `[Both]` the player walks with stable acceleration and stopping.
 - [x] `[Both]` sprint changes locomotion speed when requested.
 - [ ] `[Both]` jump starts only from a valid supported state.
-- [ ] `[Both]` the player falls and lands without penetration or persistent hovering.
+- [x] `[Both]` the player falls and lands without penetration or persistent hovering.
 - [ ] `[Both]` the player steps onto the supported normal voxel ledge height.
 - [ ] `[Both]` the player traverses the ascending and descending voxel-terrain incline.
 - [x] `[Automated]` horizontal traversal of the exact full/partial-voxel Foundation terrace reaches
       its three-metre top and returns to ground without producing positive vertical velocity.
 - [x] `[Automated]` an unsupported ledge or ceiling prevents an invalid step-up.
 - [x] `[Automated]` traversing internal block edges does not create unrequested upward velocity.
-- [ ] `[Both]` removing the supporting block makes the player fall after collision refresh.
+- [x] `[Both]` removing the supporting block makes the player fall after collision refresh.
 - [ ] `[Both]` water enters and exits the existing swimming/controller mode correctly.
 - [x] `[Native]` first- and third-person camera modes can be selected explicitly.
 - [ ] `[Both]` the third-person camera shortens its boom before entering solid terrain.
@@ -122,7 +122,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [x] `[Automated]` the client applies the voxel mutation before dispatching its accepted-edit
       presentation event.
 - [x] `[Both]` an interior edit rebuilds the changed chunk mesh.
-- [ ] `[Both]` a face-boundary edit rebuilds both loaded neighboring chunk meshes.
+- [x] `[Both]` a face-boundary edit rebuilds both loaded neighboring chunk meshes.
 - [x] `[Automated]` collision cooking reaches the authoritative edited chunk revision.
 - [ ] `[Both]` character collision reflects removal and placement after the collision update.
 - [x] `[Automated]` an edit dirties voxel lighting when the previous or current block affects light.
@@ -238,12 +238,17 @@ Recorded 2026-07-29:
   particle emissions, one sound emission, no dropped events, and no last error. A separate
   deliberately out-of-reach placement was rejected as `voxel_command.out_of_reach` while all
   feedback counters remained zero.
-- a native save/reopen pass removed the interior grass voxel at `(8, 0, 8)`, observed the local
+- a native save/reopen pass removed the surface grass voxel at `(8, 0, 8)`, observed the local
   mesh become a one-block hole and selection advance through it, closed through the window event,
   and observed the hole again after reopening the same save. A second pass placed a voxel at
   `(8, 1, 10)`, visibly remeshed it above the ground, closed cleanly, and reopened with that same
   voxel visible and selected. The placement initially exposed and now regresses a load failure
   where persisted sunlight was compared against the not-yet-relit baseline.
+- the removed `(8, 0, 8)` voxel is on the lower face of chunk `(0, 0, 0)`. The native frame exposed
+  the neighboring `(0, -1, 0)` chunk without a seam; after collision cooking drained, the player
+  fell from feet Y `1.00` to `0.00`, landed grounded on dirt `(8, -1, 8)`, and remained stable.
+  Collision readiness now follows the collision dirty flag, so a later derived-light revision no
+  longer makes an already-current collision body appear falsely pending in the overlay.
 - `heartstead_world_integrity_v02_tests`
   - `test_saved_edits_ignore_derived_light_when_matching_the_baseline` verifies resident,
     replacement-after-relight, and streamed saved edits compare persistent voxel state while
