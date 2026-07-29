@@ -275,6 +275,21 @@ void test_walk_jump_dash_and_step() {
     const auto walked = state.position.approximate_global().z - start_z;
     assert(walked > 4.2 && walked < 4.6);
 
+    const auto crouch = movement::input_button_bit(movement::PlayerInputButton::crouch);
+    auto crouch_state = initial_state(3.5, 1.0, 3.5);
+    const auto crouch_start_z = crouch_state.position.approximate_global().z;
+    for (std::uint64_t tick = 1; tick <= 60; ++tick) {
+        auto result =
+            controller.tick(crouch_state, input(tick, crouch, 0, 0, 32'767), {}, collision);
+        assert(result);
+        crouch_state = result.value().state;
+    }
+    const auto crouched_distance = crouch_state.position.approximate_global().z - crouch_start_z;
+    assert(crouch_state.crouched);
+    assert(crouch_state.grounded);
+    assert(crouched_distance > 1.9 && crouched_distance < 2.2);
+    assert(crouched_distance < walked);
+
     const auto sprint = movement::input_button_bit(movement::PlayerInputButton::sprint);
     auto sprint_state = initial_state(3.5, 1.0, 5.5);
     bool observed_run = false;
@@ -441,6 +456,32 @@ void test_snapshot_prediction_camera_and_load() {
     assert(third);
     assert(third.value().body.local_body_visible);
 
+    movement::PlayerCameraRig step_camera;
+    auto step_state = state;
+    step_state.velocity = {};
+    step_state.grounded = true;
+    auto before_step = step_camera.evaluate(
+        step_state, movement::PlayerCameraPerspective::first_person, 1280, 720);
+    assert(before_step);
+    step_state.position = world::WorldPosition{step_state.position.approximate_global().x,
+                                               step_state.position.approximate_global().y + 0.5,
+                                               step_state.position.approximate_global().z};
+    auto after_step = step_camera.evaluate(
+        step_state, movement::PlayerCameraPerspective::first_person, 1280, 720);
+    assert(after_step);
+    const auto first_camera_rise = after_step.value().position.approximate_global().y -
+                                   before_step.value().position.approximate_global().y;
+    assert(first_camera_rise > 0.0);
+    assert(first_camera_rise < 0.2);
+    for (std::uint32_t frame_index = 0; frame_index < 12; ++frame_index) {
+        after_step = step_camera.evaluate(
+            step_state, movement::PlayerCameraPerspective::first_person, 1280, 720);
+        assert(after_step);
+    }
+    const auto smoothed_camera_rise = after_step.value().position.approximate_global().y -
+                                      before_step.value().position.approximate_global().y;
+    assert(std::abs(smoothed_camera_rise - 0.5) < 0.0001);
+
     auto& camera_chunk = yard.chunks.get_or_create({0, 0, 0});
     assert(camera_chunk.set({2, 1, 1}, {1, 0, 0, 0}));
     assert(camera_chunk.set({2, 2, 1}, {1, 0, 0, 0}));
@@ -591,13 +632,22 @@ void test_environment_fall_and_verb_boundaries() {
     assert(too_high && !too_high.value().has_value());
 
     const auto sprint = movement::input_button_bit(movement::PlayerInputButton::sprint);
+    const auto jump = movement::input_button_bit(movement::PlayerInputButton::jump);
     auto vault_state = initial_state(11.25, 1.0, 2.5);
-    auto vault_input = input(1, sprint, 0, 0, 32'767);
+    auto automatic_vault_input = input(1, sprint, 0, 0, 32'767);
+    automatic_vault_input.yaw_centidegrees = 9'000;
+    auto automatic_vault = controller.tick(vault_state, automatic_vault_input, {}, collision);
+    assert(automatic_vault);
+    assert(automatic_vault.value().state.scripted_kind == movement::ScriptedMovementKind::none);
+
+    vault_state = initial_state(11.25, 1.0, 2.5);
+    auto vault_input = input(1, sprint | jump, jump, 0, 32'767);
     vault_input.yaw_centidegrees = 9'000;
     auto vault = controller.tick(vault_state, vault_input, {}, collision);
     assert(vault);
     vault_state = vault.value().state;
     assert(vault_state.scripted_kind == movement::ScriptedMovementKind::vault);
+    assert(vault_state.jump_buffer_ticks == 0);
     for (std::uint64_t vault_tick = 2; vault_tick <= 16; ++vault_tick) {
         auto continued = input(vault_tick, sprint, 0, 0, 32'767);
         continued.yaw_centidegrees = 9'000;
@@ -607,6 +657,23 @@ void test_environment_fall_and_verb_boundaries() {
     }
     assert(vault_state.grounded);
     assert(vault_state.position.approximate_global().x > 12.2);
+
+    auto mantle_state = initial_state(11.25, 1.4, 2.5);
+    mantle_state.grounded = false;
+    mantle_state.mode = movement::PlayerControllerMode::airborne;
+    mantle_state.fall_origin = mantle_state.position;
+    auto held_mantle_input = input(1, jump);
+    held_mantle_input.yaw_centidegrees = 9'000;
+    auto held_mantle = controller.tick(mantle_state, held_mantle_input, {}, collision);
+    assert(held_mantle);
+    assert(held_mantle.value().state.scripted_kind == movement::ScriptedMovementKind::none);
+
+    auto pressed_mantle_input = input(1, jump, jump);
+    pressed_mantle_input.yaw_centidegrees = 9'000;
+    auto pressed_mantle = controller.tick(mantle_state, pressed_mantle_input, {}, collision);
+    assert(pressed_mantle);
+    assert(pressed_mantle.value().state.scripted_kind == movement::ScriptedMovementKind::mantle);
+    assert(pressed_mantle.value().state.jump_buffer_ticks == 0);
 
     auto fall_state = initial_state(5.5, 7.0, 5.5);
     fall_state.grounded = false;
@@ -689,7 +756,7 @@ void test_resource_tiers_and_air_dash() {
     assert(!unlock.value().state.exhausted);
 }
 
-void test_coyote_buffer_and_crouch_edge_guard() {
+void test_coyote_buffer_and_crouch_movement() {
     auto yard = make_yard();
     auto& chunk = *yard.chunks.find({0, 0, 0});
     for (std::uint16_t x = 1; x <= 4; ++x) {
@@ -707,8 +774,7 @@ void test_coyote_buffer_and_crouch_edge_guard() {
         assert(result);
         crouched = result.value().state;
     }
-    assert(crouched.grounded);
-    assert(crouched.position.approximate_global().z < 4.35);
+    assert(crouched.position.approximate_global().z > 5.5);
 
     auto coyote = initial_state(2.5, 1.0, 3.5);
     std::uint64_t tick = 1;
@@ -836,7 +902,7 @@ int main() {
     test_snapshot_prediction_camera_and_load();
     test_environment_fall_and_verb_boundaries();
     test_resource_tiers_and_air_dash();
-    test_coyote_buffer_and_crouch_edge_guard();
+    test_coyote_buffer_and_crouch_movement();
     test_determinism_far_world_store_and_load_normalization();
     return 0;
 }

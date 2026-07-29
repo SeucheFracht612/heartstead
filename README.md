@@ -291,8 +291,10 @@ rebuild commands and validation details.
 
 The interactive development game uses the same terrain renderer with Jolt-backed movement. Press
 `F1` to switch between first- and third-person cameras, `F3` for diagnostics, and `F4` for
-controller geometry. Press `Tab` to open the inventory, drag with the left mouse button to move a
-full stack, and use the right mouse button to split a stack:
+controller geometry. Left Control crouches without stopping movement. Press Space while sprinting
+toward a low ledge to vault; after jumping, press Space again near a reachable ledge to mantle.
+Press `Tab` to open the inventory, drag with the left mouse button to move a full stack, and use the
+right mouse button to split a stack:
 
 ```bash
 ./build/default-debug/apps/dev_game/heartstead_dev_game

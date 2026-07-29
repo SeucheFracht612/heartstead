@@ -214,10 +214,9 @@ PhysicsCharacterCollisionWorld::move(const world::WorldPosition& position,
     }
 
     bool edge_drop_prevented = false;
-    if (prevent_edge_drop &&
+    if (prevent_edge_drop && !grounded &&
         (std::abs(desired_delta.x) > collision_epsilon ||
-         std::abs(desired_delta.z) > collision_epsilon) &&
-        moved.value().ground_state != physics::PhysicsCharacterGroundState::on_ground) {
+         std::abs(desired_delta.z) > collision_epsilon)) {
         auto supported_before = has_support(position, shape, 0.08);
         if (!supported_before) {
             return core::Result<CharacterMoveResult>::failure(supported_before.error().code,

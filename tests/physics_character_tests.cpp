@@ -134,6 +134,19 @@ void test_jolt_voxel_steps_jump_and_swim_buoyancy() {
         collision.value()->has_support(world::WorldPosition{2.5, 1.0, 2.5}, {0.6, 1.8});
     assert(supported && supported.value());
 
+    auto croucher = movement::PhysicsCharacterCollisionWorld::create(
+        *physics_world.value(), chunks, palette, world::WorldPosition{2.5, 1.0, 4.5}, {0.6, 1.2});
+    assert(croucher);
+    auto crouch_position = world::WorldPosition{2.5, 1.0, 4.5};
+    for (std::uint32_t tick = 0; tick < 20; ++tick) {
+        auto moved =
+            croucher.value()->move(crouch_position, {0.6, 1.2}, {0.0, 0.0, 0.05}, 0.6, true);
+        assert(moved);
+        assert(moved.value().grounded);
+        crouch_position = moved.value().position;
+    }
+    assert(crouch_position.approximate_global().z > 5.4);
+
     auto position = world::WorldPosition{2.5, 1.0, 2.5};
     bool stepped = false;
     for (std::uint32_t tick = 0; tick < 20; ++tick) {

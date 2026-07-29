@@ -139,10 +139,13 @@ core::Status PlayerCameraConfig::validate() const {
         !std::isfinite(roll_eye_height) || !std::isfinite(third_person_distance) ||
         !std::isfinite(third_person_height) || !std::isfinite(third_person_shoulder) ||
         !std::isfinite(collision_radius) || !std::isfinite(collision_clearance) ||
-        !std::isfinite(third_person_restore_speed) || standing_eye_height <= 0.0 ||
-        crouch_eye_height <= 0.0 || roll_eye_height <= 0.0 || third_person_distance <= 0.0 ||
-        crouch_eye_height > standing_eye_height || roll_eye_height > crouch_eye_height ||
-        collision_radius <= 0.0 || collision_clearance < 0.0 || third_person_restore_speed <= 0.0) {
+        !std::isfinite(third_person_restore_speed) ||
+        !std::isfinite(maximum_smoothed_step_height) || !std::isfinite(step_smoothing_speed) ||
+        standing_eye_height <= 0.0 || crouch_eye_height <= 0.0 || roll_eye_height <= 0.0 ||
+        third_person_distance <= 0.0 || crouch_eye_height > standing_eye_height ||
+        roll_eye_height > crouch_eye_height || collision_radius <= 0.0 ||
+        collision_clearance < 0.0 || third_person_restore_speed <= 0.0 ||
+        maximum_smoothed_step_height <= 0.0 || step_smoothing_speed <= 0.0) {
         return core::Status::failure("player_camera.invalid_config",
                                      "player camera dimensions are invalid");
     }
@@ -182,7 +185,29 @@ PlayerCameraRig::evaluate(const PlayerControllerState& player, PlayerCameraPersp
     const auto eye_height = player.mode == PlayerControllerMode::rolling ? config_.roll_eye_height
                             : player.crouched                            ? config_.crouch_eye_height
                                               : config_.standing_eye_height;
-    const auto pivot_offset = math::Vec3d{0.0, eye_height, 0.0};
+    auto smoothed_step_offset = vertical_step_offset_;
+    if (last_player_position_.has_value()) {
+        const auto player_delta = player.position.relative_to(last_player_position_->anchor) -
+                                  last_player_position_->local_offset;
+        const auto step_height = std::abs(player_delta.y);
+        const auto step_like = player.grounded && last_player_grounded_ && step_height > 1.0e-4 &&
+                               step_height <= config_.maximum_smoothed_step_height &&
+                               std::abs(player.velocity.y) <= 0.1;
+        if (step_like) {
+            smoothed_step_offset = std::clamp(smoothed_step_offset - player_delta.y,
+                                              -config_.maximum_smoothed_step_height,
+                                              config_.maximum_smoothed_step_height);
+        } else if (!player.grounded || step_height > config_.maximum_smoothed_step_height) {
+            smoothed_step_offset = 0.0;
+        }
+    }
+    const auto smoothing_delta = config_.step_smoothing_speed * delta_seconds;
+    if (smoothed_step_offset > 0.0) {
+        smoothed_step_offset = std::max(0.0, smoothed_step_offset - smoothing_delta);
+    } else {
+        smoothed_step_offset = std::min(0.0, smoothed_step_offset + smoothing_delta);
+    }
+    const auto pivot_offset = math::Vec3d{0.0, eye_height + smoothed_step_offset, 0.0};
     auto camera_offset = pivot_offset;
     if (perspective == PlayerCameraPerspective::third_person) {
         camera_offset += forward * -config_.third_person_distance;
@@ -274,6 +299,9 @@ PlayerCameraRig::evaluate(const PlayerControllerState& player, PlayerCameraPersp
         frame.boom_obstructed = boom_obstructed;
         frame.boom_restoring = boom_restoring;
     }
+    last_player_position_ = player.position;
+    last_player_grounded_ = player.grounded;
+    vertical_step_offset_ = smoothed_step_offset;
     return core::Result<PlayerCameraFrame>::success(frame);
 }
 

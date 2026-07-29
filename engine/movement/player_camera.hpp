@@ -7,6 +7,8 @@
 #include "engine/world/coords/world_position.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
 
+#include <optional>
+
 namespace heartstead::movement {
 
 enum class PlayerCameraPerspective : std::uint8_t { first_person, third_person };
@@ -21,6 +23,8 @@ struct PlayerCameraConfig {
     double collision_radius = 0.18;
     double collision_clearance = 0.05;
     double third_person_restore_speed = 6.0;
+    double maximum_smoothed_step_height = 0.65;
+    double step_smoothing_speed = 4.0;
     float vertical_fov_degrees = 80.0F;
     float near_plane = 0.05F;
     float far_plane = 2048.0F;
@@ -71,6 +75,9 @@ class PlayerCameraRig {
     PlayerCameraConfig config_;
     double boom_fraction_ = 1.0;
     bool boom_initialized_ = false;
+    std::optional<world::WorldPosition> last_player_position_;
+    bool last_player_grounded_ = false;
+    double vertical_step_offset_ = 0.0;
 };
 
 } // namespace heartstead::movement

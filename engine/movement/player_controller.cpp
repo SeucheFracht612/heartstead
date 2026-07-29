@@ -682,9 +682,9 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
             --state.coyote_ticks;
         }
 
-        if (state.grounded && input.held(PlayerInputButton::sprint) &&
-            horizontal_length(direction) > 0.0 && state.stamina_milli >= 10'000 &&
-            !state.exhausted) {
+        if (state.grounded && input.pressed(PlayerInputButton::jump) &&
+            input.held(PlayerInputButton::sprint) && horizontal_length(direction) > 0.0 &&
+            state.stamina_milli >= 10'000 && !state.exhausted) {
             auto ledge = collision.probe_ledge(state.position, shape_for(state), direction,
                                                config_.vault_max_height);
             if (!ledge) {
@@ -695,13 +695,14 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
                 begin_mode(PlayerControllerMode::mantling, ScriptedMovementKind::vault,
                            vault_duration);
                 state.scripted_target = ledge.value()->target_feet;
+                state.jump_buffer_ticks = 0;
                 result.events.push_back(
                     {MovementEventKind::vault_started, input.tick, ledge.value()->ledge_height});
             }
         }
 
         if (state.mode != PlayerControllerMode::mantling && !state.grounded &&
-            input.held(PlayerInputButton::jump) && can_spend(state, config_.mantle_cost_milli)) {
+            input.pressed(PlayerInputButton::jump) && can_spend(state, config_.mantle_cost_milli)) {
             auto ledge = collision.probe_ledge(state.position, shape_for(state), facing,
                                                config_.mantle_max_height);
             if (!ledge) {
@@ -714,6 +715,7 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
                            mantle_duration);
                 state.scripted_target = ledge.value()->target_feet;
                 state.velocity = {};
+                state.jump_buffer_ticks = 0;
                 result.events.push_back(
                     {MovementEventKind::mantle_grabbed, input.tick, ledge.value()->ledge_height});
             }
@@ -768,9 +770,9 @@ PlayerController::tick(const PlayerControllerState& previous, const PlayerInputF
             if (!state.grounded && vertical_distance(state.fall_origin, state.position) < 0.0) {
                 state.fall_origin = state.position;
             }
-            auto moved = collision.move(
-                state.position, shape_for(state), state.velocity * tick_seconds,
-                state.grounded ? config_.auto_step_height : 0.0, state.crouched && state.grounded);
+            auto moved =
+                collision.move(state.position, shape_for(state), state.velocity * tick_seconds,
+                               state.grounded ? config_.auto_step_height : 0.0);
             if (!moved) {
                 return core::Result<PlayerControllerTickResult>::failure(moved.error().code,
                                                                          moved.error().message);
