@@ -634,6 +634,13 @@ read_file_bytes(const std::filesystem::path& path, std::size_t maximum_bytes) {
                                      "production OGG audio page payload is invalid: " +
                                          source.logical_id);
     }
+    if (payload_bytes < 7 || bytes[payload_offset] != 0x01 ||
+        !bytes_equal(bytes, payload_offset + 1, "vorbis")) {
+        return core::Status::failure(
+            "asset_cooker.invalid_ogg",
+            "production OGG audio must begin with a Vorbis identification packet: " +
+                source.logical_id);
+    }
     return core::Status::ok();
 }
 
@@ -910,6 +917,7 @@ validate_production_source_payload(const AssetRecord& source,
 
     if (extension == ".wav" && bytes.size() >= 12) {
         add_metadata(metadata, "audio.container", "wav");
+        add_metadata(metadata, "audio.runtime_format", "heartstead.audio.container.v1");
         add_metadata(metadata, "audio.riff_bytes",
                      static_cast<std::uint64_t>(read_le_u32(bytes, 4)) + 8U);
         std::size_t cursor = 12;
@@ -941,6 +949,8 @@ validate_production_source_payload(const AssetRecord& source,
             first_page_payload_bytes += bytes[27U + index];
         }
         add_metadata(metadata, "audio.container", "ogg");
+        add_metadata(metadata, "audio.codec", "vorbis");
+        add_metadata(metadata, "audio.runtime_format", "heartstead.audio.container.v1");
         add_metadata(metadata, "audio.first_page_segments", segment_count);
         add_metadata(metadata, "audio.first_page_payload_bytes", first_page_payload_bytes);
         return metadata;
@@ -948,6 +958,7 @@ validate_production_source_payload(const AssetRecord& source,
 
     if (extension == ".flac" && bytes.size() >= 8) {
         add_metadata(metadata, "audio.container", "flac");
+        add_metadata(metadata, "audio.runtime_format", "heartstead.audio.container.v1");
         add_metadata(metadata, "audio.first_block_type", bytes[4] & 0x7FU);
         add_metadata(metadata, "audio.first_block_bytes", read_be_u24(bytes, 5));
         return metadata;
@@ -1384,7 +1395,7 @@ std::string_view asset_cook_pipeline_name(AssetKind kind, AssetCookBackend backe
             return "shader_spirv_runtime_passthrough_v1";
         case AssetKind::sound:
         case AssetKind::music:
-            return "audio_runtime_converter_v1";
+            return "audio_runtime_converter_v2";
         case AssetKind::material:
             return "material_runtime_converter_v1";
         case AssetKind::font:

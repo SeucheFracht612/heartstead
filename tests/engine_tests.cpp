@@ -150,8 +150,10 @@ std::vector<std::uint8_t> minimal_ogg_bytes() {
     std::vector<std::uint8_t> bytes{'O', 'g', 'g', 'S', 0x00, 0x02};
     bytes.insert(bytes.end(), 20, 0x00);
     bytes.push_back(0x01);
-    bytes.push_back(0x04);
-    bytes.insert(bytes.end(), {'O', 'p', 'u', 's'});
+    bytes.push_back(0x1E);
+    bytes.insert(bytes.end(), {0x01, 'v',  'o',  'r',  'b',  'i',  's',  0x00, 0x00, 0x00,
+                               0x00, 0x01, 0x80, 0xBB, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xB8, 0x01});
     return bytes;
 }
 
@@ -850,13 +852,13 @@ void test_resource_pack_discovery_and_asset_catalog() {
         heartstead::assets::AssetCookBackend::production_converters);
     assert(production_sound_pipeline.available);
     assert(production_sound_pipeline.converts_source_format);
-    assert(production_sound_pipeline.name == "audio_runtime_converter_v1");
+    assert(production_sound_pipeline.name == "audio_runtime_converter_v2");
     const auto production_music_pipeline = heartstead::assets::asset_cook_pipeline_info(
         heartstead::assets::AssetKind::music,
         heartstead::assets::AssetCookBackend::production_converters);
     assert(production_music_pipeline.available);
     assert(production_music_pipeline.converts_source_format);
-    assert(production_music_pipeline.name == "audio_runtime_converter_v1");
+    assert(production_music_pipeline.name == "audio_runtime_converter_v2");
     const auto production_font_pipeline = heartstead::assets::asset_cook_pipeline_info(
         heartstead::assets::AssetKind::font,
         heartstead::assets::AssetCookBackend::production_converters);
@@ -1329,7 +1331,7 @@ void test_resource_pack_discovery_and_asset_catalog() {
     assert(production_flac_record->kind == heartstead::assets::AssetKind::music);
     assert(read_text(production_audio_cook_config.output_root /
                      production_sound_record->cooked_relative_path)
-               .find("backend=audio_runtime_converter_v1") != std::string::npos);
+               .find("backend=audio_runtime_converter_v2") != std::string::npos);
 
     auto production_audio_store =
         heartstead::assets::CookedAssetStore::load(production_audio_cook_config.output_root);
@@ -1338,9 +1340,11 @@ void test_resource_pack_discovery_and_asset_catalog() {
         production_audio_store.value().load_payload("base:sounds/tools/hammer.wav");
     assert(production_sound_payload);
     assert(production_sound_payload.value().kind == heartstead::assets::AssetKind::sound);
-    assert(production_sound_payload.value().backend == "audio_runtime_converter_v1");
+    assert(production_sound_payload.value().backend == "audio_runtime_converter_v2");
     assert(production_sound_payload.value().profile == "production");
     assert(production_sound_payload.value().metadata.at("audio.container") == "wav");
+    assert(production_sound_payload.value().metadata.at("audio.runtime_format") ==
+           "heartstead.audio.container.v1");
     assert(production_sound_payload.value().metadata.at("audio.channels") == "1");
     assert(production_sound_payload.value().metadata.at("audio.sample_rate") == "8000");
     assert(production_sound_payload.value().metadata.at("audio.bits_per_sample") == "8");
@@ -1349,15 +1353,18 @@ void test_resource_pack_discovery_and_asset_catalog() {
         production_audio_store.value().load_payload("base:sounds/tools/impact.ogg");
     assert(production_ogg_payload);
     assert(production_ogg_payload.value().kind == heartstead::assets::AssetKind::sound);
-    assert(production_ogg_payload.value().backend == "audio_runtime_converter_v1");
+    assert(production_ogg_payload.value().backend == "audio_runtime_converter_v2");
     assert(production_ogg_payload.value().metadata.at("audio.container") == "ogg");
-    assert(production_ogg_payload.value().metadata.at("audio.first_page_payload_bytes") == "4");
+    assert(production_ogg_payload.value().metadata.at("audio.codec") == "vorbis");
+    assert(production_ogg_payload.value().metadata.at("audio.runtime_format") ==
+           "heartstead.audio.container.v1");
+    assert(production_ogg_payload.value().metadata.at("audio.first_page_payload_bytes") == "30");
     assert(production_ogg_payload.value().bytes.size() == minimal_ogg_bytes().size());
     auto production_tone_payload =
         production_audio_store.value().load_payload("base:sounds/tools/knap.tone");
     assert(production_tone_payload);
     assert(production_tone_payload.value().kind == heartstead::assets::AssetKind::sound);
-    assert(production_tone_payload.value().backend == "audio_runtime_converter_v1");
+    assert(production_tone_payload.value().backend == "audio_runtime_converter_v2");
     assert(production_tone_payload.value().metadata.at("audio.container") == "tone");
     assert(production_tone_payload.value().metadata.at("audio.channels") == "1");
     assert(production_tone_payload.value().metadata.at("audio.sample_rate") == "48000");
@@ -1370,7 +1377,7 @@ void test_resource_pack_discovery_and_asset_catalog() {
         production_audio_store.value().load_payload("base:music/ambient.flac");
     assert(production_flac_payload);
     assert(production_flac_payload.value().kind == heartstead::assets::AssetKind::music);
-    assert(production_flac_payload.value().backend == "audio_runtime_converter_v1");
+    assert(production_flac_payload.value().backend == "audio_runtime_converter_v2");
     assert(production_flac_payload.value().metadata.at("audio.container") == "flac");
     assert(production_flac_payload.value().metadata.at("audio.first_block_bytes") == "34");
     assert(production_flac_payload.value().bytes.size() == minimal_flac_bytes().size());
@@ -1404,6 +1411,27 @@ void test_resource_pack_discovery_and_asset_catalog() {
         heartstead::assets::AssetCooker::cook(invalid_ogg_catalog, invalid_ogg_cook_config);
     assert(!invalid_ogg_cook);
     assert(invalid_ogg_cook.error().code == "asset_cooker.invalid_ogg");
+
+    const auto unsupported_ogg_assets = root / "unsupported_ogg_assets";
+    auto opus_ogg = minimal_ogg_bytes();
+    constexpr std::size_t first_ogg_payload = 28;
+    const std::array<std::uint8_t, 8> opus_header{'O', 'p', 'u', 's', 'H', 'e', 'a', 'd'};
+    std::ranges::copy(opus_header, opus_ogg.begin() + first_ogg_payload);
+    write_bytes(unsupported_ogg_assets / "sounds/unsupported.ogg", opus_ogg);
+    heartstead::assets::AssetCatalog unsupported_ogg_catalog;
+    auto unsupported_ogg_indexed = heartstead::assets::AssetCatalogBuilder::index_directory(
+        unsupported_ogg_catalog, unsupported_ogg_assets, "base",
+        heartstead::assets::AssetSourceKind::mod, "base", 0);
+    assert(!unsupported_ogg_indexed.has_errors());
+    heartstead::assets::AssetCookConfig unsupported_ogg_config;
+    unsupported_ogg_config.backend = heartstead::assets::AssetCookBackend::production_converters;
+    unsupported_ogg_config.output_root = root / "unsupported_ogg_cooked_assets";
+    auto unsupported_ogg_cook =
+        heartstead::assets::AssetCooker::cook(unsupported_ogg_catalog, unsupported_ogg_config);
+    assert(!unsupported_ogg_cook);
+    assert(unsupported_ogg_cook.error().code == "asset_cooker.invalid_ogg");
+    assert(unsupported_ogg_cook.error().message.find("Vorbis identification packet") !=
+           std::string::npos);
 
     const auto invalid_flac_assets = root / "invalid_flac_assets";
     write_text(invalid_flac_assets / "music/bad.flac", "not flac");
@@ -7781,7 +7809,7 @@ void test_debug_inspection() {
     assert(asset_audio_pipeline_inspection.object_type == "asset_cook_pipeline");
     assert(asset_audio_pipeline_inspection.state == "available");
     assert(asset_audio_pipeline_inspection.find_field("pipeline")->value ==
-           "audio_runtime_converter_v1");
+           "audio_runtime_converter_v2");
     assert(asset_audio_pipeline_inspection.find_field("converts_source_format")->value == "true");
     assert(asset_audio_pipeline_inspection.issues.empty());
     auto asset_font_pipeline_inspection =

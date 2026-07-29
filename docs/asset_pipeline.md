@@ -26,7 +26,7 @@ finished source file
 | Short sound effect | PCM/float `.wav` | Playable through a `sound_event`; mono 48 kHz is recommended for positional sound |
 | Long ambience or music | `.flac` or PCM `.wav` | Playable through a `sound_event`; set `streaming = true` |
 | Generated development sound | `.tone` | Playable, deterministic mono test/prototype audio |
-| Ogg audio | `.ogg` | Catalogued and production-cooked, but not playable in the current miniaudio build |
+| Ogg Vorbis audio | `.ogg` | Catalogued and production-cooked, but not playable in the current miniaudio build |
 | Particle effect | `particle` prototype TOML | Procedural colored quads; no authored particle texture path yet |
 | Font | `.ttf`, `.otf`, `.ttc` | Production-cookable SFNT data, but the game UI still uses its built-in diagnostic font |
 | UI artwork | Keep source, normally export PNG for handoff | No authored UI atlas/skin import path yet |
@@ -282,9 +282,9 @@ conversion.
 Looping is whole-file looping; authored loop-point metadata is not consumed. Make the end join the
 beginning cleanly.
 
-OGG passes catalog and production-container checks, but the current miniaudio build has no Vorbis
-decoder. Do not deliver OGG as a playable asset yet. MP3, AAC/M4A, Opus, WMA, AIFF, and MIDI are
-not part of the Heartstead pipeline.
+Ogg Vorbis passes catalog and production-container checks, but the current miniaudio build has no
+Vorbis decoder. Do not deliver OGG as a playable asset yet. MP3, AAC/M4A, Opus, WMA, AIFF, and
+MIDI are not part of the Heartstead pipeline.
 
 ### Sound event
 

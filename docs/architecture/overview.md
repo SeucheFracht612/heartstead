@@ -62,7 +62,8 @@ The repository currently implements the initial engine-owned foundation:
 - resource pack discovery, deterministic load plans, and asset catalog metadata
 - cooked asset manifest metadata and backend-selectable asset cooker with development
   passthrough plus partial production data-like, material, glTF/GLB model, PNG/KTX2/JPEG texture,
-  SPIR-V shader, WAV/OGG/FLAC audio, and SFNT font converters with decoded production metadata
+  SPIR-V shader, WAV/Ogg Vorbis/FLAC audio, and SFNT font converters with decoded production
+  metadata
 - cooked asset dependency validation and manifest-verified payload loading
 - backend-neutral audio event/mixer boundary with validated sound-event prototypes, exact
   floating-origin spatial math, deterministic buses/voice stealing, and a headless null backend

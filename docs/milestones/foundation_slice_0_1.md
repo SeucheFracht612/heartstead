@@ -151,7 +151,7 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [x] `[Automated]` unsupported blend materials fail cooking with the logical asset ID and reason.
 - [x] `[Automated]` animation mappings resolve unique authored clip names, never numeric indices.
 - [x] `[Automated]` missing or duplicate mapped animation names produce a clear validation error.
-- [ ] `[Automated]` WAV and Ogg Vorbis sources cook to the versioned runtime audio representation.
+- [x] `[Automated]` WAV and Ogg Vorbis sources cook to the versioned runtime audio representation.
 - [ ] `[Both]` at least one positional emitter plays a cooked sound asset.
 - [ ] `[Automated]` runtime model, texture, material, animation, and audio resources are cached by
       stable logical asset ID.
@@ -226,6 +226,8 @@ Recorded 2026-07-29:
     - selects the model's external buffer and image dependency closure
     - proves an external image change alters the dependent model's cooked hash
     - verifies alpha-blend rejection includes the logical model ID and importer reason
+  - `test_resource_pack_discovery_and_asset_catalog` validates the versioned WAV and Ogg Vorbis
+    production payloads and rejects malformed or non-Vorbis Ogg input
 - `heartstead_renderer_frontend_tests`
   - `test_renderer_frontend_submits_headless_frames` verifies model base-color textures use an
     sRGB image view while base-color factors reach the GPU surface-material record unchanged

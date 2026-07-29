@@ -101,11 +101,11 @@ Implemented foundation:
     audio, materials, fonts, UI, localization, and data assets
   - exposes a partial production backend for data-like assets, material payloads, converted
     glTF/GLB runtime models, decoded PNG/JPEG RGBA8 textures, validated KTX2 payloads, SPIR-V shader
-    payloads, validated WAV/OGG/FLAC audio payloads, and validated SFNT font payloads while
+    payloads, validated WAV/Ogg Vorbis/FLAC audio payloads, and validated SFNT font payloads while
     rejecting unsupported source formats with explicit validation errors
   - emits production metadata for media payloads, such as texture dimensions, glTF/GLB container
-    details and runtime geometry/skin/clip counts, SPIR-V word/bound data, WAV/OGG/FLAC container
-    details, and SFNT/TTC font table data
+    details and runtime geometry/skin/clip counts, SPIR-V word/bound data, WAV/Ogg Vorbis/FLAC
+    container details, and SFNT/TTC font table data
   - writes the cook profile into payload headers so the cooked asset store can verify development
     payloads against development pipelines and production payloads against production pipelines
 
@@ -176,12 +176,12 @@ fail with `asset_cooker.invalid_texture`. SPIR-V shaders are validated for heade
 version, and id bound through the renderer-owned shader validation helper; malformed SPIR-V fails
 with `shader_compiler.invalid_spirv`, and Slang/HLSL sources still fail with
 `shader_compiler.production_compiler_unavailable` until a real compiler backend is linked. WAV
-audio is validated for RIFF/WAVE shape plus `fmt ` and non-empty `data` chunks; OGG is validated
-for an initial OggS page with a non-empty payload; FLAC is validated for a native FLAC stream with
-a first STREAMINFO block. Malformed audio fails with `asset_cooker.invalid_wav`,
-`asset_cooker.invalid_ogg`, or `asset_cooker.invalid_flac`. Fonts are validated as
-TrueType/OpenType SFNT or TrueType Collection containers before cooking; malformed fonts fail with
-`asset_cooker.invalid_font`.
+audio is validated for RIFF/WAVE shape plus `fmt ` and non-empty `data` chunks; Ogg is validated
+for an initial OggS page beginning with a Vorbis identification packet; FLAC is validated for a
+native FLAC stream with a first STREAMINFO block. Malformed audio fails with
+`asset_cooker.invalid_wav`, `asset_cooker.invalid_ogg`, or `asset_cooker.invalid_flac`. Fonts are
+validated as TrueType/OpenType SFNT or TrueType Collection containers before cooking; malformed
+fonts fail with `asset_cooker.invalid_font`.
 
 Production cooked payloads also carry deterministic metadata fields in the payload header. The
 store preserves those fields as decoded metadata, so inspectors and runtime systems can query
