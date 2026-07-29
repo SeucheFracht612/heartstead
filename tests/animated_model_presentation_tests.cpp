@@ -45,7 +45,7 @@ heartstead::assets::ModelAsset make_animated_model() {
                      {255, 64, 32, 255, 32, 255, 64, 255, 32, 64, 255, 255, 255, 255, 255, 0}}};
     assets::ModelMaterial material;
     material.name = "body_material";
-    material.base_color_image = 0;
+    material.base_color_texture.image = 0;
     material.alpha_mode = assets::ModelAlphaMode::mask;
     material.alpha_cutoff = 0.25F;
     material.double_sided = true;

@@ -232,6 +232,7 @@ class Renderer {
     ShaderProgramHandle ui_shader_program_;
     TextureHandle terrain_texture_array_;
     std::unique_ptr<SurfaceTextureArray> surface_texture_array_;
+    std::unique_ptr<SurfaceTextureArray> surface_data_texture_array_;
     TextureHandle ui_texture_atlas_;
     MaterialRuntimeHandle fallback_material_;
     rhi::RenderResourceHandle terrain_sampler_;

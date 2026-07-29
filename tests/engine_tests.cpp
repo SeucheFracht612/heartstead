@@ -835,7 +835,7 @@ void test_resource_pack_discovery_and_asset_catalog() {
         heartstead::assets::AssetCookBackend::production_converters);
     assert(production_model_pipeline.available);
     assert(production_model_pipeline.converts_source_format);
-    assert(production_model_pipeline.name == "model_gltf_runtime_converter_v3");
+    assert(production_model_pipeline.name == "model_gltf_runtime_converter_v4");
     const auto production_shader_pipeline = heartstead::assets::asset_cook_pipeline_info(
         heartstead::assets::AssetKind::shader,
         heartstead::assets::AssetCookBackend::production_converters);
@@ -1171,7 +1171,7 @@ void test_resource_pack_discovery_and_asset_catalog() {
     assert(production_glb_record->kind == heartstead::assets::AssetKind::model);
     assert(read_text(production_model_cook_config.output_root /
                      production_gltf_record->cooked_relative_path)
-               .find("backend=model_gltf_runtime_converter_v3") != std::string::npos);
+               .find("backend=model_gltf_runtime_converter_v4") != std::string::npos);
     auto production_model_store =
         heartstead::assets::CookedAssetStore::load(production_model_cook_config.output_root);
     assert(production_model_store);
@@ -1179,12 +1179,12 @@ void test_resource_pack_discovery_and_asset_catalog() {
         production_model_store.value().load_payload("base:models/building/wall.gltf");
     assert(production_gltf_payload);
     assert(production_gltf_payload.value().kind == heartstead::assets::AssetKind::model);
-    assert(production_gltf_payload.value().backend == "model_gltf_runtime_converter_v3");
+    assert(production_gltf_payload.value().backend == "model_gltf_runtime_converter_v4");
     assert(production_gltf_payload.value().profile == "production");
     assert(production_gltf_payload.value().metadata.at("model.container") == "gltf");
     assert(production_gltf_payload.value().metadata.at("model.gltf_version") == "2.0");
     assert(production_gltf_payload.value().metadata.at("model.runtime_format") ==
-           "heartstead.model.v3");
+           "heartstead.model.v4");
     assert(production_gltf_payload.value().metadata.at("model.vertices") == "3");
     assert(production_gltf_payload.value().metadata.at("model.indices") == "3");
     assert(production_gltf_payload.value().metadata.at("model.nodes") == "1");
@@ -1898,7 +1898,7 @@ void test_filtered_model_dependency_cooking() {
     assert(first_runtime_model);
     assert(first_runtime_model.value().images.size() == 1);
     assert(first_runtime_model.value().images.front().width == 2);
-    assert(first_runtime_model.value().materials.front().base_color_image == 0);
+    assert(first_runtime_model.value().materials.front().base_color_texture.image == 0);
 
     write_bytes(image_path, one_pixel_png_bytes());
     auto changed_catalog = build_catalog();
@@ -1924,12 +1924,15 @@ void test_filtered_model_dependency_cooking() {
     heartstead::assets::AssetCookConfig blend_config = first_config;
     blend_config.output_root = root / "cooked_blend";
     auto blend_cook = heartstead::assets::AssetCooker::cook(blend_filtered.value(), blend_config);
-    assert(!blend_cook);
-    assert(blend_cook.error().code == "asset_cooker.invalid_model");
-    assert(blend_cook.error().message.find("base:models/props/textured.gltf") != std::string::npos);
-    assert(blend_cook.error().message.find("gltf_import.unsupported_alpha_blend") !=
-           std::string::npos);
-    assert(blend_cook.error().message.find("not alpha blend") != std::string::npos);
+    assert(blend_cook);
+    auto blend_store = heartstead::assets::CookedAssetStore::load(blend_config.output_root);
+    assert(blend_store);
+    auto blend_payload = blend_store.value().load_payload("base:models/props/textured.gltf");
+    assert(blend_payload);
+    auto blend_model = heartstead::assets::decode_model_asset(blend_payload.value().bytes);
+    assert(blend_model);
+    assert(blend_model.value().materials.front().alpha_mode ==
+           heartstead::assets::ModelAlphaMode::blend);
 
     std::filesystem::remove_all(root);
 }
@@ -1974,13 +1977,12 @@ void test_terrain_material_asset_loading() {
     material.textures.push_back(
         {"top", assets::VirtualPath::parse("base:textures/voxels/grass_top.png").value(), true});
     material.scalars.push_back({"roughness", 0.9F});
-    material.colors.push_back(
-        {"tint", renderer::materials::MaterialColor{0.8F, 1.0F, 0.8F, 1.0F}});
+    material.colors.push_back({"tint", renderer::materials::MaterialColor{0.8F, 1.0F, 0.8F, 1.0F}});
     renderer::materials::MaterialRegistry materials;
     assert(materials.add(std::move(material)));
 
-    const auto terrain_assets = renderer::materials::load_terrain_material_assets(
-        palette, materials, store.value());
+    const auto terrain_assets =
+        renderer::materials::load_terrain_material_assets(palette, materials, store.value());
     assert(terrain_assets);
     assert(terrain_assets.value().textures.size() == 2);
     assert(terrain_assets.value().textures[0].image.width == 2);
@@ -5778,9 +5780,12 @@ void test_voxel_palette() {
     clay.id = heartstead::core::PrototypeId::parse("base:voxels/clay").value();
     clay.display_name = "Clay";
     clay.fields = {
-        {"kind", "voxel"},         {"id", "base:voxels/clay"},
-        {"display_name", "Clay"},  {"terrain_material", "clay"},
-        {"mining_tool", "shovel"}, {"tags", "soil,crafting_source"},
+        {"kind", "voxel"},
+        {"id", "base:voxels/clay"},
+        {"display_name", "Clay"},
+        {"terrain_material", "clay"},
+        {"mining_tool", "shovel"},
+        {"tags", "soil,crafting_source"},
         {"interaction.break_resource_item", "base:items/raw_clay"},
     };
 
@@ -5805,8 +5810,7 @@ void test_voxel_palette() {
     assert(palette.value().type_for(clay_id).value() == 1);
     assert(palette.value().type_for(stone_id).value() == 2);
     assert(palette.value().find_by_type(1)->prototype_id == clay_id);
-    assert(palette.value().find_by_type(1)->interaction.break_resource_item ==
-           raw_clay.id);
+    assert(palette.value().find_by_type(1)->interaction.break_resource_item == raw_clay.id);
     assert(palette.value().find_by_prototype(stone_id)->terrain_material == "stone");
     auto clay_cell = palette.value().cell_for(clay_id, 3);
     assert(clay_cell);
@@ -7858,7 +7862,7 @@ void test_debug_inspection() {
     assert(asset_model_pipeline_inspection.object_type == "asset_cook_pipeline");
     assert(asset_model_pipeline_inspection.state == "available");
     assert(asset_model_pipeline_inspection.find_field("pipeline")->value ==
-           "model_gltf_runtime_converter_v3");
+           "model_gltf_runtime_converter_v4");
     assert(asset_model_pipeline_inspection.find_field("converts_source_format")->value == "true");
     assert(asset_model_pipeline_inspection.issues.empty());
 
@@ -13465,9 +13469,8 @@ void test_scenario_prototype_materialization() {
     prototype.fields.emplace("spawn_mode", "homestead");
     prototype.fields.emplace("starting_items", "base:items/raw_clay");
     prototype.fields.emplace("starting_cargo", "base:cargo/heavy_log");
-    prototype.fields.emplace(
-        "scene_entities",
-        "base:entities/foundation_material_showcase@8.5:1.0:12.5:180.0:0.75");
+    prototype.fields.emplace("scene_entities",
+                             "base:entities/foundation_material_showcase@8.5:1.0:12.5:180.0:0.75");
     prototype.fields.emplace("tags", "co_op,settlement_start");
 
     auto definition = heartstead::scenarios::scenario_definition_from_prototype(prototype);

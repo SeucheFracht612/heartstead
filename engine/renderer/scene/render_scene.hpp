@@ -90,6 +90,7 @@ struct RenderObjectProxy {
     RenderLayer layer = RenderLayer::opaque;
     RenderObjectFlags flags = RenderObjectFlags::none;
     std::array<float, 4> color{1.0F, 1.0F, 1.0F, 1.0F};
+    std::vector<float> morph_weights;
     std::uint32_t sprite_frame = 0;
 };
 
@@ -141,6 +142,7 @@ struct RenderObjectInstance {
     math::Mat4f camera_relative_transform = math::Mat4f::identity();
     math::Bounds3f camera_relative_bounds{};
     std::array<float, 4> color{};
+    std::vector<float> morph_weights;
     std::uint32_t sprite_frame = 0;
 };
 

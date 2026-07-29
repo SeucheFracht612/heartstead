@@ -11,6 +11,7 @@ namespace heartstead::animation {
 
 struct SkeletalPose {
     std::vector<assets::ModelNodeTransform> local_transforms;
+    std::vector<std::vector<float>> morph_weights;
 
     friend bool operator==(const SkeletalPose&, const SkeletalPose&) = default;
 };

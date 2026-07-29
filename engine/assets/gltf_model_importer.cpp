@@ -6,9 +6,14 @@
 #include <fastgltf/tools.hpp>
 #include <fastgltf/types.hpp>
 
+#include <draco/compression/decode.h>
+#include <draco/core/decoder_buffer.h>
+#include <meshoptimizer.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <span>
 #include <string>
@@ -21,7 +26,11 @@ namespace heartstead::assets {
 
 namespace {
 
-constexpr auto supported_gltf_extensions = fastgltf::Extensions::KHR_materials_unlit;
+constexpr auto supported_gltf_extensions =
+    fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_transform |
+    fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::KHR_mesh_quantization |
+    fastgltf::Extensions::EXT_meshopt_compression |
+    fastgltf::Extensions::KHR_draco_mesh_compression;
 
 [[nodiscard]] core::Result<ModelAsset> importer_failure(std::string code, std::string message) {
     return core::Result<ModelAsset>::failure(std::move(code), std::move(message));
@@ -79,6 +88,300 @@ constexpr auto supported_gltf_extensions = fastgltf::Extensions::KHR_materials_u
     return core::Status::ok();
 }
 
+[[nodiscard]] core::Result<std::span<const std::byte>>
+buffer_source_bytes(const fastgltf::Asset& source, std::size_t buffer_index) {
+    if (buffer_index >= source.buffers.size()) {
+        return core::Result<std::span<const std::byte>>::failure(
+            "gltf_import.buffer_out_of_bounds", "glTF compressed data references a missing buffer");
+    }
+    return std::visit(
+        [](const auto& data) -> core::Result<std::span<const std::byte>> {
+            using Source = std::remove_cvref_t<decltype(data)>;
+            if constexpr (std::is_same_v<Source, fastgltf::sources::Array> ||
+                          std::is_same_v<Source, fastgltf::sources::Vector>) {
+                return core::Result<std::span<const std::byte>>::success(
+                    {data.bytes.data(), data.bytes.size()});
+            } else if constexpr (std::is_same_v<Source, fastgltf::sources::ByteView>) {
+                return core::Result<std::span<const std::byte>>::success(
+                    {data.bytes.data(), data.bytes.size()});
+            } else {
+                return core::Result<std::span<const std::byte>>::failure(
+                    "gltf_import.buffer_not_loaded",
+                    "glTF compressed buffer source was not loaded into the model cooker");
+            }
+        },
+        source.buffers[buffer_index].data);
+}
+
+[[nodiscard]] core::Result<std::span<const std::byte>>
+buffer_view_bytes(const fastgltf::Asset& source, std::size_t buffer_view_index) {
+    if (buffer_view_index >= source.bufferViews.size()) {
+        return core::Result<std::span<const std::byte>>::failure(
+            "gltf_import.buffer_view_out_of_bounds",
+            "glTF compressed data references a missing buffer view");
+    }
+    const auto& view = source.bufferViews[buffer_view_index];
+    auto buffer = buffer_source_bytes(source, view.bufferIndex);
+    if (!buffer) {
+        return buffer;
+    }
+    if (view.byteOffset > buffer.value().size() ||
+        view.byteLength > buffer.value().size() - view.byteOffset) {
+        return core::Result<std::span<const std::byte>>::failure(
+            "gltf_import.buffer_view_out_of_bounds", "glTF buffer view exceeds its loaded buffer");
+    }
+    return core::Result<std::span<const std::byte>>::success(
+        buffer.value().subspan(view.byteOffset, view.byteLength));
+}
+
+[[nodiscard]] std::size_t append_buffer(fastgltf::Asset& asset, std::span<const std::byte> bytes,
+                                        std::string_view name) {
+    fastgltf::sources::Array storage{fastgltf::StaticVector<std::byte>(bytes.size()),
+                                     fastgltf::MimeType::None};
+    std::ranges::copy(bytes, storage.bytes.begin());
+    fastgltf::Buffer buffer;
+    buffer.byteLength = bytes.size();
+    buffer.data = std::move(storage);
+    buffer.name = name;
+    asset.buffers.push_back(std::move(buffer));
+    return asset.buffers.size() - 1U;
+}
+
+[[nodiscard]] core::Status decompress_meshopt_buffer_views(fastgltf::Asset& asset,
+                                                           const ModelAssetLimits& limits) {
+    std::size_t decoded_total = 0;
+    for (auto& view : asset.bufferViews) {
+        if (view.meshoptCompression == nullptr) {
+            continue;
+        }
+        const auto& compressed = *view.meshoptCompression;
+        auto source = buffer_source_bytes(asset, compressed.bufferIndex);
+        if (!source) {
+            return core::Status::failure(source.error().code, source.error().message);
+        }
+        if (compressed.byteOffset > source.value().size() ||
+            compressed.byteLength > source.value().size() - compressed.byteOffset ||
+            compressed.byteStride == 0 ||
+            compressed.count > std::numeric_limits<std::size_t>::max() / compressed.byteStride) {
+            return core::Status::failure(
+                "gltf_import.invalid_meshopt_buffer",
+                "EXT_meshopt_compression source range or decoded layout is invalid");
+        }
+        const auto decoded_size = compressed.count * compressed.byteStride;
+        if (decoded_size > limits.maximum_source_bytes - decoded_total) {
+            return core::Status::failure(
+                "gltf_import.buffer_limit",
+                "decoded EXT_meshopt_compression data exceeds the source byte limit");
+        }
+        decoded_total += decoded_size;
+        std::vector<std::byte> decoded(decoded_size);
+        const auto encoded = source.value().subspan(compressed.byteOffset, compressed.byteLength);
+        const auto* encoded_data = reinterpret_cast<const unsigned char*>(encoded.data());
+        int decode_result = -1;
+        switch (compressed.mode) {
+        case fastgltf::MeshoptCompressionMode::Attributes:
+            decode_result =
+                meshopt_decodeVertexBuffer(decoded.data(), compressed.count, compressed.byteStride,
+                                           encoded_data, encoded.size());
+            break;
+        case fastgltf::MeshoptCompressionMode::Triangles:
+            decode_result =
+                meshopt_decodeIndexBuffer(decoded.data(), compressed.count, compressed.byteStride,
+                                          encoded_data, encoded.size());
+            break;
+        case fastgltf::MeshoptCompressionMode::Indices:
+            decode_result =
+                meshopt_decodeIndexSequence(decoded.data(), compressed.count, compressed.byteStride,
+                                            encoded_data, encoded.size());
+            break;
+        }
+        if (decode_result != 0) {
+            return core::Status::failure(
+                "gltf_import.meshopt_decode_failed",
+                "meshoptimizer rejected an EXT_meshopt_compression payload");
+        }
+        switch (compressed.filter) {
+        case fastgltf::MeshoptCompressionFilter::None:
+            break;
+        case fastgltf::MeshoptCompressionFilter::Octahedral:
+            meshopt_decodeFilterOct(decoded.data(), compressed.count, compressed.byteStride);
+            break;
+        case fastgltf::MeshoptCompressionFilter::Quaternion:
+            meshopt_decodeFilterQuat(decoded.data(), compressed.count, compressed.byteStride);
+            break;
+        case fastgltf::MeshoptCompressionFilter::Exponential:
+            meshopt_decodeFilterExp(decoded.data(), compressed.count, compressed.byteStride);
+            break;
+        }
+        const auto buffer_index = append_buffer(asset, decoded, "meshopt_decoded");
+        view.bufferIndex = buffer_index;
+        view.byteOffset = 0;
+        view.byteLength = decoded.size();
+        if (compressed.mode == fastgltf::MeshoptCompressionMode::Attributes) {
+            view.byteStride = compressed.byteStride;
+        }
+        view.meshoptCompression.reset();
+    }
+    return core::Status::ok();
+}
+
+[[nodiscard]] std::size_t accessor_components(fastgltf::AccessorType type) {
+    switch (type) {
+    case fastgltf::AccessorType::Scalar:
+        return 1;
+    case fastgltf::AccessorType::Vec2:
+        return 2;
+    case fastgltf::AccessorType::Vec3:
+        return 3;
+    case fastgltf::AccessorType::Vec4:
+        return 4;
+    default:
+        return 0;
+    }
+}
+
+[[nodiscard]] core::Status decompress_draco_primitives(fastgltf::Asset& asset,
+                                                       const ModelAssetLimits& limits) {
+    std::size_t decoded_total = 0;
+    for (auto& mesh : asset.meshes) {
+        for (auto& primitive : mesh.primitives) {
+            if (primitive.dracoCompression == nullptr) {
+                continue;
+            }
+            auto encoded = buffer_view_bytes(asset, primitive.dracoCompression->bufferView);
+            if (!encoded) {
+                return core::Status::failure(encoded.error().code, encoded.error().message);
+            }
+            draco::DecoderBuffer decoder_buffer;
+            decoder_buffer.Init(reinterpret_cast<const char*>(encoded.value().data()),
+                                encoded.value().size());
+            draco::Decoder decoder;
+            auto decoded = decoder.DecodeMeshFromBuffer(&decoder_buffer);
+            if (!decoded.ok() || decoded.value() == nullptr) {
+                return core::Status::failure(
+                    "gltf_import.draco_decode_failed",
+                    "Draco rejected a KHR_draco_mesh_compression payload: " +
+                        decoded.status().error_msg_string());
+            }
+            auto draco_mesh = std::move(decoded).value();
+            const auto point_count = static_cast<std::size_t>(draco_mesh->num_points());
+            if (point_count == 0 || point_count > limits.maximum_vertices) {
+                return core::Status::failure(
+                    "gltf_import.vertex_limit",
+                    "decoded Draco vertex count is empty or exceeds its configured limit");
+            }
+            for (const auto& primitive_attribute : primitive.attributes) {
+                const auto draco_mapping =
+                    primitive.dracoCompression->findAttribute(primitive_attribute.name);
+                if (draco_mapping == primitive.dracoCompression->attributes.end() ||
+                    primitive_attribute.accessorIndex >= asset.accessors.size()) {
+                    return core::Status::failure("gltf_import.invalid_draco_attribute",
+                                                 "Draco primitive attribute mapping is incomplete");
+                }
+                const auto* attribute = draco_mesh->GetAttributeByUniqueId(
+                    static_cast<std::uint32_t>(draco_mapping->accessorIndex));
+                auto& accessor = asset.accessors[primitive_attribute.accessorIndex];
+                const auto components = accessor_components(accessor.type);
+                if (attribute == nullptr || components == 0 || accessor.count != point_count) {
+                    return core::Status::failure(
+                        "gltf_import.invalid_draco_attribute",
+                        "decoded Draco attribute does not match its glTF accessor");
+                }
+                const auto joints = primitive_attribute.name.starts_with("JOINTS_");
+                const auto component_bytes = joints ? sizeof(std::uint16_t) : sizeof(float);
+                const auto decoded_size = point_count * components * component_bytes;
+                if (decoded_size > limits.maximum_source_bytes - decoded_total) {
+                    return core::Status::failure(
+                        "gltf_import.buffer_limit",
+                        "decoded Draco data exceeds the source byte limit");
+                }
+                decoded_total += decoded_size;
+                bool conversion_failed = false;
+                std::vector<std::uint16_t> joint_values;
+                std::vector<float> attribute_values;
+                if (joints) {
+                    joint_values.resize(point_count * components);
+                } else {
+                    attribute_values.resize(point_count * components);
+                }
+                for (std::size_t point = 0; point < point_count; ++point) {
+                    const auto mapped = attribute->mapped_index(
+                        draco::PointIndex(static_cast<std::uint32_t>(point)));
+                    if (joints) {
+                        auto* destination = joint_values.data() + point * components;
+                        conversion_failed |= !attribute->ConvertValue(
+                            mapped, static_cast<std::int8_t>(components), destination);
+                    } else {
+                        auto* destination = attribute_values.data() + point * components;
+                        conversion_failed |= !attribute->ConvertValue(
+                            mapped, static_cast<std::int8_t>(components), destination);
+                    }
+                }
+                if (conversion_failed) {
+                    return core::Status::failure(
+                        "gltf_import.draco_attribute_conversion_failed",
+                        "decoded Draco attribute could not be converted to runtime values");
+                }
+                const auto attribute_bytes = joints ? std::as_bytes(std::span{joint_values})
+                                                    : std::as_bytes(std::span{attribute_values});
+                const auto buffer = append_buffer(asset, attribute_bytes, "draco_attribute");
+                fastgltf::BufferView view;
+                view.bufferIndex = buffer;
+                view.byteLength = attribute_bytes.size();
+                asset.bufferViews.push_back(std::move(view));
+                accessor.bufferViewIndex = asset.bufferViews.size() - 1U;
+                accessor.byteOffset = 0;
+                accessor.componentType = joints ? fastgltf::ComponentType::UnsignedShort
+                                                : fastgltf::ComponentType::Float;
+                accessor.normalized = false;
+                accessor.sparse.reset();
+            }
+            if (!primitive.indicesAccessor.has_value() ||
+                *primitive.indicesAccessor >= asset.accessors.size()) {
+                return core::Status::failure(
+                    "gltf_import.invalid_draco_indices",
+                    "Draco triangle primitive is missing its index accessor");
+            }
+            const auto index_count = static_cast<std::size_t>(draco_mesh->num_faces()) * 3U;
+            if (index_count == 0 || index_count > limits.maximum_indices) {
+                return core::Status::failure(
+                    "gltf_import.index_limit",
+                    "decoded Draco index count is empty or exceeds its configured limit");
+            }
+            if (index_count >
+                (limits.maximum_source_bytes - decoded_total) / sizeof(std::uint32_t)) {
+                return core::Status::failure("gltf_import.buffer_limit",
+                                             "decoded Draco indices exceed the source byte limit");
+            }
+            decoded_total += index_count * sizeof(std::uint32_t);
+            std::vector<std::uint32_t> indices(index_count);
+            for (std::uint32_t face = 0; face < draco_mesh->num_faces(); ++face) {
+                const auto& source_face = draco_mesh->face(draco::FaceIndex(face));
+                for (std::size_t corner = 0; corner < 3; ++corner) {
+                    indices[static_cast<std::size_t>(face) * 3U + corner] =
+                        source_face[corner].value();
+                }
+            }
+            const auto index_bytes = std::as_bytes(std::span{indices});
+            const auto buffer = append_buffer(asset, index_bytes, "draco_indices");
+            fastgltf::BufferView view;
+            view.bufferIndex = buffer;
+            view.byteLength = index_bytes.size();
+            asset.bufferViews.push_back(std::move(view));
+            auto& accessor = asset.accessors[*primitive.indicesAccessor];
+            accessor.bufferViewIndex = asset.bufferViews.size() - 1U;
+            accessor.byteOffset = 0;
+            accessor.count = indices.size();
+            accessor.type = fastgltf::AccessorType::Scalar;
+            accessor.componentType = fastgltf::ComponentType::UnsignedInt;
+            accessor.normalized = false;
+            accessor.sparse.reset();
+            primitive.dracoCompression.reset();
+        }
+    }
+    return core::Status::ok();
+}
+
 [[nodiscard]] core::Status import_nodes(const fastgltf::Asset& source, ModelAsset& target,
                                         const ModelAssetLimits& limits) {
     if (source.nodes.empty() || source.nodes.size() > limits.maximum_nodes) {
@@ -104,6 +407,15 @@ constexpr auto supported_gltf_extensions = fastgltf::Extensions::KHR_materials_u
             normalized_quaternion(transform->rotation),
             {transform->scale[0], transform->scale[1], transform->scale[2]},
         };
+        const auto& default_weights =
+            !source_node.weights.empty() ? source_node.weights
+            : source_node.meshIndex.has_value() && *source_node.meshIndex < source.meshes.size()
+                ? source.meshes[*source_node.meshIndex].weights
+                : source_node.weights;
+        target.nodes[index].morph_weights.reserve(default_weights.size());
+        for (const auto weight : default_weights) {
+            target.nodes[index].morph_weights.push_back(static_cast<float>(weight));
+        }
         for (const auto child : source_node.children) {
             if (child >= source.nodes.size()) {
                 return core::Status::failure("gltf_import.child_out_of_bounds",
@@ -218,9 +530,10 @@ image_source_bytes(const fastgltf::Asset& source, std::size_t image_index) {
 }
 
 [[nodiscard]] core::Result<std::uint32_t>
-import_base_color_image(const fastgltf::Asset& source, std::size_t image_index, ModelAsset& target,
-                        std::unordered_map<std::size_t, std::uint32_t>& imported_images,
-                        const ModelAssetLimits& limits, std::size_t& total_image_bytes) {
+import_model_image(const fastgltf::Asset& source, std::size_t image_index, bool ktx2,
+                   ModelAsset& target,
+                   std::unordered_map<std::size_t, std::uint32_t>& imported_images,
+                   const ModelAssetLimits& limits, std::size_t& total_image_bytes) {
     const auto existing = imported_images.find(image_index);
     if (existing != imported_images.end()) {
         return core::Result<std::uint32_t>::success(existing->second);
@@ -236,11 +549,11 @@ import_base_color_image(const fastgltf::Asset& source, std::size_t image_index, 
     ImageAssetLimits image_limits;
     image_limits.maximum_dimension = limits.maximum_image_dimension;
     image_limits.maximum_decoded_bytes = limits.maximum_decoded_image_bytes - total_image_bytes;
-    auto decoded = decode_png_or_jpeg(bytes.value(), image_limits);
+    auto decoded = ktx2 ? decode_ktx2(bytes.value(), image_limits, true)
+                        : decode_png_or_jpeg(bytes.value(), image_limits);
     if (!decoded) {
-        return core::Result<std::uint32_t>::failure(decoded.error().code,
-                                                    "glTF base-color image could not be decoded: " +
-                                                        decoded.error().message);
+        return core::Result<std::uint32_t>::failure(
+            decoded.error().code, "glTF image could not be decoded: " + decoded.error().message);
     }
     auto name = model_name(source.images[image_index].name, "image", image_index, limits);
     if (!name) {
@@ -254,9 +567,123 @@ import_base_color_image(const fastgltf::Asset& source, std::size_t image_index, 
     return core::Result<std::uint32_t>::success(runtime_index);
 }
 
+[[nodiscard]] ModelTextureMagFilter model_mag_filter(fastgltf::Filter filter) {
+    return filter == fastgltf::Filter::Nearest ? ModelTextureMagFilter::nearest
+                                               : ModelTextureMagFilter::linear;
+}
+
+[[nodiscard]] ModelTextureMinFilter model_min_filter(fastgltf::Filter filter) {
+    switch (filter) {
+    case fastgltf::Filter::Nearest:
+        return ModelTextureMinFilter::nearest;
+    case fastgltf::Filter::Linear:
+        return ModelTextureMinFilter::linear;
+    case fastgltf::Filter::NearestMipMapNearest:
+        return ModelTextureMinFilter::nearest_mipmap_nearest;
+    case fastgltf::Filter::LinearMipMapNearest:
+        return ModelTextureMinFilter::linear_mipmap_nearest;
+    case fastgltf::Filter::NearestMipMapLinear:
+        return ModelTextureMinFilter::nearest_mipmap_linear;
+    case fastgltf::Filter::LinearMipMapLinear:
+        return ModelTextureMinFilter::linear_mipmap_linear;
+    }
+    return ModelTextureMinFilter::linear;
+}
+
+[[nodiscard]] ModelTextureWrap model_wrap(fastgltf::Wrap wrap) {
+    switch (wrap) {
+    case fastgltf::Wrap::ClampToEdge:
+        return ModelTextureWrap::clamp_to_edge;
+    case fastgltf::Wrap::MirroredRepeat:
+        return ModelTextureWrap::mirrored_repeat;
+    case fastgltf::Wrap::Repeat:
+        return ModelTextureWrap::repeat;
+    }
+    return ModelTextureWrap::repeat;
+}
+
+[[nodiscard]] core::Status import_samplers(const fastgltf::Asset& source, ModelAsset& target,
+                                           const ModelAssetLimits& limits) {
+    if (source.samplers.size() > limits.maximum_samplers) {
+        return core::Status::failure("gltf_import.sampler_limit",
+                                     "glTF sampler count exceeds its configured limit");
+    }
+    target.samplers.reserve(source.samplers.size());
+    for (const auto& source_sampler : source.samplers) {
+        ModelSampler sampler;
+        sampler.mag_filter =
+            model_mag_filter(source_sampler.magFilter.value_or(fastgltf::Filter::Linear));
+        sampler.min_filter =
+            model_min_filter(source_sampler.minFilter.value_or(fastgltf::Filter::Linear));
+        sampler.wrap_s = model_wrap(source_sampler.wrapS);
+        sampler.wrap_t = model_wrap(source_sampler.wrapT);
+        target.samplers.push_back(sampler);
+    }
+    return core::Status::ok();
+}
+
+[[nodiscard]] core::Status
+import_texture_binding(const fastgltf::Asset& source, const fastgltf::TextureInfo& texture_info,
+                       ModelTextureBinding& binding, ModelAsset& target,
+                       std::unordered_map<std::size_t, std::uint32_t>& imported_images,
+                       const ModelAssetLimits& limits, std::size_t& total_image_bytes) {
+    if (texture_info.textureIndex >= source.textures.size()) {
+        return core::Status::failure("gltf_import.texture_out_of_bounds",
+                                     "glTF material references a missing texture");
+    }
+    const auto& texture = source.textures[texture_info.textureIndex];
+    const auto ktx2 = texture.basisuImageIndex.has_value();
+    const auto image_index =
+        ktx2 ? *texture.basisuImageIndex
+             : texture.imageIndex.value_or(std::numeric_limits<std::size_t>::max());
+    if (image_index >= source.images.size()) {
+        return core::Status::failure(
+            "gltf_import.texture_source_out_of_bounds",
+            "glTF texture does not resolve to a loaded PNG, JPEG, or KTX2 image");
+    }
+    if (texture.samplerIndex.has_value()) {
+        if (*texture.samplerIndex >= target.samplers.size()) {
+            return core::Status::failure("gltf_import.sampler_out_of_bounds",
+                                         "glTF texture references a missing sampler");
+        }
+        binding.sampler = static_cast<std::uint32_t>(*texture.samplerIndex);
+    }
+    auto texcoord = texture_info.texCoordIndex;
+    if (texture_info.transform != nullptr) {
+        const auto& transform = *texture_info.transform;
+        if (transform.texCoordIndex.has_value()) {
+            texcoord = *transform.texCoordIndex;
+        }
+        binding.offset = {static_cast<float>(transform.uvOffset[0]),
+                          static_cast<float>(transform.uvOffset[1])};
+        binding.scale = {static_cast<float>(transform.uvScale[0]),
+                         static_cast<float>(transform.uvScale[1])};
+        binding.rotation = static_cast<float>(transform.rotation);
+    }
+    if (texcoord > 1U) {
+        return core::Status::failure("gltf_import.unsupported_texture_coordinates",
+                                     "runtime model textures support TEXCOORD_0 and TEXCOORD_1");
+    }
+    binding.texcoord = static_cast<std::uint8_t>(texcoord);
+    auto image = import_model_image(source, image_index, ktx2, target, imported_images, limits,
+                                    total_image_bytes);
+    if (!image) {
+        return core::Status::failure(image.error().code, image.error().message);
+    }
+    binding.image = image.value();
+    return core::Status::ok();
+}
+
 [[nodiscard]] core::Status import_materials(const fastgltf::Asset& source, ModelAsset& target,
                                             const ModelAssetLimits& limits) {
-    if (source.materials.size() > limits.maximum_materials) {
+    const auto needs_default_material =
+        std::ranges::any_of(source.meshes, [](const fastgltf::Mesh& mesh) {
+            return std::ranges::any_of(mesh.primitives, [](const fastgltf::Primitive& primitive) {
+                return !primitive.materialIndex.has_value();
+            });
+        });
+    if (source.materials.size() > limits.maximum_materials ||
+        (needs_default_material && source.materials.size() == limits.maximum_materials)) {
         return core::Status::failure("gltf_import.material_limit",
                                      "glTF material count exceeds its configured limit");
     }
@@ -269,12 +696,6 @@ import_base_color_image(const fastgltf::Asset& source, std::size_t image_index, 
         if (!name) {
             return core::Status::failure(name.error().code, name.error().message);
         }
-        if (source_material.alphaMode == fastgltf::AlphaMode::Blend) {
-            return core::Status::failure(
-                "gltf_import.unsupported_alpha_blend",
-                "Asset Pipeline V1 supports opaque and masked glTF materials, not alpha blend");
-        }
-
         ModelMaterial material;
         material.name = std::move(name).value();
         for (std::size_t component = 0; component < material.base_color_factor.size();
@@ -282,37 +703,62 @@ import_base_color_image(const fastgltf::Asset& source, std::size_t image_index, 
             material.base_color_factor[component] =
                 static_cast<float>(source_material.pbrData.baseColorFactor[component]);
         }
-        material.alpha_mode = source_material.alphaMode == fastgltf::AlphaMode::Mask
-                                  ? ModelAlphaMode::mask
-                                  : ModelAlphaMode::opaque;
+        material.alpha_mode =
+            source_material.alphaMode == fastgltf::AlphaMode::Mask    ? ModelAlphaMode::mask
+            : source_material.alphaMode == fastgltf::AlphaMode::Blend ? ModelAlphaMode::blend
+                                                                      : ModelAlphaMode::opaque;
         material.alpha_cutoff = static_cast<float>(source_material.alphaCutoff);
         material.double_sided = source_material.doubleSided;
         material.unlit = source_material.unlit;
-
-        if (source_material.pbrData.baseColorTexture.has_value()) {
-            const auto& texture_info = *source_material.pbrData.baseColorTexture;
-            if (texture_info.texCoordIndex != 0 || texture_info.transform != nullptr) {
-                return core::Status::failure(
-                    "gltf_import.unsupported_texture_coordinates",
-                    "Asset Pipeline V1 base-color textures require TEXCOORD_0 without transforms");
-            }
-            if (texture_info.textureIndex >= source.textures.size()) {
-                return core::Status::failure("gltf_import.texture_out_of_bounds",
-                                             "glTF material references a missing texture");
-            }
-            const auto& texture = source.textures[texture_info.textureIndex];
-            if (!texture.imageIndex.has_value()) {
-                return core::Status::failure(
-                    "gltf_import.unsupported_texture_source",
-                    "Asset Pipeline V1 base-color textures require a PNG or JPEG glTF image");
-            }
-            auto image = import_base_color_image(source, *texture.imageIndex, target,
-                                                 imported_images, limits, total_image_bytes);
-            if (!image) {
-                return core::Status::failure(image.error().code, image.error().message);
-            }
-            material.base_color_image = image.value();
+        material.metallic_factor = static_cast<float>(source_material.pbrData.metallicFactor);
+        material.roughness_factor = static_cast<float>(source_material.pbrData.roughnessFactor);
+        material.normal_scale = source_material.normalTexture.has_value()
+                                    ? static_cast<float>(source_material.normalTexture->scale)
+                                    : 1.0F;
+        material.occlusion_strength =
+            source_material.occlusionTexture.has_value()
+                ? static_cast<float>(source_material.occlusionTexture->strength)
+                : 1.0F;
+        for (std::size_t component = 0; component < material.emissive_factor.size(); ++component) {
+            material.emissive_factor[component] =
+                static_cast<float>(source_material.emissiveFactor[component]);
         }
+
+        const auto import_optional = [&](const auto& texture,
+                                         ModelTextureBinding& binding) -> core::Status {
+            if (!texture.has_value()) {
+                return core::Status::ok();
+            }
+            return import_texture_binding(source, *texture, binding, target, imported_images,
+                                          limits, total_image_bytes);
+        };
+        auto status =
+            import_optional(source_material.pbrData.baseColorTexture, material.base_color_texture);
+        if (!status) {
+            return status;
+        }
+        status = import_optional(source_material.pbrData.metallicRoughnessTexture,
+                                 material.metallic_roughness_texture);
+        if (!status) {
+            return status;
+        }
+        status = import_optional(source_material.normalTexture, material.normal_texture);
+        if (!status) {
+            return status;
+        }
+        status = import_optional(source_material.occlusionTexture, material.occlusion_texture);
+        if (!status) {
+            return status;
+        }
+        status = import_optional(source_material.emissiveTexture, material.emissive_texture);
+        if (!status) {
+            return status;
+        }
+        target.materials.push_back(std::move(material));
+    }
+    if (needs_default_material) {
+        ModelMaterial material;
+        material.name = "default_material";
         target.materials.push_back(std::move(material));
     }
     return core::Status::ok();
@@ -328,10 +774,9 @@ import_base_color_image(const fastgltf::Asset& source, std::size_t image_index, 
                                      "glTF mesh primitive must provide POSITION");
     }
     const auto& accessor = source.accessors[attribute->accessorIndex];
-    if (accessor.type != fastgltf::AccessorType::Vec3 ||
-        accessor.componentType != fastgltf::ComponentType::Float || accessor.count == 0) {
+    if (accessor.type != fastgltf::AccessorType::Vec3 || accessor.count == 0) {
         return core::Status::failure("gltf_import.invalid_positions",
-                                     "glTF POSITION must be a non-empty float VEC3 accessor");
+                                     "glTF POSITION must be a non-empty VEC3 accessor");
     }
     vertices.resize(accessor.count);
     fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
@@ -381,21 +826,56 @@ copy_optional_attribute(const fastgltf::Asset& source, const fastgltf::Primitive
     }
     status = copy_optional_attribute<fastgltf::math::fvec2>(
         source, primitive, "TEXCOORD_0", fastgltf::AccessorType::Vec2, vertices.size(),
-        [&](const auto& value, std::size_t index) { vertices[index].uv = {value[0], value[1]}; });
+        [&](const auto& value, std::size_t index) { vertices[index].uv0 = {value[0], value[1]}; });
     if (!status) {
         return status;
+    }
+    status = copy_optional_attribute<fastgltf::math::fvec2>(
+        source, primitive, "TEXCOORD_1", fastgltf::AccessorType::Vec2, vertices.size(),
+        [&](const auto& value, std::size_t index) { vertices[index].uv1 = {value[0], value[1]}; });
+    if (!status) {
+        return status;
+    }
+    status = copy_optional_attribute<fastgltf::math::fvec4>(
+        source, primitive, "TANGENT", fastgltf::AccessorType::Vec4, vertices.size(),
+        [&](const auto& value, std::size_t index) {
+            vertices[index].tangent = {value[0], value[1], value[2], value[3]};
+        });
+    if (!status) {
+        return status;
+    }
+    const auto color = primitive.findAttribute("COLOR_0");
+    if (color != primitive.attributes.end()) {
+        if (color->accessorIndex >= source.accessors.size()) {
+            return core::Status::failure("gltf_import.attribute_out_of_bounds",
+                                         "glTF COLOR_0 references a missing accessor");
+        }
+        const auto& accessor = source.accessors[color->accessorIndex];
+        if (accessor.count != vertices.size() || (accessor.type != fastgltf::AccessorType::Vec3 &&
+                                                  accessor.type != fastgltf::AccessorType::Vec4)) {
+            return core::Status::failure("gltf_import.attribute_shape_mismatch",
+                                         "glTF COLOR_0 must be a VEC3 or VEC4 matching POSITION");
+        }
+        if (accessor.type == fastgltf::AccessorType::Vec3) {
+            fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
+                source, accessor, [&](const auto& value, std::size_t index) {
+                    vertices[index].color = {value[0], value[1], value[2], 1.0F};
+                });
+        } else {
+            fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(
+                source, accessor, [&](const auto& value, std::size_t index) {
+                    vertices[index].color = {value[0], value[1], value[2], value[3]};
+                });
+        }
     }
 
     const auto joints = primitive.findAttribute("JOINTS_0");
     const auto weights = primitive.findAttribute("WEIGHTS_0");
     const auto joints_1 = primitive.findAttribute("JOINTS_1");
     const auto weights_1 = primitive.findAttribute("WEIGHTS_1");
-    if (joints_1 != primitive.attributes.end() || weights_1 != primitive.attributes.end()) {
-        return core::Status::failure(
-            "gltf_import.too_many_joint_sets",
-            "glTF runtime format currently supports four joint influences per vertex");
-    }
     if ((joints == primitive.attributes.end()) != (weights == primitive.attributes.end()) ||
+        (joints_1 == primitive.attributes.end()) != (weights_1 == primitive.attributes.end()) ||
+        (joints_1 != primitive.attributes.end() && joints == primitive.attributes.end()) ||
         (skin != nullptr && joints == primitive.attributes.end())) {
         return core::Status::failure(
             "gltf_import.missing_skin_attributes",
@@ -405,7 +885,10 @@ copy_optional_attribute(const fastgltf::Asset& source, const fastgltf::Primitive
         return core::Status::ok();
     }
     if (skin == nullptr || joints->accessorIndex >= source.accessors.size() ||
-        weights->accessorIndex >= source.accessors.size()) {
+        weights->accessorIndex >= source.accessors.size() ||
+        (joints_1 != primitive.attributes.end() &&
+         (joints_1->accessorIndex >= source.accessors.size() ||
+          weights_1->accessorIndex >= source.accessors.size()))) {
         return core::Status::failure("gltf_import.invalid_skin_binding",
                                      "glTF joint attributes require a valid skin and accessors");
     }
@@ -417,25 +900,61 @@ copy_optional_attribute(const fastgltf::Asset& source, const fastgltf::Primitive
         return core::Status::failure("gltf_import.invalid_skin_attributes",
                                      "glTF skin attributes must be VEC4 per vertex");
     }
-    fastgltf::iterateAccessorWithIndex<fastgltf::math::u16vec4>(
-        source, joint_accessor, [&](const auto& value, std::size_t vertex_index) {
-            for (std::size_t component = 0; component < 4; ++component) {
-                vertices[vertex_index].joints[component] = value[component];
-            }
-        });
-    fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(
-        source, weight_accessor, [&](const auto& value, std::size_t vertex_index) {
-            float sum = 0.0F;
-            for (std::size_t component = 0; component < 4; ++component) {
-                vertices[vertex_index].weights[component] = value[component];
-                sum += value[component];
-            }
-            if (std::isfinite(sum) && sum > 0.0F) {
-                for (auto& weight : vertices[vertex_index].weights) {
-                    weight /= sum;
+    std::vector<std::array<std::uint16_t, 8>> imported_joints(vertices.size());
+    std::vector<std::array<float, 8>> imported_weights(vertices.size());
+    const auto copy_joint_set = [&](const fastgltf::Accessor& accessor, std::size_t offset) {
+        fastgltf::iterateAccessorWithIndex<fastgltf::math::u16vec4>(
+            source, accessor, [&](const auto& value, std::size_t vertex_index) {
+                for (std::size_t component = 0; component < 4; ++component) {
+                    imported_joints[vertex_index][offset + component] = value[component];
                 }
-            }
-        });
+            });
+    };
+    const auto copy_weight_set = [&](const fastgltf::Accessor& accessor, std::size_t offset) {
+        fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(
+            source, accessor, [&](const auto& value, std::size_t vertex_index) {
+                for (std::size_t component = 0; component < 4; ++component) {
+                    imported_weights[vertex_index][offset + component] = value[component];
+                }
+            });
+    };
+    copy_joint_set(joint_accessor, 0);
+    copy_weight_set(weight_accessor, 0);
+    if (joints_1 != primitive.attributes.end()) {
+        const auto& joint_accessor_1 = source.accessors[joints_1->accessorIndex];
+        const auto& weight_accessor_1 = source.accessors[weights_1->accessorIndex];
+        if (joint_accessor_1.type != fastgltf::AccessorType::Vec4 ||
+            weight_accessor_1.type != fastgltf::AccessorType::Vec4 ||
+            joint_accessor_1.count != vertices.size() ||
+            weight_accessor_1.count != vertices.size()) {
+            return core::Status::failure("gltf_import.invalid_skin_attributes",
+                                         "glTF JOINTS_1 and WEIGHTS_1 must be VEC4 per vertex");
+        }
+        copy_joint_set(joint_accessor_1, 4);
+        copy_weight_set(weight_accessor_1, 4);
+    }
+    for (std::size_t vertex_index = 0; vertex_index < vertices.size(); ++vertex_index) {
+        std::array<std::pair<float, std::uint16_t>, 8> influences;
+        for (std::size_t influence = 0; influence < influences.size(); ++influence) {
+            influences[influence] = {imported_weights[vertex_index][influence],
+                                     imported_joints[vertex_index][influence]};
+        }
+        std::ranges::sort(influences, std::greater{}, &decltype(influences)::value_type::first);
+        float sum = 0.0F;
+        for (std::size_t influence = 0; influence < 4; ++influence) {
+            vertices[vertex_index].weights[influence] = influences[influence].first;
+            vertices[vertex_index].joints[influence] = influences[influence].second;
+            sum += influences[influence].first;
+        }
+        if (!std::isfinite(sum) || sum <= 0.0F) {
+            return core::Status::failure(
+                "gltf_import.invalid_skin_weights",
+                "glTF skin weights must contain a finite non-zero influence per vertex");
+        }
+        for (auto& weight : vertices[vertex_index].weights) {
+            weight /= sum;
+        }
+    }
     for (const auto& vertex : vertices) {
         for (std::size_t component = 0; component < 4; ++component) {
             if (vertex.weights[component] > 0.0F &&
@@ -448,9 +967,115 @@ copy_optional_attribute(const fastgltf::Asset& source, const fastgltf::Primitive
     return core::Status::ok();
 }
 
+[[nodiscard]] core::Result<std::vector<ModelMorphTarget>>
+import_morph_targets(const fastgltf::Asset& source, const fastgltf::Primitive& primitive,
+                     std::size_t vertex_count, const ModelAssetLimits& limits,
+                     std::size_t& total_delta_values) {
+    if (primitive.targets.size() > limits.maximum_morph_targets_per_primitive) {
+        return core::Result<std::vector<ModelMorphTarget>>::failure(
+            "gltf_import.morph_limit", "glTF morph target count exceeds its configured limit");
+    }
+    std::vector<ModelMorphTarget> targets(primitive.targets.size());
+    for (std::size_t target_index = 0; target_index < primitive.targets.size(); ++target_index) {
+        const auto& source_target = primitive.targets[target_index];
+        auto& target = targets[target_index];
+        const auto import_attribute = [&](std::string_view semantic,
+                                          std::vector<math::Vec3f>& deltas) -> core::Status {
+            const auto attribute =
+                std::ranges::find(source_target, semantic, &fastgltf::Attribute::name);
+            if (attribute == source_target.end()) {
+                return core::Status::ok();
+            }
+            if (attribute->accessorIndex >= source.accessors.size()) {
+                return core::Status::failure("gltf_import.morph_accessor_out_of_bounds",
+                                             "glTF morph target references a missing accessor");
+            }
+            const auto& accessor = source.accessors[attribute->accessorIndex];
+            if (accessor.type != fastgltf::AccessorType::Vec3 || accessor.count != vertex_count ||
+                vertex_count > limits.maximum_morph_delta_values - total_delta_values) {
+                return core::Status::failure("gltf_import.invalid_morph_accessor",
+                                             "glTF morph attributes must be VEC3 arrays matching "
+                                             "POSITION and within limits");
+            }
+            deltas.resize(vertex_count);
+            total_delta_values += vertex_count;
+            fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
+                source, accessor, [&](const auto& value, std::size_t vertex) {
+                    deltas[vertex] = {value[0], value[1], value[2]};
+                });
+            return core::Status::ok();
+        };
+        auto status = import_attribute("POSITION", target.position_deltas);
+        if (!status) {
+            return core::Result<std::vector<ModelMorphTarget>>::failure(status.error().code,
+                                                                        status.error().message);
+        }
+        status = import_attribute("NORMAL", target.normal_deltas);
+        if (!status) {
+            return core::Result<std::vector<ModelMorphTarget>>::failure(status.error().code,
+                                                                        status.error().message);
+        }
+        status = import_attribute("TANGENT", target.tangent_deltas);
+        if (!status) {
+            return core::Result<std::vector<ModelMorphTarget>>::failure(status.error().code,
+                                                                        status.error().message);
+        }
+    }
+    return core::Result<std::vector<ModelMorphTarget>>::success(std::move(targets));
+}
+
+void generate_tangents(std::vector<ModelVertex>& vertices,
+                       std::span<const std::uint32_t> global_indices, std::uint32_t first_vertex,
+                       bool has_uvs) {
+    std::vector<math::Vec3f> tangent_accumulator(vertices.size());
+    std::vector<math::Vec3f> bitangent_accumulator(vertices.size());
+    if (has_uvs) {
+        for (std::size_t triangle = 0; triangle + 2U < global_indices.size(); triangle += 3U) {
+            const auto i0 = global_indices[triangle] - first_vertex;
+            const auto i1 = global_indices[triangle + 1U] - first_vertex;
+            const auto i2 = global_indices[triangle + 2U] - first_vertex;
+            const auto edge1 = vertices[i1].position - vertices[i0].position;
+            const auto edge2 = vertices[i2].position - vertices[i0].position;
+            const math::Vec2f uv1{vertices[i1].uv0.x - vertices[i0].uv0.x,
+                                  vertices[i1].uv0.y - vertices[i0].uv0.y};
+            const math::Vec2f uv2{vertices[i2].uv0.x - vertices[i0].uv0.x,
+                                  vertices[i2].uv0.y - vertices[i0].uv0.y};
+            const auto determinant = uv1.x * uv2.y - uv1.y * uv2.x;
+            if (!std::isfinite(determinant) || std::abs(determinant) <= 1.0e-12F) {
+                continue;
+            }
+            const auto inverse = 1.0F / determinant;
+            const auto tangent = (edge1 * uv2.y - edge2 * uv1.y) * inverse;
+            const auto bitangent = (edge2 * uv1.x - edge1 * uv2.x) * inverse;
+            for (const auto vertex : {i0, i1, i2}) {
+                tangent_accumulator[vertex] = tangent_accumulator[vertex] + tangent;
+                bitangent_accumulator[vertex] = bitangent_accumulator[vertex] + bitangent;
+            }
+        }
+    }
+    for (std::size_t index = 0; index < vertices.size(); ++index) {
+        const auto normal = vertices[index].normal;
+        auto tangent =
+            tangent_accumulator[index] - normal * math::dot(normal, tangent_accumulator[index]);
+        auto tangent_length = std::sqrt(math::length_squared(tangent));
+        if (!std::isfinite(tangent_length) || tangent_length <= 1.0e-8F) {
+            const auto axis = std::abs(normal.y) < 0.999F ? math::Vec3f{0.0F, 1.0F, 0.0F}
+                                                          : math::Vec3f{1.0F, 0.0F, 0.0F};
+            tangent = math::cross(axis, normal);
+            tangent_length = std::sqrt(math::length_squared(tangent));
+        }
+        tangent = tangent * (1.0F / tangent_length);
+        const auto handedness =
+            math::dot(math::cross(normal, tangent), bitangent_accumulator[index]) < 0.0F ? -1.0F
+                                                                                         : 1.0F;
+        vertices[index].tangent = {tangent.x, tangent.y, tangent.z, handedness};
+    }
+}
+
 [[nodiscard]] core::Status import_geometry(const fastgltf::Asset& source, ModelAsset& target,
                                            const ModelAssetLimits& limits) {
     bool has_bounds = false;
+    std::size_t morph_delta_values = 0;
     for (std::size_t node_index = 0; node_index < source.nodes.size(); ++node_index) {
         const auto& node = source.nodes[node_index];
         if (!node.meshIndex.has_value()) {
@@ -494,6 +1119,21 @@ copy_optional_attribute(const fastgltf::Asset& source, const fastgltf::Primitive
             if (!status) {
                 return status;
             }
+            auto morph_targets = import_morph_targets(source, primitive, vertices.size(), limits,
+                                                      morph_delta_values);
+            if (!morph_targets) {
+                return core::Status::failure(morph_targets.error().code,
+                                             morph_targets.error().message);
+            }
+            auto& node_weights = target.nodes[node_index].morph_weights;
+            if (node_weights.empty() && !morph_targets.value().empty()) {
+                node_weights.resize(morph_targets.value().size(), 0.0F);
+            }
+            if (node_weights.size() != morph_targets.value().size()) {
+                return core::Status::failure(
+                    "gltf_import.morph_weight_mismatch",
+                    "glTF node or mesh morph weights must match every primitive target count");
+            }
             if (!primitive.indicesAccessor.has_value() ||
                 *primitive.indicesAccessor >= source.accessors.size()) {
                 return core::Status::failure("gltf_import.missing_indices",
@@ -529,6 +1169,15 @@ copy_optional_attribute(const fastgltf::Asset& source, const fastgltf::Primitive
                 return core::Status::failure("gltf_import.index_out_of_bounds",
                                              "glTF index references a missing primitive vertex");
             }
+            if (primitive.findAttribute("TANGENT") == primitive.attributes.end()) {
+                generate_tangents(
+                    vertices,
+                    std::span<const std::uint32_t>{target.indices}.subspan(first_index,
+                                                                           index_accessor.count),
+                    first_vertex,
+                    primitive.findAttribute("TEXCOORD_0") != primitive.attributes.end());
+                std::ranges::copy(vertices, target.vertices.begin() + first_vertex);
+            }
             const auto primitive_label =
                 mesh.name.empty() ? std::string{}
                                   : std::string(mesh.name) + "_" + std::to_string(primitive_index);
@@ -543,11 +1192,20 @@ copy_optional_attribute(const fastgltf::Asset& source, const fastgltf::Primitive
                                                  "glTF primitive references a missing material");
                 }
                 material_index = static_cast<std::uint32_t>(*primitive.materialIndex);
+            } else if (target.materials.size() > source.materials.size()) {
+                material_index = static_cast<std::uint32_t>(source.materials.size());
             }
-            target.primitives.push_back(
-                {std::move(name).value(), first_vertex, static_cast<std::uint32_t>(vertices.size()),
-                 first_index, static_cast<std::uint32_t>(index_accessor.count),
-                 static_cast<std::uint32_t>(node_index), skin_index, material_index});
+            target.primitives.push_back({
+                std::move(name).value(),
+                first_vertex,
+                static_cast<std::uint32_t>(vertices.size()),
+                first_index,
+                static_cast<std::uint32_t>(index_accessor.count),
+                static_cast<std::uint32_t>(node_index),
+                skin_index,
+                material_index,
+                std::move(morph_targets).value(),
+            });
             for (const auto& vertex : vertices) {
                 if (!has_bounds) {
                     target.bounds = {vertex.position, vertex.position};
@@ -556,6 +1214,22 @@ copy_optional_attribute(const fastgltf::Asset& source, const fastgltf::Primitive
                     target.bounds.min = math::component_min(target.bounds.min, vertex.position);
                     target.bounds.max = math::component_max(target.bounds.max, vertex.position);
                 }
+            }
+            const auto& imported_primitive = target.primitives.back();
+            for (std::size_t vertex_index = 0; vertex_index < vertices.size(); ++vertex_index) {
+                auto maximum_delta = math::Vec3f{};
+                for (const auto& morph_target : imported_primitive.morph_targets) {
+                    if (!morph_target.position_deltas.empty()) {
+                        const auto delta = morph_target.position_deltas[vertex_index];
+                        maximum_delta.x += std::abs(delta.x);
+                        maximum_delta.y += std::abs(delta.y);
+                        maximum_delta.z += std::abs(delta.z);
+                    }
+                }
+                target.bounds.min = math::component_min(
+                    target.bounds.min, vertices[vertex_index].position - maximum_delta);
+                target.bounds.max = math::component_max(
+                    target.bounds.max, vertices[vertex_index].position + maximum_delta);
             }
         }
     }
@@ -575,9 +1249,7 @@ copy_optional_attribute(const fastgltf::Asset& source, const fastgltf::Primitive
     case fastgltf::AnimationPath::Scale:
         return core::Result<ModelAnimationPath>::success(ModelAnimationPath::scale);
     case fastgltf::AnimationPath::Weights:
-        return core::Result<ModelAnimationPath>::failure(
-            "gltf_import.unsupported_animation_path",
-            "runtime skeletal clips do not currently support morph-weight animation");
+        return core::Result<ModelAnimationPath>::success(ModelAnimationPath::weights);
     }
     return core::Result<ModelAnimationPath>::failure("gltf_import.unknown_animation_path",
                                                      "glTF animation path is unknown");
@@ -643,13 +1315,19 @@ animation_interpolation(fastgltf::AnimationInterpolation source) {
             const auto interpolation = animation_interpolation(sampler.interpolation);
             const auto output_multiplier =
                 interpolation == ModelAnimationInterpolation::cubic_spline ? 3U : 1U;
+            const auto is_weights = path.value() == ModelAnimationPath::weights;
             const auto expected_type = path.value() == ModelAnimationPath::rotation
                                            ? fastgltf::AccessorType::Vec4
-                                           : fastgltf::AccessorType::Vec3;
+                                       : is_weights ? fastgltf::AccessorType::Scalar
+                                                    : fastgltf::AccessorType::Vec3;
+            const auto weight_count = target.nodes[*source_channel.nodeIndex].morph_weights.size();
+            const auto expected_output_count =
+                input.count * output_multiplier * (is_weights ? weight_count : 1U);
             if (input.type != fastgltf::AccessorType::Scalar ||
                 input.componentType != fastgltf::ComponentType::Float || input.count == 0 ||
                 input.count > limits.maximum_keyframes_per_channel ||
-                output.type != expected_type || output.count != input.count * output_multiplier) {
+                (is_weights && weight_count == 0) || output.type != expected_type ||
+                output.count != expected_output_count) {
                 return core::Status::failure(
                     "gltf_import.invalid_animation_accessor",
                     "glTF animation accessors have invalid type or keyframe counts");
@@ -659,11 +1337,17 @@ animation_interpolation(fastgltf::AnimationInterpolation source) {
             channel.path = path.value();
             channel.interpolation = interpolation;
             channel.times.resize(input.count);
-            channel.values.resize(output.count);
             fastgltf::iterateAccessorWithIndex<float>(
                 source, input,
                 [&](float value, std::size_t index) { channel.times[index] = value; });
-            if (channel.path == ModelAnimationPath::rotation) {
+            if (is_weights) {
+                channel.weight_count = static_cast<std::uint32_t>(weight_count);
+                channel.weight_values.resize(output.count);
+                fastgltf::iterateAccessorWithIndex<float>(
+                    source, output,
+                    [&](float value, std::size_t index) { channel.weight_values[index] = value; });
+            } else if (channel.path == ModelAnimationPath::rotation) {
+                channel.values.resize(output.count);
                 fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(
                     source, output, [&](const auto& value, std::size_t index) {
                         math::Vec4f result{value[0], value[1], value[2], value[3]};
@@ -684,6 +1368,7 @@ animation_interpolation(fastgltf::AnimationInterpolation source) {
                         channel.values[index] = result;
                     });
             } else {
+                channel.values.resize(output.count);
                 fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
                     source, output, [&](const auto& value, std::size_t index) {
                         channel.values[index] = {value[0], value[1], value[2], 0.0F};
@@ -819,13 +1504,25 @@ core::Result<ModelAsset> import_gltf_model(const std::filesystem::path& path,
         }
         declared_buffer_bytes += buffer.byteLength;
     }
+    auto status = decompress_meshopt_buffer_views(parsed.get(), limits);
+    if (!status) {
+        return importer_failure(status.error().code, status.error().message);
+    }
+    status = decompress_draco_primitives(parsed.get(), limits);
+    if (!status) {
+        return importer_failure(status.error().code, status.error().message);
+    }
 
     ModelAsset result;
-    auto status = import_nodes(parsed.get(), result, limits);
+    status = import_nodes(parsed.get(), result, limits);
     if (!status) {
         return importer_failure(status.error().code, status.error().message);
     }
     status = import_skins(parsed.get(), result, limits);
+    if (!status) {
+        return importer_failure(status.error().code, status.error().message);
+    }
+    status = import_samplers(parsed.get(), result, limits);
     if (!status) {
         return importer_failure(status.error().code, status.error().message);
     }

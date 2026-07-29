@@ -150,9 +150,9 @@ core::Status AnimatedModelPresentation::initialize(renderer::Renderer& renderer,
     primitives_ = std::move(uploaded);
     entities_.clear();
     stats_ = {};
-    has_skinned_primitives_ =
+    has_deformed_primitives_ =
         std::ranges::any_of(config_.model->primitives, [](const assets::ModelPrimitive& primitive) {
-            return primitive.skin != assets::no_model_index;
+            return primitive.skin != assets::no_model_index || !primitive.morph_targets.empty();
         });
     initialized_ = true;
     return core::Status::ok();
@@ -188,7 +188,7 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
         }
 
         std::optional<animation::SkeletalPose> pose;
-        if (has_skinned_primitives_) {
+        if (has_deformed_primitives_) {
             auto sampled = animation::sample_locomotion_animation(model, config_.locomotion_clips,
                                                                   source.current_locomotion,
                                                                   snapshot.simulation_tick);
@@ -260,6 +260,8 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
                 object.material = binding.material;
                 object.local_bounds = config_.animated_bounds;
                 object.skin_palette = palette_id;
+                object.morph_weights = pose.has_value() ? pose->morph_weights[primitive.node]
+                                                        : model.nodes[primitive.node].morph_weights;
                 object.layer = binding.layer;
                 object.flags = binding.flags;
                 if (source.teleported) {
@@ -314,6 +316,9 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
             object_update.object.material = binding.material;
             object_update.object.local_bounds = config_.animated_bounds;
             object_update.object.skin_palette = visual.palette;
+            object_update.object.morph_weights = pose.has_value()
+                                                     ? pose->morph_weights[primitive.node]
+                                                     : model.nodes[primitive.node].morph_weights;
             object_update.object.layer = binding.layer;
             object_update.object.flags = binding.flags;
             if (source.teleported) {
@@ -401,7 +406,7 @@ core::Status AnimatedModelPresentation::shutdown(renderer::Renderer& renderer) {
     primitives_.clear();
     config_ = {};
     stats_ = {};
-    has_skinned_primitives_ = false;
+    has_deformed_primitives_ = false;
     initialized_ = false;
     return core::Status::ok();
 }

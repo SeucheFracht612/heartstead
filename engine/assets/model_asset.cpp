@@ -14,6 +14,7 @@ namespace {
 
 constexpr std::string_view model_magic_v2 = "heartstead.model.v2";
 constexpr std::string_view model_magic_v3 = "heartstead.model.v3";
+constexpr std::string_view model_magic_v4 = "heartstead.model.v4";
 constexpr std::uint8_t model_material_double_sided = 1U << 0U;
 constexpr std::uint8_t model_material_unlit = 1U << 1U;
 constexpr std::uint8_t known_model_material_flags =
@@ -31,7 +32,11 @@ constexpr float weight_tolerance = 0.01F;
 }
 
 [[nodiscard]] bool valid_vertex(const ModelVertex& vertex) noexcept {
-    if (!vertex.position.is_finite() || !vertex.normal.is_finite() || !vertex.uv.is_finite()) {
+    if (!vertex.position.is_finite() || !vertex.normal.is_finite() || !vertex.tangent.is_finite() ||
+        !vertex.uv0.is_finite() || !vertex.uv1.is_finite() ||
+        !std::ranges::all_of(vertex.color, [](float value) {
+            return std::isfinite(value) && value >= 0.0F && value <= 1.0F;
+        })) {
         return false;
     }
     float weight_sum = 0.0F;
@@ -42,6 +47,45 @@ constexpr float weight_tolerance = 0.01F;
         weight_sum += weight;
     }
     return std::abs(weight_sum - 1.0F) <= weight_tolerance;
+}
+
+[[nodiscard]] bool valid_model_sampler(const ModelSampler& sampler) noexcept {
+    switch (sampler.mag_filter) {
+    case ModelTextureMagFilter::nearest:
+    case ModelTextureMagFilter::linear:
+        break;
+    default:
+        return false;
+    }
+    switch (sampler.min_filter) {
+    case ModelTextureMinFilter::nearest:
+    case ModelTextureMinFilter::linear:
+    case ModelTextureMinFilter::nearest_mipmap_nearest:
+    case ModelTextureMinFilter::linear_mipmap_nearest:
+    case ModelTextureMinFilter::nearest_mipmap_linear:
+    case ModelTextureMinFilter::linear_mipmap_linear:
+        break;
+    default:
+        return false;
+    }
+    const auto valid_wrap = [](ModelTextureWrap wrap) {
+        switch (wrap) {
+        case ModelTextureWrap::repeat:
+        case ModelTextureWrap::clamp_to_edge:
+        case ModelTextureWrap::mirrored_repeat:
+            return true;
+        }
+        return false;
+    };
+    return valid_wrap(sampler.wrap_s) && valid_wrap(sampler.wrap_t);
+}
+
+[[nodiscard]] bool valid_texture_binding(const ModelTextureBinding& binding,
+                                         const ModelAsset& asset) noexcept {
+    return (binding.image == no_model_index || binding.image < asset.images.size()) &&
+           (binding.sampler == no_model_index || binding.sampler < asset.samplers.size()) &&
+           binding.texcoord <= 1U && binding.offset.is_finite() && binding.scale.is_finite() &&
+           std::isfinite(binding.rotation);
 }
 
 [[nodiscard]] bool valid_model_image(const ModelImage& image, const ModelAssetLimits& limits,
@@ -63,21 +107,29 @@ constexpr float weight_tolerance = 0.01F;
 [[nodiscard]] bool valid_model_material(const ModelMaterial& material, const ModelAsset& asset,
                                         const ModelAssetLimits& limits) noexcept {
     if (!valid_name(material.name, limits) ||
-        (material.base_color_image != no_model_index &&
-         material.base_color_image >= asset.images.size()) ||
+        !valid_texture_binding(material.base_color_texture, asset) ||
+        !valid_texture_binding(material.metallic_roughness_texture, asset) ||
+        !valid_texture_binding(material.normal_texture, asset) ||
+        !valid_texture_binding(material.occlusion_texture, asset) ||
+        !valid_texture_binding(material.emissive_texture, asset) ||
         !std::isfinite(material.alpha_cutoff) || material.alpha_cutoff < 0.0F) {
         return false;
     }
     switch (material.alpha_mode) {
     case ModelAlphaMode::opaque:
     case ModelAlphaMode::mask:
+    case ModelAlphaMode::blend:
         break;
     default:
         return false;
     }
-    return std::ranges::all_of(material.base_color_factor, [](float value) {
+    const auto unit_value = [](float value) {
         return std::isfinite(value) && value >= 0.0F && value <= 1.0F;
-    });
+    };
+    return std::ranges::all_of(material.base_color_factor, unit_value) &&
+           std::ranges::all_of(material.emissive_factor, unit_value) &&
+           unit_value(material.metallic_factor) && unit_value(material.roughness_factor) &&
+           std::isfinite(material.normal_scale) && unit_value(material.occlusion_strength);
 }
 
 [[nodiscard]] bool node_hierarchy_is_acyclic(const ModelAsset& asset) {
@@ -119,6 +171,13 @@ constexpr float weight_tolerance = 0.01F;
     case ModelAnimationPath::rotation:
     case ModelAnimationPath::scale:
         break;
+    case ModelAnimationPath::weights:
+        if (channel.weight_count == 0 || channel.node >= asset.nodes.size() ||
+            asset.nodes[channel.node].morph_weights.size() != channel.weight_count ||
+            !channel.values.empty()) {
+            return false;
+        }
+        break;
     default:
         return false;
     }
@@ -136,7 +195,16 @@ constexpr float weight_tolerance = 0.01F;
     }
     const auto multiplier =
         channel.interpolation == ModelAnimationInterpolation::cubic_spline ? 3U : 1U;
-    if (channel.values.size() != channel.times.size() * multiplier) {
+    if (channel.path == ModelAnimationPath::weights) {
+        const auto expected =
+            channel.times.size() * multiplier * static_cast<std::size_t>(channel.weight_count);
+        if (channel.weight_values.size() != expected ||
+            !std::ranges::all_of(channel.weight_values,
+                                 [](float value) { return std::isfinite(value); })) {
+            return false;
+        }
+    } else if (channel.weight_count != 0 || !channel.weight_values.empty() ||
+               channel.values.size() != channel.times.size() * multiplier) {
         return false;
     }
     float previous = -1.0F;
@@ -356,11 +424,13 @@ bool ModelNodeTransform::is_valid() const noexcept {
 core::Status ModelAssetLimits::validate() const {
     if (maximum_source_bytes == 0 || maximum_vertices == 0 || maximum_indices == 0 ||
         maximum_nodes == 0 || maximum_primitives == 0 || maximum_skins == 0 ||
-        maximum_images == 0 || maximum_materials == 0 || maximum_image_dimension == 0 ||
-        maximum_decoded_image_bytes < 4 || maximum_joints_per_skin == 0 ||
-        maximum_joints_per_skin > UINT16_MAX || maximum_animations == 0 ||
-        maximum_channels_per_animation == 0 || maximum_keyframes_per_channel == 0 ||
-        maximum_name_bytes == 0 || maximum_name_bytes > UINT32_MAX) {
+        maximum_images == 0 || maximum_samplers == 0 || maximum_materials == 0 ||
+        maximum_image_dimension == 0 || maximum_decoded_image_bytes < 4 ||
+        maximum_joints_per_skin == 0 || maximum_joints_per_skin > UINT16_MAX ||
+        maximum_animations == 0 || maximum_channels_per_animation == 0 ||
+        maximum_keyframes_per_channel == 0 || maximum_morph_targets_per_primitive == 0 ||
+        maximum_morph_delta_values == 0 || maximum_name_bytes == 0 ||
+        maximum_name_bytes > UINT32_MAX) {
         return core::Status::failure("model_asset.invalid_limits",
                                      "model asset limits must be finite and non-zero");
     }
@@ -378,6 +448,7 @@ core::Status validate_model_asset(const ModelAsset& asset, const ModelAssetLimit
         asset.nodes.size() > limits.maximum_nodes ||
         asset.primitives.size() > limits.maximum_primitives ||
         asset.images.size() > limits.maximum_images ||
+        asset.samplers.size() > limits.maximum_samplers ||
         asset.materials.size() > limits.maximum_materials ||
         asset.skins.size() > limits.maximum_skins ||
         asset.animations.size() > limits.maximum_animations || !asset.bounds.is_valid()) {
@@ -405,6 +476,10 @@ core::Status validate_model_asset(const ModelAsset& asset, const ModelAssetLimit
                 "model asset image name, dimensions, or RGBA8 payload is invalid");
         }
     }
+    if (!std::ranges::all_of(asset.samplers, valid_model_sampler)) {
+        return core::Status::failure("model_asset.invalid_sampler",
+                                     "model asset sampler state is invalid");
+    }
     if (!std::ranges::all_of(asset.materials, [&](const ModelMaterial& material) {
             return valid_model_material(material, asset, limits);
         })) {
@@ -413,11 +488,14 @@ core::Status validate_model_asset(const ModelAsset& asset, const ModelAssetLimit
             "model asset material parameters or base-color image binding are invalid");
     }
     for (const auto& node : asset.nodes) {
-        if (!valid_name(node.name, limits) || !node.bind_transform.is_valid()) {
+        if (!valid_name(node.name, limits) || !node.bind_transform.is_valid() ||
+            !std::ranges::all_of(node.morph_weights,
+                                 [](float value) { return std::isfinite(value); })) {
             return core::Status::failure("model_asset.invalid_node",
                                          "model asset node name or bind transform is invalid");
         }
     }
+    std::size_t morph_delta_values = 0;
     for (const auto& primitive : asset.primitives) {
         if (!valid_name(primitive.name, limits) || primitive.node >= asset.nodes.size() ||
             (primitive.skin != no_model_index && primitive.skin >= asset.skins.size()) ||
@@ -431,6 +509,33 @@ core::Status validate_model_asset(const ModelAsset& asset, const ModelAssetLimit
             primitive.index_count % 3U != 0) {
             return core::Status::failure("model_asset.invalid_primitive",
                                          "model asset primitive range or binding is invalid");
+        }
+        if (primitive.morph_targets.size() > limits.maximum_morph_targets_per_primitive ||
+            asset.nodes[primitive.node].morph_weights.size() != primitive.morph_targets.size()) {
+            return core::Status::failure(
+                "model_asset.invalid_morph_binding",
+                "model primitive morph targets must match its node's default weights");
+        }
+        for (const auto& target : primitive.morph_targets) {
+            const auto valid_deltas = [&](const std::vector<math::Vec3f>& deltas) {
+                return (deltas.empty() || deltas.size() == primitive.vertex_count) &&
+                       std::ranges::all_of(deltas,
+                                           [](math::Vec3f value) { return value.is_finite(); });
+            };
+            if (!valid_deltas(target.position_deltas) || !valid_deltas(target.normal_deltas) ||
+                !valid_deltas(target.tangent_deltas)) {
+                return core::Status::failure(
+                    "model_asset.invalid_morph_target",
+                    "model morph target deltas must be finite and match the primitive");
+            }
+            const auto additional = target.position_deltas.size() + target.normal_deltas.size() +
+                                    target.tangent_deltas.size();
+            if (additional > limits.maximum_morph_delta_values - morph_delta_values) {
+                return core::Status::failure(
+                    "model_asset.morph_limit",
+                    "model morph target data exceeds its configured limit");
+            }
+            morph_delta_values += additional;
         }
         if (primitive.skin != no_model_index) {
             const auto& skin = asset.skins[primitive.skin];
@@ -492,7 +597,7 @@ core::Result<std::vector<std::uint8_t>> encode_model_asset(const ModelAsset& ass
                                                                 status.error().message);
     }
     ByteWriter writer;
-    writer.string(model_magic_v3);
+    writer.string(model_magic_v4);
     writer.u32(static_cast<std::uint32_t>(asset.vertices.size()));
     writer.u32(static_cast<std::uint32_t>(asset.indices.size()));
     writer.u32(static_cast<std::uint32_t>(asset.nodes.size()));
@@ -507,7 +612,7 @@ core::Result<std::vector<std::uint8_t>> encode_model_asset(const ModelAsset& ass
     for (const auto& vertex : asset.vertices) {
         write_vec3(writer, vertex.position);
         write_vec3(writer, vertex.normal);
-        write_vec2(writer, vertex.uv);
+        write_vec2(writer, vertex.uv0);
         for (const auto joint : vertex.joints) {
             writer.u16(joint);
         }
@@ -548,7 +653,7 @@ core::Result<std::vector<std::uint8_t>> encode_model_asset(const ModelAsset& ass
         for (const auto value : material.base_color_factor) {
             writer.f32(value);
         }
-        writer.u32(material.base_color_image);
+        writer.u32(material.base_color_texture.image);
         writer.u8(static_cast<std::uint8_t>(material.alpha_mode));
         writer.f32(material.alpha_cutoff);
         std::uint8_t flags = 0;
@@ -591,7 +696,93 @@ core::Result<std::vector<std::uint8_t>> encode_model_asset(const ModelAsset& ass
             }
         }
     }
-    return core::Result<std::vector<std::uint8_t>>::success(writer.take());
+
+    // V4 appends the new vertex, material, sampler, and morph state after the
+    // V2/V3-compatible core. This keeps legacy decoding simple and makes the
+    // version boundary explicit without duplicating the mature core codec.
+    for (const auto& vertex : asset.vertices) {
+        write_vec4(writer, vertex.tangent);
+        write_vec2(writer, vertex.uv1);
+        for (const auto component : vertex.color) {
+            writer.f32(component);
+        }
+    }
+    writer.u32(static_cast<std::uint32_t>(asset.samplers.size()));
+    for (const auto& sampler : asset.samplers) {
+        writer.u8(static_cast<std::uint8_t>(sampler.mag_filter));
+        writer.u8(static_cast<std::uint8_t>(sampler.min_filter));
+        writer.u8(static_cast<std::uint8_t>(sampler.wrap_s));
+        writer.u8(static_cast<std::uint8_t>(sampler.wrap_t));
+    }
+    const auto write_texture_binding = [&](const ModelTextureBinding& binding) {
+        writer.u32(binding.image);
+        writer.u32(binding.sampler);
+        writer.u8(binding.texcoord);
+        write_vec2(writer, binding.offset);
+        write_vec2(writer, binding.scale);
+        writer.f32(binding.rotation);
+    };
+    for (const auto& material : asset.materials) {
+        for (const auto component : material.emissive_factor) {
+            writer.f32(component);
+        }
+        writer.f32(material.metallic_factor);
+        writer.f32(material.roughness_factor);
+        writer.f32(material.normal_scale);
+        writer.f32(material.occlusion_strength);
+        write_texture_binding(material.base_color_texture);
+        write_texture_binding(material.metallic_roughness_texture);
+        write_texture_binding(material.normal_texture);
+        write_texture_binding(material.occlusion_texture);
+        write_texture_binding(material.emissive_texture);
+    }
+    for (const auto& node : asset.nodes) {
+        writer.u32(static_cast<std::uint32_t>(node.morph_weights.size()));
+        for (const auto weight : node.morph_weights) {
+            writer.f32(weight);
+        }
+    }
+    for (const auto& primitive : asset.primitives) {
+        writer.u32(static_cast<std::uint32_t>(primitive.morph_targets.size()));
+        for (const auto& target : primitive.morph_targets) {
+            std::uint8_t attributes = 0;
+            if (!target.position_deltas.empty()) {
+                attributes |= 1U << 0U;
+            }
+            if (!target.normal_deltas.empty()) {
+                attributes |= 1U << 1U;
+            }
+            if (!target.tangent_deltas.empty()) {
+                attributes |= 1U << 2U;
+            }
+            writer.u8(attributes);
+            for (const auto value : target.position_deltas) {
+                write_vec3(writer, value);
+            }
+            for (const auto value : target.normal_deltas) {
+                write_vec3(writer, value);
+            }
+            for (const auto value : target.tangent_deltas) {
+                write_vec3(writer, value);
+            }
+        }
+    }
+    for (const auto& clip : asset.animations) {
+        for (const auto& channel : clip.channels) {
+            writer.u32(channel.weight_count);
+            writer.u32(static_cast<std::uint32_t>(channel.weight_values.size()));
+            for (const auto value : channel.weight_values) {
+                writer.f32(value);
+            }
+        }
+    }
+    auto encoded = writer.take();
+    if (encoded.size() > limits.maximum_source_bytes) {
+        return core::Result<std::vector<std::uint8_t>>::failure(
+            "model_asset.encoded_size_limit",
+            "encoded model asset exceeds its configured payload limit");
+    }
+    return core::Result<std::vector<std::uint8_t>>::success(std::move(encoded));
 }
 
 core::Result<ModelAsset> decode_model_asset(std::span<const std::uint8_t> bytes,
@@ -606,11 +797,12 @@ core::Result<ModelAsset> decode_model_asset(std::span<const std::uint8_t> bytes,
                                                  "model asset payload size is invalid");
     }
     ByteReader reader(bytes);
-    auto magic = reader.string(model_magic_v3.size());
+    auto magic = reader.string(model_magic_v4.size());
     if (!magic) {
         return decode_failure<ModelAsset>(magic.error());
     }
-    const auto model_version = magic.value() == model_magic_v3   ? 3U
+    const auto model_version = magic.value() == model_magic_v4   ? 4U
+                               : magic.value() == model_magic_v3 ? 3U
                                : magic.value() == model_magic_v2 ? 2U
                                                                  : 0U;
     if (model_version == 0U) {
@@ -676,7 +868,7 @@ core::Result<ModelAsset> decode_model_asset(std::span<const std::uint8_t> bytes,
         }
         vertex.position = position.value();
         vertex.normal = normal.value();
-        vertex.uv = uv.value();
+        vertex.uv0 = uv.value();
         for (auto& joint : vertex.joints) {
             auto value = reader.u16();
             if (!value) {
@@ -741,9 +933,15 @@ core::Result<ModelAsset> decode_model_asset(std::span<const std::uint8_t> bytes,
                                                 : material.error();
             return decode_failure<ModelAsset>(error);
         }
-        primitive = {
-            std::move(name).value(), first_vertex.value(), vertices.value(), first_index.value(),
-            indices.value(),         node.value(),         skin.value(),     material.value()};
+        primitive = {std::move(name).value(),
+                     first_vertex.value(),
+                     vertices.value(),
+                     first_index.value(),
+                     indices.value(),
+                     node.value(),
+                     skin.value(),
+                     material.value(),
+                     {}};
     }
     std::size_t total_image_bytes = 0;
     for (auto& image : asset.images) {
@@ -805,10 +1003,9 @@ core::Result<ModelAsset> decode_model_asset(std::span<const std::uint8_t> bytes,
             model_version >= 3U ? known_model_material_flags : model_material_double_sided;
         if ((flags.value() & static_cast<std::uint8_t>(~allowed_flags)) != 0U) {
             return core::Result<ModelAsset>::failure(
-                "model_asset.invalid_boolean",
-                "model asset material contains unsupported flags");
+                "model_asset.invalid_boolean", "model asset material contains unsupported flags");
         }
-        material.base_color_image = image.value();
+        material.base_color_texture.image = image.value();
         material.alpha_mode = static_cast<ModelAlphaMode>(alpha_mode.value());
         material.alpha_cutoff = alpha_cutoff.value();
         material.double_sided = (flags.value() & model_material_double_sided) != 0U;
@@ -908,6 +1105,219 @@ core::Result<ModelAsset> decode_model_asset(std::span<const std::uint8_t> bytes,
             }
         }
     }
+    if (model_version >= 4U) {
+        for (auto& vertex : asset.vertices) {
+            auto tangent = read_vec4(reader);
+            auto uv1 = read_vec2(reader);
+            if (!tangent || !uv1) {
+                if (!tangent) {
+                    return decode_failure<ModelAsset>(tangent.error());
+                }
+                return decode_failure<ModelAsset>(uv1.error());
+            }
+            vertex.tangent = tangent.value();
+            vertex.uv1 = uv1.value();
+            for (auto& component : vertex.color) {
+                auto value = reader.f32();
+                if (!value) {
+                    return decode_failure<ModelAsset>(value.error());
+                }
+                component = value.value();
+            }
+        }
+
+        auto sampler_count = reader.u32();
+        if (!sampler_count) {
+            return decode_failure<ModelAsset>(sampler_count.error());
+        }
+        if (sampler_count.value() > limits.maximum_samplers) {
+            return core::Result<ModelAsset>::failure(
+                "model_asset.sampler_limit",
+                "model asset sampler count exceeds its configured limit");
+        }
+        asset.samplers.resize(sampler_count.value());
+        for (auto& sampler : asset.samplers) {
+            auto mag = reader.u8();
+            auto min = reader.u8();
+            auto wrap_s = reader.u8();
+            auto wrap_t = reader.u8();
+            if (!mag || !min || !wrap_s || !wrap_t) {
+                const auto& error = !mag      ? mag.error()
+                                    : !min    ? min.error()
+                                    : !wrap_s ? wrap_s.error()
+                                              : wrap_t.error();
+                return decode_failure<ModelAsset>(error);
+            }
+            sampler.mag_filter = static_cast<ModelTextureMagFilter>(mag.value());
+            sampler.min_filter = static_cast<ModelTextureMinFilter>(min.value());
+            sampler.wrap_s = static_cast<ModelTextureWrap>(wrap_s.value());
+            sampler.wrap_t = static_cast<ModelTextureWrap>(wrap_t.value());
+        }
+
+        const auto read_texture_binding = [&](ModelTextureBinding& binding) -> core::Status {
+            auto image = reader.u32();
+            auto sampler = reader.u32();
+            auto texcoord = reader.u8();
+            auto offset = read_vec2(reader);
+            auto scale = read_vec2(reader);
+            auto rotation = reader.f32();
+            if (!image || !sampler || !texcoord || !offset || !scale || !rotation) {
+                const auto& error = !image      ? image.error()
+                                    : !sampler  ? sampler.error()
+                                    : !texcoord ? texcoord.error()
+                                    : !offset   ? offset.error()
+                                    : !scale    ? scale.error()
+                                                : rotation.error();
+                return core::Status::failure(error.code, error.message);
+            }
+            binding.image = image.value();
+            binding.sampler = sampler.value();
+            binding.texcoord = texcoord.value();
+            binding.offset = offset.value();
+            binding.scale = scale.value();
+            binding.rotation = rotation.value();
+            return core::Status::ok();
+        };
+        for (auto& material : asset.materials) {
+            for (auto& component : material.emissive_factor) {
+                auto value = reader.f32();
+                if (!value) {
+                    return decode_failure<ModelAsset>(value.error());
+                }
+                component = value.value();
+            }
+            auto metallic = reader.f32();
+            auto roughness = reader.f32();
+            auto normal_scale = reader.f32();
+            auto occlusion_strength = reader.f32();
+            if (!metallic || !roughness || !normal_scale || !occlusion_strength) {
+                const auto& error = !metallic       ? metallic.error()
+                                    : !roughness    ? roughness.error()
+                                    : !normal_scale ? normal_scale.error()
+                                                    : occlusion_strength.error();
+                return decode_failure<ModelAsset>(error);
+            }
+            material.metallic_factor = metallic.value();
+            material.roughness_factor = roughness.value();
+            material.normal_scale = normal_scale.value();
+            material.occlusion_strength = occlusion_strength.value();
+            for (auto* binding : {&material.base_color_texture,
+                                  &material.metallic_roughness_texture, &material.normal_texture,
+                                  &material.occlusion_texture, &material.emissive_texture}) {
+                auto binding_status = read_texture_binding(*binding);
+                if (!binding_status) {
+                    return core::Result<ModelAsset>::failure(binding_status.error().code,
+                                                             binding_status.error().message);
+                }
+            }
+        }
+
+        for (auto& node : asset.nodes) {
+            auto weight_count = reader.u32();
+            if (!weight_count) {
+                return decode_failure<ModelAsset>(weight_count.error());
+            }
+            if (weight_count.value() > limits.maximum_morph_targets_per_primitive) {
+                return core::Result<ModelAsset>::failure(
+                    "model_asset.morph_limit",
+                    "model node morph weight count exceeds its configured limit");
+            }
+            node.morph_weights.resize(weight_count.value());
+            for (auto& weight : node.morph_weights) {
+                auto value = reader.f32();
+                if (!value) {
+                    return decode_failure<ModelAsset>(value.error());
+                }
+                weight = value.value();
+            }
+        }
+
+        std::size_t morph_delta_values = 0;
+        for (auto& primitive : asset.primitives) {
+            auto target_count = reader.u32();
+            if (!target_count) {
+                return decode_failure<ModelAsset>(target_count.error());
+            }
+            if (target_count.value() > limits.maximum_morph_targets_per_primitive) {
+                return core::Result<ModelAsset>::failure(
+                    "model_asset.morph_limit",
+                    "model primitive morph target count exceeds its configured limit");
+            }
+            primitive.morph_targets.resize(target_count.value());
+            for (auto& target : primitive.morph_targets) {
+                auto attributes = reader.u8();
+                if (!attributes) {
+                    return decode_failure<ModelAsset>(attributes.error());
+                }
+                if ((attributes.value() & static_cast<std::uint8_t>(~0x07U)) != 0U) {
+                    return core::Result<ModelAsset>::failure(
+                        "model_asset.invalid_morph_target",
+                        "model morph target contains unsupported attribute flags");
+                }
+                const auto read_deltas = [&](std::vector<math::Vec3f>& deltas,
+                                             std::uint8_t bit) -> core::Status {
+                    if ((attributes.value() & bit) == 0U) {
+                        return core::Status::ok();
+                    }
+                    if (primitive.vertex_count >
+                        limits.maximum_morph_delta_values - morph_delta_values) {
+                        return core::Status::failure(
+                            "model_asset.morph_limit",
+                            "model morph target data exceeds its configured limit");
+                    }
+                    deltas.resize(primitive.vertex_count);
+                    morph_delta_values += primitive.vertex_count;
+                    for (auto& delta : deltas) {
+                        auto value = read_vec3(reader);
+                        if (!value) {
+                            return core::Status::failure(value.error().code, value.error().message);
+                        }
+                        delta = value.value();
+                    }
+                    return core::Status::ok();
+                };
+                for (const auto& [deltas, bit] :
+                     {std::pair{&target.position_deltas, static_cast<std::uint8_t>(1U << 0U)},
+                      std::pair{&target.normal_deltas, static_cast<std::uint8_t>(1U << 1U)},
+                      std::pair{&target.tangent_deltas, static_cast<std::uint8_t>(1U << 2U)}}) {
+                    auto delta_status = read_deltas(*deltas, bit);
+                    if (!delta_status) {
+                        return core::Result<ModelAsset>::failure(delta_status.error().code,
+                                                                 delta_status.error().message);
+                    }
+                }
+            }
+        }
+
+        for (auto& clip : asset.animations) {
+            for (auto& channel : clip.channels) {
+                auto weight_count = reader.u32();
+                auto value_count = reader.u32();
+                if (!weight_count || !value_count) {
+                    return decode_failure<ModelAsset>(
+                        (!weight_count ? weight_count : value_count).error());
+                }
+                const auto maximum_values =
+                    static_cast<std::uint64_t>(limits.maximum_keyframes_per_channel) *
+                    limits.maximum_morph_targets_per_primitive * 3U;
+                if (weight_count.value() > limits.maximum_morph_targets_per_primitive ||
+                    value_count.value() > maximum_values) {
+                    return core::Result<ModelAsset>::failure(
+                        "model_asset.morph_limit",
+                        "model morph animation data exceeds its configured limit");
+                }
+                channel.weight_count = weight_count.value();
+                channel.weight_values.resize(value_count.value());
+                for (auto& value : channel.weight_values) {
+                    auto decoded = reader.f32();
+                    if (!decoded) {
+                        return decode_failure<ModelAsset>(decoded.error());
+                    }
+                    value = decoded.value();
+                }
+            }
+        }
+    }
     if (!reader.at_end()) {
         return core::Result<ModelAsset>::failure("model_asset.trailing_data",
                                                  "model asset payload has trailing data");
@@ -927,6 +1337,8 @@ std::string_view model_animation_path_name(ModelAnimationPath path) noexcept {
         return "rotation";
     case ModelAnimationPath::scale:
         return "scale";
+    case ModelAnimationPath::weights:
+        return "weights";
     }
     return "unknown";
 }
@@ -950,6 +1362,8 @@ std::string_view model_alpha_mode_name(ModelAlphaMode mode) noexcept {
         return "opaque";
     case ModelAlphaMode::mask:
         return "mask";
+    case ModelAlphaMode::blend:
+        return "blend";
     }
     return "unknown";
 }

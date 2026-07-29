@@ -148,6 +148,12 @@ heartstead_add_foundation_test(heartstead_model_asset_tests model_asset_tests.cp
 target_compile_definitions(
   heartstead_model_asset_tests PRIVATE HEARTSTEAD_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
 )
+heartstead_add_foundation_test(heartstead_model_compression_tests
+                               model_compression_tests.cpp)
+target_link_libraries(
+  heartstead_model_compression_tests
+  PRIVATE draco::draco KTX::ktx meshoptimizer::meshoptimizer
+)
 heartstead_add_foundation_test(heartstead_skeletal_animation_tests skeletal_animation_tests.cpp)
 heartstead_add_foundation_test(heartstead_voxel_light_tests voxel_light_tests.cpp)
 heartstead_add_foundation_test(heartstead_voxel_fluid_tests voxel_fluid_tests.cpp)

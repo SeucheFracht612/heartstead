@@ -1,7 +1,7 @@
 # Animation
 
 Heartstead cooks glTF 2.0 geometry, materials, skins, and animation clips into the bounded
-`heartstead.model.v3` runtime asset described in [assets.md](assets.md). Runtime animation never
+`heartstead.model.v4` runtime asset described in [assets.md](assets.md). Runtime animation never
 parses JSON and never receives source-container paths.
 
 The animation boundary follows the glTF interpolation rules:
@@ -11,6 +11,8 @@ The animation boundary follows the glTF interpolation rules:
 - LINEAR rotation channels use shortest-path quaternion spherical interpolation.
 - CUBICSPLINE channels use cubic Hermite interpolation with tangents scaled by the keyframe time
   interval. Quaternion results are normalized after component-wise Hermite evaluation.
+- Morph-weight channels use the same STEP, LINEAR, and CUBICSPLINE rules and are evaluated before
+  skinning on the GPU.
 - Missing channels retain the model bind pose.
 
 `SkeletalPose` stores one local TRS value per model node. Pose blending interpolates translation
@@ -34,9 +36,14 @@ blend locally.
 
 `skin_model_vertex` is the CPU reference implementation for position and normal linear-blend
 skinning. The renderer uses GPU skinning through the existing static-instance path: its unified
-vertex contract adds four 16-bit joint indices and four floating-point weights, while each
+vertex contract adds four 16-bit joint indices and four normalized 16-bit weights, while each
 `GpuObjectInstance` identifies a range in a buffered skin-matrix storage ring. Static instances
 take the zero-palette branch, so static and animated objects remain batch-compatible.
+
+The cooker accepts both glTF influence sets and retains the strongest four normalized influences.
+Morph deltas remain in a device-local storage arena and visible instances upload only their current
+bounded weight vectors. The vertex shader applies weighted position, normal, and tangent deltas
+before linear-blend skinning.
 
 The retained `RenderScene` owns generation-safe skin palettes. A frame uploads each visible palette
 once even when several instances share it, then references the absolute buffered-ring offset from

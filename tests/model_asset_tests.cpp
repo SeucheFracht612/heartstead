@@ -21,6 +21,10 @@ void append_u16(std::vector<std::uint8_t>& bytes, std::uint16_t value) {
     bytes.push_back(static_cast<std::uint8_t>((value >> 8U) & 0xFFU));
 }
 
+void append_i16(std::vector<std::uint8_t>& bytes, std::int16_t value) {
+    append_u16(bytes, std::bit_cast<std::uint16_t>(value));
+}
+
 void append_f32(std::vector<std::uint8_t>& bytes, float value) {
     const auto bits = std::bit_cast<std::uint32_t>(value);
     for (std::uint32_t shift = 0; shift < 32; shift += 8) {
@@ -86,7 +90,35 @@ std::vector<std::uint8_t> animated_triangle_buffer() {
     append_f32(bytes, 1.0F);
     append_vec4(bytes, 0.0F, 0.0F, 0.0F, 1.0F);
     append_vec4(bytes, 0.0F, 0.0F, 0.70710677F, 0.70710677F);
-    assert(bytes.size() == 344);
+    append_vec2(bytes, 0.1F, 0.2F);
+    append_vec2(bytes, 0.8F, 0.2F);
+    append_vec2(bytes, 0.4F, 0.9F);
+    for (const auto color : {std::array<std::uint8_t, 4>{255, 128, 64, 255},
+                             std::array<std::uint8_t, 4>{64, 255, 128, 192},
+                             std::array<std::uint8_t, 4>{128, 64, 255, 128}}) {
+        bytes.insert(bytes.end(), color.begin(), color.end());
+    }
+    for (int index = 0; index < 3; ++index) {
+        append_i16(bytes, 32'767);
+        append_i16(bytes, 0);
+        append_i16(bytes, 0);
+        append_i16(bytes, 32'767);
+    }
+    for (int index = 0; index < 3; ++index) {
+        append_u16(bytes, 1);
+        append_u16(bytes, 0);
+        append_u16(bytes, 0);
+        append_u16(bytes, 0);
+    }
+    for (int index = 0; index < 3; ++index) {
+        append_vec4(bytes, 0.75F, 0.0F, 0.0F, 0.0F);
+    }
+    append_vec3(bytes, 0.0F, 0.25F, 0.0F);
+    append_vec3(bytes, 0.0F, 0.25F, 0.0F);
+    append_vec3(bytes, 0.0F, 0.25F, 0.0F);
+    append_f32(bytes, 0.0F);
+    append_f32(bytes, 1.0F);
+    assert(bytes.size() == 520);
     return bytes;
 }
 
@@ -103,8 +135,8 @@ std::vector<std::uint8_t> one_pixel_png() {
 std::string animated_triangle_gltf() {
     return R"({
   "asset":{"version":"2.0"},
-  "extensionsUsed":["KHR_materials_unlit"],
-  "extensionsRequired":["KHR_materials_unlit"],
+  "extensionsUsed":["KHR_materials_unlit","KHR_texture_transform","KHR_mesh_quantization"],
+  "extensionsRequired":["KHR_materials_unlit","KHR_texture_transform","KHR_mesh_quantization"],
   "scene":0,
   "scenes":[{"nodes":[0,1]}],
   "nodes":[
@@ -112,29 +144,48 @@ std::string animated_triangle_gltf() {
     {"name":"root","children":[2]},
     {"name":"hand","translation":[0,1,0]}
   ],
-  "meshes":[{"name":"player","primitives":[{
-    "attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2,"JOINTS_0":3,"WEIGHTS_0":4},
+  "meshes":[{"name":"player","weights":[0],"primitives":[{
+    "attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2,"TEXCOORD_1":9,
+                  "COLOR_0":10,"TANGENT":11,
+                  "JOINTS_0":3,"WEIGHTS_0":4,"JOINTS_1":12,"WEIGHTS_1":13},
     "indices":5,
-    "material":0
+    "material":0,
+    "targets":[{"POSITION":14}]
   }]}],
   "materials":[{
     "name":"storybook_cloth",
     "pbrMetallicRoughness":{
       "baseColorFactor":[0.8,0.6,0.4,1.0],
-      "baseColorTexture":{"index":0}
+      "baseColorTexture":{"index":0,"texCoord":1,"extensions":{"KHR_texture_transform":{
+        "offset":[0.25,0.5],"scale":[2,3],"rotation":0.5,"texCoord":1
+      }}},
+      "metallicFactor":0.35,
+      "roughnessFactor":0.65,
+      "metallicRoughnessTexture":{"index":0}
     },
+    "normalTexture":{"index":0,"scale":0.75},
+    "occlusionTexture":{"index":0,"strength":0.6},
+    "emissiveTexture":{"index":0},
+    "emissiveFactor":[0.1,0.2,0.3],
     "alphaMode":"MASK",
     "alphaCutoff":0.25,
     "doubleSided":true,
     "extensions":{"KHR_materials_unlit":{}}
+  },{
+    "name":"glass",
+    "pbrMetallicRoughness":{"baseColorFactor":[0.2,0.4,0.8,0.5]},
+    "alphaMode":"BLEND"
   }],
-  "textures":[{"source":0}],
+  "textures":[{"source":0,"sampler":0}],
+  "samplers":[{"magFilter":9728,"minFilter":9987,"wrapS":33071,"wrapT":33648}],
   "images":[{"name":"storybook_color","uri":"player.png"}],
   "skins":[{"name":"rig","inverseBindMatrices":6,"skeleton":1,"joints":[1,2]}],
   "animations":[{"name":"wave","samplers":[{
     "input":7,"output":8,"interpolation":"LINEAR"
-  }],"channels":[{"sampler":0,"target":{"node":2,"path":"rotation"}}]}],
-  "buffers":[{"uri":"player.bin","byteLength":344}],
+  }],"channels":[{"sampler":0,"target":{"node":2,"path":"rotation"}}]},
+  {"name":"morph","samplers":[{"input":7,"output":15,"interpolation":"LINEAR"}],
+   "channels":[{"sampler":0,"target":{"node":0,"path":"weights"}}]}],
+  "buffers":[{"uri":"player.bin","byteLength":520}],
   "bufferViews":[
     {"buffer":0,"byteOffset":0,"byteLength":36},
     {"buffer":0,"byteOffset":36,"byteLength":36},
@@ -144,7 +195,14 @@ std::string animated_triangle_gltf() {
     {"buffer":0,"byteOffset":168,"byteLength":6},
     {"buffer":0,"byteOffset":176,"byteLength":128},
     {"buffer":0,"byteOffset":304,"byteLength":8},
-    {"buffer":0,"byteOffset":312,"byteLength":32}
+    {"buffer":0,"byteOffset":312,"byteLength":32},
+    {"buffer":0,"byteOffset":344,"byteLength":24},
+    {"buffer":0,"byteOffset":368,"byteLength":12},
+    {"buffer":0,"byteOffset":380,"byteLength":24},
+    {"buffer":0,"byteOffset":404,"byteLength":24},
+    {"buffer":0,"byteOffset":428,"byteLength":48},
+    {"buffer":0,"byteOffset":476,"byteLength":36},
+    {"buffer":0,"byteOffset":512,"byteLength":8}
   ],
   "accessors":[
     {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3",
@@ -156,7 +214,15 @@ std::string animated_triangle_gltf() {
     {"bufferView":5,"componentType":5123,"count":3,"type":"SCALAR"},
     {"bufferView":6,"componentType":5126,"count":2,"type":"MAT4"},
     {"bufferView":7,"componentType":5126,"count":2,"type":"SCALAR","min":[0],"max":[1]},
-    {"bufferView":8,"componentType":5126,"count":2,"type":"VEC4"}
+    {"bufferView":8,"componentType":5126,"count":2,"type":"VEC4"},
+    {"bufferView":9,"componentType":5126,"count":3,"type":"VEC2"},
+    {"bufferView":10,"componentType":5121,"normalized":true,"count":3,"type":"VEC4"},
+    {"bufferView":11,"componentType":5122,"normalized":true,"count":3,"type":"VEC4"},
+    {"bufferView":12,"componentType":5123,"count":3,"type":"VEC4"},
+    {"bufferView":13,"componentType":5126,"count":3,"type":"VEC4"},
+    {"bufferView":14,"componentType":5126,"count":3,"type":"VEC3",
+     "min":[0,0.25,0],"max":[0,0.25,0]},
+    {"bufferView":15,"componentType":5126,"count":2,"type":"SCALAR"}
   ]
 })";
 }
@@ -193,6 +259,11 @@ void test_typed_gltf_import_and_codec() {
     auto imported = heartstead::assets::import_gltf_model(model_path);
     assert(imported);
     assert(imported.value().vertices.size() == 3);
+    assert(imported.value().vertices[0].uv1.x == 0.1F);
+    assert(imported.value().vertices[0].color[0] == 1.0F);
+    assert(imported.value().vertices[0].color[1] > 0.49F);
+    assert(imported.value().vertices[0].tangent.x > 0.99F);
+    assert(imported.value().vertices[0].joints[0] == 1);
     assert(imported.value().indices == std::vector<std::uint32_t>({0, 1, 2}));
     assert(imported.value().nodes.size() == 3);
     assert(imported.value().nodes[2].parent == 1);
@@ -201,21 +272,47 @@ void test_typed_gltf_import_and_codec() {
     assert(imported.value().primitives.size() == 1);
     assert(imported.value().primitives[0].skin == 0);
     assert(imported.value().primitives[0].material == 0);
+    assert(imported.value().primitives[0].morph_targets.size() == 1);
+    assert(imported.value().primitives[0].morph_targets[0].position_deltas.size() == 3);
     assert(imported.value().images.size() == 1);
     assert(imported.value().images[0].width == 1);
     assert(imported.value().images[0].height == 1);
     assert(imported.value().images[0].rgba8.size() == 4);
-    assert(imported.value().materials.size() == 1);
+    assert(imported.value().samplers.size() == 1);
+    assert(imported.value().samplers[0].mag_filter ==
+           heartstead::assets::ModelTextureMagFilter::nearest);
+    assert(imported.value().samplers[0].min_filter ==
+           heartstead::assets::ModelTextureMinFilter::linear_mipmap_linear);
+    assert(imported.value().samplers[0].wrap_s ==
+           heartstead::assets::ModelTextureWrap::clamp_to_edge);
+    assert(imported.value().samplers[0].wrap_t ==
+           heartstead::assets::ModelTextureWrap::mirrored_repeat);
+    assert(imported.value().materials.size() == 2);
     assert(imported.value().materials[0].name == "storybook_cloth");
-    assert(imported.value().materials[0].base_color_image == 0);
+    assert(imported.value().materials[0].base_color_texture.image == 0);
+    assert(imported.value().materials[0].base_color_texture.sampler == 0);
+    assert(imported.value().materials[0].base_color_texture.texcoord == 1);
+    assert(imported.value().materials[0].base_color_texture.offset.x == 0.25F);
+    assert(imported.value().materials[0].base_color_texture.scale.y == 3.0F);
+    assert(imported.value().materials[0].metallic_factor == 0.35F);
+    assert(imported.value().materials[0].roughness_factor == 0.65F);
+    assert(imported.value().materials[0].normal_scale == 0.75F);
+    assert(imported.value().materials[0].occlusion_strength == 0.6F);
+    assert(imported.value().materials[0].emissive_factor[2] > 0.29F);
     assert(imported.value().materials[0].alpha_mode == heartstead::assets::ModelAlphaMode::mask);
     assert(imported.value().materials[0].alpha_cutoff == 0.25F);
     assert(imported.value().materials[0].double_sided);
     assert(imported.value().materials[0].unlit);
-    assert(imported.value().animations.size() == 1);
+    assert(imported.value().materials[1].alpha_mode == heartstead::assets::ModelAlphaMode::blend);
+    assert(imported.value().animations.size() == 2);
     assert(imported.value().animations[0].name == "wave");
     assert(imported.value().animations[0].duration_seconds == 1.0F);
     assert(imported.value().animations[0].channels[0].values.size() == 2);
+    assert(imported.value().animations[1].channels[0].path ==
+           heartstead::assets::ModelAnimationPath::weights);
+    assert(imported.value().animations[1].channels[0].weight_count == 1);
+    assert(imported.value().animations[1].channels[0].weight_values ==
+           std::vector<float>({0.0F, 1.0F}));
     assert(heartstead::assets::resolve_model_animation_clip(imported.value(), "wave").value() == 0);
     auto missing_clip =
         heartstead::assets::resolve_model_animation_clip(imported.value(), "missing");
@@ -234,10 +331,57 @@ void test_typed_gltf_import_and_codec() {
     assert(decoded.value() == imported.value());
 
     auto legacy_model = imported.value();
-    legacy_model.materials.front().unlit = false;
+    for (auto& vertex : legacy_model.vertices) {
+        vertex.tangent = {};
+        vertex.tangent.x = 1.0F;
+        vertex.tangent.w = 1.0F;
+        vertex.uv1 = {};
+        vertex.color = {1.0F, 1.0F, 1.0F, 1.0F};
+    }
+    legacy_model.samplers.clear();
+    for (auto& material : legacy_model.materials) {
+        const auto base_image = material.base_color_texture.image;
+        const auto base_factor = material.base_color_factor;
+        const auto name = material.name;
+        const auto alpha_mode = material.alpha_mode;
+        const auto alpha_cutoff = material.alpha_cutoff;
+        const auto double_sided = material.double_sided;
+        material = {};
+        material.name = name;
+        material.base_color_factor = base_factor;
+        material.base_color_texture.image = base_image;
+        material.alpha_mode = alpha_mode;
+        material.alpha_cutoff = alpha_cutoff;
+        material.double_sided = double_sided;
+    }
+    legacy_model.nodes[0].morph_weights.clear();
+    legacy_model.primitives[0].morph_targets.clear();
+    legacy_model.animations.resize(1);
     auto legacy_encoded = heartstead::assets::encode_model_asset(legacy_model);
     assert(legacy_encoded);
-    constexpr std::string_view current_magic = "heartstead.model.v3";
+    std::size_t v4_extension_bytes = legacy_model.vertices.size() * 40U + 4U +
+                                     legacy_model.samplers.size() * 4U +
+                                     legacy_model.materials.size() * 173U;
+    for (const auto& node : legacy_model.nodes) {
+        v4_extension_bytes += 4U + node.morph_weights.size() * sizeof(float);
+    }
+    for (const auto& primitive : legacy_model.primitives) {
+        v4_extension_bytes += 4U;
+        for (const auto& target : primitive.morph_targets) {
+            v4_extension_bytes +=
+                1U + (target.position_deltas.size() + target.normal_deltas.size() +
+                      target.tangent_deltas.size()) *
+                         sizeof(float) * 3U;
+        }
+    }
+    for (const auto& clip : legacy_model.animations) {
+        for (const auto& channel : clip.channels) {
+            v4_extension_bytes += 8U + channel.weight_values.size() * sizeof(float);
+        }
+    }
+    assert(v4_extension_bytes < legacy_encoded.value().size());
+    legacy_encoded.value().resize(legacy_encoded.value().size() - v4_extension_bytes);
+    constexpr std::string_view current_magic = "heartstead.model.v4";
     const auto magic = std::search(legacy_encoded.value().begin(), legacy_encoded.value().end(),
                                    current_magic.begin(), current_magic.end());
     assert(magic != legacy_encoded.value().end());
@@ -278,7 +422,7 @@ void test_base_storybook_player_asset() {
     assert(imported.value().images.front().height == 2);
     assert(imported.value().materials.size() == 1);
     assert(imported.value().primitives.front().material == 0);
-    assert(imported.value().materials.front().base_color_image == 0);
+    assert(imported.value().materials.front().base_color_texture.image == 0);
     assert(imported.value().animations.size() == 6);
     assert(imported.value().animations[0].name == "idle");
     assert(imported.value().animations[1].name == "walk");

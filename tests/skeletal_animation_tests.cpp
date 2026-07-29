@@ -194,5 +194,27 @@ int main() {
     assert(nearly_equal(transition_middle.value().local_transforms[1].translation.y, 0.4F));
     assert(nearly_equal(transition_end.value().local_transforms[1].translation.y, 1.0F));
 
+    auto morph_model = model;
+    morph_model.nodes[0].morph_weights = {0.0F};
+    assets::ModelMorphTarget morph_target;
+    morph_target.position_deltas = {{0.0F, 1.0F, 0.0F}};
+    morph_model.primitives[0].morph_targets = {morph_target};
+    assets::ModelAnimationClip morph_clip;
+    morph_clip.name = "morph";
+    morph_clip.duration_seconds = 1.0F;
+    morph_clip.channels.emplace_back(0, assets::ModelAnimationPath::weights,
+                                     assets::ModelAnimationInterpolation::linear,
+                                     std::vector<float>{0.0F, 1.0F}, std::vector<math::Vec4f>{}, 1U,
+                                     std::vector<float>{0.0F, 1.0F});
+    morph_model.animations.push_back(std::move(morph_clip));
+    assert(assets::validate_model_asset(morph_model));
+    auto half_morph = animation::sample_animation_clip(morph_model, {3, 0.5F, false});
+    assert(half_morph);
+    assert(nearly_equal(half_morph.value().morph_weights[0][0], 0.5F));
+    auto blended_morph = animation::blend_skeletal_poses(
+        morph_model, animation::bind_pose(morph_model), half_morph.value(), 0.5F);
+    assert(blended_morph);
+    assert(nearly_equal(blended_morph.value().morph_weights[0][0], 0.25F));
+
     return 0;
 }

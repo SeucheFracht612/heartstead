@@ -130,12 +130,19 @@ make_static_mesh_shader_program(std::span<const std::uint32_t> vertex_spirv,
          rhi::RenderShaderStageFlags::fragment},
         {"surface_materials", rhi::RenderDescriptorKind::storage_buffer, 3, true,
          rhi::RenderShaderStageFlags::fragment},
+        {"surface_data_textures", rhi::RenderDescriptorKind::sampled_texture, 4, true,
+         rhi::RenderShaderStageFlags::fragment},
+        {"morph_deltas", rhi::RenderDescriptorKind::storage_buffer, 5, true,
+         rhi::RenderShaderStageFlags::vertex},
+        {"morph_weights", rhi::RenderDescriptorKind::storage_buffer, 6, true,
+         rhi::RenderShaderStageFlags::vertex},
     };
     shader_program.interface.push_constant_ranges.push_back(
         {rhi::RenderShaderStageFlags::vertex | rhi::RenderShaderStageFlags::fragment, 0,
          sizeof(rhi::ChunkPushConstants)});
-    shader_program.dependencies = {"gpu_static_mesh_vertex_v2", "gpu_object_instance_v1",
-                                   "gpu_surface_material_v1", "chunk_push_constants_v2"};
+    shader_program.dependencies = {"gpu_static_mesh_vertex_v3", "gpu_object_instance_v2",
+                                   "gpu_surface_material_v2", "gpu_morph_delta_v1",
+                                   "chunk_push_constants_v2"};
     return shader_program;
 }
 
@@ -381,6 +388,16 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         (void)shutdown();
         return core::Status::failure(error.code, error.message);
     }
+    surface_data_texture_array_ = std::make_unique<SurfaceTextureArray>(*texture_manager_);
+    SurfaceTextureArrayConfig data_texture_config;
+    data_texture_config.color_space = TextureColorSpace::linear;
+    data_texture_config.texture_id = "__surface_data_texture_array";
+    fallback_status = surface_data_texture_array_->initialize(std::move(data_texture_config));
+    if (!fallback_status) {
+        const auto error = fallback_status.error();
+        (void)shutdown();
+        return core::Status::failure(error.code, error.message);
+    }
     const auto fallback_material_id = core::PrototypeId::parse("base:materials/error");
     if (!fallback_material_id) {
         (void)shutdown();
@@ -404,9 +421,9 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         (void)shutdown();
         return core::Status::failure(error.code, error.message);
     }
-    pipeline_status = create_terrain_pipeline(desc.terrain_vertex_spirv,
-                                              desc.terrain_fragment_spirv, desc.voxel_palette,
-                                              desc.terrain_material_assets);
+    pipeline_status =
+        create_terrain_pipeline(desc.terrain_vertex_spirv, desc.terrain_fragment_spirv,
+                                desc.voxel_palette, desc.terrain_material_assets);
     if (!pipeline_status) {
         const auto error = pipeline_status.error();
         (void)shutdown();
@@ -554,6 +571,10 @@ core::Status Renderer::shutdown() {
     if (surface_texture_array_ != nullptr) {
         remember_failure(surface_texture_array_->shutdown());
         surface_texture_array_.reset();
+    }
+    if (surface_data_texture_array_ != nullptr) {
+        remember_failure(surface_data_texture_array_->shutdown());
+        surface_data_texture_array_.reset();
     }
     if (texture_manager_ != nullptr) {
         remember_failure(texture_manager_->shutdown());
@@ -1112,7 +1133,8 @@ core::Result<MaterialRuntimeHandle> Renderer::create_surface_material(MaterialRu
 
 core::Result<std::vector<ModelRenderMaterialBinding>>
 Renderer::create_model_materials(std::string_view asset_id, const assets::ModelAsset& model) {
-    if (!is_initialized() || surface_texture_array_ == nullptr || material_cache_ == nullptr) {
+    if (!is_initialized() || surface_texture_array_ == nullptr ||
+        surface_data_texture_array_ == nullptr || material_cache_ == nullptr) {
         return core::Result<std::vector<ModelRenderMaterialBinding>>::failure(
             "renderer.not_initialized", "renderer must be initialized first");
     }
@@ -1126,20 +1148,52 @@ Renderer::create_model_materials(std::string_view asset_id, const assets::ModelA
             "renderer.invalid_model_asset_id", "model render materials require an asset id");
     }
 
-    std::vector<std::uint32_t> image_layers;
-    image_layers.reserve(model.images.size());
+    std::vector<std::uint32_t> color_image_layers(model.images.size(), assets::no_model_index);
+    std::vector<std::uint32_t> data_image_layers(model.images.size(), assets::no_model_index);
+    std::vector<bool> color_image_usage(model.images.size());
+    std::vector<bool> data_image_usage(model.images.size());
+    const auto mark_image = [](const assets::ModelTextureBinding& binding,
+                               std::vector<bool>& usage) {
+        if (binding.image != assets::no_model_index) {
+            usage[binding.image] = true;
+        }
+    };
+    for (const auto& material : model.materials) {
+        mark_image(material.base_color_texture, color_image_usage);
+        mark_image(material.emissive_texture, color_image_usage);
+        mark_image(material.metallic_roughness_texture, data_image_usage);
+        mark_image(material.normal_texture, data_image_usage);
+        mark_image(material.occlusion_texture, data_image_usage);
+    }
     for (std::size_t index = 0; index < model.images.size(); ++index) {
         const auto& image = model.images[index];
-        auto layer =
-            surface_texture_array_->add(std::string(asset_id) + "#image/" + std::to_string(index),
-                                        image.width, image.height, image.rgba8);
-        if (!layer) {
-            return core::Result<std::vector<ModelRenderMaterialBinding>>::failure(
-                layer.error().code, layer.error().message);
+        if (color_image_usage[index]) {
+            auto color_layer = surface_texture_array_->add(std::string(asset_id) + "#image/" +
+                                                               std::to_string(index),
+                                                           image.width, image.height, image.rgba8);
+            if (!color_layer) {
+                return core::Result<std::vector<ModelRenderMaterialBinding>>::failure(
+                    color_layer.error().code, color_layer.error().message);
+            }
+            color_image_layers[index] = color_layer.value();
         }
-        image_layers.push_back(layer.value());
+        if (data_image_usage[index]) {
+            auto data_layer = surface_data_texture_array_->add(
+                std::string(asset_id) + "#data-image/" + std::to_string(index), image.width,
+                image.height, image.rgba8);
+            if (!data_layer) {
+                return core::Result<std::vector<ModelRenderMaterialBinding>>::failure(
+                    data_layer.error().code, data_layer.error().message);
+            }
+            data_image_layers[index] = data_layer.value();
+        }
     }
     auto status = surface_texture_array_->synchronize();
+    if (!status) {
+        return core::Result<std::vector<ModelRenderMaterialBinding>>::failure(
+            status.error().code, status.error().message);
+    }
+    status = surface_data_texture_array_->synchronize();
     if (!status) {
         return core::Result<std::vector<ModelRenderMaterialBinding>>::failure(
             status.error().code, status.error().message);
@@ -1168,21 +1222,62 @@ Renderer::create_model_materials(std::string_view asset_id, const assets::ModelA
         MaterialRuntimeDesc runtime;
         runtime.id = material_id.value();
         runtime.domain = MaterialRuntimeDomain::surface;
-        runtime.surface_texture = source.base_color_image == assets::no_model_index
-                                      ? surface_texture_array_->fallbacks().white
-                                      : image_layers[source.base_color_image];
+        const auto sampler_state = [&](std::uint32_t sampler_index) {
+            const auto sampler = sampler_index == assets::no_model_index
+                                     ? assets::ModelSampler{}
+                                     : model.samplers[sampler_index];
+            return static_cast<std::uint32_t>(sampler.mag_filter) |
+                   (static_cast<std::uint32_t>(sampler.min_filter) << 1U) |
+                   (static_cast<std::uint32_t>(sampler.wrap_s) << 4U) |
+                   (static_cast<std::uint32_t>(sampler.wrap_t) << 6U);
+        };
+        const auto runtime_binding = [&](const assets::ModelTextureBinding& binding, bool color,
+                                         std::uint32_t fallback) {
+            RuntimeSurfaceTextureBinding result_binding;
+            result_binding.texture =
+                binding.image == assets::no_model_index
+                    ? fallback
+                    : (color ? color_image_layers : data_image_layers)[binding.image];
+            result_binding.sampler_state = sampler_state(binding.sampler);
+            result_binding.texcoord = binding.texcoord;
+            result_binding.offset = {binding.offset.x, binding.offset.y};
+            result_binding.scale = {binding.scale.x, binding.scale.y};
+            result_binding.rotation = binding.rotation;
+            return result_binding;
+        };
+        runtime.base_color_texture = runtime_binding(source.base_color_texture, true,
+                                                     surface_texture_array_->fallbacks().white);
+        runtime.metallic_roughness_texture =
+            runtime_binding(source.metallic_roughness_texture, false,
+                            surface_data_texture_array_->fallbacks().white);
+        runtime.normal_texture = runtime_binding(source.normal_texture, false,
+                                                 surface_data_texture_array_->fallbacks().normal);
+        runtime.occlusion_texture = runtime_binding(source.occlusion_texture, false,
+                                                    surface_data_texture_array_->fallbacks().white);
+        runtime.emissive_texture = runtime_binding(source.emissive_texture, true,
+                                                   surface_texture_array_->fallbacks().white);
+        runtime.surface_texture = runtime.base_color_texture.texture;
         runtime.base_color = source.base_color_factor;
         runtime.alpha_cutoff = source.alpha_cutoff;
+        runtime.emissive_color = source.emissive_factor;
+        runtime.metallic = source.metallic_factor;
+        runtime.roughness = source.roughness_factor;
+        runtime.normal_scale = source.normal_scale;
+        runtime.occlusion_strength = source.occlusion_strength;
         ModelRenderMaterialBinding binding;
-        binding.layer = source.alpha_mode == assets::ModelAlphaMode::mask
-                            ? RenderLayer::alpha_tested
-                            : RenderLayer::opaque;
+        binding.layer =
+            source.alpha_mode == assets::ModelAlphaMode::mask    ? RenderLayer::alpha_tested
+            : source.alpha_mode == assets::ModelAlphaMode::blend ? RenderLayer::transparent
+                                                                 : RenderLayer::opaque;
         if (source.alpha_mode == assets::ModelAlphaMode::mask) {
             runtime.flags = runtime.flags | VoxelMaterialFlags::alpha_tested;
         }
         if (source.double_sided) {
             runtime.flags = runtime.flags | VoxelMaterialFlags::two_sided;
             binding.flags = binding.flags | RenderObjectFlags::two_sided;
+        }
+        if (source.alpha_mode == assets::ModelAlphaMode::blend) {
+            runtime.flags = runtime.flags | VoxelMaterialFlags::translucent;
         }
         if (source.unlit) {
             runtime.flags = runtime.flags | VoxelMaterialFlags::unlit;
@@ -1221,10 +1316,12 @@ bool Renderer::is_initialized() const noexcept {
            frame_builder_ != nullptr && shader_manager_ != nullptr && texture_manager_ != nullptr &&
            material_cache_ != nullptr && pipeline_cache_ != nullptr && mesh_manager_ != nullptr &&
            surface_texture_array_ != nullptr && surface_texture_array_->texture().is_valid() &&
-           scene_render_system_ != nullptr && sky_renderer_ != nullptr &&
-           sky_renderer_->is_initialized() && debug_renderer_ != nullptr &&
-           ui_renderer_ != nullptr && sky_pipeline_.is_valid() && terrain_pipelines_.is_valid() &&
-           scene_pipelines_.is_valid() && debug_pipelines_.is_valid() && ui_pipeline_.is_valid() &&
+           surface_data_texture_array_ != nullptr &&
+           surface_data_texture_array_->texture().is_valid() && scene_render_system_ != nullptr &&
+           sky_renderer_ != nullptr && sky_renderer_->is_initialized() &&
+           debug_renderer_ != nullptr && ui_renderer_ != nullptr && sky_pipeline_.is_valid() &&
+           terrain_pipelines_.is_valid() && scene_pipelines_.is_valid() &&
+           debug_pipelines_.is_valid() && ui_pipeline_.is_valid() &&
            fallback_material_.is_valid() && surface_sampler_.is_valid();
 }
 
@@ -1527,11 +1624,11 @@ core::Status Renderer::create_sky_pipeline(std::span<const std::uint32_t> vertex
     return core::Status::ok();
 }
 
-core::Status Renderer::create_terrain_pipeline(std::span<const std::uint32_t> vertex_spirv,
-                                               std::span<const std::uint32_t> fragment_spirv,
-                                               const world::VoxelPalette* voxel_palette,
-                                               const materials::TerrainMaterialAssetSet&
-                                                   material_assets) {
+core::Status
+Renderer::create_terrain_pipeline(std::span<const std::uint32_t> vertex_spirv,
+                                  std::span<const std::uint32_t> fragment_spirv,
+                                  const world::VoxelPalette* voxel_palette,
+                                  const materials::TerrainMaterialAssetSet& material_assets) {
     if (shader_manager_ == nullptr || sampler_cache_ == nullptr || texture_manager_ == nullptr ||
         material_cache_ == nullptr || pipeline_cache_ == nullptr) {
         return core::Status::failure("renderer.runtime_assets_uninitialized",
@@ -1567,9 +1664,8 @@ core::Status Renderer::create_terrain_pipeline(std::span<const std::uint32_t> ve
     std::vector<std::uint32_t> material_texture_layers;
     material_texture_layers.reserve(material_assets.textures.size());
     for (const auto& texture : material_assets.textures) {
-        const auto resized =
-            resize_surface_rgba8(texture.image.width, texture.image.height, texture.image.rgba8,
-                                 16, 16);
+        const auto resized = resize_surface_rgba8(texture.image.width, texture.image.height,
+                                                  texture.image.rgba8, 16, 16);
         layer = texture_builder.add_layer(texture.logical_id, resized);
         if (!layer) {
             return core::Status::failure(layer.error().code, layer.error().message);
@@ -1645,12 +1741,10 @@ core::Status Renderer::create_terrain_pipeline(std::span<const std::uint32_t> ve
             runtime_material.base_color = material_asset->base_color;
             runtime_material.roughness = material_asset->roughness;
             if (material_asset->blend_mode == materials::MaterialBlendMode::masked) {
-                runtime_material.flags =
-                    runtime_material.flags | VoxelMaterialFlags::alpha_tested;
+                runtime_material.flags = runtime_material.flags | VoxelMaterialFlags::alpha_tested;
             } else if (material_asset->blend_mode == materials::MaterialBlendMode::translucent ||
                        material_asset->blend_mode == materials::MaterialBlendMode::additive) {
-                runtime_material.flags =
-                    runtime_material.flags | VoxelMaterialFlags::translucent;
+                runtime_material.flags = runtime_material.flags | VoxelMaterialFlags::translucent;
             }
             if (material_asset->double_sided) {
                 runtime_material.flags = runtime_material.flags | VoxelMaterialFlags::two_sided;
@@ -1822,6 +1916,12 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
          rhi::RenderShaderStageFlags::fragment},
         {"surface_materials", rhi::RenderDescriptorKind::storage_buffer, 3, true,
          rhi::RenderShaderStageFlags::fragment},
+        {"surface_data_textures", rhi::RenderDescriptorKind::sampled_texture, 4, true,
+         rhi::RenderShaderStageFlags::fragment},
+        {"morph_deltas", rhi::RenderDescriptorKind::storage_buffer, 5, true,
+         rhi::RenderShaderStageFlags::vertex},
+        {"morph_weights", rhi::RenderDescriptorKind::storage_buffer, 6, true,
+         rhi::RenderShaderStageFlags::vertex},
     };
     layout.push_constant_ranges.push_back(
         {rhi::RenderShaderStageFlags::vertex | rhi::RenderShaderStageFlags::fragment, 0,
@@ -1935,21 +2035,27 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
 }
 
 core::Status Renderer::bind_scene_surface_resources() {
-    if (device_ == nullptr || surface_texture_array_ == nullptr || material_cache_ == nullptr ||
+    if (device_ == nullptr || surface_texture_array_ == nullptr ||
+        surface_data_texture_array_ == nullptr || material_cache_ == nullptr ||
         !surface_sampler_.is_valid()) {
         return core::Status::failure("renderer.scene_surface_resources_uninitialized",
                                      "scene surface resources must be initialized first");
     }
     const auto scene_material = core::PrototypeId::parse("base:materials/static_instances");
     const auto* texture = surface_texture_array_->texture_view();
-    if (!scene_material || texture == nullptr || !texture->image.is_valid()) {
+    const auto* data_texture = surface_data_texture_array_->texture_view();
+    if (!scene_material || texture == nullptr || !texture->image.is_valid() ||
+        data_texture == nullptr || !data_texture->image.is_valid()) {
         return core::Status::failure("renderer.scene_surface_resources_missing",
                                      "scene surface texture or material identity is missing");
     }
-    const rhi::RenderDescriptorWrite texture_write{
-        scene_material.value(), "surface_textures", texture->image, 0, 0, surface_sampler_};
-    auto written =
-        device_->write_descriptors(std::span<const rhi::RenderDescriptorWrite>{&texture_write, 1});
+    const std::array texture_writes{
+        rhi::RenderDescriptorWrite{scene_material.value(), "surface_textures", texture->image, 0, 0,
+                                   surface_sampler_},
+        rhi::RenderDescriptorWrite{scene_material.value(), "surface_data_textures",
+                                   data_texture->image, 0, 0, surface_sampler_},
+    };
+    auto written = device_->write_descriptors(texture_writes);
     if (!written) {
         return core::Status::failure(written.error().code, written.error().message);
     }

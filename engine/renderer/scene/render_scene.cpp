@@ -90,7 +90,9 @@ core::Status validate_render_object_proxy(const RenderObjectProxy& object) {
         !object.material.is_valid() || !object.previous_transform.is_finite() ||
         !object.previous_transform.has_non_zero_scale() || !object.current_transform.is_finite() ||
         !object.current_transform.has_non_zero_scale() || !object.local_bounds.is_valid() ||
-        !finite_color(object.color)) {
+        !finite_color(object.color) || object.morph_weights.size() > 64U ||
+        !std::ranges::all_of(object.morph_weights,
+                             [](float value) { return std::isfinite(value); })) {
         return core::Status::failure("render_scene.invalid_object",
                                      "render object proxy contains invalid retained render data");
     }
@@ -441,9 +443,16 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
             ++frame.stats.culled_objects;
             continue;
         }
-        RenderObjectInstance instance{
-            object.id,         object.mesh, object.material, object.skin_palette, object.layer,
-            transform.value(), bounds,      object.color,    object.sprite_frame};
+        RenderObjectInstance instance{object.id,
+                                      object.mesh,
+                                      object.material,
+                                      object.skin_palette,
+                                      object.layer,
+                                      transform.value(),
+                                      bounds,
+                                      object.color,
+                                      object.morph_weights,
+                                      object.sprite_frame};
         auto batch =
             std::ranges::find_if(frame.batches, [&object](const RenderInstanceBatch& value) {
                 return value.mesh == object.mesh && value.material == object.material &&

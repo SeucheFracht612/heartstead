@@ -9,7 +9,17 @@
       "name": "joltphysics",
       "default-features": false
     },
+    "draco",
     "fastgltf",
+    {
+      "name": "glslang",
+      "host": true,
+      "features": [
+        "tools"
+      ]
+    },
+    "ktx",
+    "meshoptimizer",
     "miniaudio",
     "stb",
     {
@@ -25,6 +35,19 @@
     {
       "name": "fastgltf",
       "version": "0.9.0"
+    },
+    {
+      "name": "draco",
+      "version": "1.5.7",
+      "port-version": 1
+    },
+    {
+      "name": "ktx",
+      "version": "4.4.2"
+    },
+    {
+      "name": "meshoptimizer",
+      "version": "1.2"
     },
     {
       "name": "miniaudio",

@@ -15,6 +15,8 @@ struct SurfaceTextureArrayConfig {
     std::uint32_t layer_width = 512;
     std::uint32_t layer_height = 512;
     std::uint32_t maximum_layers = 256;
+    TextureColorSpace color_space = TextureColorSpace::srgb;
+    std::string texture_id = "__surface_texture_array";
 
     [[nodiscard]] core::Status validate() const;
 };
@@ -53,10 +55,10 @@ class SurfaceTextureArray {
     bool initialized_ = false;
 };
 
-[[nodiscard]] std::vector<std::byte> resize_surface_rgba8(std::uint32_t source_width,
-                                                          std::uint32_t source_height,
-                                                          std::span<const std::uint8_t> source,
-                                                          std::uint32_t target_width,
-                                                          std::uint32_t target_height);
+[[nodiscard]] std::vector<std::byte>
+resize_surface_rgba8(std::uint32_t source_width, std::uint32_t source_height,
+                     std::span<const std::uint8_t> source, std::uint32_t target_width,
+                     std::uint32_t target_height,
+                     TextureColorSpace color_space = TextureColorSpace::srgb);
 
 } // namespace heartstead::renderer

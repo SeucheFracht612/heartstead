@@ -649,8 +649,7 @@ void test_renderer_frontend_submits_headless_frames() {
     terrain_texture.image.width = 2;
     terrain_texture.image.height = 2;
     terrain_texture.image.rgba8 = {
-        32,  96,  24, 255, 48,  128, 32, 255,
-        64,  144, 40, 255, 80,  160, 48, 255,
+        32, 96, 24, 255, 48, 128, 32, 255, 64, 144, 40, 255, 80, 160, 48, 255,
     };
     init.terrain_material_assets.textures.push_back(std::move(terrain_texture));
     renderer::materials::TerrainVoxelMaterialAsset terrain_material;
@@ -685,9 +684,9 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(voxel_material->roughness == terrain_material.roughness);
     const auto initialized_resource_count = retained_renderer.device()->live_resource_count();
     // Ten shader modules, eleven prewarmed pipelines, sky geometry, four fallback textures,
-    // terrain/UI arrays, one shared sampler, one material-table buffer, static arenas/instances,
-    // a skin-matrix ring, and buffered debug/UI geometry.
-    assert(initialized_resource_count == 43);
+    // terrain/UI plus color/data surface arrays, one shared sampler, one material-table buffer,
+    // static/morph arenas, instance/skin/morph rings, and buffered debug/UI geometry.
+    assert(initialized_resource_count == 46);
 
     assets::ModelAsset material_model;
     material_model.vertices.resize(3);
@@ -705,7 +704,7 @@ void test_renderer_frontend_submits_headless_frames() {
     assets::ModelMaterial source_material;
     source_material.name = "paint";
     source_material.base_color_factor = {0.25F, 0.5F, 0.75F, 0.8F};
-    source_material.base_color_image = 0;
+    source_material.base_color_texture.image = 0;
     source_material.alpha_mode = assets::ModelAlphaMode::mask;
     source_material.alpha_cutoff = 0.375F;
     source_material.double_sided = true;
@@ -852,7 +851,7 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(renderer_stats.drawn_chunks == 1);
     assert(renderer_stats.draw_calls == 2);
     assert(renderer_stats.pipeline_switches == 2);
-    assert(renderer_stats.resident_textures == 7);
+    assert(renderer_stats.resident_textures == 8);
     assert(renderer_stats.runtime_materials == 257);
     assert(renderer_stats.resident_pipelines == 12);
     assert(renderer_stats.resident_texture_bytes > 0);
@@ -965,6 +964,14 @@ void test_renderer_frontend_submits_headless_frames() {
         {"joint", 0, {}},
     };
     animated_model.primitives = {{"animated_body", 0, 3, 0, 3, 0, 0}};
+    animated_model.nodes[0].morph_weights = {0.0F};
+    assets::ModelMorphTarget morph_target;
+    morph_target.position_deltas = {
+        {0.0F, 0.1F, 0.0F},
+        {0.0F, 0.1F, 0.0F},
+        {0.0F, 0.1F, 0.0F},
+    };
+    animated_model.primitives[0].morph_targets.push_back(std::move(morph_target));
     animated_model.skins = {{"animated_skin", 1, {1}, {math::Mat4f::identity()}}};
     animated_model.bounds = {{-0.5F, -0.5F, 0.0F}, {0.5F, 0.5F, 0.0F}};
     assert(assets::validate_model_asset(animated_model));
@@ -983,6 +990,7 @@ void test_renderer_frontend_submits_headless_frames() {
     animated_object.material = retained_renderer.fallback_material();
     animated_object.local_bounds = animated_model.bounds;
     animated_object.skin_palette = skin_palette_id.value();
+    animated_object.morph_weights = {0.5F};
     auto animated_object_id = retained_renderer.create_object(animated_object);
     assert(animated_object_id);
     animated_object.previous_transform.position.x = 1.0F;
@@ -996,6 +1004,7 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(retained_renderer.scene_stats().submitted_skin_palettes == 1);
     assert(retained_renderer.scene_stats().submitted_skin_matrices == 1);
     assert(retained_renderer.scene_stats().uploaded_skin_matrix_bytes == sizeof(math::Mat4f));
+    assert(retained_renderer.scene_stats().uploaded_morph_weight_bytes == sizeof(float) * 2U);
     assert(retained_renderer.stats().retained_skin_palettes == 1);
     assert(retained_renderer.stats().submitted_skin_matrices == 1);
 

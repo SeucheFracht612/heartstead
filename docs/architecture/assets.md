@@ -174,16 +174,21 @@ assets (`data`, `localization`, `ui`, and unknown/raw data), material assets, gl
 assets, PNG/KTX2/JPEG `texture` assets, `.spv` `shader` assets, WAV/OGG/FLAC `sound` or `music`
 assets, and SFNT `font` assets into deterministic production-profile payload wrappers. Text glTF
 and GLB models are strictly parsed and validated by fastgltf, bounded by engine-owned limits, and
-converted into the versioned `heartstead.model.v3` binary. That runtime format contains indexed
-triangle geometry, UV0, four-influence skin vertices, a node hierarchy, inverse-bind matrices,
-bounded translation/rotation/scale animation clips, decoded RGBA8 base-color images, glTF
-base-color factors, and per-primitive material references. Opaque, alpha-mask, and double-sided
-material state is preserved. Required or optional `KHR_materials_unlit` state is stored in the
-packed material flags and bypasses lighting in the shared static-mesh shader without a pipeline
-variant. Alpha blend and transformed/non-UV0 base-color textures fail closed.
-The runtime never parses JSON or follows external glTF paths. Unsupported topology, morph-weight
-animation, excess joint influences, malformed hierarchies, and out-of-range accessors fail as
-`asset_cooker.invalid_model`. PNG textures are validated for signature and IHDR shape; KTX2
+converted into the versioned `heartstead.model.v4` binary. That runtime format contains indexed
+triangle geometry, tangents, two UV sets, vertex colors, the strongest four of up to eight skin
+influences, a node hierarchy, inverse-bind matrices, bounded transform and morph-weight animation,
+morph deltas, decoded RGBA8 images, exact glTF sampler/texture transforms, and core
+metallic-roughness PBR materials. Opaque, alpha-mask, alpha-blend, and double-sided material state
+is preserved. Color textures are filtered in sRGB while metallic-roughness, normal, and occlusion
+textures use a separate linear array. Required or optional `KHR_materials_unlit` state bypasses
+lighting without a pipeline variant.
+
+Cooking enables `KHR_texture_transform`, `KHR_texture_basisu`, `KHR_mesh_quantization`,
+`EXT_meshopt_compression`, and `KHR_draco_mesh_compression`. Compressed images and geometry are
+decoded once in the offline cooker; the runtime never parses JSON, follows source paths, or pays
+mesh/image decompression cost. Unsupported topology, UV sets above 1, malformed hierarchies, and
+out-of-range accessors fail as `asset_cooker.invalid_model`. PNG textures are validated for
+signature and IHDR shape; KTX2
 textures are validated for identifier, dimensions, DFD range, and level index ranges; JPEG textures
 are validated for SOI, sane marker ranges, nonzero frame dimensions, and EOI. Malformed textures
 fail with `asset_cooker.invalid_texture`. SPIR-V shaders are validated for header shape, magic,

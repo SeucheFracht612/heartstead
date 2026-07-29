@@ -17,12 +17,14 @@ struct alignas(16) GpuObjectInstance {
     math::Mat4f camera_relative_transform = math::Mat4f::identity();
     float color[4]{1.0F, 1.0F, 1.0F, 1.0F};
     std::uint32_t metadata[4]{};
+    std::uint32_t morph_metadata[4]{};
 };
 
-static_assert(sizeof(GpuObjectInstance) == 96);
+static_assert(sizeof(GpuObjectInstance) == 112);
 static_assert(offsetof(GpuObjectInstance, camera_relative_transform) == 0);
 static_assert(offsetof(GpuObjectInstance, color) == 64);
 static_assert(offsetof(GpuObjectInstance, metadata) == 80);
+static_assert(offsetof(GpuObjectInstance, morph_metadata) == 96);
 
 struct ScenePipelineSet {
     rhi::RenderResourceHandle opaque;
@@ -40,6 +42,7 @@ struct ScenePipelineSet {
 struct SceneRenderConfig {
     std::uint32_t maximum_instances_per_frame = 65'536;
     std::uint32_t maximum_skin_matrices_per_frame = 65'536;
+    std::uint32_t maximum_morph_weights_per_frame = 1'048'576;
     std::uint32_t buffered_frames = 3;
 
     [[nodiscard]] core::Status validate() const;
@@ -55,8 +58,10 @@ struct SceneRenderStats {
     std::uint32_t submitted_skin_matrices = 0;
     std::uint64_t uploaded_instance_bytes = 0;
     std::uint64_t uploaded_skin_matrix_bytes = 0;
+    std::uint64_t uploaded_morph_weight_bytes = 0;
     std::uint64_t instance_buffer_bytes = 0;
     std::uint64_t skin_matrix_buffer_bytes = 0;
+    std::uint64_t morph_weight_buffer_bytes = 0;
 };
 
 struct SceneDrawCommands {
@@ -84,6 +89,7 @@ class SceneRenderSystem {
     [[nodiscard]] const SceneRenderStats& stats() const noexcept;
     [[nodiscard]] rhi::RenderResourceHandle instance_buffer() const noexcept;
     [[nodiscard]] rhi::RenderResourceHandle skin_matrix_buffer() const noexcept;
+    [[nodiscard]] rhi::RenderResourceHandle morph_weight_buffer() const noexcept;
 
   private:
     struct UploadedSkinPalette {
@@ -101,8 +107,10 @@ class SceneRenderSystem {
     SceneRenderConfig config_{};
     rhi::RenderResourceHandle instance_buffer_;
     rhi::RenderResourceHandle skin_matrix_buffer_;
+    rhi::RenderResourceHandle morph_weight_buffer_;
     std::vector<GpuObjectInstance> instance_scratch_;
     std::vector<math::Mat4f> skin_matrix_scratch_;
+    std::vector<float> morph_weight_scratch_;
     std::vector<UploadedSkinPalette> uploaded_skin_palettes_;
     std::uint64_t frame_number_ = 0;
     SceneRenderStats stats_{};

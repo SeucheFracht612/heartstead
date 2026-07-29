@@ -380,15 +380,34 @@ core::Status validate_material_runtime_desc(const MaterialRuntimeDesc& desc) {
             "material_runtime.invalid_domain",
             "voxel materials require a non-air voxel type and surface materials require type zero");
     }
-    if (!std::isfinite(desc.alpha_cutoff) || desc.alpha_cutoff < 0.0F || desc.alpha_cutoff > 1.0F) {
+    if (!std::isfinite(desc.alpha_cutoff) || desc.alpha_cutoff < 0.0F) {
         return core::Status::failure("material_runtime.invalid_alpha_cutoff",
-                                     "material alpha cutoff must be finite and in zero to one");
+                                     "material alpha cutoff must be finite and non-negative");
     }
     for (const auto value : desc.base_color) {
         if (!std::isfinite(value) || value < 0.0F || value > 1.0F) {
             return core::Status::failure("material_runtime.invalid_base_color",
                                          "material base color must be finite and in zero to one");
         }
+    }
+    const auto valid_texture_binding = [](const RuntimeSurfaceTextureBinding& binding) {
+        return binding.texcoord <= 1U && std::isfinite(binding.offset[0]) &&
+               std::isfinite(binding.offset[1]) && std::isfinite(binding.scale[0]) &&
+               std::isfinite(binding.scale[1]) && std::isfinite(binding.rotation);
+    };
+    if (!valid_texture_binding(desc.base_color_texture) ||
+        !valid_texture_binding(desc.metallic_roughness_texture) ||
+        !valid_texture_binding(desc.normal_texture) ||
+        !valid_texture_binding(desc.occlusion_texture) ||
+        !valid_texture_binding(desc.emissive_texture) ||
+        !std::ranges::all_of(desc.emissive_color,
+                             [](float value) { return std::isfinite(value) && value >= 0.0F; }) ||
+        !std::isfinite(desc.metallic) || desc.metallic < 0.0F || desc.metallic > 1.0F ||
+        !std::isfinite(desc.normal_scale) || !std::isfinite(desc.occlusion_strength) ||
+        desc.occlusion_strength < 0.0F || desc.occlusion_strength > 1.0F) {
+        return core::Status::failure(
+            "material_runtime.invalid_surface_parameters",
+            "surface material texture transforms and PBR parameters must be finite and bounded");
     }
     if (!std::isfinite(desc.emissive_strength) || desc.emissive_strength < 0.0F ||
         !std::isfinite(desc.roughness) || desc.roughness < 0.0F || desc.roughness > 1.0F ||
@@ -414,10 +433,34 @@ GpuVoxelMaterial gpu_voxel_material(const MaterialRuntimeDesc& desc) noexcept {
 
 GpuSurfaceMaterial gpu_surface_material(const MaterialRuntimeDesc& desc) noexcept {
     GpuSurfaceMaterial result;
-    result.base_color_texture = desc.surface_texture;
-    result.flags = static_cast<std::uint32_t>(desc.flags);
-    result.alpha_cutoff = desc.alpha_cutoff;
+    const auto write_binding = [](GpuSurfaceTextureBinding& target,
+                                  const RuntimeSurfaceTextureBinding& source) {
+        target.metadata[0] = source.texture;
+        target.metadata[1] = source.sampler_state;
+        target.metadata[2] = source.texcoord;
+        target.metadata[3] = std::bit_cast<std::uint32_t>(source.rotation);
+        target.transform[0] = source.offset[0];
+        target.transform[1] = source.offset[1];
+        target.transform[2] = source.scale[0];
+        target.transform[3] = source.scale[1];
+    };
+    auto base_binding = desc.base_color_texture;
+    if (base_binding.texture == 0U) {
+        base_binding.texture = desc.surface_texture;
+    }
+    write_binding(result.textures[0], base_binding);
+    write_binding(result.textures[1], desc.metallic_roughness_texture);
+    write_binding(result.textures[2], desc.normal_texture);
+    write_binding(result.textures[3], desc.occlusion_texture);
+    write_binding(result.textures[4], desc.emissive_texture);
     std::ranges::copy(desc.base_color, result.base_color);
+    std::ranges::copy(desc.emissive_color, result.emissive_metallic);
+    result.emissive_metallic[3] = desc.metallic;
+    result.roughness_normal_occlusion_alpha[0] = desc.roughness;
+    result.roughness_normal_occlusion_alpha[1] = desc.normal_scale;
+    result.roughness_normal_occlusion_alpha[2] = desc.occlusion_strength;
+    result.roughness_normal_occlusion_alpha[3] = desc.alpha_cutoff;
+    result.flags = static_cast<std::uint32_t>(desc.flags);
     return result;
 }
 

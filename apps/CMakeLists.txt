@@ -1,4 +1,10 @@
-find_program(HEARTSTEAD_GLSLANG_VALIDATOR NAMES glslangValidator glslang)
+find_program(
+  HEARTSTEAD_GLSLANG_VALIDATOR
+  NAMES glslangValidator glslang
+  HINTS
+    "${VCPKG_INSTALLED_DIR}/${VCPKG_HOST_TRIPLET}/tools/glslang"
+    "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/glslang"
+)
 
 function(heartstead_attach_terrain_shader_assets target)
   set(shader_source_dir "${PROJECT_SOURCE_DIR}/engine/renderer/shaders/builtin")

@@ -421,7 +421,11 @@ target_sources(
 
 target_include_directories(heartstead_engine PUBLIC ${PROJECT_SOURCE_DIR})
 target_include_directories(heartstead_engine SYSTEM PRIVATE ${Stb_INCLUDE_DIR})
-target_link_libraries(heartstead_engine PUBLIC Threads::Threads PRIVATE fastgltf::fastgltf)
+target_link_libraries(
+  heartstead_engine
+  PUBLIC Threads::Threads
+  PRIVATE draco::draco fastgltf::fastgltf KTX::ktx meshoptimizer::meshoptimizer
+)
 if(HEARTSTEAD_ENABLE_MINIAUDIO)
   target_sources(heartstead_engine PRIVATE audio/miniaudio/miniaudio_implementation.cpp)
   target_include_directories(heartstead_engine SYSTEM PRIVATE ${MINIAUDIO_INCLUDE_DIRS})

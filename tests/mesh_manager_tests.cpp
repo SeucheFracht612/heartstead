@@ -32,7 +32,8 @@ void test_mesh_upload_cache_fallback_and_release() {
     assert(manager.fallback_mesh().is_valid());
     assert(manager.find_exact(manager.fallback_mesh()) != nullptr);
     assert(manager.stats().resident_mesh_count == 1);
-    assert(device.value()->live_resource_count() == baseline + 2);
+    // Vertex, index, and morph arenas each own one GPU buffer.
+    assert(device.value()->live_resource_count() == baseline + 3);
 
     const renderer::StaticMeshUploadDesc upload{"test_triangle",
                                                 triangle_vertices,

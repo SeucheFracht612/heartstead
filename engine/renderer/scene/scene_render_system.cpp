@@ -38,10 +38,13 @@ rhi::RenderResourceHandle ScenePipelineSet::for_layer(RenderLayer layer,
 core::Status SceneRenderConfig::validate() const {
     constexpr auto maximum_size = std::numeric_limits<std::size_t>::max();
     if (maximum_instances_per_frame == 0 || buffered_frames < 2 || buffered_frames > 8 ||
-        maximum_skin_matrices_per_frame == 0 ||
+        maximum_skin_matrices_per_frame == 0 || maximum_morph_weights_per_frame == 0 ||
         maximum_instances_per_frame > maximum_size / sizeof(GpuObjectInstance) / buffered_frames ||
         maximum_skin_matrices_per_frame > maximum_size / sizeof(math::Mat4f) / buffered_frames ||
+        maximum_morph_weights_per_frame > maximum_size / sizeof(float) / buffered_frames ||
         static_cast<std::uint64_t>(maximum_skin_matrices_per_frame) * buffered_frames >
+            std::numeric_limits<std::uint32_t>::max() ||
+        static_cast<std::uint64_t>(maximum_morph_weights_per_frame) * buffered_frames >
             std::numeric_limits<std::uint32_t>::max()) {
         return core::Status::failure(
             "scene_render.invalid_config",
@@ -100,26 +103,50 @@ core::Status SceneRenderSystem::initialize(SceneRenderConfig config) {
         return core::Status::failure(error.code, error.message);
     }
     skin_matrix_buffer_ = skin_matrix_buffer.value().handle;
-    const std::array writes{
-        rhi::RenderDescriptorWrite{pipeline_material_, "object_instances", instance_buffer_, 0,
-                                   byte_size},
-        rhi::RenderDescriptorWrite{pipeline_material_, "skin_matrices", skin_matrix_buffer_, 0,
-                                   skin_matrix_byte_size},
-    };
-    auto descriptor = device_->write_descriptors(writes);
-    if (!descriptor) {
-        const auto error = descriptor.error();
+    const auto morph_weight_count =
+        static_cast<std::size_t>(config_.maximum_morph_weights_per_frame) * config_.buffered_frames;
+    const auto morph_weight_byte_size = morph_weight_count * sizeof(float);
+    auto morph_weight_buffer = device_->create_buffer(
+        {rhi::RenderBufferUsage::storage, morph_weight_byte_size, "scene_morph_weight_buffer",
+         rhi::RenderBufferMemory::device_local});
+    if (!morph_weight_buffer) {
+        const auto error = morph_weight_buffer.error();
         (void)device_->release_resource(instance_buffer_);
         (void)device_->release_resource(skin_matrix_buffer_);
         instance_buffer_ = {};
         skin_matrix_buffer_ = {};
         return core::Status::failure(error.code, error.message);
     }
+    morph_weight_buffer_ = morph_weight_buffer.value().handle;
+    const std::array writes{
+        rhi::RenderDescriptorWrite{pipeline_material_, "object_instances", instance_buffer_, 0,
+                                   byte_size},
+        rhi::RenderDescriptorWrite{pipeline_material_, "skin_matrices", skin_matrix_buffer_, 0,
+                                   skin_matrix_byte_size},
+        rhi::RenderDescriptorWrite{
+            pipeline_material_, "morph_deltas", meshes_->morph_delta_buffer(), 0,
+            static_cast<std::size_t>(meshes_->stats().morph_arena.capacity_bytes)},
+        rhi::RenderDescriptorWrite{pipeline_material_, "morph_weights", morph_weight_buffer_, 0,
+                                   morph_weight_byte_size},
+    };
+    auto descriptor = device_->write_descriptors(writes);
+    if (!descriptor) {
+        const auto error = descriptor.error();
+        (void)device_->release_resource(instance_buffer_);
+        (void)device_->release_resource(skin_matrix_buffer_);
+        (void)device_->release_resource(morph_weight_buffer_);
+        instance_buffer_ = {};
+        skin_matrix_buffer_ = {};
+        morph_weight_buffer_ = {};
+        return core::Status::failure(error.code, error.message);
+    }
     instance_scratch_.reserve(config_.maximum_instances_per_frame);
     skin_matrix_scratch_.reserve(config_.maximum_skin_matrices_per_frame);
+    morph_weight_scratch_.reserve(config_.maximum_morph_weights_per_frame);
     uploaded_skin_palettes_.reserve(config_.maximum_instances_per_frame);
     stats_.instance_buffer_bytes = byte_size;
     stats_.skin_matrix_buffer_bytes = skin_matrix_byte_size;
+    stats_.morph_weight_buffer_bytes = morph_weight_byte_size;
     return core::Status::ok();
 }
 
@@ -140,6 +167,7 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
     scratch.transparent.clear();
     instance_scratch_.clear();
     skin_matrix_scratch_.clear();
+    morph_weight_scratch_.clear();
     uploaded_skin_palettes_.clear();
     stats_ = {};
     stats_.scene = extracted.value().stats;
@@ -148,6 +176,9 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
     stats_.skin_matrix_buffer_bytes =
         static_cast<std::uint64_t>(config_.maximum_skin_matrices_per_frame) *
         config_.buffered_frames * sizeof(math::Mat4f);
+    stats_.morph_weight_buffer_bytes =
+        static_cast<std::uint64_t>(config_.maximum_morph_weights_per_frame) *
+        config_.buffered_frames * sizeof(float);
 
     const auto frame_slot = frame_number_ % config_.buffered_frames;
     const auto segment_instance_offset =
@@ -156,6 +187,9 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
     const auto segment_skin_matrix_offset =
         static_cast<std::uint64_t>(frame_slot) * config_.maximum_skin_matrices_per_frame;
     const auto segment_skin_matrix_byte_offset = segment_skin_matrix_offset * sizeof(math::Mat4f);
+    const auto segment_morph_weight_offset =
+        static_cast<std::uint64_t>(frame_slot) * config_.maximum_morph_weights_per_frame;
+    const auto segment_morph_weight_byte_offset = segment_morph_weight_offset * sizeof(float);
 
     for (auto& batch : extracted.value().batches) {
         if (instance_scratch_.size() >= config_.maximum_instances_per_frame) {
@@ -178,6 +212,13 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
         float accepted_sort_depth = 0.0F;
         for (const auto& instance : batch.instances) {
             if (instance_scratch_.size() >= config_.maximum_instances_per_frame) {
+                ++stats_.dropped_instances;
+                continue;
+            }
+            if (instance.morph_weights.size() != mesh->morph_target_count ||
+                morph_weight_scratch_.size() + instance.morph_weights.size() >
+                    config_.maximum_morph_weights_per_frame ||
+                mesh->vertex_count > 0x00FF'FFFFU) {
                 ++stats_.dropped_instances;
                 continue;
             }
@@ -235,6 +276,18 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
                 material = materials_->find(fallback_material_);
             }
             gpu.metadata[3] = material == nullptr ? 0U : material->material_index;
+            gpu.morph_metadata[0] =
+                static_cast<std::uint32_t>(mesh->vertices.offset / sizeof(GpuStaticMeshVertex));
+            gpu.morph_metadata[1] =
+                mesh->morph_deltas.is_valid()
+                    ? static_cast<std::uint32_t>(mesh->morph_deltas.offset / sizeof(GpuMorphDelta))
+                    : 0U;
+            gpu.morph_metadata[2] = static_cast<std::uint32_t>(segment_morph_weight_offset +
+                                                               morph_weight_scratch_.size());
+            gpu.morph_metadata[3] = (mesh->morph_target_count << 24U) | mesh->vertex_count;
+            morph_weight_scratch_.insert(morph_weight_scratch_.end(),
+                                         instance.morph_weights.begin(),
+                                         instance.morph_weights.end());
             instance_scratch_.push_back(gpu);
         }
         const auto accepted = instance_scratch_.size() - first_instance_in_segment;
@@ -278,7 +331,8 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
         std::as_bytes(std::span<const GpuObjectInstance>{instance_scratch_});
     const auto skin_matrix_bytes =
         std::as_bytes(std::span<const math::Mat4f>{skin_matrix_scratch_});
-    std::array<rhi::RenderBufferWrite, 2> writes;
+    const auto morph_weight_bytes = std::as_bytes(std::span<const float>{morph_weight_scratch_});
+    std::array<rhi::RenderBufferWrite, 3> writes;
     std::size_t write_count = 0;
     if (!instance_bytes.empty()) {
         writes[write_count++] = {instance_buffer_, static_cast<std::size_t>(segment_byte_offset),
@@ -289,6 +343,11 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
                                  static_cast<std::size_t>(segment_skin_matrix_byte_offset),
                                  skin_matrix_bytes};
     }
+    if (!morph_weight_bytes.empty()) {
+        writes[write_count++] = {morph_weight_buffer_,
+                                 static_cast<std::size_t>(segment_morph_weight_byte_offset),
+                                 morph_weight_bytes};
+    }
     if (write_count > 0) {
         auto upload = device_->upload_buffer_batch(
             std::span<const rhi::RenderBufferWrite>{writes.data(), write_count});
@@ -298,6 +357,7 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
         }
         stats_.uploaded_instance_bytes = instance_bytes.size();
         stats_.uploaded_skin_matrix_bytes = skin_matrix_bytes.size();
+        stats_.uploaded_morph_weight_bytes = morph_weight_bytes.size();
     }
     ++frame_number_;
     scratch.stats = stats_;
@@ -316,6 +376,7 @@ core::Status SceneRenderSystem::set_pipelines(ScenePipelineSet pipelines) noexce
 core::Status SceneRenderSystem::shutdown() {
     instance_scratch_.clear();
     skin_matrix_scratch_.clear();
+    morph_weight_scratch_.clear();
     uploaded_skin_palettes_.clear();
     stats_ = {};
     frame_number_ = 0;
@@ -326,11 +387,18 @@ core::Status SceneRenderSystem::shutdown() {
     }
     if (skin_matrix_buffer_.is_valid()) {
         auto skin_status = device_->release_resource(skin_matrix_buffer_);
-        skin_matrix_buffer_ = {};
         if (!skin_status && status) {
             status = skin_status;
         }
     }
+    skin_matrix_buffer_ = {};
+    if (morph_weight_buffer_.is_valid()) {
+        auto morph_status = device_->release_resource(morph_weight_buffer_);
+        if (!morph_status && status) {
+            status = morph_status;
+        }
+    }
+    morph_weight_buffer_ = {};
     return status;
 }
 
@@ -344,6 +412,10 @@ rhi::RenderResourceHandle SceneRenderSystem::instance_buffer() const noexcept {
 
 rhi::RenderResourceHandle SceneRenderSystem::skin_matrix_buffer() const noexcept {
     return skin_matrix_buffer_;
+}
+
+rhi::RenderResourceHandle SceneRenderSystem::morph_weight_buffer() const noexcept {
+    return morph_weight_buffer_;
 }
 
 } // namespace heartstead::renderer

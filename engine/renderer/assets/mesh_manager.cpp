@@ -18,6 +18,19 @@ struct MeshManager::Record {
 
 namespace {
 
+[[nodiscard]] constexpr std::int16_t pack_snorm16(float value) noexcept {
+    value = std::clamp(value, -1.0F, 1.0F);
+    return static_cast<std::int16_t>(value * 32'767.0F + (value >= 0.0F ? 0.5F : -0.5F));
+}
+
+[[nodiscard]] constexpr std::uint16_t pack_unorm16(float value) noexcept {
+    return static_cast<std::uint16_t>(std::clamp(value, 0.0F, 1.0F) * 65'535.0F + 0.5F);
+}
+
+[[nodiscard]] constexpr std::uint8_t pack_unorm8(float value) noexcept {
+    return static_cast<std::uint8_t>(std::clamp(value, 0.0F, 1.0F) * 255.0F + 0.5F);
+}
+
 constexpr std::array<GpuStaticMeshVertex, 24> fallback_vertices{{
     {{-0.5F, -0.5F, 0.5F}, {0.0F, 0.0F, 1.0F}, {0.0F, 0.0F}},
     {{0.5F, -0.5F, 0.5F}, {0.0F, 0.0F, 1.0F}, {1.0F, 0.0F}},
@@ -67,7 +80,16 @@ core::Status MeshManagerConfig::validate() const {
     indices.initial_block_bytes = index_initial_bytes;
     indices.maximum_capacity_bytes = index_maximum_bytes;
     indices.debug_name = "static_mesh_index_arena";
-    return indices.validate();
+    status = indices.validate();
+    if (!status) {
+        return status;
+    }
+    GpuBufferArenaConfig morphs;
+    morphs.usage = rhi::RenderBufferUsage::storage;
+    morphs.initial_block_bytes = morph_bytes;
+    morphs.maximum_capacity_bytes = morph_bytes;
+    morphs.debug_name = "static_mesh_morph_arena";
+    return morphs.validate();
 }
 
 core::Status validate_static_mesh_upload(const StaticMeshUploadDesc& desc) {
@@ -91,27 +113,17 @@ core::Status validate_static_mesh_upload(const StaticMeshUploadDesc& desc) {
                                              "static mesh position must be finite");
             }
         }
-        for (const auto value : vertex.normal) {
-            if (!std::isfinite(value)) {
-                return core::Status::failure("mesh_manager.non_finite_vertex",
-                                             "static mesh normal must be finite");
-            }
-        }
-        for (const auto value : vertex.uv) {
+        for (const auto value : vertex.uv0) {
             if (!std::isfinite(value)) {
                 return core::Status::failure("mesh_manager.non_finite_vertex",
                                              "static mesh UV must be finite");
             }
         }
-        float weight_sum = 0.0F;
+        std::uint32_t weight_sum = 0;
         for (const auto weight : vertex.weights) {
-            if (!std::isfinite(weight) || weight < 0.0F || weight > 1.0F) {
-                return core::Status::failure("mesh_manager.invalid_skin_weight",
-                                             "mesh skin weights must be finite and normalized");
-            }
             weight_sum += weight;
         }
-        if (std::abs(weight_sum - 1.0F) > 0.01F) {
+        if (weight_sum < 65'530U || weight_sum > 65'540U) {
             return core::Status::failure("mesh_manager.invalid_skin_weight",
                                          "mesh skin weights must sum to one");
         }
@@ -154,6 +166,24 @@ core::Status MeshManager::initialize(MeshManagerConfig config) {
     }
     vertex_arena_ = std::move(vertices).value();
     index_arena_ = std::move(indices).value();
+    GpuBufferArenaConfig morph_config;
+    morph_config.usage = rhi::RenderBufferUsage::storage;
+    morph_config.initial_block_bytes = config.morph_bytes;
+    morph_config.maximum_capacity_bytes = config.morph_bytes;
+    morph_config.debug_name = "static_mesh_morph_arena";
+    auto morphs = GpuBufferArena::create(*device_, std::move(morph_config));
+    if (!morphs) {
+        (void)shutdown();
+        return core::Status::failure(morphs.error().code, morphs.error().message);
+    }
+    morph_arena_ = std::move(morphs).value();
+    auto morph_sentinel = morph_arena_->allocate(sizeof(GpuMorphDelta), alignof(GpuMorphDelta));
+    if (!morph_sentinel) {
+        const auto error = morph_sentinel.error();
+        (void)shutdown();
+        return core::Status::failure(error.code, error.message);
+    }
+    morph_sentinel_ = morph_sentinel.value();
     auto fallback = upload_mesh({"__error_cube",
                                  fallback_vertices,
                                  fallback_indices,
@@ -203,13 +233,24 @@ core::Result<RenderMeshHandle> MeshManager::create_model_primitive(std::string i
         vertex.position[0] = source.position.x;
         vertex.position[1] = source.position.y;
         vertex.position[2] = source.position.z;
-        vertex.normal[0] = source.normal.x;
-        vertex.normal[1] = source.normal.y;
-        vertex.normal[2] = source.normal.z;
-        vertex.uv[0] = source.uv.x;
-        vertex.uv[1] = source.uv.y;
+        vertex.normal[0] = pack_snorm16(source.normal.x);
+        vertex.normal[1] = pack_snorm16(source.normal.y);
+        vertex.normal[2] = pack_snorm16(source.normal.z);
+        vertex.tangent[0] = pack_snorm16(source.tangent.x);
+        vertex.tangent[1] = pack_snorm16(source.tangent.y);
+        vertex.tangent[2] = pack_snorm16(source.tangent.z);
+        vertex.tangent[3] = pack_snorm16(source.tangent.w);
+        vertex.uv0[0] = source.uv0.x;
+        vertex.uv0[1] = source.uv0.y;
+        vertex.uv1[0] = source.uv1.x;
+        vertex.uv1[1] = source.uv1.y;
         std::ranges::copy(source.joints, vertex.joints);
-        std::ranges::copy(source.weights, vertex.weights);
+        for (std::size_t influence = 0; influence < source.weights.size(); ++influence) {
+            vertex.weights[influence] = pack_unorm16(source.weights[influence]);
+        }
+        for (std::size_t component = 0; component < source.color.size(); ++component) {
+            vertex.color[component] = pack_unorm8(source.color[component]);
+        }
         vertices.push_back(vertex);
         if (!has_bounds) {
             bounds = {source.position, source.position};
@@ -235,14 +276,44 @@ core::Result<RenderMeshHandle> MeshManager::create_model_primitive(std::string i
         primitive.skin == assets::no_model_index
             ? 0U
             : static_cast<std::uint32_t>(model.skins[primitive.skin].joints.size());
+    std::vector<GpuMorphDelta> morph_deltas;
+    morph_deltas.reserve(static_cast<std::size_t>(primitive.morph_targets.size()) *
+                         primitive.vertex_count);
+    for (const auto& target : primitive.morph_targets) {
+        for (std::size_t vertex_index = 0; vertex_index < primitive.vertex_count; ++vertex_index) {
+            GpuMorphDelta delta;
+            if (!target.position_deltas.empty()) {
+                const auto value = target.position_deltas[vertex_index];
+                delta.position[0] = value.x;
+                delta.position[1] = value.y;
+                delta.position[2] = value.z;
+            }
+            if (!target.normal_deltas.empty()) {
+                const auto value = target.normal_deltas[vertex_index];
+                delta.normal[0] = value.x;
+                delta.normal[1] = value.y;
+                delta.normal[2] = value.z;
+            }
+            if (!target.tangent_deltas.empty()) {
+                const auto value = target.tangent_deltas[vertex_index];
+                delta.tangent[0] = value.x;
+                delta.tangent[1] = value.y;
+                delta.tangent[2] = value.z;
+            }
+            morph_deltas.push_back(delta);
+        }
+    }
     const StaticMeshUploadDesc upload{id, vertices, indices, bounds};
-    return upload_mesh(upload, false, joint_count);
+    return upload_mesh(upload, false, joint_count, morph_deltas,
+                       static_cast<std::uint32_t>(primitive.morph_targets.size()));
 }
 
 core::Result<RenderMeshHandle> MeshManager::upload_mesh(const StaticMeshUploadDesc& desc,
                                                         bool fallback,
-                                                        std::uint32_t skin_joint_count) {
-    if (vertex_arena_ == nullptr || index_arena_ == nullptr) {
+                                                        std::uint32_t skin_joint_count,
+                                                        std::span<const GpuMorphDelta> morph_deltas,
+                                                        std::uint32_t morph_target_count) {
+    if (vertex_arena_ == nullptr || index_arena_ == nullptr || morph_arena_ == nullptr) {
         return core::Result<RenderMeshHandle>::failure("mesh_manager.not_initialized",
                                                        "mesh manager must be initialized first");
     }
@@ -264,16 +335,38 @@ core::Result<RenderMeshHandle> MeshManager::upload_mesh(const StaticMeshUploadDe
         return core::Result<RenderMeshHandle>::failure(indices.error().code,
                                                        indices.error().message);
     }
-    const std::array writes{
-        rhi::RenderBufferWrite{vertices.value().buffer,
-                               static_cast<std::size_t>(vertices.value().offset), vertex_bytes},
-        rhi::RenderBufferWrite{indices.value().buffer,
-                               static_cast<std::size_t>(indices.value().offset), index_bytes},
-    };
-    auto uploaded = device_->upload_buffer_batch(writes);
+    GpuAllocation morph_allocation;
+    if (!morph_deltas.empty()) {
+        auto allocation =
+            morph_arena_->allocate(std::as_bytes(morph_deltas).size(), alignof(GpuMorphDelta));
+        if (!allocation) {
+            (void)vertex_arena_->retire(vertices.value(), device_->completed_submission_serial());
+            (void)index_arena_->retire(indices.value(), device_->completed_submission_serial());
+            collect();
+            return core::Result<RenderMeshHandle>::failure(allocation.error().code,
+                                                           allocation.error().message);
+        }
+        morph_allocation = allocation.value();
+    }
+    std::array<rhi::RenderBufferWrite, 3> writes;
+    std::size_t write_count = 0;
+    writes[write_count++] = {vertices.value().buffer,
+                             static_cast<std::size_t>(vertices.value().offset), vertex_bytes};
+    writes[write_count++] = {indices.value().buffer,
+                             static_cast<std::size_t>(indices.value().offset), index_bytes};
+    if (!morph_deltas.empty()) {
+        writes[write_count++] = {morph_allocation.buffer,
+                                 static_cast<std::size_t>(morph_allocation.offset),
+                                 std::as_bytes(morph_deltas)};
+    }
+    auto uploaded = device_->upload_buffer_batch(
+        std::span<const rhi::RenderBufferWrite>{writes.data(), write_count});
     if (!uploaded) {
         (void)vertex_arena_->retire(vertices.value(), device_->completed_submission_serial());
         (void)index_arena_->retire(indices.value(), device_->completed_submission_serial());
+        if (morph_allocation.is_valid()) {
+            (void)morph_arena_->retire(morph_allocation, device_->completed_submission_serial());
+        }
         collect();
         return core::Result<RenderMeshHandle>::failure(uploaded.error().code,
                                                        uploaded.error().message);
@@ -291,19 +384,23 @@ core::Result<RenderMeshHandle> MeshManager::upload_mesh(const StaticMeshUploadDe
     auto& record = records_[slot_index];
     record.occupied = true;
     record.id = desc.id;
-    record.view = {{static_cast<std::uint32_t>(slot_index + 1U), record.generation},
-                   record.id,
-                   vertices.value(),
-                   indices.value(),
-                   static_cast<std::uint32_t>(desc.vertices.size()),
-                   static_cast<std::uint32_t>(desc.indices.size()),
-                   skin_joint_count,
-                   fallback ? 0U : 1U,
-                   rhi::RenderIndexType::uint32,
-                   desc.local_bounds,
-                   fallback};
+    record.view = {};
+    record.view.handle = {static_cast<std::uint32_t>(slot_index + 1U), record.generation};
+    record.view.id = record.id;
+    record.view.vertices = vertices.value();
+    record.view.indices = indices.value();
+    record.view.morph_deltas = morph_allocation;
+    record.view.vertex_count = static_cast<std::uint32_t>(desc.vertices.size());
+    record.view.index_count = static_cast<std::uint32_t>(desc.indices.size());
+    record.view.skin_joint_count = skin_joint_count;
+    record.view.morph_target_count = morph_target_count;
+    record.view.reference_count = fallback ? 0U : 1U;
+    record.view.index_type = rhi::RenderIndexType::uint32;
+    record.view.local_bounds = desc.local_bounds;
+    record.view.fallback = fallback;
     ++stats_.uploaded_mesh_count;
-    stats_.uploaded_bytes += vertex_bytes.size() + index_bytes.size();
+    stats_.uploaded_bytes +=
+        vertex_bytes.size() + index_bytes.size() + std::as_bytes(morph_deltas).size();
     refresh_stats();
     return core::Result<RenderMeshHandle>::success(record.view.handle);
 }
@@ -347,6 +444,11 @@ core::Status MeshManager::retire_record(Record& record) {
     auto status = vertex_arena_->retire(record.view.vertices, device_->last_submission_serial());
     auto index_status =
         index_arena_->retire(record.view.indices, device_->last_submission_serial());
+    auto morph_status = core::Status::ok();
+    if (record.view.morph_deltas.is_valid()) {
+        morph_status =
+            morph_arena_->retire(record.view.morph_deltas, device_->last_submission_serial());
+    }
     record.occupied = false;
     record.id.clear();
     record.view = {};
@@ -356,7 +458,7 @@ core::Status MeshManager::retire_record(Record& record) {
     }
     collect();
     refresh_stats();
-    return !status ? status : index_status;
+    return !status ? status : !index_status ? index_status : morph_status;
 }
 
 const RenderMeshView* MeshManager::find(RenderMeshHandle handle) noexcept {
@@ -390,6 +492,10 @@ MeshManagerStats MeshManager::stats() noexcept {
     return stats_;
 }
 
+rhi::RenderResourceHandle MeshManager::morph_delta_buffer() const noexcept {
+    return morph_sentinel_.buffer;
+}
+
 MeshManager::Record* MeshManager::find_record(RenderMeshHandle handle) noexcept {
     if (!handle.is_valid() || handle.index > records_.size()) {
         return nullptr;
@@ -419,6 +525,9 @@ void MeshManager::collect() noexcept {
     if (index_arena_ != nullptr) {
         index_arena_->collect(device_->completed_submission_serial());
     }
+    if (morph_arena_ != nullptr) {
+        morph_arena_->collect(device_->completed_submission_serial());
+    }
 }
 
 void MeshManager::refresh_stats() noexcept {
@@ -434,7 +543,8 @@ void MeshManager::refresh_stats() noexcept {
     for (const auto& record : records_) {
         if (record.occupied) {
             ++stats_.resident_mesh_count;
-            stats_.resident_mesh_bytes += record.view.vertices.size + record.view.indices.size;
+            stats_.resident_mesh_bytes += record.view.vertices.size + record.view.indices.size +
+                                          record.view.morph_deltas.size;
         }
     }
     if (vertex_arena_ != nullptr) {
@@ -442,6 +552,9 @@ void MeshManager::refresh_stats() noexcept {
     }
     if (index_arena_ != nullptr) {
         stats_.index_arena = index_arena_->stats();
+    }
+    if (morph_arena_ != nullptr) {
+        stats_.morph_arena = morph_arena_->stats();
     }
 }
 
@@ -462,6 +575,13 @@ core::Status MeshManager::shutdown() {
             if (!status && first_failure) {
                 first_failure = status;
             }
+            if (record.view.morph_deltas.is_valid()) {
+                status = morph_arena_->retire(record.view.morph_deltas,
+                                              device_->completed_submission_serial());
+                if (!status && first_failure) {
+                    first_failure = status;
+                }
+            }
         }
         collect();
     }
@@ -481,6 +601,14 @@ core::Status MeshManager::shutdown() {
         }
         index_arena_.reset();
     }
+    if (morph_arena_ != nullptr) {
+        auto status = morph_arena_->shutdown();
+        if (!status && first_failure) {
+            first_failure = status;
+        }
+        morph_arena_.reset();
+    }
+    morph_sentinel_ = {};
     refresh_stats();
     return first_failure;
 }

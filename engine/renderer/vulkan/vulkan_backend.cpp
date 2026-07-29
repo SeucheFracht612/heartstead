@@ -2560,8 +2560,17 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 case rhi::RenderVertexAttributeFormat::uint16:
                     format = VK_FORMAT_R16_UINT;
                     break;
+                case rhi::RenderVertexAttributeFormat::snorm16x4:
+                    format = VK_FORMAT_R16G16B16A16_SNORM;
+                    break;
+                case rhi::RenderVertexAttributeFormat::unorm16x4:
+                    format = VK_FORMAT_R16G16B16A16_UNORM;
+                    break;
                 case rhi::RenderVertexAttributeFormat::snorm8x4:
                     format = VK_FORMAT_R8G8B8A8_SNORM;
+                    break;
+                case rhi::RenderVertexAttributeFormat::unorm8x4:
+                    format = VK_FORMAT_R8G8B8A8_UNORM;
                     break;
                 case rhi::RenderVertexAttributeFormat::uint8x4:
                     format = VK_FORMAT_R8G8B8A8_UINT;

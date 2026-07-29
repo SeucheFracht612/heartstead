@@ -22,6 +22,18 @@ enum class MaterialRuntimeDomain : std::uint8_t {
     voxel,
 };
 
+struct RuntimeSurfaceTextureBinding {
+    std::uint32_t texture = 0;
+    std::uint32_t sampler_state = 0;
+    std::uint32_t texcoord = 0;
+    std::array<float, 2> offset{};
+    std::array<float, 2> scale{1.0F, 1.0F};
+    float rotation = 0.0F;
+
+    friend bool operator==(const RuntimeSurfaceTextureBinding&,
+                           const RuntimeSurfaceTextureBinding&) = default;
+};
+
 struct MaterialRuntimeDesc {
     core::PrototypeId id;
     MaterialRuntimeDomain domain = MaterialRuntimeDomain::voxel;
@@ -30,12 +42,21 @@ struct MaterialRuntimeDesc {
     std::uint32_t top_texture = 0;
     std::uint32_t bottom_texture = 0;
     std::uint32_t surface_texture = 0;
+    RuntimeSurfaceTextureBinding base_color_texture;
+    RuntimeSurfaceTextureBinding metallic_roughness_texture;
+    RuntimeSurfaceTextureBinding normal_texture;
+    RuntimeSurfaceTextureBinding occlusion_texture;
+    RuntimeSurfaceTextureBinding emissive_texture;
     VoxelMaterialFlags flags = VoxelMaterialFlags::none;
     std::array<float, 4> base_color{1.0F, 1.0F, 1.0F, 1.0F};
     float alpha_cutoff = 0.5F;
     float emissive_strength = 0.0F;
     float roughness = 1.0F;
     float animation_frame_time = 0.0F;
+    std::array<float, 3> emissive_color{};
+    float metallic = 1.0F;
+    float normal_scale = 1.0F;
+    float occlusion_strength = 1.0F;
 
     friend bool operator==(const MaterialRuntimeDesc&, const MaterialRuntimeDesc&) = default;
 };
@@ -56,19 +77,28 @@ struct MaterialRuntimeCacheStats {
     GpuMaterialTableStats surface_gpu_table{};
 };
 
+struct GpuSurfaceTextureBinding {
+    std::uint32_t metadata[4]{};
+    float transform[4]{0.0F, 0.0F, 1.0F, 1.0F};
+};
+
+static_assert(sizeof(GpuSurfaceTextureBinding) == 32);
+
 struct GpuSurfaceMaterial {
-    std::uint32_t base_color_texture = 0;
-    std::uint32_t flags = 0;
-    float alpha_cutoff = 0.5F;
-    float padding = 0.0F;
+    GpuSurfaceTextureBinding textures[5]{};
     float base_color[4]{1.0F, 1.0F, 1.0F, 1.0F};
+    float emissive_metallic[4]{};
+    float roughness_normal_occlusion_alpha[4]{1.0F, 1.0F, 1.0F, 0.5F};
+    std::uint32_t flags = 0;
+    std::uint32_t padding[3]{};
 
     friend bool operator==(const GpuSurfaceMaterial&, const GpuSurfaceMaterial&) = default;
 };
 
-static_assert(sizeof(GpuSurfaceMaterial) == 32);
-static_assert(offsetof(GpuSurfaceMaterial, base_color_texture) == 0);
-static_assert(offsetof(GpuSurfaceMaterial, base_color) == 16);
+static_assert(sizeof(GpuSurfaceMaterial) == 224);
+static_assert(offsetof(GpuSurfaceMaterial, textures) == 0);
+static_assert(offsetof(GpuSurfaceMaterial, base_color) == 160);
+static_assert(offsetof(GpuSurfaceMaterial, flags) == 208);
 
 class MaterialRuntimeCache {
   public:

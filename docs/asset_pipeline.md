@@ -20,9 +20,9 @@ finished source file
 | You are making | Deliver | Current use |
 | --- | --- | --- |
 | Static or skinned model | glTF 2.0 `.glb` or `.gltf` | Fully cooked and rendered through an `entity_visual` |
-| Model base-color texture | 8-bit `.png`; `.jpg`/`.jpeg` for opaque art | Decoded to RGBA8, cooked with the model, and sampled by the model shader |
+| Model material texture | 8-bit `.png`; `.jpg`/`.jpeg` for opaque art; Basis Universal `.ktx2` through `KHR_texture_basisu` | Decoded to RGBA8 during cooking and sampled by the model shader |
 | Standalone texture | `.png`, `.jpg`, `.jpeg` | Decoded to a versioned RGBA8 payload, but not yet bindable to terrain, UI, or particles through contributor data |
-| Prebuilt texture container | `.ktx2` | Container validation/cooking only; not a model-texture or runtime-transcoding path yet |
+| Prebuilt texture container | `.ktx2` | Basis Universal KTX2 works in glTF; standalone KTX2 remains container-cooked without a general material binding |
 | Short sound effect | PCM/float `.wav` | Playable through a `sound_event`; mono 48 kHz is recommended for positional sound |
 | Long ambience or music | `.flac` or PCM `.wav` | Playable through a `sound_event`; set `streaming = true` |
 | Generated development sound | `.tone` | Playable, deterministic mono test/prototype audio |
@@ -116,7 +116,7 @@ Use Blender's glTF 2.0 exporter and choose **glTF Binary (.glb)** when possible.
 - Triangulate the model.
 - Apply or clean transforms that cannot be represented as translation, quaternion rotation, and
   non-zero scale.
-- Export normals and UV set 0.
+- Export normals, tangents, and the UV sets used by materials.
 - Give every material and animation clip a useful name.
 - Confirm scale and forward direction in the asset brief. The pipeline does not impose an
   automatic facing conversion.
@@ -129,50 +129,62 @@ automatically.
 GLB avoids missing sidecars and is the safest handoff. If using text glTF, keep `.bin` buffers and
 PNG/JPEG images with the delivery and do not move them after export.
 
-### Geometry supported by Model V1
+### Geometry supported by Model v4
 
 The importer keeps:
 
-- indexed triangle primitives;
+- triangle-list primitives (the cooker generates indices when the source omits them);
 - `POSITION`;
 - `NORMAL` (missing normals become straight up and will light incorrectly);
-- `TEXCOORD_0`;
+- authored or cooker-generated `TANGENT`;
+- `TEXCOORD_0` and `TEXCOORD_1`;
+- normalized or floating-point `COLOR_0`;
 - one node hierarchy with translation/rotation/scale transforms;
 - static primitives;
 - skinned primitives;
-- `JOINTS_0` and `WEIGHTS_0`, with at most four influences per vertex;
+- `JOINTS_0`/`WEIGHTS_0` and optional `JOINTS_1`/`WEIGHTS_1`; the strongest four influences are
+  retained and normalized for the GPU;
 - inverse-bind matrices;
-- translation, rotation, and scale animation.
+- position, normal, and tangent morph targets;
+- translation, rotation, scale, and morph-weight animation;
+- quantized attributes through `KHR_mesh_quantization`;
+- `EXT_meshopt_compression` and `KHR_draco_mesh_compression`, decoded once during cooking.
 
-It does not currently use tangents, vertex colors, additional UV sets, morph targets, cameras, or
-lights. `JOINTS_1`/`WEIGHTS_1` are rejected.
+Only triangle-list primitives are accepted. Cameras, lights, and UV sets above 1 are not runtime
+model features.
 
-### Material and base-color rules
+### Material rules
 
-Material slots are preserved per glTF primitive. Model V1 supports:
+Material slots are preserved per glTF primitive. Model v4 supports core glTF
+metallic-roughness materials:
 
 - glTF `baseColorTexture`;
 - glTF `baseColorFactor`;
-- one PNG or JPEG base-color image per referenced texture;
+- `metallicRoughnessTexture`, metallic factor, and roughness factor;
+- normal maps and normal scale;
+- occlusion maps and strength;
+- emissive maps and emissive factor;
+- PNG, JPEG, or Basis Universal KTX2 images;
+- each texture's sampler wrap/minification/magnification state;
+- `TEXCOORD_0`, `TEXCOORD_1`, and `KHR_texture_transform`;
 - opaque materials;
 - alpha-mask materials and `alphaCutoff`;
+- alpha-blended materials;
 - `doubleSided`;
 - required or optional `KHR_materials_unlit`;
-- a material with no base-color image, which uses the named white fallback texture.
+- named white, black, normal, and error fallback layers where a map is absent.
 
-The shader multiplies the sampled texture by the base-color factor. Base-color RGB is interpreted
-as sRGB; alpha and the numeric material factor remain linear. Only `TEXCOORD_0` without a texture
-transform is supported.
+Base-color and emissive RGB are sampled as sRGB. Metallic-roughness, normal, occlusion, alpha, and
+numeric material factors remain linear. Color and data maps are therefore stored in separate GPU
+arrays, and an image is uploaded to both only when materials use it in both roles.
 
 Use alpha mask for cutout leaves, grass cards, fences, and similar hard-edged transparency. glTF
-alpha blend is rejected by the cooker. Normal, metallic/roughness, occlusion, and emissive maps are
-outside V1 and are currently ignored rather than becoming final PBR materials.
-
-PNG is recommended when alpha matters. JPEG is opaque and lossy. KTX2 cannot be used as a glTF
-base-color image in V1.
+alpha blend uses the transparent render layer and back-to-front object sorting. PNG is recommended
+when alpha matters, JPEG is opaque and lossy, and Basis Universal KTX2 is useful for compact model
+delivery.
 
 Model images are decoded to bounded RGBA8 during cooking and stored in the versioned
-`heartstead.model.v3` payload. An individual image may be at most 8192 pixels on either axis, and
+`heartstead.model.v4` payload. An individual image may be at most 8192 pixels on either axis, and
 the decoded images in one model share a 128 MiB limit.
 
 `KHR_materials_unlit` is supported for both optional and required glTF extensions. Unlit materials
@@ -228,8 +240,7 @@ sounds.footstep_default = "base:audio/earth_footstep"
 
 Clip names, not numeric positions, are used. Every mapped name must exist exactly once. For the
 Foundation player, all six locomotion roles are required. The clips may use STEP, LINEAR, or
-CUBICSPLINE interpolation and may animate node translation, rotation, or scale. Morph-weight
-animation is rejected.
+CUBICSPLINE interpolation and may animate node translation, rotation, scale, or morph weights.
 
 For other skinned entity types, the current general presenter still expects the same locomotion
 role set. More specialized animation state maps are future work.
@@ -252,6 +263,8 @@ These are malformed-input limits, not art budgets:
 | Animation clips | 256 |
 | Channels in one clip | 4,096 |
 | Keys in one channel | 1,000,000 |
+| Morph targets on one primitive | 64 |
+| Morph delta values | 16,777,216 |
 
 Real-time assets should remain far below these ceilings.
 
@@ -259,10 +272,13 @@ Real-time assets should remain far below these ceilings.
 
 The production cooker recognizes `.png`, `.jpg`, `.jpeg`, and `.ktx2`.
 
-- PNG/JPEG are the usable input formats for model base color.
+- PNG/JPEG are usable for all model texture roles.
+- Basis Universal KTX2 is usable by model textures through `KHR_texture_basisu`; it is transcoded
+  to bounded RGBA8 during cooking.
 - Standalone PNG/JPEG assets are decoded and production-cooked as bounded, versioned RGBA8
   payloads. Their color space remains unspecified until a material consumer binds them.
-- KTX2 receives bounded container validation, but there is no runtime Basis/KTX transcode path.
+- Standalone KTX2 receives bounded container validation, but still has no general runtime material
+  consumer.
 
 Terrain materials can bind standalone production-cooked PNG/JPEG assets. The renderer resamples
 each source image into its 16 x 16 sRGB terrain texture array and generates mipmaps. UI atlas and
@@ -513,7 +529,8 @@ Current named renderer resources include an error checker texture, white texture
 flat normal texture, error material, and error mesh.
 
 - A glTF material without a base-color texture uses white.
-- A model primitive without an imported material uses the renderer error material.
+- A glTF primitive without a material uses the core glTF default white PBR material. A malformed
+  runtime primitive whose material cannot be resolved uses the renderer error material.
 - An absent voxel surface sound uses the player visual's default footstep.
 - Absent optional voxel break/place feedback uses the interaction fallback and logs the voxel ID,
   missing role, and selected fallback once per presentation-system lifetime.
@@ -535,6 +552,25 @@ the required idle clip remains a validation/cook/startup error with the logical 
 Likewise, a declared sound event with a missing or uncookable asset is a content error rather than
 a fallback case. Runtime fallbacks cover unavailable runtime records and requests; they are
 diagnostic safety nets, not substitutes for delivering valid definitions and assets.
+
+## Remaining glTF gaps
+
+The v4 path closes the common Blender/exporter holes, but it is not every glTF extension:
+
+- primitive modes other than triangle lists;
+- UV sets above `TEXCOORD_1`;
+- material extensions such as clearcoat, sheen, transmission/volume, IOR, specular, iridescence,
+  anisotropy, emissive strength, and dispersion;
+- WebP/AVIF texture extensions, material variants, GPU instancing, animation pointers, and
+  authored LOD chains;
+- model cameras and punctual lights;
+- native BC/ASTC/ETC GPU texture residency. Basis KTX2 currently decompresses during cooking to
+  RGBA8, favoring deterministic runtime startup over GPU-memory compression;
+- per-triangle ordering for intersecting alpha-blended surfaces. Transparent objects are sorted
+  back to front as objects.
+
+A required unsupported extension fails during strict import. Optional unsupported extensions may
+be ignored as glTF permits, so do not rely on them for the model's essential appearance.
 
 ## Delivery checklist
 
@@ -558,9 +594,9 @@ diagnostic safety nets, not substitutes for delivering valid definitions and ass
 - A resource-pack replacement changed the extension and therefore the ID.
 - A text glTF references a missing or escaping sidecar.
 - A model is not triangulated.
-- A model uses more than four joint influences or exports morph-weight animation.
-- A base-color texture uses another UV set or a texture transform.
-- A material uses alpha blend instead of opaque/mask.
+- A model uses a non-triangle primitive mode or UV set 2 or higher.
+- A material requires an unsupported PBR extension such as transmission or clearcoat.
+- A KTX2 image is not Basis Universal (or plain RGBA8 for the low-level decoder).
 - A mapped animation name is missing or duplicated.
 - A valid sound file has no `sound_event`, or the event is never referenced by presentation data.
 - OGG was assumed to be playable because it passed cooking.

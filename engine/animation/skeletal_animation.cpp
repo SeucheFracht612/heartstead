@@ -135,6 +135,44 @@ constexpr float minimum_affine_determinant = 1.0e-8F;
     return result;
 }
 
+[[nodiscard]] float weight_channel_value(const assets::ModelAnimationChannel& channel,
+                                         std::size_t weight_index, float time_seconds) noexcept {
+    const auto value_at = [&](std::size_t keyframe, std::size_t spline_component = 1U) {
+        const auto frame_stride =
+            static_cast<std::size_t>(channel.weight_count) *
+            (channel.interpolation == assets::ModelAnimationInterpolation::cubic_spline ? 3U : 1U);
+        const auto component_offset =
+            channel.interpolation == assets::ModelAnimationInterpolation::cubic_spline
+                ? spline_component * channel.weight_count
+                : 0U;
+        return channel.weight_values[keyframe * frame_stride + component_offset + weight_index];
+    };
+    if (time_seconds <= channel.times.front() || channel.times.size() == 1) {
+        return value_at(0);
+    }
+    if (time_seconds >= channel.times.back()) {
+        return value_at(channel.times.size() - 1U);
+    }
+    const auto upper = std::upper_bound(channel.times.begin(), channel.times.end(), time_seconds);
+    const auto second_index = static_cast<std::size_t>(std::distance(channel.times.begin(), upper));
+    const auto first_index = second_index - 1U;
+    if (channel.interpolation == assets::ModelAnimationInterpolation::step) {
+        return value_at(first_index);
+    }
+    const auto span = channel.times[second_index] - channel.times[first_index];
+    const auto alpha = (time_seconds - channel.times[first_index]) / span;
+    if (channel.interpolation == assets::ModelAnimationInterpolation::linear) {
+        const auto first = value_at(first_index);
+        return first + (value_at(second_index) - first) * alpha;
+    }
+    const auto alpha_squared = alpha * alpha;
+    const auto alpha_cubed = alpha_squared * alpha;
+    return (2.0F * alpha_cubed - 3.0F * alpha_squared + 1.0F) * value_at(first_index) +
+           (alpha_cubed - 2.0F * alpha_squared + alpha) * span * value_at(first_index, 2U) +
+           (-2.0F * alpha_cubed + 3.0F * alpha_squared) * value_at(second_index) +
+           (alpha_cubed - alpha_squared) * span * value_at(second_index, 0U);
+}
+
 [[nodiscard]] float sampled_time(const assets::ModelAnimationClip& clip,
                                  const AnimationClipPlayback& playback) noexcept {
     if (!playback.looping || clip.duration_seconds <= 0.0F) {
@@ -225,19 +263,31 @@ constexpr float minimum_affine_determinant = 1.0e-8F;
 SkeletalPose bind_pose(const assets::ModelAsset& model) {
     SkeletalPose result;
     result.local_transforms.reserve(model.nodes.size());
+    result.morph_weights.reserve(model.nodes.size());
     for (const auto& node : model.nodes) {
         result.local_transforms.push_back(node.bind_transform);
+        result.morph_weights.push_back(node.morph_weights);
     }
     return result;
 }
 
 core::Status validate_skeletal_pose(const assets::ModelAsset& model, const SkeletalPose& pose) {
     if (pose.local_transforms.size() != model.nodes.size() ||
+        pose.morph_weights.size() != model.nodes.size() ||
         !std::ranges::all_of(pose.local_transforms,
                              [](const auto& transform) { return transform.is_valid(); })) {
         return core::Status::failure(
             "skeletal_animation.invalid_pose",
             "skeletal pose must provide one valid local TRS transform per model node");
+    }
+    for (std::size_t node = 0; node < model.nodes.size(); ++node) {
+        if (pose.morph_weights[node].size() != model.nodes[node].morph_weights.size() ||
+            !std::ranges::all_of(pose.morph_weights[node],
+                                 [](float value) { return std::isfinite(value); })) {
+            return core::Status::failure(
+                "skeletal_animation.invalid_pose",
+                "skeletal pose morph weights must match the model nodes and be finite");
+        }
     }
     return core::Status::ok();
 }
@@ -255,14 +305,27 @@ core::Result<SkeletalPose> sample_animation_clip(const assets::ModelAsset& model
     for (const auto& channel : clip.channels) {
         const auto value_multiplier =
             channel.interpolation == assets::ModelAnimationInterpolation::cubic_spline ? 3U : 1U;
+        const auto is_weights = channel.path == assets::ModelAnimationPath::weights;
+        const auto expected_weight_values =
+            channel.times.size() * value_multiplier * channel.weight_count;
         if (channel.node >= pose.local_transforms.size() || channel.times.empty() ||
-            channel.values.size() != channel.times.size() * value_multiplier) {
+            (is_weights ? channel.weight_count != pose.morph_weights[channel.node].size() ||
+                              channel.weight_values.size() != expected_weight_values ||
+                              !channel.values.empty()
+                        : channel.values.size() != channel.times.size() * value_multiplier)) {
             return core::Result<SkeletalPose>::failure(
                 "skeletal_animation.invalid_channel",
                 "animation channel has invalid runtime bounds or references a missing model node");
         }
-        const auto value = channel_value(channel, time_seconds);
         auto& transform = pose.local_transforms[channel.node];
+        if (is_weights) {
+            for (std::size_t weight = 0; weight < channel.weight_count; ++weight) {
+                pose.morph_weights[channel.node][weight] =
+                    weight_channel_value(channel, weight, time_seconds);
+            }
+            continue;
+        }
+        const auto value = channel_value(channel, time_seconds);
         switch (channel.path) {
         case assets::ModelAnimationPath::translation:
             transform.translation = {value.x, value.y, value.z};
@@ -272,6 +335,8 @@ core::Result<SkeletalPose> sample_animation_clip(const assets::ModelAsset& model
             break;
         case assets::ModelAnimationPath::scale:
             transform.scale = {value.x, value.y, value.z};
+            break;
+        case assets::ModelAnimationPath::weights:
             break;
         }
     }
@@ -300,6 +365,7 @@ core::Result<SkeletalPose> blend_skeletal_poses(const assets::ModelAsset& model,
     }
     SkeletalPose result;
     result.local_transforms.resize(first.local_transforms.size());
+    result.morph_weights.resize(first.morph_weights.size());
     for (std::size_t index = 0; index < result.local_transforms.size(); ++index) {
         const auto& left = first.local_transforms[index];
         const auto& right = second.local_transforms[index];
@@ -308,6 +374,15 @@ core::Result<SkeletalPose> blend_skeletal_poses(const assets::ModelAsset& model,
             slerp(left.rotation, right.rotation, second_weight),
             left.scale + (right.scale - left.scale) * second_weight,
         };
+    }
+    for (std::size_t node = 0; node < result.morph_weights.size(); ++node) {
+        result.morph_weights[node].resize(first.morph_weights[node].size());
+        for (std::size_t weight = 0; weight < result.morph_weights[node].size(); ++weight) {
+            result.morph_weights[node][weight] =
+                first.morph_weights[node][weight] +
+                (second.morph_weights[node][weight] - first.morph_weights[node][weight]) *
+                    second_weight;
+        }
     }
     return core::Result<SkeletalPose>::success(std::move(result));
 }

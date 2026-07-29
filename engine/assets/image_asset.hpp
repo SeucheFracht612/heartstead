@@ -26,5 +26,8 @@ struct ImageAsset {
 
 [[nodiscard]] core::Result<ImageAsset> decode_png_or_jpeg(std::span<const std::uint8_t> encoded,
                                                           const ImageAssetLimits& limits = {});
+[[nodiscard]] core::Result<ImageAsset> decode_ktx2(std::span<const std::uint8_t> encoded,
+                                                   const ImageAssetLimits& limits = {},
+                                                   bool require_gltf_basisu = false);
 
 } // namespace heartstead::assets

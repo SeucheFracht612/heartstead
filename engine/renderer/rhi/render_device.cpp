@@ -1363,6 +1363,8 @@ core::Status validate_render_graphics_pipeline_shape(const RenderGraphicsPipelin
             break;
         case RenderVertexAttributeFormat::sint16x4:
         case RenderVertexAttributeFormat::uint16x4:
+        case RenderVertexAttributeFormat::snorm16x4:
+        case RenderVertexAttributeFormat::unorm16x4:
             byte_size = 8;
             break;
         case RenderVertexAttributeFormat::uint16x2:
@@ -1372,6 +1374,7 @@ core::Status validate_render_graphics_pipeline_shape(const RenderGraphicsPipelin
             byte_size = 2;
             break;
         case RenderVertexAttributeFormat::snorm8x4:
+        case RenderVertexAttributeFormat::unorm8x4:
         case RenderVertexAttributeFormat::uint8x4:
             byte_size = 4;
             break;

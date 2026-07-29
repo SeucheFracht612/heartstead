@@ -1026,7 +1026,7 @@ production_metadata_fields(const AssetRecord& source, std::span<const std::uint8
 }
 
 void add_model_runtime_metadata(CookedAssetMetadataFields& metadata, const ModelAsset& model) {
-    add_metadata(metadata, "model.runtime_format", "heartstead.model.v3");
+    add_metadata(metadata, "model.runtime_format", "heartstead.model.v4");
     add_metadata(metadata, "model.vertices", model.vertices.size());
     add_metadata(metadata, "model.indices", model.indices.size());
     add_metadata(metadata, "model.nodes", model.nodes.size());
@@ -1397,7 +1397,7 @@ std::string_view asset_cook_pipeline_name(AssetKind kind, AssetCookBackend backe
         case AssetKind::texture:
             return "texture_png_ktx2_jpeg_converter_v2";
         case AssetKind::model:
-            return "model_gltf_runtime_converter_v3";
+            return "model_gltf_runtime_converter_v4";
         case AssetKind::shader:
             return "shader_spirv_runtime_passthrough_v1";
     case AssetKind::sound:

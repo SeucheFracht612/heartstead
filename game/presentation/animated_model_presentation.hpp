@@ -74,7 +74,7 @@ class AnimatedModelPresentation final {
     std::vector<PrimitiveBinding> primitives_;
     std::unordered_map<std::uint64_t, EntityVisual> entities_;
     AnimatedModelPresentationStats stats_;
-    bool has_skinned_primitives_ = false;
+    bool has_deformed_primitives_ = false;
     bool initialized_ = false;
 };
 

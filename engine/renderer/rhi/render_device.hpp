@@ -352,7 +352,10 @@ enum class RenderVertexAttributeFormat : std::uint8_t {
     uint16x4,
     uint16x2,
     uint16,
+    snorm16x4,
+    unorm16x4,
     snorm8x4,
+    unorm8x4,
     uint8x4,
     uint8,
 };

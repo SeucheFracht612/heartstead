@@ -51,7 +51,7 @@ namespace {
 
 core::Status SurfaceTextureArrayConfig::validate() const {
     if (layer_width == 0 || layer_height == 0 || maximum_layers < 4 || layer_width > 4096 ||
-        layer_height > 4096) {
+        layer_height > 4096 || texture_id.empty()) {
         return core::Status::failure(
             "surface_texture_array.invalid_config",
             "surface texture layers must be 1-4096 pixels and allow four fallback layers");
@@ -141,8 +141,8 @@ core::Result<std::uint32_t> SurfaceTextureArray::add(std::string id, std::uint32
             "surface_texture_array.full",
             "surface texture array has reached its configured layer limit");
     }
-    auto resized =
-        resize_surface_rgba8(width, height, rgba8, config_.layer_width, config_.layer_height);
+    auto resized = resize_surface_rgba8(width, height, rgba8, config_.layer_width,
+                                        config_.layer_height, config_.color_space);
     auto layer = layers_.add_layer(std::move(id), resized);
     if (!layer) {
         return layer;
@@ -165,7 +165,7 @@ core::Status SurfaceTextureArray::synchronize() {
     if (synchronized_revision_ == revision_) {
         return core::Status::ok();
     }
-    auto upload = layers_.build("__surface_texture_array", TextureColorSpace::srgb, true);
+    auto upload = layers_.build(config_.texture_id, config_.color_space, true);
     if (!upload) {
         return core::Status::failure(upload.error().code, upload.error().message);
     }
@@ -221,8 +221,8 @@ std::uint64_t SurfaceTextureArray::revision() const noexcept {
 
 std::vector<std::byte> resize_surface_rgba8(std::uint32_t source_width, std::uint32_t source_height,
                                             std::span<const std::uint8_t> source,
-                                            std::uint32_t target_width,
-                                            std::uint32_t target_height) {
+                                            std::uint32_t target_width, std::uint32_t target_height,
+                                            TextureColorSpace color_space) {
     std::vector<std::byte> result(static_cast<std::size_t>(target_width) * target_height * 4U);
     for (std::uint32_t target_y = 0; target_y < target_height; ++target_y) {
         const auto source_y = (static_cast<float>(target_y) + 0.5F) *
@@ -246,14 +246,16 @@ std::vector<std::byte> resize_surface_rgba8(std::uint32_t source_width, std::uin
                                     std::size_t channel) noexcept {
                 const auto offset = (static_cast<std::size_t>(y) * source_width + x) * 4U + channel;
                 auto value = static_cast<float>(source[offset]) / 255.0F;
-                return channel < 3U ? srgb_to_linear(value) : value;
+                return channel < 3U && color_space == TextureColorSpace::srgb
+                           ? srgb_to_linear(value)
+                           : value;
             };
             const auto output = (static_cast<std::size_t>(target_y) * target_width + target_x) * 4U;
             for (std::size_t channel = 0; channel < 4U; ++channel) {
                 const auto top = std::lerp(sample(x0, y0, channel), sample(x1, y0, channel), fx);
                 const auto bottom = std::lerp(sample(x0, y1, channel), sample(x1, y1, channel), fx);
                 auto value = std::lerp(top, bottom, fy);
-                if (channel < 3U) {
+                if (channel < 3U && color_space == TextureColorSpace::srgb) {
                     value = linear_to_srgb(value);
                 }
                 result[output + channel] = static_cast<std::byte>(
