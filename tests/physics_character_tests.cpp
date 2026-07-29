@@ -54,6 +54,14 @@ void fill_floor_and_step(heartstead::world::ChunkDatabase& chunks) {
         }
     }
     assert(chunk.set({4, 1, 2}, {2, 0}));
+    // A voxel "slope" is a staircase of authored collision shapes, not an inclined plane.
+    assert(chunk.set({6, 1, 8}, {2, 0}));
+    assert(chunk.set({7, 1, 8}, {1, 0}));
+    assert(chunk.set({8, 1, 8}, {1, 0}));
+    assert(chunk.set({8, 2, 8}, {2, 0}));
+    assert(chunk.set({9, 1, 8}, {1, 0}));
+    assert(chunk.set({9, 2, 8}, {1, 0}));
+    assert(chunk.set({15, 1, 12}, {1, 0}));
     assert(chunk.set({10, 1, 2}, {3, 0, world::full_fluid_state_bits()}));
 }
 
@@ -69,17 +77,20 @@ void create_floor_and_step_bodies(heartstead::physics::IPhysicsWorld& physics_wo
     step.shape.half_extents = {0.5F, 0.25F, 0.5F};
     assert(physics_world.create_body(std::move(step)));
 
-    physics::PhysicsBodyDesc gentle_ramp;
-    gentle_ramp.position = {8.0F, 2.7F, 8.0F};
-    gentle_ramp.rotation_degrees = {0.0F, 0.0F, 30.0F};
-    gentle_ramp.shape.half_extents = {3.0F, 0.1F, 1.0F};
-    assert(physics_world.create_body(std::move(gentle_ramp)));
+    const auto create_static_box = [&physics_world](physics::Vec3 position,
+                                                    physics::Vec3 half_extents) {
+        physics::PhysicsBodyDesc body;
+        body.position = position;
+        body.shape.half_extents = half_extents;
+        assert(physics_world.create_body(std::move(body)));
+    };
+    create_static_box({6.5F, 1.25F, 8.5F}, {0.5F, 0.25F, 0.5F});
+    create_static_box({7.5F, 1.5F, 8.5F}, {0.5F, 0.5F, 0.5F});
+    create_static_box({8.5F, 1.75F, 8.5F}, {0.5F, 0.75F, 0.5F});
+    create_static_box({9.5F, 2.0F, 8.5F}, {0.5F, 1.0F, 0.5F});
 
-    physics::PhysicsBodyDesc steep_ramp;
-    steep_ramp.position = {16.0F, 3.7F, 12.0F};
-    steep_ramp.rotation_degrees = {0.0F, 0.0F, 60.0F};
-    steep_ramp.shape.half_extents = {3.0F, 0.1F, 1.0F};
-    assert(physics_world.create_body(std::move(steep_ramp)));
+    // A full-height voxel above the floor is deliberately too high to auto-step.
+    create_static_box({15.5F, 1.5F, 12.5F}, {0.5F, 0.5F, 0.5F});
 }
 
 [[nodiscard]] heartstead::movement::PlayerInputFrame
@@ -102,7 +113,7 @@ void test_character_api_validation_and_capabilities() {
                .supports_character_controllers);
 }
 
-void test_jolt_step_jump_and_swim_buoyancy() {
+void test_jolt_voxel_steps_jump_and_swim_buoyancy() {
     using namespace heartstead;
     if (!physics::physics_backend_info(physics::PhysicsBackend::jolt).available) {
         return;
@@ -135,29 +146,31 @@ void test_jolt_step_jump_and_swim_buoyancy() {
     assert(position.approximate_global().x > 4.0);
     assert(std::abs(position.approximate_global().y - 1.5) < 0.06);
 
-    auto gentle = movement::PhysicsCharacterCollisionWorld::create(
+    auto terrace = movement::PhysicsCharacterCollisionWorld::create(
         *physics_world.value(), chunks, palette, world::WorldPosition{4.8, 1.0, 8.0}, {0.6, 1.8});
-    assert(gentle);
-    auto gentle_position = world::WorldPosition{4.8, 1.0, 8.0};
+    assert(terrace);
+    auto terrace_position = world::WorldPosition{4.8, 1.0, 8.0};
     for (std::uint32_t tick = 0; tick < 55; ++tick) {
-        auto moved = gentle.value()->move(gentle_position, {0.6, 1.8}, {0.08, 0.0, 0.0}, 0.6);
+        auto moved = terrace.value()->move(terrace_position, {0.6, 1.8}, {0.08, 0.0, 0.0}, 0.6);
         assert(moved);
-        gentle_position = moved.value().position;
+        terrace_position = moved.value().position;
     }
-    assert(gentle_position.approximate_global().x > 8.0);
-    assert(gentle_position.approximate_global().y > 2.5);
+    assert(terrace_position.approximate_global().x > 9.0);
+    assert(terrace_position.approximate_global().y > 2.9);
 
-    auto steep = movement::PhysicsCharacterCollisionWorld::create(
-        *physics_world.value(), chunks, palette, world::WorldPosition{13.5, 1.0, 12.0}, {0.6, 1.8});
-    assert(steep);
-    auto steep_position = world::WorldPosition{13.5, 1.0, 12.0};
+    auto high_ledge = movement::PhysicsCharacterCollisionWorld::create(
+        *physics_world.value(), chunks, palette, world::WorldPosition{13.5, 1.0, 12.5}, {0.6, 1.8});
+    assert(high_ledge);
+    auto ledge_position = world::WorldPosition{13.5, 1.0, 12.5};
+    auto maximum_ledge_y = ledge_position.approximate_global().y;
     for (std::uint32_t tick = 0; tick < 55; ++tick) {
-        auto moved = steep.value()->move(steep_position, {0.6, 1.8}, {0.08, 0.0, 0.0}, 0.6);
+        auto moved = high_ledge.value()->move(ledge_position, {0.6, 1.8}, {0.08, 0.0, 0.0}, 0.6);
         assert(moved);
-        steep_position = moved.value().position;
+        ledge_position = moved.value().position;
+        maximum_ledge_y = std::max(maximum_ledge_y, ledge_position.approximate_global().y);
     }
-    assert(steep_position.approximate_global().x < 15.0);
-    assert(steep_position.approximate_global().y < 1.6);
+    assert(ledge_position.approximate_global().x < 15.0);
+    assert(maximum_ledge_y < 1.06);
 
     physics::PhysicsBodyDesc pushable;
     pushable.motion_type = physics::BodyMotionType::dynamic;
@@ -215,6 +228,6 @@ void test_jolt_step_jump_and_swim_buoyancy() {
 
 int main() {
     test_character_api_validation_and_capabilities();
-    test_jolt_step_jump_and_swim_buoyancy();
+    test_jolt_voxel_steps_jump_and_swim_buoyancy();
     return 0;
 }

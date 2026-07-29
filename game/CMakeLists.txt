@@ -5,6 +5,7 @@ target_sources(
   heartstead_game
   PRIVATE
     application/game_application.cpp
+    foundation/foundation_world.cpp
     features/interaction/voxel_raycast.cpp
     features/interaction/voxel_commands.cpp
     features/interaction/voxel_interaction_module.cpp
@@ -29,6 +30,7 @@ target_sources(
     BASE_DIRS ${PROJECT_SOURCE_DIR}
     FILES
       application/game_application.hpp
+      foundation/foundation_world.hpp
       features/interaction/voxel_raycast.hpp
       features/interaction/voxel_commands.hpp
       features/interaction/voxel_interaction_module.hpp

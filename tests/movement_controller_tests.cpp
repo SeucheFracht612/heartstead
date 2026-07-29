@@ -128,12 +128,9 @@ void test_fixed_step_and_input_codec() {
         movement::PlayerInputBundleTextCodec::encode(bundle));
     assert(bundle_round_trip && bundle_round_trip.value().frames.size() == 3);
     const auto binary_bundle = movement::PlayerInputBundleBinaryCodec::encode(bundle);
-    auto binary_bundle_round_trip =
-        movement::PlayerInputBundleBinaryCodec::decode(binary_bundle);
-    assert(binary_bundle_round_trip &&
-           binary_bundle_round_trip.value().frames == bundle.frames);
-    assert(binary_bundle.size() <
-           movement::PlayerInputBundleTextCodec::encode(bundle).size());
+    auto binary_bundle_round_trip = movement::PlayerInputBundleBinaryCodec::decode(binary_bundle);
+    assert(binary_bundle_round_trip && binary_bundle_round_trip.value().frames == bundle.frames);
+    assert(binary_bundle.size() < movement::PlayerInputBundleTextCodec::encode(bundle).size());
     assert(!movement::PlayerInputBundleBinaryCodec::decode(
         std::string_view(binary_bundle).substr(0, binary_bundle.size() - 1)));
     movement::ServerMovementInputQueue queue;
@@ -295,10 +292,8 @@ void test_snapshot_prediction_camera_and_load() {
     assert(decoded.value().state.position == snapshot.state.position);
     assert(decoded.value().collision_world_revision == 9);
     assert(decoded.value().state.locomotion_animation == snapshot.state.locomotion_animation);
-    const auto binary_snapshot =
-        movement::PlayerControllerSnapshotBinaryCodec::encode(snapshot);
-    auto decoded_binary =
-        movement::PlayerControllerSnapshotBinaryCodec::decode(binary_snapshot);
+    const auto binary_snapshot = movement::PlayerControllerSnapshotBinaryCodec::encode(snapshot);
+    auto decoded_binary = movement::PlayerControllerSnapshotBinaryCodec::decode(binary_snapshot);
     assert(decoded_binary);
     assert(decoded_binary.value().state.position == snapshot.state.position);
     assert(decoded_binary.value().state.locomotion_animation ==
@@ -327,6 +322,18 @@ void test_snapshot_prediction_camera_and_load() {
     auto third = camera.evaluate(state, movement::PlayerCameraPerspective::third_person, 1280, 720);
     assert(third);
     assert(third.value().body.local_body_visible);
+
+    auto& camera_chunk = yard.chunks.get_or_create({0, 0, 0});
+    assert(camera_chunk.set({2, 1, 1}, {1, 0, 0, 0}));
+    assert(camera_chunk.set({2, 2, 1}, {1, 0, 0, 0}));
+    assert(camera_chunk.set({2, 3, 1}, {1, 0, 0, 0}));
+    const movement::PlayerCameraCollisionContext camera_collision{yard.chunks, yard.palette};
+    auto constrained = camera.evaluate(state, movement::PlayerCameraPerspective::third_person, 1280,
+                                       720, &camera_collision);
+    assert(constrained);
+    assert(constrained.value().position.approximate_global().z >
+           third.value().position.approximate_global().z + 3.0);
+    assert(constrained.value().position.approximate_global().z > 2.18);
 
     movement::RemotePlayerInterpolator interpolator;
     auto remote_a = snapshot;

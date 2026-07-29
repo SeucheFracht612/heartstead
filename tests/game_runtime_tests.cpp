@@ -236,7 +236,7 @@ void test_game_runtime_starts_from_aggregate_content() {
            report.asset_catalog.active_count());
     assert(runtime.value().startup_report().voxel_palette_entry_count ==
            report.voxel_palette.size());
-    assert(runtime.value().startup_report().voxel_palette_entry_count == 4);
+    assert(runtime.value().startup_report().voxel_palette_entry_count == 9);
     assert(runtime.value().startup_report().material_definition_count ==
            report.material_registry.size());
     assert(runtime.value().startup_report().material_asset_reference_count ==

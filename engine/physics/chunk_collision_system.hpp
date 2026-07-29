@@ -30,17 +30,20 @@ struct ChunkCollisionBodyRecord {
     world::ChunkIdentity identity{};
     std::uint64_t content_revision = 0;
     std::uint64_t collision_table_revision = 0;
+    std::uint64_t shape_fingerprint = 0;
     PhysicsBodyId body_id{};
     std::uint32_t box_count = 0;
 };
 
 struct ChunkCollisionSystemStats {
+    std::uint64_t world_revision = 1;
     std::size_t resident_body_count = 0;
     std::size_t pending_chunk_count = 0;
     std::size_t in_flight_job_count = 0;
     std::size_t completed_mailbox_count = 0;
     std::uint32_t submitted_this_update = 0;
     std::uint32_t applied_this_update = 0;
+    std::uint32_t body_changes_this_update = 0;
     std::uint32_t removed_this_update = 0;
     std::uint64_t applied_shapes = 0;
     std::uint64_t removed_bodies = 0;
@@ -68,6 +71,7 @@ class ChunkCollisionSystem {
     void shutdown() noexcept;
 
     [[nodiscard]] const ChunkCollisionBodyRecord* find(world::ChunkCoord coordinate) const noexcept;
+    [[nodiscard]] std::uint64_t world_revision() const noexcept;
     [[nodiscard]] const ChunkCollisionSystemStats& stats() noexcept;
     [[nodiscard]] const ChunkCollisionSystemStats& stats() const noexcept;
 
@@ -94,6 +98,7 @@ class ChunkCollisionSystem {
     std::shared_ptr<const world::ChunkCollisionTableSnapshot> collision_table_;
     std::map<world::ChunkCoord, ChunkCollisionBodyRecord> bodies_;
     std::set<world::ChunkCoord> pending_chunks_;
+    std::uint64_t world_revision_ = 1;
     ChunkCollisionSystemStats stats_{};
 };
 

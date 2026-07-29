@@ -152,15 +152,28 @@ void test_system_cooks_rebuilds_and_removes_terrain(heartstead::physics::Physics
 
     auto collision_system = physics::ChunkCollisionSystem::create(*physics_world.value(), palette);
     assert(collision_system);
+    assert(collision_system.value()->world_revision() == 1);
     const auto initial_revision = chunk.content_revision();
     assert(wait_for_collision_revision(*collision_system.value(), chunks, dirty_regions, palette,
                                        coordinate, initial_revision));
     const auto* initial_record = collision_system.value()->find(coordinate);
     assert(initial_record != nullptr);
     assert(initial_record->box_count == 1);
+    const auto initial_world_revision = collision_system.value()->world_revision();
+    assert(initial_world_revision > 1);
     assert(physics_world.value()->body_state(initial_record->body_id).has_value());
     assert(dirty_regions.count(dirty::DirtyRegionKind::chunk_collision) == 0);
     assert(dirty_regions.count(dirty::DirtyRegionKind::chunk_mesh) == 1);
+
+    const auto unchanged_body = initial_record->body_id;
+    assert(chunks.set(coordinate, {1, 1, 1}, {3, 0}, dirty_regions));
+    const auto non_colliding_revision = chunks.find(coordinate)->content_revision();
+    assert(wait_for_collision_revision(*collision_system.value(), chunks, dirty_regions, palette,
+                                       coordinate, non_colliding_revision));
+    const auto* unchanged_record = collision_system.value()->find(coordinate);
+    assert(unchanged_record != nullptr);
+    assert(unchanged_record->body_id == unchanged_body);
+    assert(collision_system.value()->world_revision() == initial_world_revision);
 
     physics::PhysicsBodyDesc dropped;
     dropped.motion_type = physics::BodyMotionType::dynamic;
@@ -184,12 +197,15 @@ void test_system_cooks_rebuilds_and_removes_terrain(heartstead::physics::Physics
     assert(rebuilt_record != nullptr);
     assert(rebuilt_record->body_id != old_body);
     assert(rebuilt_record->box_count > 1);
+    const auto rebuilt_world_revision = collision_system.value()->world_revision();
+    assert(rebuilt_world_revision > initial_world_revision);
     assert(!physics_world.value()->body_state(old_body).has_value());
     const auto rebuilt_body = rebuilt_record->body_id;
 
     assert(chunks.erase(coordinate));
     assert(collision_system.value()->update(chunks, dirty_regions, palette));
     assert(collision_system.value()->find(coordinate) == nullptr);
+    assert(collision_system.value()->world_revision() > rebuilt_world_revision);
     assert(!physics_world.value()->body_state(rebuilt_body).has_value());
     assert(collision_system.value()->stats().resident_body_count == 0);
 }

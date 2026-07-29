@@ -1,6 +1,6 @@
 # Foundation Slice 0.1
 
-Status: planned
+Status: in progress
 
 The Foundation Slice is the first small but real Heartstead game build. It proves that the
 authoritative runtime, voxel world, controller, rendering, asset, presentation, audio, particle,
@@ -45,14 +45,14 @@ build followed by the commands above produced the authoritative result.
 
 ## Application and session
 
-- [ ] `[Automated]` `dev_game --frames 3` always creates a valid local authoritative session.
+- [x] `[Automated]` `dev_game --frames 3` always creates a valid local authoritative session.
 - [ ] `[Automated]` a bounded remote-client smoke can connect to the dedicated server.
-- [ ] `[Automated]` headless `--frames` runs do not require a display or audio output device.
+- [x] `[Automated]` headless `--frames` runs do not require a display or audio output device.
 - [ ] `[Native]` the native executable creates the window, renderer, audio system, input system,
       and development mode without startup warnings.
-- [ ] `[Automated]` bounded shutdown releases the gameplay mode before application-owned renderer,
+- [x] `[Automated]` bounded shutdown releases the gameplay mode before application-owned renderer,
       audio, window, and platform resources.
-- [ ] `[Automated]` `main.cpp` contains launch configuration and composition only; gameplay
+- [x] `[Automated]` `main.cpp` contains launch configuration and composition only; gameplay
       features are not manually integrated there.
 - [ ] `[Native]` the diagnostic overlay shows session mode, connection state, authoritative tick,
       presentation tick, and last runtime error.
@@ -60,15 +60,15 @@ build followed by the commands above produced the authoritative result.
 ## Deterministic Foundation environment
 
 - [ ] `[Automated]` a new Foundation world records a stable scenario ID, layout version, and seed.
-- [ ] `[Automated]` repeated new-world construction produces byte-equivalent baseline chunks.
+- [x] `[Automated]` repeated new-world construction produces byte-equivalent baseline chunks.
 - [ ] `[Both]` the player appears at the documented safe spawn.
-- [ ] `[Automated]` the full player capsule and camera pivot volume at spawn contain no solid voxel.
+- [x] `[Automated]` the full player capsule and camera pivot volume at spawn contain no solid voxel.
 - [ ] `[Both]` dirt, stone, grass, water, and visually distinct diagnostic blocks are present.
 - [ ] `[Both]` the compact controller course contains full-block steps, partial-height steps,
       voxel-terrain inclines, ledges, a low ceiling, a small hole, a landing area, and water.
 - [ ] `[Both]` the course crosses at least one chunk boundary at a marked edit station.
 - [ ] `[Native]` daylight, shadows, fog, and the basic sky render in the Foundation world.
-- [ ] `[Automated]` saved edit deltas are applied after deterministic baseline construction.
+- [x] `[Automated]` saved edit deltas are applied after deterministic baseline construction.
 
 For this slice, a slope is voxel terrain: a terraced incline composed from full and
 partial-height voxel shapes. It is not an arbitrary rotated plane or hidden physics fixture.
@@ -81,8 +81,8 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 - [ ] `[Both]` the player falls and lands without penetration or persistent hovering.
 - [ ] `[Both]` the player steps onto the supported normal voxel ledge height.
 - [ ] `[Both]` the player traverses the ascending and descending voxel-terrain incline.
-- [ ] `[Automated]` an unsupported ledge or ceiling prevents an invalid step-up.
-- [ ] `[Automated]` traversing internal block edges does not create unrequested upward velocity.
+- [x] `[Automated]` an unsupported ledge or ceiling prevents an invalid step-up.
+- [x] `[Automated]` traversing internal block edges does not create unrequested upward velocity.
 - [ ] `[Both]` removing the supporting block makes the player fall after collision refresh.
 - [ ] `[Both]` water enters and exits the existing swimming/controller mode correctly.
 - [ ] `[Native]` first- and third-person camera modes can be selected explicitly.
@@ -191,14 +191,14 @@ partial-height voxel shapes. It is not an arbitrary rotated plane or hidden phys
 
 ## Regression gates
 
-- [ ] `[Automated]` the complete default-debug build passes.
-- [ ] `[Automated]` the complete default-debug CTest suite passes.
+- [x] `[Automated]` the complete default-debug build passes.
+- [x] `[Automated]` the complete default-debug CTest suite passes.
 - [ ] `[Automated]` the Foundation headless integration test starts a session, spawns a player,
       submits an edit, advances ticks, verifies server and client state, saves, reloads, and
       verifies the edit.
 - [ ] `[Automated]` the Foundation asset validation test cooks and loads all required assets and
       resolves every presentation reference.
-- [ ] `[Automated]` the bounded `dev_game` headless smoke passes.
+- [x] `[Automated]` the bounded `dev_game` headless smoke passes.
 - [ ] `[Native]` the bounded real-window smoke creates renderer/audio resources, renders the
       Foundation scene, and shuts down cleanly.
 - [ ] `[Native]` all visual and audible checklist items receive a final in-game pass before the
@@ -214,4 +214,3 @@ The slice is complete only when:
   mapping, and sound set, but no manual presenter in `dev_game`;
 - adding an interaction requires an input/request, authoritative command and validation, state
   change, and presentation event, but no effect trigger in `main.cpp`.
-

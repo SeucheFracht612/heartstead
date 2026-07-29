@@ -3,7 +3,9 @@
 #include "engine/core/result.hpp"
 #include "engine/math/matrix.hpp"
 #include "engine/movement/player_controller.hpp"
+#include "engine/world/chunks/chunk_database.hpp"
 #include "engine/world/coords/world_position.hpp"
+#include "engine/world/voxels/voxel_palette.hpp"
 
 namespace heartstead::movement {
 
@@ -16,11 +18,18 @@ struct PlayerCameraConfig {
     double third_person_distance = 4.0;
     double third_person_height = 0.45;
     double third_person_shoulder = 0.35;
+    double collision_radius = 0.18;
+    double collision_clearance = 0.05;
     float vertical_fov_degrees = 80.0F;
     float near_plane = 0.05F;
     float far_plane = 2048.0F;
 
     [[nodiscard]] core::Status validate() const;
+};
+
+struct PlayerCameraCollisionContext {
+    const world::ChunkDatabase& chunks;
+    const world::VoxelPalette& palette;
 };
 
 struct PlayerBodyRigPose {
@@ -49,7 +58,8 @@ class PlayerCameraRig {
 
     [[nodiscard]] core::Result<PlayerCameraFrame>
     evaluate(const PlayerControllerState& player, PlayerCameraPerspective perspective,
-             std::uint32_t viewport_width, std::uint32_t viewport_height) const;
+             std::uint32_t viewport_width, std::uint32_t viewport_height,
+             const PlayerCameraCollisionContext* collision = nullptr) const;
 
   private:
     PlayerCameraConfig config_;

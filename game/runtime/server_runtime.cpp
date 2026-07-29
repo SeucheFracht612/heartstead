@@ -11,6 +11,7 @@
 #include "engine/world/world_snapshot.hpp"
 #include "game/features/interaction/voxel_commands.hpp"
 #include "game/features/interaction/voxel_interaction_module.hpp"
+#include "game/foundation/foundation_world.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -52,6 +53,33 @@ void revoke_private_subject_access(net::HostSession& host, core::NetId client_id
         policy.private_access_rules.erase(rule);
     }
     host.set_replication_relevance_policy(std::move(policy));
+}
+
+[[nodiscard]] bool collision_geometry_matches(world::VoxelCell lhs, world::VoxelCell rhs,
+                                              const world::VoxelPalette& palette) noexcept {
+    if (lhs.type == rhs.type) {
+        return true;
+    }
+    const auto* lhs_definition = palette.find_by_type(lhs.type);
+    const auto* rhs_definition = palette.find_by_type(rhs.type);
+    const auto bounds_match = [](const world::VoxelDefinition* first,
+                                 const world::VoxelDefinition* second) {
+        const auto first_size = first == nullptr ? std::size_t{0} : first->collision_bounds.size();
+        const auto second_size =
+            second == nullptr ? std::size_t{0} : second->collision_bounds.size();
+        if (first_size != second_size) {
+            return false;
+        }
+        for (std::size_t index = 0; index < first_size; ++index) {
+            const auto& first_bounds = first->collision_bounds[index];
+            const auto& second_bounds = second->collision_bounds[index];
+            if (first_bounds.min != second_bounds.min || first_bounds.max != second_bounds.max) {
+                return false;
+            }
+        }
+        return true;
+    };
+    return bounds_match(lhs_definition, rhs_definition);
 }
 
 [[nodiscard]] core::Result<std::vector<world::VoxelLightSource>>
@@ -286,6 +314,7 @@ core::Status ServerRuntime::initialize() {
                     return connection_status;
                 }
             }
+            bool collision_world_changed = false;
             for (const auto& report : current_commands_.command_reports) {
                 if (!report.success) {
                     continue;
@@ -298,6 +327,10 @@ core::Status ServerRuntime::initialize() {
                     if (!change) {
                         return core::Status::failure(change.error().code, change.error().message);
                     }
+                    collision_world_changed =
+                        collision_world_changed ||
+                        !collision_geometry_matches(change.value().previous, change.value().current,
+                                                    *desc_.voxel_palette);
                     if (context.events != nullptr) {
                         auto event_status = context.events->voxel_changed.append(
                             {change.value().position, change.value().previous,
@@ -307,6 +340,14 @@ core::Status ServerRuntime::initialize() {
                         }
                     }
                 }
+            }
+            if (collision_world_changed) {
+                if (collision_world_revision_ == std::numeric_limits<std::uint64_t>::max()) {
+                    return core::Status::failure(
+                        "server_runtime.collision_revision_exhausted",
+                        "authoritative collision-world revision space is exhausted");
+                }
+                ++collision_world_revision_;
             }
             return core::Status::ok();
         },
@@ -809,23 +850,9 @@ core::Status ServerRuntime::ensure_spawn_area() {
     if (spawn_area_initialized_) {
         return core::Status::ok();
     }
-    const auto clay_id = core::PrototypeId::parse("base:voxels/clay");
-    if (!clay_id.has_value()) {
-        return core::Status::failure("server_runtime.invalid_spawn_voxel",
-                                     "default spawn voxel prototype id is invalid");
-    }
-    auto clay = desc_.voxel_palette->cell_for(*clay_id);
-    if (!clay) {
-        return core::Status::failure(clay.error().code, clay.error().message);
-    }
-    auto& chunk = world_.chunks().get_or_create({0, 0, 0});
-    for (std::uint16_t x = 0; x < world::VoxelChunk::edge_length; ++x) {
-        for (std::uint16_t z = 0; z < world::VoxelChunk::edge_length; ++z) {
-            auto status = chunk.set({x, 0, z}, clay.value());
-            if (!status) {
-                return status;
-            }
-        }
+    auto built = foundation::build_world(world_.chunks(), *desc_.voxel_palette);
+    if (!built) {
+        return core::Status::failure(built.error().code, built.error().message);
     }
     if (!pending_saved_voxel_edits_.empty()) {
         auto status =
@@ -842,7 +869,7 @@ core::Status ServerRuntime::ensure_spawn_area() {
 world::WorldPosition ServerRuntime::scenario_spawn_position() const noexcept {
     switch (desc_.scenario.spawn_mode) {
     case scenarios::ScenarioSpawnMode::homestead:
-        return {8.5, 1.0, 8.5};
+        return foundation::spawn_position();
     case scenarios::ScenarioSpawnMode::outpost:
         return {16.5, 1.0, 16.5};
     case scenarios::ScenarioSpawnMode::debug:
@@ -1460,21 +1487,7 @@ bool ServerRuntime::admit_transient_snapshot(std::size_t payload_bytes) noexcept
 }
 
 std::uint64_t ServerRuntime::collision_world_revision() const noexcept {
-    std::uint64_t revision = 1'469'598'103'934'665'603ULL;
-    const auto mix = [&revision](std::uint64_t value) {
-        revision ^= value;
-        revision *= 1'099'511'628'211ULL;
-    };
-    for (const auto& identity : world_.chunks().identities()) {
-        mix(static_cast<std::uint64_t>(identity.coordinate.x));
-        mix(static_cast<std::uint64_t>(identity.coordinate.y));
-        mix(static_cast<std::uint64_t>(identity.coordinate.z));
-        mix(identity.load_generation);
-        if (const auto* chunk = world_.chunks().find(identity.coordinate); chunk != nullptr) {
-            mix(chunk->content_revision());
-        }
-    }
-    return revision;
+    return collision_world_revision_;
 }
 
 } // namespace heartstead::game

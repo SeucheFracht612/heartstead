@@ -21,8 +21,8 @@
 #include "engine/world/world_state.hpp"
 #include "game/framework/gameplay_module.hpp"
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <span>
@@ -198,6 +198,7 @@ class ServerRuntime final {
     std::uint32_t current_transient_snapshot_message_count_ = 0;
     std::int64_t current_time_ms_ = 0;
     std::uint64_t pending_world_time_numerator_ = 0;
+    std::uint64_t collision_world_revision_ = 1;
     bool spawn_area_initialized_ = false;
     std::uint64_t next_custom_replication_sequence_ = 1;
     std::uint64_t transient_replication_cursor_ = 0;

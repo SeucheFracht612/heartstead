@@ -11,6 +11,7 @@
 #include "engine/renderer/environment/day_night.hpp"
 #include "game/features/animals/wandering_animal_module.hpp"
 #include "game/features/interaction/voxel_raycast.hpp"
+#include "game/foundation/foundation_world.hpp"
 #include "game/presentation/animated_model_presentation.hpp"
 #include "game/presentation/client_audio_presentation.hpp"
 #include "game/presentation/particle_presentation.hpp"
@@ -66,10 +67,10 @@ physical_resource_proxy(const entities::PhysicalResourceRecord& resource,
     return core::Result<renderer::RenderObjectProxy>::success(proxy);
 }
 
-[[nodiscard]] core::Status
-drop_demo_resource(game::GameRuntime& runtime, renderer::Renderer& renderer,
-                   const movement::PlayerCameraFrame& camera,
-                   std::vector<DevPhysicalResourceVisual>& visuals) {
+[[nodiscard]] core::Status drop_demo_resource(game::GameRuntime& runtime,
+                                              renderer::Renderer& renderer,
+                                              const movement::PlayerCameraFrame& camera,
+                                              std::vector<DevPhysicalResourceVisual>& visuals) {
     auto* session = runtime.session();
     auto* server = session == nullptr ? nullptr : session->server();
     if (server == nullptr) {
@@ -173,8 +174,7 @@ load_storybook_player_model(const std::filesystem::path& cooked_asset_root) {
     return assets::decode_model_asset(payload.value().bytes);
 }
 
-[[nodiscard]] renderer::RenderCamera
-render_camera_from(const movement::PlayerCameraFrame& frame) {
+[[nodiscard]] renderer::RenderCamera render_camera_from(const movement::PlayerCameraFrame& frame) {
     renderer::RenderCamera camera;
     camera.floating_origin = frame.floating_origin;
     camera.local_position = {static_cast<float>(frame.position.local_offset.x),
@@ -185,16 +185,15 @@ render_camera_from(const movement::PlayerCameraFrame& frame) {
     camera.view_projection = frame.view_projection;
     camera.yaw_radians =
         std::atan2(static_cast<float>(frame.forward.x), static_cast<float>(frame.forward.z));
-    camera.pitch_radians =
-        std::asin(std::clamp(static_cast<float>(frame.forward.y), -1.0F, 1.0F));
+    camera.pitch_radians = std::asin(std::clamp(static_cast<float>(frame.forward.y), -1.0F, 1.0F));
     return camera;
 }
 
-[[nodiscard]] core::Status
-start_runtime(game::GameRuntime& runtime, const content::ContentValidationReport& content_report,
-              const DevGameModeConfig& options) {
+[[nodiscard]] core::Status start_runtime(game::GameRuntime& runtime,
+                                         const content::ContentValidationReport& content_report,
+                                         const DevGameModeConfig& options) {
     auto metadata = content::save_metadata_from_content_report(content_report, "development",
-                                                               0x4845415254535445ULL);
+                                                               game::foundation::world_seed);
     if (!metadata) {
         return core::Status::failure(metadata.error().code, metadata.error().message);
     }
@@ -265,8 +264,8 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
         return core::Status::failure("dev_game.missing_content",
                                      "development mode requires validated content");
     }
-    auto runtime = game::GameRuntime::initialize(game::GameRuntimeConfig{},
-                                                 *state.config.content_report);
+    auto runtime =
+        game::GameRuntime::initialize(game::GameRuntimeConfig{}, *state.config.content_report);
     if (!runtime) {
         return core::Status::failure(runtime.error().code, runtime.error().message);
     }
@@ -287,8 +286,7 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
     }
     auto character_model = load_storybook_player_model(state.config.cooked_asset_root);
     if (!character_model) {
-        return core::Status::failure(character_model.error().code,
-                                     character_model.error().message);
+        return core::Status::failure(character_model.error().code, character_model.error().message);
     }
     game::AnimatedModelPresentationConfig animated_model_config;
     animated_model_config.asset_id = "base:models/entities/storybook_player.gltf";
@@ -331,8 +329,7 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
     auto particle_system = renderer::CpuParticleSystem::create(
         state.particle_config, state.config.content_report->particle_prototypes);
     if (!particle_system) {
-        return core::Status::failure(particle_system.error().code,
-                                     particle_system.error().message);
+        return core::Status::failure(particle_system.error().code, particle_system.error().message);
     }
     state.particle_system.emplace(std::move(particle_system).value());
     status = state.particle_presentation.initialize(
@@ -416,10 +413,10 @@ DevGameMode::update(game::GameApplicationServices& services,
     }
 
     auto ui_input = state.game_ui->process_input(*frame.input, *state.runtime.session(),
-                                                frame.now_milliseconds);
+                                                 frame.now_milliseconds);
     if (!ui_input) {
-        return core::Result<game::GameApplicationFrameOutput>::failure(
-            ui_input.error().code, ui_input.error().message);
+        return core::Result<game::GameApplicationFrameOutput>::failure(ui_input.error().code,
+                                                                       ui_input.error().message);
     }
     if (ui_input.value().inventory_toggled) {
         auto status = services.set_cursor_capture(!state.game_ui->inventory_open());
@@ -488,12 +485,11 @@ DevGameMode::update(game::GameApplicationServices& services,
         renderer->set_voxel_fluid_stats(server->chunk_fluids().stats());
         renderer->set_voxel_lighting_stats(server->chunk_lighting().stats());
     }
-    auto day_night = renderer::evaluate_day_night(
-        runtime_frame.value().authoritative_world_tick,
-        state.runtime.session()->config().world_time);
+    auto day_night = renderer::evaluate_day_night(runtime_frame.value().authoritative_world_tick,
+                                                  state.runtime.session()->config().world_time);
     if (!day_night) {
-        return core::Result<game::GameApplicationFrameOutput>::failure(
-            day_night.error().code, day_night.error().message);
+        return core::Result<game::GameApplicationFrameOutput>::failure(day_night.error().code,
+                                                                       day_night.error().message);
     }
     auto status = renderer->set_environment(day_night.value().render);
     if (!status) {
@@ -505,8 +501,13 @@ DevGameMode::update(game::GameApplicationServices& services,
     if (player == nullptr || !frame.extent.is_valid()) {
         return core::Result<game::GameApplicationFrameOutput>::success({});
     }
-    auto camera_frame = state.camera_rig.evaluate(player->state, state.camera_perspective,
-                                                  frame.extent.width, frame.extent.height);
+    const movement::PlayerCameraCollisionContext camera_collision{
+        state.runtime.session()->client()->world().chunks(),
+        state.config.content_report->voxel_palette,
+    };
+    auto camera_frame =
+        state.camera_rig.evaluate(player->state, state.camera_perspective, frame.extent.width,
+                                  frame.extent.height, &camera_collision);
     if (!camera_frame) {
         return core::Result<game::GameApplicationFrameOutput>::failure(
             camera_frame.error().code, camera_frame.error().message);
@@ -519,9 +520,9 @@ DevGameMode::update(game::GameApplicationServices& services,
     }
 
     if (!state.fire_emitter.is_valid()) {
-        auto fire_position = world::WorldPosition::from_anchor(
-            player->state.position.anchor,
-            player->state.position.local_offset + math::Vec3d{2.0, 0.35, 2.0});
+        auto fire_position = world::WorldPosition::from_anchor(player->state.position.anchor,
+                                                               player->state.position.local_offset +
+                                                                   math::Vec3d{2.0, 0.35, 2.0});
         if (!fire_position) {
             return core::Result<game::GameApplicationFrameOutput>::failure(
                 fire_position.error().code, fire_position.error().message);
@@ -543,12 +544,14 @@ DevGameMode::update(game::GameApplicationServices& services,
 
     const auto swimming = player->state.mode == movement::PlayerControllerMode::swimming;
     if (swimming && !state.was_swimming) {
-        status = state.particle_system->queue_event(
-            {state.splash, player->state.position, {0.0F, 1.0F, 0.0F},
-             {static_cast<float>(player->state.velocity.x),
-              static_cast<float>(player->state.velocity.y),
-              static_cast<float>(player->state.velocity.z)},
-             24, state.particle_seed++});
+        status = state.particle_system->queue_event({state.splash,
+                                                     player->state.position,
+                                                     {0.0F, 1.0F, 0.0F},
+                                                     {static_cast<float>(player->state.velocity.x),
+                                                      static_cast<float>(player->state.velocity.y),
+                                                      static_cast<float>(player->state.velocity.z)},
+                                                     24,
+                                                     state.particle_seed++});
         if (!status) {
             return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
                                                                            status.error().message);
@@ -560,16 +563,16 @@ DevGameMode::update(game::GameApplicationServices& services,
         state.runtime.session()->client()->world().chunks(),
         {camera_frame.value().position, camera_frame.value().forward, 6.0});
     if (!selection) {
-        return core::Result<game::GameApplicationFrameOutput>::failure(
-            selection.error().code, selection.error().message);
+        return core::Result<game::GameApplicationFrameOutput>::failure(selection.error().code,
+                                                                       selection.error().message);
     }
     if (action_frame[input::InputAction::primary_action].pressed ||
         action_frame[input::InputAction::secondary_action].pressed) {
         const auto& hit = selection.value().hit;
         if (hit.has_value()) {
             if (action_frame[input::InputAction::primary_action].pressed) {
-                status = state.runtime.session()->submit_remove_voxel(
-                    {hit->block}, frame.now_milliseconds);
+                status = state.runtime.session()->submit_remove_voxel({hit->block},
+                                                                      frame.now_milliseconds);
             } else {
                 status = state.runtime.session()->submit_place_voxel(
                     {hit->adjacent_block, state.clay}, frame.now_milliseconds);
@@ -579,15 +582,17 @@ DevGameMode::update(game::GameApplicationServices& services,
                     status.error().code, status.error().message);
             }
             if (action_frame[input::InputAction::primary_action].pressed) {
-                auto puff_position =
-                    world::WorldPosition::from_anchor(hit->block, {0.5, 0.5, 0.5});
+                auto puff_position = world::WorldPosition::from_anchor(hit->block, {0.5, 0.5, 0.5});
                 if (!puff_position) {
                     return core::Result<game::GameApplicationFrameOutput>::failure(
                         puff_position.error().code, puff_position.error().message);
                 }
-                status = state.particle_system->queue_event(
-                    {state.block_break_puff, puff_position.value(), {0.0F, 1.0F, 0.0F}, {}, 18,
-                     state.particle_seed++});
+                status = state.particle_system->queue_event({state.block_break_puff,
+                                                             puff_position.value(),
+                                                             {0.0F, 1.0F, 0.0F},
+                                                             {},
+                                                             18,
+                                                             state.particle_seed++});
                 if (!status) {
                     return core::Result<game::GameApplicationFrameOutput>::failure(
                         status.error().code, status.error().message);
@@ -609,8 +614,7 @@ DevGameMode::update(game::GameApplicationServices& services,
     auto camera = render_camera_from(camera_frame.value());
     if (auto* debug = renderer->debug_renderer(); debug != nullptr) {
         if (selection.value().hit.has_value()) {
-            auto block_origin =
-                world::WorldPosition::from_anchor(selection.value().hit->block, {});
+            auto block_origin = world::WorldPosition::from_anchor(selection.value().hit->block, {});
             if (!block_origin) {
                 return core::Result<game::GameApplicationFrameOutput>::failure(
                     block_origin.error().code, block_origin.error().message);
@@ -633,12 +637,11 @@ DevGameMode::update(game::GameApplicationServices& services,
             }
             const auto speed = math::length(player->state.velocity);
             if (status && speed > 0.01) {
-                status = debug->submit_ray(
-                    player->state.position,
-                    {static_cast<float>(player->state.velocity.x),
-                     static_cast<float>(player->state.velocity.y),
-                     static_cast<float>(player->state.velocity.z)},
-                    static_cast<float>(speed), {0.25F, 0.72F, 1.0F, 1.0F});
+                status = debug->submit_ray(player->state.position,
+                                           {static_cast<float>(player->state.velocity.x),
+                                            static_cast<float>(player->state.velocity.y),
+                                            static_cast<float>(player->state.velocity.z)},
+                                           static_cast<float>(speed), {0.25F, 0.72F, 1.0F, 1.0F});
             }
             if (!status) {
                 return core::Result<game::GameApplicationFrameOutput>::failure(
@@ -656,8 +659,7 @@ DevGameMode::update(game::GameApplicationServices& services,
         return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
                                                                        status.error().message);
     }
-    status =
-        synchronize_demo_resources(state.runtime, *renderer, state.physical_resource_visuals);
+    status = synchronize_demo_resources(state.runtime, *renderer, state.physical_resource_visuals);
     if (!status) {
         return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
                                                                        status.error().message);
@@ -667,8 +669,7 @@ DevGameMode::update(game::GameApplicationServices& services,
         return core::Result<game::GameApplicationFrameOutput>::failure(
             render_snapshot.error().code, render_snapshot.error().message);
     }
-    auto animated_stats =
-        state.animated_models.synchronize(*renderer, render_snapshot.value());
+    auto animated_stats = state.animated_models.synchronize(*renderer, render_snapshot.value());
     if (!animated_stats) {
         return core::Result<game::GameApplicationFrameOutput>::failure(
             animated_stats.error().code, animated_stats.error().message);
@@ -693,14 +694,13 @@ DevGameMode::update(game::GameApplicationServices& services,
             return core::Result<game::GameApplicationFrameOutput>::failure(
                 painted_ui.error().code, painted_ui.error().message);
         }
-        renderer->set_ui_widget_stats(
-            state.game_ui->stats().layout_ms, state.game_ui->stats().paint_ms,
-            state.game_ui->stats().layout.widget_count);
+        renderer->set_ui_widget_stats(state.game_ui->stats().layout_ms,
+                                      state.game_ui->stats().paint_ms,
+                                      state.game_ui->stats().layout.widget_count);
         if (state.diagnostic_overlay_visible) {
             const auto position = player->state.position.approximate_global();
             std::ostringstream text;
-            text << std::fixed << std::setprecision(2)
-                 << "FOUNDATION DIAGNOSTICS [F3]\n"
+            text << std::fixed << std::setprecision(2) << "FOUNDATION DIAGNOSTICS [F3]\n"
                  << "session "
                  << (state.runtime.session()->server() == nullptr ? "remote" : "local")
                  << " | client " << (state.local_client_connected ? "connected" : "offline")
@@ -709,15 +709,14 @@ DevGameMode::update(game::GameApplicationServices& services,
                  << (state.camera_perspective == movement::PlayerCameraPerspective::third_person
                          ? "third-person"
                          : "first-person")
-                 << " [F1] | geometry "
-                 << (state.debug_geometry_visible ? "on" : "off") << " [F4]\n"
+                 << " [F1] | geometry " << (state.debug_geometry_visible ? "on" : "off")
+                 << " [F4]\n"
                  << "position " << position.x << ", " << position.y << ", " << position.z << '\n'
                  << "velocity " << player->state.velocity.x << ", " << player->state.velocity.y
                  << ", " << player->state.velocity.z << '\n'
                  << "controller " << movement::player_controller_mode_name(player->state.mode)
                  << " | grounded " << (player->state.grounded ? "yes" : "no") << '\n'
-                 << "input " << player_input.move_x << ", " << player_input.move_z
-                 << " | selected "
+                 << "input " << player_input.move_x << ", " << player_input.move_z << " | selected "
                  << (selection.value().hit.has_value() ? "voxel" : "none");
             const auto diagnostic_text = text.str();
             renderer::UiQuadDesc panel;
@@ -784,8 +783,8 @@ core::Status DevGameMode::shutdown(game::GameApplicationServices& services) {
 std::string DevGameMode::summary() const {
     const auto& state = *implementation_;
     return "development runtime: frames=" + std::to_string(state.frame_count) +
-           " authoritative_tick=" + std::to_string(state.authoritative_tick) + " local_client=" +
-           (state.local_client_connected ? "connected" : "offline");
+           " authoritative_tick=" + std::to_string(state.authoritative_tick) +
+           " local_client=" + (state.local_client_connected ? "connected" : "offline");
 }
 
 } // namespace heartstead::dev_game

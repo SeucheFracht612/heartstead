@@ -1,8 +1,10 @@
 #include "engine/physics/chunk_collision_system.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
+#include <exception>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -28,6 +30,31 @@ namespace {
     mix(coordinate.y);
     mix(coordinate.z);
     return value | (std::uint64_t{1} << 63U);
+}
+
+[[nodiscard]] std::uint64_t
+collision_shape_fingerprint(const world::ChunkCollisionShape& shape) noexcept {
+    std::uint64_t value = 1'469'598'103'934'665'603ULL;
+    const auto mix = [&value](std::uint64_t component) {
+        value ^= component;
+        value *= 1'099'511'628'211ULL;
+    };
+    const auto mix_float = [&mix](float component) {
+        mix(static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(component)));
+    };
+    mix(static_cast<std::uint64_t>(shape.boxes.size()));
+    for (const auto& box : shape.boxes) {
+        mix(static_cast<std::uint64_t>(box.kind));
+        mix_float(box.local_position.x);
+        mix_float(box.local_position.y);
+        mix_float(box.local_position.z);
+        mix_float(box.half_extents.x);
+        mix_float(box.half_extents.y);
+        mix_float(box.half_extents.z);
+        mix_float(box.radius);
+        mix_float(box.half_height);
+    }
+    return value;
 }
 
 } // namespace
@@ -89,6 +116,7 @@ core::Status ChunkCollisionSystem::update(world::ChunkDatabase& chunks,
                                           const world::VoxelPalette& palette) {
     stats_.submitted_this_update = 0;
     stats_.applied_this_update = 0;
+    stats_.body_changes_this_update = 0;
     stats_.removed_this_update = 0;
     stats_.last_apply_ms = 0.0;
 
@@ -106,6 +134,12 @@ core::Status ChunkCollisionSystem::update(world::ChunkDatabase& chunks,
         return status;
     }
     status = submit_pending(chunks);
+    if (stats_.body_changes_this_update > 0 || stats_.removed_this_update > 0) {
+        if (world_revision_ == std::numeric_limits<std::uint64_t>::max()) {
+            std::terminate();
+        }
+        ++world_revision_;
+    }
     refresh_stats();
     return status;
 }
@@ -130,6 +164,10 @@ const ChunkCollisionBodyRecord*
 ChunkCollisionSystem::find(world::ChunkCoord coordinate) const noexcept {
     const auto found = bodies_.find(coordinate);
     return found == bodies_.end() ? nullptr : &found->second;
+}
+
+std::uint64_t ChunkCollisionSystem::world_revision() const noexcept {
+    return world_revision_;
 }
 
 const ChunkCollisionSystemStats& ChunkCollisionSystem::stats() noexcept {
@@ -283,6 +321,29 @@ core::Status ChunkCollisionSystem::apply_result(world::ChunkDatabase& chunks,
         return shape_status;
     }
 
+    const auto shape_fingerprint = collision_shape_fingerprint(*result.shape);
+    const auto existing = bodies_.find(result.identity.coordinate);
+    const bool geometry_is_unchanged = (result.shape->empty() && existing == bodies_.end()) ||
+                                       (!result.shape->empty() && existing != bodies_.end() &&
+                                        existing->second.box_count == result.shape->boxes.size() &&
+                                        existing->second.shape_fingerprint == shape_fingerprint);
+    if (geometry_is_unchanged) {
+        if (existing != bodies_.end()) {
+            existing->second.identity = result.identity;
+            existing->second.content_revision = result.center_revision;
+            existing->second.collision_table_revision = result.collision_table_revision;
+        }
+        if (auto* mutable_chunk = chunks.find(result.identity.coordinate);
+            mutable_chunk != nullptr && mutable_chunk->identity() == result.identity &&
+            mutable_chunk->content_revision() == result.center_revision) {
+            mutable_chunk->clear_dirty(world::ChunkDirtyFlag::collision);
+            pending_chunks_.erase(result.identity.coordinate);
+        }
+        ++stats_.applied_shapes;
+        ++stats_.applied_this_update;
+        return core::Status::ok();
+    }
+
     PhysicsBodyId new_body;
     if (!result.shape->empty()) {
         auto position = chunk_physics_position(result.identity.coordinate);
@@ -302,7 +363,6 @@ core::Status ChunkCollisionSystem::apply_result(world::ChunkDatabase& chunks,
         new_body = created.value();
     }
 
-    const auto existing = bodies_.find(result.identity.coordinate);
     if (existing != bodies_.end()) {
         auto status = physics_world_->destroy_body(existing->second.body_id);
         if (!status) {
@@ -318,8 +378,8 @@ core::Status ChunkCollisionSystem::apply_result(world::ChunkDatabase& chunks,
         const auto box_count = static_cast<std::uint32_t>(result.shape->boxes.size());
         bodies_.emplace(result.identity.coordinate,
                         ChunkCollisionBodyRecord{result.identity, result.center_revision,
-                                                 result.collision_table_revision, new_body,
-                                                 box_count});
+                                                 result.collision_table_revision, shape_fingerprint,
+                                                 new_body, box_count});
         stats_.current_collision_boxes += box_count;
     }
     if (auto* mutable_chunk = chunks.find(result.identity.coordinate);
@@ -330,6 +390,7 @@ core::Status ChunkCollisionSystem::apply_result(world::ChunkDatabase& chunks,
     }
     ++stats_.applied_shapes;
     ++stats_.applied_this_update;
+    ++stats_.body_changes_this_update;
     return core::Status::ok();
 }
 
@@ -347,6 +408,7 @@ ChunkCollisionSystem::chunk_physics_position(world::ChunkCoord coordinate) const
 }
 
 void ChunkCollisionSystem::refresh_stats() noexcept {
+    stats_.world_revision = world_revision_;
     stats_.resident_body_count = bodies_.size();
     stats_.pending_chunk_count = pending_chunks_.size();
     if (scheduler_ != nullptr) {
