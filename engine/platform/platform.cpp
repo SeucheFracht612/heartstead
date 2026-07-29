@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <limits>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 
 namespace heartstead::platform {
@@ -84,6 +85,27 @@ struct X11OutgoingIncrementalClipboardTransfer {
     }
     XCloseDisplay(display);
     return true;
+}
+
+[[nodiscard]] const char* x11_pointer_grab_result_name(int result) noexcept {
+    switch (result) {
+    case GrabSuccess:
+        return "GrabSuccess";
+    case AlreadyGrabbed:
+        return "AlreadyGrabbed";
+    case GrabInvalidTime:
+        return "GrabInvalidTime";
+    case GrabNotViewable:
+        return "GrabNotViewable";
+    case GrabFrozen:
+        return "GrabFrozen";
+    default:
+        return "unknown";
+    }
+}
+
+[[nodiscard]] bool x11_pointer_grab_result_is_transient(int result) noexcept {
+    return result == AlreadyGrabbed || result == GrabNotViewable || result == GrabFrozen;
 }
 
 [[nodiscard]] KeyCode key_from_x11_keysym(KeySym key) noexcept {
@@ -1002,6 +1024,8 @@ class X11NativePlatform final : public IPlatform {
     [[nodiscard]] core::Status close_window(WindowId id) override {
         const auto found = native_windows_.find(id.value());
         if (found != native_windows_.end()) {
+            cursor_capture_requests_.erase(id.value());
+            unfocused_windows_.erase(id.value());
             if (logical_.cursor_captured(id)) {
                 XUngrabPointer(display_, CurrentTime);
             }
@@ -1038,6 +1062,7 @@ class X11NativePlatform final : public IPlatform {
     void begin_frame() override {
         logical_.begin_frame();
         pump_x11_events();
+        retry_pending_cursor_captures();
     }
 
     [[nodiscard]] core::Status queue_event(PlatformEvent event) override {
@@ -1079,29 +1104,26 @@ class X11NativePlatform final : public IPlatform {
             return core::Status::failure("platform.window_not_open", "window is not open");
         }
         if (captured) {
-            const auto result =
-                XGrabPointer(display_, found->second, True,
-                             PointerMotionMask | ButtonPressMask | ButtonReleaseMask, GrabModeAsync,
-                             GrabModeAsync, found->second, invisible_cursor_, CurrentTime);
-            if (result != GrabSuccess) {
-                return core::Status::failure("platform.cursor_capture_failed",
-                                             "X11 pointer grab failed");
+            cursor_capture_requests_.insert(window_id.value());
+            if (unfocused_windows_.contains(window_id.value())) {
+                return core::Status::ok();
             }
-            if (invisible_cursor_ != None) {
-                XDefineCursor(display_, found->second, invisible_cursor_);
+            const auto result = try_capture_cursor(window_id, found->second);
+            if (result == GrabSuccess || x11_pointer_grab_result_is_transient(result)) {
+                return core::Status::ok();
             }
-            const auto* state = logical_.find_window(window_id);
-            if (state != nullptr) {
-                XWarpPointer(display_, None, found->second, 0, 0, 0, 0,
-                             static_cast<int>(state->width / 2),
-                             static_cast<int>(state->height / 2));
-            }
+            cursor_capture_requests_.erase(window_id.value());
+            return core::Status::failure(
+                "platform.cursor_capture_failed",
+                "X11 pointer grab failed with " +
+                    std::string(x11_pointer_grab_result_name(result)));
         } else {
+            cursor_capture_requests_.erase(window_id.value());
             XUngrabPointer(display_, CurrentTime);
             XUndefineCursor(display_, found->second);
+            XFlush(display_);
+            return logical_.set_cursor_capture(window_id, false);
         }
-        XFlush(display_);
-        return logical_.set_cursor_capture(window_id, captured);
     }
 
     [[nodiscard]] bool cursor_captured(WindowId window_id) const noexcept override {
@@ -1152,6 +1174,44 @@ class X11NativePlatform final : public IPlatform {
     }
 
   private:
+    [[nodiscard]] int try_capture_cursor(WindowId id, ::Window native_window) {
+        if (logical_.cursor_captured(id)) {
+            return GrabSuccess;
+        }
+        const auto result =
+            XGrabPointer(display_, native_window, True,
+                         PointerMotionMask | ButtonPressMask | ButtonReleaseMask, GrabModeAsync,
+                         GrabModeAsync, native_window, invisible_cursor_, CurrentTime);
+        if (result != GrabSuccess) {
+            return result;
+        }
+        if (invisible_cursor_ != None) {
+            XDefineCursor(display_, native_window, invisible_cursor_);
+        }
+        const auto* state = logical_.find_window(id);
+        if (state != nullptr) {
+            XWarpPointer(display_, None, native_window, 0, 0, 0, 0,
+                         static_cast<int>(state->width / 2),
+                         static_cast<int>(state->height / 2));
+        }
+        XFlush(display_);
+        const auto status = logical_.set_cursor_capture(id, true);
+        return status ? GrabSuccess : GrabInvalidTime;
+    }
+
+    void retry_pending_cursor_captures() {
+        for (const auto id_value : cursor_capture_requests_) {
+            if (unfocused_windows_.contains(id_value)) {
+                continue;
+            }
+            const auto found = native_windows_.find(id_value);
+            if (found == native_windows_.end()) {
+                continue;
+            }
+            (void)try_capture_cursor(WindowId::from_value(id_value), found->second);
+        }
+    }
+
     [[nodiscard]] std::optional<WindowId> window_id_for(::Window native_window) const noexcept {
         const auto found = window_ids_by_native_.find(native_window);
         if (found == window_ids_by_native_.end()) {
@@ -1263,6 +1323,11 @@ class X11NativePlatform final : public IPlatform {
         auto id = window_id_for(event.window);
         if (!id) {
             return;
+        }
+        if (focused) {
+            unfocused_windows_.erase(id->value());
+        } else {
+            unfocused_windows_.insert(id->value());
         }
         (void)logical_.queue_event(PlatformEvent{focused ? PlatformEventKind::window_focus_gained
                                                          : PlatformEventKind::window_focus_lost,
@@ -1463,6 +1528,8 @@ class X11NativePlatform final : public IPlatform {
         if (!id) {
             return;
         }
+        cursor_capture_requests_.erase(id->value());
+        unfocused_windows_.erase(id->value());
         native_windows_.erase(id->value());
         window_ids_by_native_.erase(event.window);
         if (const auto* state = logical_.find_window(id.value()); state != nullptr && state->open) {
@@ -1907,6 +1974,8 @@ class X11NativePlatform final : public IPlatform {
     std::vector<X11OutgoingIncrementalClipboardTransfer> pending_clipboard_transfers_;
     std::unordered_map<std::uint64_t, ::Window> native_windows_;
     std::unordered_map<::Window, std::uint64_t> window_ids_by_native_;
+    std::unordered_set<std::uint64_t> cursor_capture_requests_;
+    std::unordered_set<std::uint64_t> unfocused_windows_;
 };
 
 [[nodiscard]] core::Result<std::unique_ptr<IPlatform>> create_x11_platform() {

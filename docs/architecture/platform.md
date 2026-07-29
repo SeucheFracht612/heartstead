@@ -48,6 +48,9 @@ Implemented foundation:
     transfers
   - maps X11 configure, close, key, text, pointer motion, mouse button, and wheel events into the
     same `PlatformEvent` and retained input snapshot model used by the headless backend
+  - treats cursor capture as a retained request: a not-yet-viewable window, a temporary competing
+    grab, or focus loss suspends capture without aborting application startup, and the event pump
+    retries the request once X11 can grant it
   - reports unavailable when compiled without X11 or when no X11 display is available
 - `run_headless_app`
   - headless-specific helper retained for deterministic tests

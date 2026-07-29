@@ -319,8 +319,8 @@ Implemented foundation:
     descriptor set objects for material pipeline layouts without exposing their handles
   - requests the Khronos validation layer when configured and enables `VK_EXT_debug_utils`
     independently when available, so pass/upload labels remain active in non-validation benchmark
-    runs; warning and error callbacks route into engine logging, with graceful fallback when either
-    facility is unavailable
+    runs; warning and error callbacks route into engine logging, while unavailable optional
+    layers/extensions produce an informational capability message and a graceful fallback
   - records delayed timestamp-query results for the complete GPU frame, opaque terrain pass,
     frame-transfer interval, final swapchain copy, and asynchronous buffer-upload batches without
     stalling to read the current submission; upload timings retain their source submission serial

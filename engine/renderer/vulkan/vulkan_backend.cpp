@@ -200,14 +200,15 @@ create_instance(const rhi::RenderDeviceDesc& desc) {
     const auto validation_available = instance_layer_available(validation_layer);
     const auto enable_validation = desc.enable_validation && validation_available;
     if (desc.enable_validation && !validation_available) {
-        core::log(core::LogLevel::warning,
-                  "Vulkan validation was requested but VK_LAYER_KHRONOS_validation is unavailable");
+        core::log(core::LogLevel::info,
+                  "VK_LAYER_KHRONOS_validation is not installed; continuing without Vulkan "
+                  "validation");
     }
     const auto debug_utils_available =
         instance_extension_available(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     const auto enable_debug_utils = debug_utils_available;
     if (!debug_utils_available) {
-        core::log(core::LogLevel::warning,
+        core::log(core::LogLevel::info,
                   "VK_EXT_debug_utils is unavailable; Vulkan command labels are disabled");
     }
 

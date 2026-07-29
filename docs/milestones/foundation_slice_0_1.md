@@ -48,7 +48,7 @@ build followed by the commands above produced the authoritative result.
 - [x] `[Automated]` `dev_game --frames 3` always creates a valid local authoritative session.
 - [x] `[Automated]` a bounded remote-client smoke can connect to the dedicated server.
 - [x] `[Automated]` headless `--frames` runs do not require a display or audio output device.
-- [ ] `[Native]` the native executable creates the window, renderer, audio system, input system,
+- [x] `[Native]` the native executable creates the window, renderer, audio system, input system,
       and development mode without startup warnings.
 - [x] `[Automated]` bounded shutdown releases the gameplay mode before application-owned renderer,
       audio, window, and platform resources.
@@ -220,8 +220,11 @@ Recorded 2026-07-29:
 - `cmake --build --preset default-debug -j2 --target heartstead_dev_game`: passed.
 - `ctest --test-dir build/default-debug --output-on-failure -j2`: 100/100 passed.
 - `heartstead_dev_game --native-frames 120 --no-save`: passed after waiting for the final GPU
-  submission before mode-owned render resources are released. The host does not provide
-  `VK_LAYER_KHRONOS_validation`, so the separate warning-free startup item remains open.
+  submission before mode-owned render resources are released. The host does not provide the
+  optional `VK_LAYER_KHRONOS_validation`; capability discovery now reports that as information
+  and continues without validation rather than emitting a startup warning.
+- ten consecutive `heartstead_dev_game --native-frames 30 --no-save` launches passed. X11 cursor
+  capture retains and retries transient map/focus/grab requests instead of aborting startup.
 - `heartstead_dev_game_save_smoke` creates a missing slot, verifies a periodic generation commit,
   clean-shutdown commit, and staged-generation cleanup, then reopens and recommits the same slot.
 - `heartstead_runtime_spine_tests`
