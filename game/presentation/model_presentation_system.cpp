@@ -153,6 +153,7 @@ core::Status ModelPresentationSystem::initialize(
         presentation_config.visual_prototype = definition.entity_prototype;
         presentation_config.model = cached->second;
         presentation_config.animated_bounds = model.bounds.expanded(definition.bounds_padding);
+        presentation_config.model_scale = definition.model_scale;
         presentation_config.bounds_padding = definition.bounds_padding;
         presentation_config.flags = definition.cast_shadow
                                         ? renderer::RenderObjectFlags::cast_shadow

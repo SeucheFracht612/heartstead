@@ -49,6 +49,7 @@ Implemented foundation:
 - `entity_visual` presentation definitions
   - bind entity prototypes to production-cooked static, rigid-node animated, or skinned models
   - map locomotion roles to unique authored clip names
+  - may apply a positive uniform `model_scale` without changing authoritative entity dimensions
   - are synchronized for replicated scene objects by `ModelPresentationSystem`
   - share one immutable decoded model, including animation data, for every definition that names
     the same logical model asset; renderer mesh, texture, and material caches use that same id

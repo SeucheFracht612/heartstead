@@ -119,6 +119,10 @@ int main() {
         .transition_ticks = 6,
     };
     config.animated_bounds = config.model->bounds.expanded(0.5F);
+    auto invalid_scale_config = config;
+    invalid_scale_config.model_scale = 0.0F;
+    assert(!invalid_scale_config.validate());
+    config.model_scale = 0.5F;
     auto second_config = config;
     second_config.visual_prototype = *core::PrototypeId::parse("base:entities/test_animal");
 

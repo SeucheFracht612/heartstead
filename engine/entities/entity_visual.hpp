@@ -20,6 +20,7 @@ struct EntityVisualDefinition {
     std::string model_asset;
     std::unordered_map<std::string, std::string> animation_clips;
     std::unordered_map<std::string, core::PrototypeId> sound_events;
+    float model_scale = 1.0F;
     float bounds_padding = 0.25F;
     std::uint32_t transition_ticks = 9;
     bool cast_shadow = true;

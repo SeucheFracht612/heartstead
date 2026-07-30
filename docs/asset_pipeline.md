@@ -204,6 +204,7 @@ id = "base:visuals/oak_stump"
 display_name = "Oak Stump Visual"
 entity = "base:entities/oak_stump"
 model = "base:models/props/oak_stump.glb"
+model_scale = "1.0"
 bounds_padding = "0.15"
 cast_shadow = "true"
 ```
@@ -211,6 +212,11 @@ cast_shadow = "true"
 A static visual has no animation mappings. This describes presentation behavior, not mesh layout:
 an unskinned model may still contain animation clips and becomes animated when its visual maps
 locomotion roles to those clips.
+
+`model_scale` is an optional positive uniform presentation scale and defaults to `1.0`. Use it when
+an otherwise correctly authored model uses different world-unit proportions from the entity's
+gameplay representation. It scales the complete model pose around the model origin; it does not
+change the controller, collider, authoritative transform, or replicated state.
 
 The corresponding gameplay `entity` prototype is separate content data. Declaring a visual does
 not spawn an entity by itself; a scenario or gameplay system must create and replicate that
@@ -228,6 +234,7 @@ id = "base:visuals/player"
 display_name = "Player Visual"
 entity = "base:entities/player"
 model = "base:models/entities/test_player.glb"
+model_scale = "0.66"
 bounds_padding = "0.40"
 transition_ticks = "9"
 cast_shadow = "true"
@@ -255,7 +262,8 @@ joint palettes from the same evaluated matrices.
 Locomotion is in-place: the player controller owns world movement, while presentation removes
 horizontal root motion from common root-motion carrier nodes. `bounds_padding` expands
 conservative per-primitive rigid bounds, including morph-target displacement. Increase it if an
-asset's rotations or unusual deformation still leave the maintained bounds.
+asset's rotations or unusual deformation still leave the maintained bounds. Padding is expressed
+in model-local units and is scaled by `model_scale` together with the resulting bounds.
 
 For other animated entity types, the current general presenter still expects the same locomotion
 role set. More specialized animation state maps are future work.

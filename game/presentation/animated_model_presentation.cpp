@@ -127,11 +127,13 @@ core::Status AnimatedModelPresentationConfig::validate() const {
         }
     }
     if (asset_id.empty() || !visual_prototype.is_valid() || !animated_bounds.is_valid() ||
+        !std::isfinite(model_scale) || model_scale <= 0.0F || model_scale > 100.0F ||
         !std::isfinite(bounds_padding) || bounds_padding < 0.0F || bounds_padding > 100.0F ||
         !finite_color(color)) {
         return core::Status::failure(
             "animated_model_presentation.invalid_config",
-            "model presentation requires an id, prototype, finite bounds/padding, and color");
+            "model presentation requires an id, prototype, finite positive scale, bounds/padding, "
+            "and color");
     }
     return core::Status::ok();
 }
@@ -202,6 +204,8 @@ core::Status AnimatedModelPresentation::initialize(renderer::Renderer& renderer,
     primitives_ = std::move(uploaded);
     bind_pose_ = std::move(bind_pose);
     bind_node_matrices_ = std::move(bind_node_matrices).value();
+    model_scale_matrix_ =
+        math::scale_matrix({config_.model_scale, config_.model_scale, config_.model_scale});
     entities_.clear();
     stats_ = {};
     has_active_animation_ = has_any_locomotion_clip(config_.locomotion_clips);
@@ -327,9 +331,10 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
                 object.anchor = source.current_transform.position;
                 object.previous_transform = previous_transform.value();
                 object.current_transform = current_transform.value();
-                object.model_transform = primitive.skin == assets::no_model_index
-                                             ? (*node_matrices)[primitive.node]
-                                             : math::Mat4f::identity();
+                object.model_transform =
+                    model_scale_matrix_ * (primitive.skin == assets::no_model_index
+                                               ? (*node_matrices)[primitive.node]
+                                               : math::Mat4f::identity());
                 object.mesh = binding.mesh;
                 object.material = binding.material;
                 object.local_bounds = binding.local_bounds;
@@ -385,9 +390,10 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
             object_update.object.anchor = source.current_transform.position;
             object_update.object.previous_transform = previous_transform.value();
             object_update.object.current_transform = current_transform.value();
-            object_update.object.model_transform = primitive.skin == assets::no_model_index
-                                                       ? (*node_matrices)[primitive.node]
-                                                       : math::Mat4f::identity();
+            object_update.object.model_transform =
+                model_scale_matrix_ * (primitive.skin == assets::no_model_index
+                                           ? (*node_matrices)[primitive.node]
+                                           : math::Mat4f::identity());
             object_update.object.mesh = binding.mesh;
             object_update.object.material = binding.material;
             object_update.object.local_bounds = binding.local_bounds;
@@ -480,6 +486,7 @@ core::Status AnimatedModelPresentation::shutdown(renderer::Renderer& renderer) {
     primitives_.clear();
     bind_pose_ = {};
     bind_node_matrices_.clear();
+    model_scale_matrix_ = math::Mat4f::identity();
     config_ = {};
     stats_ = {};
     has_active_animation_ = false;

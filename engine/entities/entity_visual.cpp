@@ -41,11 +41,13 @@ namespace {
 
 core::Status EntityVisualDefinition::validate() const {
     if (!id.is_valid() || !entity_prototype.is_valid() || model_asset.empty() ||
+        !std::isfinite(model_scale) || model_scale <= 0.0F || model_scale > 100.0F ||
         !std::isfinite(bounds_padding) || bounds_padding < 0.0F || bounds_padding > 100.0F ||
         transition_ticks > 600U) {
         return core::Status::failure(
             "entity_visual.invalid_definition",
-            "entity visual requires valid ids, a model, bounded padding, and transition ticks");
+            "entity visual requires valid ids, a model, positive bounded scale/padding, and "
+            "transition ticks");
     }
     for (const auto& [role, clip] : animation_clips) {
         if (!supported_animation_role(role) || clip.empty()) {
@@ -167,6 +169,15 @@ entity_visual_definition_from_prototype(const modding::GenericPrototype& prototy
                                                                      status.error().message);
             }
             definition.sound_events.emplace(key.substr(sound_prefix.size()), *sound_event);
+        }
+    }
+    if (const auto* scale = field(prototype, "model_scale"); scale != nullptr) {
+        const auto [end, error] =
+            std::from_chars(scale->data(), scale->data() + scale->size(), definition.model_scale);
+        if (error != std::errc{} || end != scale->data() + scale->size()) {
+            return core::Result<EntityVisualDefinition>::failure(
+                "entity_visual.invalid_model_scale",
+                "entity visual model_scale must be a decimal number");
         }
     }
     if (const auto* padding = field(prototype, "bounds_padding"); padding != nullptr) {

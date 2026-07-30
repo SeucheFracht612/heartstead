@@ -94,8 +94,9 @@ world state.
 Each retained model object carries an entity transform plus an optional model-local matrix. Static
 objects leave the latter at identity. Rigid-node animation supplies the evaluated matrix of the
 primitive's owning glTF node; skinned animation supplies a joint palette evaluated from that same
-node pose. Culling and every maintained surface layer compose the model-local matrix after the
-interpolated entity transform, so opaque, alpha-tested, and transparent results stay aligned.
+node pose. Entity visuals may prepend a uniform presentation scale to either branch. Culling and
+every maintained surface layer compose the model-local matrix after the interpolated entity
+transform, so opaque, alpha-tested, and transparent results stay aligned.
 
 The current frame sequence has a depth attachment but no shadow-map pass. `cast_shadow` is retained
 as presentation intent only; a future shadow implementation must reuse the same composed object
@@ -115,6 +116,10 @@ is the contributor-facing source of truth.
 
 Alpha-tested surfaces discard by material cutoff. Transparent/fluid surfaces blend without depth
 writes. Lighting is evaluated in linear space and encoded for the current scene target.
+
+The surface-material storage buffer has an explicit 224-byte CPU/GPU record contract. Its final
+flag word and padding are exposed to GLSL as one aligned `uvec4`; splitting that tail into a scalar
+and `uvec3` changes the std430 array stride and causes later materials to read neighboring records.
 
 ## Shader and pipeline lifecycle
 

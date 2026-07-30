@@ -64,13 +64,18 @@ receives its animated node matrix through `RenderObjectProxy::model_transform`.
 
 The renderer composes:
 
-`entity_transform * model_transform`
+`entity_transform * visual_scale * model_transform`
 
 The same result drives culling and the opaque, alpha-tested, and transparent scene layers. Morph
 deltas are applied before skinning on the GPU. Unskinned animated primitives use conservative
 per-primitive local bounds containing base vertices and the absolute extent of all morph targets,
 expanded by the visual's `bounds_padding`, then transformed by the current node matrix. Skinned
 primitives continue to use the padded whole-model animated bound.
+
+`visual_scale` is the entity visual's positive uniform `model_scale`, which defaults to identity.
+It is presentation-only and wraps both rigid node matrices and skinned palettes, so an asset can be
+matched to gameplay world-unit proportions without modifying the shared model, animation pose,
+controller transform, or collider.
 
 `RenderObjectFlags::cast_shadow` is retained in visual data, but the current renderer has no
 shadow-map pass. When that pass is added, it must consume the same composed object matrix and skin
@@ -105,6 +110,8 @@ locomotion clip from moving the visual away from its controller or applying move
 
 The base Kenney player exercises the rigid branch: six unskinned mesh primitives are attached to
 animated body-part nodes, all 27 named clips survive cooking, and the player mapping selects
-`idle`, `walk`, and `sprint` with the normal locomotion roles. The existing test animal exercises
-the skinned branch. Both go through the same sampling, blending, hierarchy, morph, and presentation
-code.
+`idle`, `walk`, and `sprint` with the normal locomotion roles. Its source bounds are approximately
+2.73 world units tall, so the base visual applies `model_scale = "0.66"` to present it at
+approximately 1.80 units while leaving gameplay dimensions authoritative. The existing test animal
+exercises the skinned branch. Both go through the same sampling, blending, hierarchy, morph, and
+presentation code.

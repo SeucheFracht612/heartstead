@@ -65,7 +65,9 @@ int main() {
     const auto animal = core::PrototypeId::parse("base:entities/test_animal");
     const auto fallback = core::PrototypeId::parse("base:visuals/fallback");
     assert(player && animal && fallback);
-    assert(content.visual_definitions.find_for_entity(*player) != nullptr);
+    const auto* player_visual = content.visual_definitions.find_for_entity(*player);
+    assert(player_visual != nullptr);
+    assert(player_visual->model_scale == 0.66F);
     assert(content.visual_definitions.find_for_entity(*animal) != nullptr);
     assert(content.visual_definitions.find(*fallback) != nullptr);
 

@@ -25,6 +25,7 @@ struct AnimatedModelPresentationConfig {
     renderer::RenderLayer layer = renderer::RenderLayer::opaque;
     renderer::RenderObjectFlags flags = renderer::RenderObjectFlags::cast_shadow;
     math::Bounds3f animated_bounds{};
+    float model_scale = 1.0F;
     float bounds_padding = 0.25F;
     bool ignore_horizontal_root_motion = true;
     std::array<float, 4> color{1.0F, 1.0F, 1.0F, 1.0F};
@@ -77,6 +78,7 @@ class AnimatedModelPresentation final {
     std::vector<PrimitiveBinding> primitives_;
     animation::NodePose bind_pose_;
     std::vector<math::Mat4f> bind_node_matrices_;
+    math::Mat4f model_scale_matrix_ = math::Mat4f::identity();
     std::unordered_map<std::uint64_t, EntityVisual> entities_;
     AnimatedModelPresentationStats stats_;
     bool has_active_animation_ = false;
