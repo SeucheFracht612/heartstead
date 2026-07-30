@@ -89,8 +89,9 @@ core::Status validate_render_object_proxy(const RenderObjectProxy& object) {
     if (!object.id.is_valid() || !object.anchor.is_valid() || !object.mesh.is_valid() ||
         !object.material.is_valid() || !object.previous_transform.is_finite() ||
         !object.previous_transform.has_non_zero_scale() || !object.current_transform.is_finite() ||
-        !object.current_transform.has_non_zero_scale() || !object.local_bounds.is_valid() ||
-        !finite_color(object.color) || object.morph_weights.size() > 64U ||
+        !object.current_transform.has_non_zero_scale() || !object.model_transform.is_finite() ||
+        !object.local_bounds.is_valid() || !finite_color(object.color) ||
+        object.morph_weights.size() > 64U ||
         !std::ranges::all_of(object.morph_weights,
                              [](float value) { return std::isfinite(value); })) {
         return core::Status::failure("render_scene.invalid_object",
@@ -398,7 +399,8 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
             return core::Result<math::Mat4f>::success(transforms[index]);
         }
         const auto local =
-            math::transform_matrix(interpolate_render_transform(object, simulation_alpha));
+            math::transform_matrix(interpolate_render_transform(object, simulation_alpha)) *
+            object.model_transform;
         math::Mat4f model;
         if (object.parent.is_valid()) {
             const auto* parent = find_object(object.parent);

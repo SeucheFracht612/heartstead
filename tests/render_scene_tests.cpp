@@ -45,6 +45,27 @@ void test_transform_matrix_and_bounds() {
     assert(std::abs(bounds.max.y - 4.0F) < 0.0001F);
 }
 
+void test_model_local_transform_is_shared_by_rendering_and_bounds() {
+    renderer::RenderScene scene;
+    auto object = make_object(anchored({0, 0, 0}));
+    object.previous_transform.position = {1.0F, 0.0F, -10.0F};
+    object.current_transform = object.previous_transform;
+    object.model_transform = math::translation_matrix({2.0F, 3.0F, 0.0F});
+    auto id = scene.create_object(object);
+    assert(id);
+
+    renderer::RenderCamera camera;
+    assert(camera.update_matrices());
+    auto extracted = scene.extract(camera, 1.0F);
+    assert(extracted);
+    assert(extracted.value().stats.visible_objects == 1);
+    const auto& instance = extracted.value().batches.front().instances.front();
+    assert(std::abs(instance.camera_relative_transform.at(0, 3) - 3.0F) < 0.0001F);
+    assert(std::abs(instance.camera_relative_transform.at(1, 3) - 3.0F) < 0.0001F);
+    assert(std::abs(instance.camera_relative_bounds.min.x - 2.5F) < 0.0001F);
+    assert(std::abs(instance.camera_relative_bounds.max.y - 3.5F) < 0.0001F);
+}
+
 void test_generation_safe_retained_scene_and_interpolation() {
     constexpr std::int64_t coordinate = 8'000'000'000'000'000LL;
     renderer::RenderScene scene;
@@ -226,6 +247,7 @@ void test_generation_safe_skin_palettes() {
 
 int main() {
     test_transform_matrix_and_bounds();
+    test_model_local_transform_is_shared_by_rendering_and_bounds();
     test_generation_safe_retained_scene_and_interpolation();
     test_parent_transforms_batching_culling_and_hidden_objects();
     test_teleport_rotation_light_and_batched_updates();

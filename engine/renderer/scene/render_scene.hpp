@@ -82,6 +82,9 @@ struct RenderObjectProxy {
     world::WorldPosition anchor;
     math::Transform3f previous_transform;
     math::Transform3f current_transform;
+    // Model-local transform applied after the interpolated entity transform. Animated rigid
+    // primitives use this for their evaluated glTF node matrix; static callers keep identity.
+    math::Mat4f model_transform = math::Mat4f::identity();
     RenderMeshHandle mesh;
     MaterialRuntimeHandle material;
     math::Bounds3f local_bounds{};
