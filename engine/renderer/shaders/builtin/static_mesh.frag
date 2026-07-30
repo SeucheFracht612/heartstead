@@ -134,12 +134,8 @@ vec4 sample_binding(sampler2DArray image, GpuTextureBinding binding) {
     return mix(first, second, fract(clamped_lod));
 }
 
-vec3 linear_to_srgb(vec3 linear_color) {
-    vec3 low = linear_color * 12.92;
-    vec3 high = 1.055 * pow(max(linear_color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
-    return mix(high, low, lessThanEqual(linear_color, vec3(0.0031308)));
-}
-
+// Writes linear radiance into the HDR scene target. Display encoding happens once, in the
+// tone mapping pass; a transfer function applied here would be applied twice.
 void main() {
     GpuSurfaceMaterial material = surface_materials.materials[fragment_material];
     vec4 base_color =
@@ -220,5 +216,5 @@ void main() {
                            length(fragment_world_position));
     color = mix(color, frame.fog_color_fog_end.rgb, fog);
     float alpha = fragment_layer == LAYER_TRANSPARENT ? base_color.a : 1.0;
-    out_color = vec4(linear_to_srgb(max(color, vec3(0.0))), alpha);
+    out_color = vec4(max(color, vec3(0.0)), alpha);
 }

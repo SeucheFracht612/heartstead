@@ -223,23 +223,28 @@ class HeadlessRenderDevice final : public IRenderDevice {
                             "renderer.unbound_graphics_pipeline_layout",
                             "render draw graphics pipeline layout is no longer bound");
                     }
-                    const auto descriptor_status = validate_required_descriptors(layout->second);
+                    const auto descriptor_status = validate_required_descriptors(
+                        layout->second, frame.plan.passes[pass_commands.pass_index]
+                                            .sampled_resources);
                     if (!descriptor_status) {
                         return core::Result<RenderFrameStats>::failure(
                             descriptor_status.error().code, descriptor_status.error().message);
                     }
-                    const auto has_chunk_constants = std::ranges::any_of(
-                        layout->second.push_constant_ranges,
-                        [](const RenderPushConstantRange& range) {
-                            return any(range.stages & RenderShaderStageFlags::vertex) &&
-                                   range.byte_offset == 0 &&
-                                   range.byte_size >= sizeof(ChunkPushConstants);
-                        });
-                    if (!has_chunk_constants) {
-                        return core::Result<RenderFrameStats>::failure(
-                            "renderer.missing_chunk_push_constants",
-                            "render draw pipeline layout must expose the chunk push-constant "
-                            "block to the vertex stage");
+                    // Post-process passes carry their own constants rather than the chunk block.
+                    if (pass.kind != RenderPassKind::post_process) {
+                        const auto has_chunk_constants = std::ranges::any_of(
+                            layout->second.push_constant_ranges,
+                            [](const RenderPushConstantRange& range) {
+                                return any(range.stages & RenderShaderStageFlags::vertex) &&
+                                       range.byte_offset == 0 &&
+                                       range.byte_size >= sizeof(ChunkPushConstants);
+                            });
+                        if (!has_chunk_constants) {
+                            return core::Result<RenderFrameStats>::failure(
+                                "renderer.missing_chunk_push_constants",
+                                "render draw pipeline layout must expose the chunk push-constant "
+                                "block to the vertex stage");
+                        }
                     }
 
                     const auto has_color_target = std::ranges::any_of(
@@ -766,9 +771,20 @@ class HeadlessRenderDevice final : public IRenderDevice {
 
   private:
     [[nodiscard]] core::Status
-    validate_required_descriptors(const RenderPipelineLayoutDesc& layout) const {
+    validate_required_descriptors(
+        const RenderPipelineLayoutDesc& layout,
+        std::span<const RenderPassSampledResource> graph_supplied = {}) const {
         for (const auto& binding : layout.descriptors) {
             if (!binding.required) {
+                continue;
+            }
+            // Bindings the frame graph fills are resolved per frame from graph resources, not
+            // written once through write_descriptors.
+            const auto supplied_by_graph = std::ranges::any_of(
+                graph_supplied, [&binding](const RenderPassSampledResource& sampled) {
+                    return sampled.binding_name == binding.name;
+                });
+            if (supplied_by_graph) {
                 continue;
             }
             const auto key = layout.material_id.value() + "|" + binding.name;

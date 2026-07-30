@@ -85,8 +85,6 @@ struct RendererInitDesc {
     SceneRenderConfig scene_render_config{};
     DebugRendererConfig debug_renderer_config{};
     UiRendererConfig ui_renderer_config{};
-    // Selects how scene colour reaches the display. Choosing linear_hdr requires tone map SPIR-V.
-    FrameColorPipeline color_pipeline = FrameColorPipeline::legacy_ldr;
     rhi::ClearColor clear_color{0.055F, 0.09F, 0.14F, 1.0F};
     rhi::RenderEnvironmentData environment{};
     bool development_shader_hot_reload = false;
@@ -203,9 +201,7 @@ class Renderer {
 
   private:
     // Format of the graph resource world shading writes into. Pipelines must be created against
-    // the format of the attachment they will actually be bound to, so this follows the frame
-    // graph: an rgba16_sfloat scene target under the linear HDR graph, the display image under
-    // the legacy path. Read when pipelines are built, so the colour pipeline is a startup choice.
+    // the format of the attachment they will be bound to.
     [[nodiscard]] rhi::RenderImageFormat scene_color_format() const noexcept;
     [[nodiscard]] core::Status create_sky_pipeline(std::span<const std::uint32_t> vertex_spirv,
                                                    std::span<const std::uint32_t> fragment_spirv);
@@ -244,9 +240,6 @@ class Renderer {
     GraphicsPipelineKey ui_pipeline_key_{};
     // Invalid when no tone map SPIR-V was supplied, which is also what makes the linear HDR graph
     // unavailable.
-    // Held here rather than read back from the frame builder: pipelines are created before the
-    // frame builder exists, and they must be built against the format the chosen graph uses.
-    FrameColorPipeline color_pipeline_ = FrameColorPipeline::legacy_ldr;
     rhi::RenderResourceHandle tone_map_pipeline_{};
     GraphicsPipelineKey tone_map_pipeline_key_{};
     ShaderProgramHandle terrain_shader_program_;

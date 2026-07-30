@@ -20,14 +20,6 @@ void FrameBuilder::set_clear_color(rhi::ClearColor clear_color) noexcept {
     clear_color_ = clear_color;
 }
 
-void FrameBuilder::set_color_pipeline(FrameColorPipeline pipeline) noexcept {
-    color_pipeline_ = pipeline;
-}
-
-FrameColorPipeline FrameBuilder::color_pipeline() const noexcept {
-    return color_pipeline_;
-}
-
 core::Status FrameBuilder::set_exposure(rhi::RenderExposureSettings exposure) {
     auto status = rhi::validate_render_exposure(exposure);
     if (!status) {
@@ -50,93 +42,6 @@ rhi::RenderResourceHandle FrameBuilder::tone_map_pipeline() const noexcept {
 }
 
 core::Result<rhi::RenderFramePlan> FrameBuilder::build_plan() const {
-    return color_pipeline_ == FrameColorPipeline::linear_hdr ? build_linear_hdr_plan()
-                                                            : build_legacy_ldr_plan();
-}
-
-core::Result<rhi::RenderFramePlan> FrameBuilder::build_legacy_ldr_plan() const {
-    using namespace rhi;
-    auto extent_status = validate_render_extent(extent_);
-    if (!extent_status) {
-        return core::Result<RenderFramePlan>::failure(extent_status.error().code,
-                                                      extent_status.error().message);
-    }
-
-    RenderFramePlanBuilder builder(extent_);
-    auto status = builder.add_resource(
-        {"output", extent_, RenderResourceLifetime::external, RenderImageFormat::rgba8_unorm});
-    if (!status) {
-        return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
-    }
-    status = builder.add_resource(
-        {"depth", extent_, RenderResourceLifetime::transient, RenderImageFormat::d32_sfloat});
-    if (!status) {
-        return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
-    }
-    status = builder.add_pass(
-        {.name = "sky",
-         .kind = RenderPassKind::clear,
-         .writes = {"output", "depth"},
-         .clear_color = clear_color_});
-    if (!status) {
-        return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
-    }
-    status = builder.add_pass(
-        {.name = "opaque_terrain",
-         .kind = RenderPassKind::world,
-         .reads = {"output"},
-         .writes = {"output", "depth"}});
-    if (!status) {
-        return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
-    }
-    status = builder.add_pass({.name = "alpha_tested_terrain",
-                               .kind = RenderPassKind::world,
-                               .reads = {"output", "depth"},
-                               .writes = {"output", "depth"}});
-    if (!status) {
-        return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
-    }
-    status = builder.add_pass({.name = "rich_static_instances",
-                               .kind = RenderPassKind::world,
-                               .reads = {"output", "depth"},
-                               .writes = {"output", "depth"}});
-    if (!status) {
-        return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
-    }
-    status = builder.add_pass({.name = "transparent_terrain",
-                               .kind = RenderPassKind::world,
-                               .reads = {"output", "depth"},
-                               .writes = {"output", "depth"}});
-    if (!status) {
-        return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
-    }
-    status = builder.add_pass(
-        {.name = "debug",
-         .kind = RenderPassKind::debug,
-         .reads = {"output", "depth"},
-         .writes = {"output", "depth"}});
-    if (!status) {
-        return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
-    }
-    status = builder.add_pass(
-        {.name = "ui",
-         .kind = RenderPassKind::ui,
-         .reads = {"output", "depth"},
-         .writes = {"output", "depth"}});
-    if (!status) {
-        return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
-    }
-    status = builder.add_pass({.name = "present",
-                               .kind = RenderPassKind::present,
-                               .reads = {"output"},
-                               .presents = true});
-    if (!status) {
-        return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
-    }
-    return builder.build();
-}
-
-core::Result<rhi::RenderFramePlan> FrameBuilder::build_linear_hdr_plan() const {
     using namespace rhi;
     auto extent_status = validate_render_extent(extent_);
     if (!extent_status) {
@@ -270,7 +175,7 @@ FrameBuilder::build(const RenderCamera& camera, RenderCommandLists commands,
     // graph owns, generated in the vertex shader, so the draw is synthesized here rather than
     // being something every caller has to remember to submit.
     std::vector<rhi::RenderDrawCommand> tone_map_draws;
-    if (color_pipeline_ == FrameColorPipeline::linear_hdr && tone_map_pipeline_.is_valid()) {
+    if (tone_map_pipeline_.is_valid()) {
         rhi::RenderDrawCommand tone_map_draw;
         tone_map_draw.pipeline = tone_map_pipeline_;
         tone_map_draw.vertex_count = 3;
@@ -278,10 +183,7 @@ FrameBuilder::build(const RenderCamera& camera, RenderCommandLists commands,
         tone_map_draws.push_back(tone_map_draw);
         append(hdr_pass_index::tone_map, tone_map_draws);
     }
-    // UI shifts one slot in the HDR graph because tone mapping owns index 6. The legacy path keeps
-    // UI at index 6.
-    append(color_pipeline_ == FrameColorPipeline::linear_hdr ? hdr_pass_index::ui : 6,
-           commands.ui_draws);
+    append(hdr_pass_index::ui, commands.ui_draws);
     auto status = rhi::validate_render_frame_submission_shape(result);
     if (!status) {
         return core::Result<rhi::RenderFrameSubmission>::failure(status.error().code,

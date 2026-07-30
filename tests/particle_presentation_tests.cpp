@@ -28,6 +28,8 @@ void initialize_renderer(heartstead::renderer::Renderer& renderer) {
     init.debug_fragment_spirv = spirv;
     init.ui_vertex_spirv = spirv;
     init.ui_fragment_spirv = spirv;
+    init.tone_map_vertex_spirv = spirv;
+    init.tone_map_fragment_spirv = spirv;
     assert(renderer.initialize(std::move(init)));
 }
 

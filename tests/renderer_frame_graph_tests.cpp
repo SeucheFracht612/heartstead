@@ -55,7 +55,6 @@ find_use(const rhi::RenderFrameExecutionPlan& execution_plan, std::string_view r
 
 [[nodiscard]] rhi::RenderFramePlan build_hdr_plan(rhi::RenderExtent extent = {1280, 720}) {
     FrameBuilder builder(extent, rhi::ClearColor{0.1F, 0.2F, 0.3F, 1.0F});
-    builder.set_color_pipeline(FrameColorPipeline::linear_hdr);
     auto plan = builder.build_plan();
     assert(plan);
     return std::move(plan).value();
@@ -194,7 +193,6 @@ void test_graph_derives_scene_target_barriers() {
 
 void test_hdr_submission_carries_validated_exposure() {
     FrameBuilder builder({1280, 720});
-    builder.set_color_pipeline(FrameColorPipeline::linear_hdr);
 
     assert(builder.set_exposure({0.75F, rhi::RenderToneMapping::khronos_pbr_neutral, 1.0F}));
     assert(builder.exposure().tone_mapping == rhi::RenderToneMapping::khronos_pbr_neutral);
@@ -238,28 +236,6 @@ void test_tone_map_push_constants_match_the_shader_layout() {
     assert(rhi::render_image_format_bytes_per_pixel(rhi::RenderImageFormat::rgba16_sfloat) == 8);
 }
 
-// The legacy path stays byte for byte what the backend already executes until the HDR graph is
-// wired through it. This test exists to catch an accidental change to the shipping frame.
-void test_legacy_pipeline_plan_is_unchanged() {
-    FrameBuilder builder({1280, 720});
-    assert(builder.color_pipeline() == FrameColorPipeline::legacy_ldr);
-    auto plan = builder.build_plan();
-    assert(plan);
-    const auto& legacy = plan.value();
-
-    assert(legacy.resources.size() == 2);
-    assert(legacy.resources[0].name == "output");
-    assert(legacy.resources[0].format == rhi::RenderImageFormat::rgba8_unorm);
-    assert(legacy.resources[1].name == "depth");
-    assert(legacy.passes.size() == 8);
-    assert(legacy.passes[0].name == "sky");
-    assert(legacy.passes[6].name == "ui");
-    assert(legacy.passes[7].name == "present");
-    assert(legacy.pass_count(rhi::RenderPassKind::post_process) == 0);
-    assert(legacy.find_resource(rhi::scene_color_resource_name) == nullptr);
-    assert(legacy.validate());
-}
-
 void test_hdr_plan_resizes_every_resource() {
     const auto plan = build_hdr_plan({640, 360});
     assert(plan.extent.width == 640);
@@ -281,7 +257,6 @@ int main() {
     test_graph_derives_scene_target_barriers();
     test_hdr_submission_carries_validated_exposure();
     test_tone_map_push_constants_match_the_shader_layout();
-    test_legacy_pipeline_plan_is_unchanged();
     test_hdr_plan_resizes_every_resource();
     return 0;
 }

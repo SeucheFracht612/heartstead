@@ -42,7 +42,7 @@ struct UiFixture {
     pipeline.vertex_attributes.assign(renderer::gpu_ui_vertex_attributes.begin(),
                                       renderer::gpu_ui_vertex_attributes.end());
     pipeline.cull_mode = RenderCullMode::none;
-    pipeline.depth_test_enable = true;
+    pipeline.depth_test_enable = false;
     pipeline.depth_write_enable = false;
     pipeline.depth_compare = RenderCompareOperation::always;
     pipeline.blend_mode = RenderBlendMode::alpha;
@@ -90,7 +90,7 @@ void test_ui_geometry_scissors_and_capacity() {
     lists.ui_draws = commands.value().draws;
     auto frame = builder.build(camera, std::move(lists));
     assert(frame);
-    assert(frame.value().pass_commands.front().pass_index == 6);
+    assert(frame.value().pass_commands.front().pass_index == renderer::hdr_pass_index::ui);
     auto executed = fixture.device->execute_frame(frame.value());
     assert(executed);
     assert(executed.value().draw_count == 2);

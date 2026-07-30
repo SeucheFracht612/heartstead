@@ -95,6 +95,8 @@ void initialize_renderer(heartstead::renderer::Renderer& renderer) {
     init.debug_fragment_spirv = test_spirv;
     init.ui_vertex_spirv = test_spirv;
     init.ui_fragment_spirv = test_spirv;
+    init.tone_map_vertex_spirv = test_spirv;
+    init.tone_map_fragment_spirv = test_spirv;
     assert(renderer.initialize(std::move(init)));
 }
 

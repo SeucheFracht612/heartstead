@@ -36,12 +36,8 @@ layout(push_constant) uniform ChunkPushConstants {
 const uint MATERIAL_ALPHA_TESTED = 1U;
 const uint MATERIAL_TRANSLUCENT = 2U;
 
-vec3 linear_to_srgb(vec3 linear_color) {
-    vec3 low = linear_color * 12.92;
-    vec3 high = 1.055 * pow(max(linear_color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
-    return mix(high, low, lessThanEqual(linear_color, vec3(0.0031308)));
-}
-
+// Writes linear radiance into the HDR scene target. Display encoding happens once, in the
+// tone mapping pass; a transfer function applied here would be applied twice.
 uint face_index(vec3 normal) {
     vec3 magnitude = abs(normal);
     if (magnitude.y >= magnitude.x && magnitude.y >= magnitude.z) {
@@ -109,5 +105,5 @@ void main() {
                            fog_distance);
     color = mix(color, chunk.fog_color_fog_end.rgb, fog);
     float output_alpha = (material_flags & MATERIAL_TRANSLUCENT) != 0U ? surface_alpha : 1.0;
-    out_color = vec4(linear_to_srgb(max(color, vec3(0.0))), output_alpha);
+    out_color = vec4(max(color, vec3(0.0)), output_alpha);
 }

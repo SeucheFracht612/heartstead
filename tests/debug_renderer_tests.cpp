@@ -49,6 +49,8 @@ struct DebugFixture {
     pipeline.vertex_attributes.assign(std::begin(renderer::gpu_debug_vertex_attributes),
                                       std::end(renderer::gpu_debug_vertex_attributes));
     pipeline.topology = RenderPrimitiveTopology::line_list;
+    // The debug pass draws into the linear scene target, not the display image.
+    pipeline.color_target_format = RenderImageFormat::rgba16_sfloat;
     pipeline.cull_mode = RenderCullMode::none;
     pipeline.depth_test_enable = true;
     pipeline.depth_write_enable = false;

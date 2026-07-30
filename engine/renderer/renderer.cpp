@@ -445,9 +445,6 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         return core::Status::failure(error.code, error.message);
     }
     fallback_material_ = created_fallback_material.value();
-    // Must be settled before any pipeline is created: pipelines bake in the colour format of the
-    // attachment the chosen graph will bind them to.
-    color_pipeline_ = desc.color_pipeline;
     auto pipeline_status = create_sky_pipeline(desc.sky_vertex_spirv, desc.sky_fragment_spirv);
     if (!pipeline_status) {
         const auto error = pipeline_status.error();
@@ -481,9 +478,6 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         (void)shutdown();
         return core::Status::failure(error.code, error.message);
     }
-    // Only the linear HDR graph needs tone mapping, so a caller that never selects it may omit the
-    // shaders. Selecting that graph without them is rejected below rather than silently presenting
-    // an unresolved scene target.
     if (!desc.tone_map_vertex_spirv.empty() && !desc.tone_map_fragment_spirv.empty()) {
         pipeline_status =
             create_tone_map_pipeline(desc.tone_map_vertex_spirv, desc.tone_map_fragment_spirv);
@@ -493,11 +487,12 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
             return core::Status::failure(error.code, error.message);
         }
     }
-    if (color_pipeline_ == FrameColorPipeline::linear_hdr && !tone_map_pipeline_.is_valid()) {
+    if (!tone_map_pipeline_.is_valid()) {
         (void)shutdown();
         return core::Status::failure(
             "renderer.tone_map_shaders_required",
-            "the linear HDR frame graph needs tone map shaders, which were not supplied");
+            "the frame graph resolves the scene target through tone mapping, so tone map shaders "
+            "are required");
     }
     pipeline_cache_->seal();
 
@@ -561,7 +556,6 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         return core::Status::failure(error.code, error.message);
     }
     frame_builder_ = std::make_unique<FrameBuilder>(device_->current_extent(), desc.clear_color);
-    frame_builder_->set_color_pipeline(color_pipeline_);
     frame_builder_->set_tone_map_pipeline(tone_map_pipeline_);
     environment_ = desc.environment;
     return core::Status::ok();
@@ -1615,9 +1609,7 @@ void Renderer::update_backend_stats(const rhi::RenderFrameStats& frame) noexcept
 }
 
 rhi::RenderImageFormat Renderer::scene_color_format() const noexcept {
-    return color_pipeline_ == FrameColorPipeline::linear_hdr
-               ? rhi::RenderImageFormat::rgba16_sfloat
-               : rhi::RenderImageFormat::rgba8_unorm;
+    return rhi::RenderImageFormat::rgba16_sfloat;
 }
 
 core::Status Renderer::create_sky_pipeline(std::span<const std::uint32_t> vertex_spirv,
@@ -2324,10 +2316,10 @@ core::Status Renderer::create_ui_pipeline(std::span<const std::uint32_t> vertex_
     pipeline.polygon_mode = rhi::RenderPolygonMode::fill;
     pipeline.cull_mode = rhi::RenderCullMode::none;
     pipeline.front_face = rhi::RenderFrontFace::counter_clockwise;
-    // Keep a compatible physical render pass while always accepting UI fragments.
-    pipeline.depth_test_enable = true;
+    // UI composites onto the tone mapped image, which carries no depth attachment. Depth testing
+    // was only ever enabled here to stay compatible with the old shared render pass.
+    pipeline.depth_test_enable = false;
     pipeline.depth_write_enable = false;
-    pipeline.depth_compare = rhi::RenderCompareOperation::always;
     pipeline.blend_mode = rhi::RenderBlendMode::alpha;
     pipeline.color_target_format = rhi::RenderImageFormat::rgba8_unorm;
     pipeline.depth_target_format = rhi::RenderImageFormat::d32_sfloat;
