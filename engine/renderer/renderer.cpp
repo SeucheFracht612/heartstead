@@ -1564,6 +1564,13 @@ void Renderer::update_backend_stats(const rhi::RenderFrameStats& frame) noexcept
     stats_.gpu_final_copy_ms = frame.gpu_final_copy_ms;
 }
 
+rhi::RenderImageFormat Renderer::scene_color_format() const noexcept {
+    return frame_builder_ != nullptr &&
+                   frame_builder_->color_pipeline() == FrameColorPipeline::linear_hdr
+               ? rhi::RenderImageFormat::rgba16_sfloat
+               : rhi::RenderImageFormat::rgba8_unorm;
+}
+
 core::Status Renderer::create_sky_pipeline(std::span<const std::uint32_t> vertex_spirv,
                                            std::span<const std::uint32_t> fragment_spirv) {
     if (shader_manager_ == nullptr || pipeline_cache_ == nullptr) {
@@ -1604,7 +1611,7 @@ core::Status Renderer::create_sky_pipeline(std::span<const std::uint32_t> vertex
     pipeline.depth_write_enable = false;
     pipeline.depth_compare = rhi::RenderCompareOperation::always;
     pipeline.blend_mode = rhi::RenderBlendMode::disabled;
-    pipeline.color_target_format = rhi::RenderImageFormat::rgba8_unorm;
+    pipeline.color_target_format = scene_color_format();
     pipeline.depth_target_format = rhi::RenderImageFormat::d32_sfloat;
 
     sky_pipeline_key_.shader_program = sky_shader_program_;
@@ -1887,7 +1894,7 @@ Renderer::create_terrain_pipeline(std::span<const std::uint32_t> vertex_spirv,
     pipeline.depth_write_enable = true;
     pipeline.depth_compare = rhi::RenderCompareOperation::less;
     pipeline.blend_mode = rhi::RenderBlendMode::disabled;
-    pipeline.color_target_format = rhi::RenderImageFormat::rgba8_unorm;
+    pipeline.color_target_format = scene_color_format();
     pipeline.depth_target_format = rhi::RenderImageFormat::d32_sfloat;
     const auto vertex_layout =
         hash_vertex_layout(pipeline.vertex_stride, pipeline.vertex_attributes);
@@ -2011,7 +2018,7 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
     pipeline.depth_write_enable = true;
     pipeline.depth_compare = rhi::RenderCompareOperation::less;
     pipeline.blend_mode = rhi::RenderBlendMode::disabled;
-    pipeline.color_target_format = rhi::RenderImageFormat::rgba8_unorm;
+    pipeline.color_target_format = scene_color_format();
     pipeline.depth_target_format = rhi::RenderImageFormat::d32_sfloat;
     const auto* surface_texture = surface_texture_array_->texture_view();
     if (surface_texture == nullptr) {
@@ -2172,7 +2179,7 @@ core::Status Renderer::create_debug_pipelines(std::span<const std::uint32_t> ver
     pipeline.depth_write_enable = false;
     pipeline.depth_compare = rhi::RenderCompareOperation::less_or_equal;
     pipeline.blend_mode = rhi::RenderBlendMode::alpha;
-    pipeline.color_target_format = rhi::RenderImageFormat::rgba8_unorm;
+    pipeline.color_target_format = scene_color_format();
     pipeline.depth_target_format = rhi::RenderImageFormat::d32_sfloat;
     const auto vertex_layout =
         hash_vertex_layout(pipeline.vertex_stride, pipeline.vertex_attributes);

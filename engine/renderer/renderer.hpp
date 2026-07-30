@@ -195,6 +195,11 @@ class Renderer {
     [[nodiscard]] const rhi::IRenderDevice* device() const noexcept;
 
   private:
+    // Format of the graph resource world shading writes into. Pipelines must be created against
+    // the format of the attachment they will actually be bound to, so this follows the frame
+    // graph: an rgba16_sfloat scene target under the linear HDR graph, the display image under
+    // the legacy path. Read when pipelines are built, so the colour pipeline is a startup choice.
+    [[nodiscard]] rhi::RenderImageFormat scene_color_format() const noexcept;
     [[nodiscard]] core::Status create_sky_pipeline(std::span<const std::uint32_t> vertex_spirv,
                                                    std::span<const std::uint32_t> fragment_spirv);
     [[nodiscard]] core::Status
