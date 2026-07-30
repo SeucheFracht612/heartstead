@@ -124,6 +124,10 @@ struct RenderDrawCommand {
     RenderResourceHandle vertex_buffer;
     RenderResourceHandle index_buffer;
 
+    // A draw is indexed when it carries an index buffer, and non-indexed otherwise. Non-indexed
+    // draws use vertex_count and need no vertex buffer at all, which is what lets a fullscreen
+    // pass derive its positions from gl_VertexIndex instead of uploading geometry.
+    std::uint32_t vertex_count = 0;
     std::uint32_t index_count = 0;
     std::uint32_t first_index = 0;
     std::int32_t vertex_offset = 0;

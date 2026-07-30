@@ -4841,9 +4841,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 }
                 for (const auto& draw : commands->draws) {
                     auto& pipeline = graphics_pipelines_.at(draw.pipeline.value);
-                    auto& vertex = buffer_resources_.at(draw.vertex_buffer.value);
-                    auto& index = buffer_resources_.at(draw.index_buffer.value);
                     auto& layout = pipeline_layouts_.at(pipeline.desc.material_id.value());
+                    const auto indexed = draw.index_buffer.is_valid();
                     if (bound_pipeline != pipeline.pipeline) {
                         bound_pipeline = pipeline.pipeline;
                         ++pipeline_bind_count;
@@ -4855,13 +4854,19 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                                                     &layout.descriptor_set, 0, nullptr);
                         }
                     }
-                    const VkDeviceSize vertex_buffer_offset = 0;
-                    vkCmdBindVertexBuffers(frame_commands, 0, 1, &vertex.buffer,
-                                           &vertex_buffer_offset);
-                    vkCmdBindIndexBuffer(frame_commands, index.buffer, 0,
-                                         draw.index_type == rhi::RenderIndexType::uint16
-                                             ? VK_INDEX_TYPE_UINT16
-                                             : VK_INDEX_TYPE_UINT32);
+                    if (draw.vertex_buffer.is_valid()) {
+                        auto& vertex = buffer_resources_.at(draw.vertex_buffer.value);
+                        const VkDeviceSize vertex_buffer_offset = 0;
+                        vkCmdBindVertexBuffers(frame_commands, 0, 1, &vertex.buffer,
+                                               &vertex_buffer_offset);
+                    }
+                    if (indexed) {
+                        auto& index = buffer_resources_.at(draw.index_buffer.value);
+                        vkCmdBindIndexBuffer(frame_commands, index.buffer, 0,
+                                             draw.index_type == rhi::RenderIndexType::uint16
+                                                 ? VK_INDEX_TYPE_UINT16
+                                                 : VK_INDEX_TYPE_UINT32);
+                    }
                     VkRect2D draw_scissor{};
                     if (draw.scissor_enabled) {
                         draw_scissor.offset = {static_cast<std::int32_t>(draw.scissor.x),
@@ -4886,8 +4891,13 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                     vkCmdPushConstants(frame_commands, layout.pipeline_layout,
                                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                        sizeof(constants), &constants);
-                    vkCmdDrawIndexed(frame_commands, draw.index_count, draw.instance_count,
-                                     draw.first_index, draw.vertex_offset, draw.first_instance);
+                    if (indexed) {
+                        vkCmdDrawIndexed(frame_commands, draw.index_count, draw.instance_count,
+                                         draw.first_index, draw.vertex_offset, draw.first_instance);
+                    } else {
+                        vkCmdDraw(frame_commands, draw.vertex_count, draw.instance_count, 0,
+                                  draw.first_instance);
+                    }
                 }
             };
 

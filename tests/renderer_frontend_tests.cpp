@@ -62,7 +62,11 @@ void test_frame_builder_preserves_terrain_phase_commands() {
     renderer::FrameBuilder builder({640, 360}, {0.1F, 0.2F, 0.3F, 1.0F});
     renderer::RenderCamera camera;
     assert(camera.set_aspect_ratio(640.0F / 360.0F));
-    const renderer::rhi::RenderDrawCommand draw{{1}, {2}, {3}, 3};
+    renderer::rhi::RenderDrawCommand draw;
+    draw.pipeline = {1};
+    draw.vertex_buffer = {2};
+    draw.index_buffer = {3};
+    draw.index_count = 3;
     renderer::RenderCommandLists commands;
     commands.sky_draws.push_back(draw);
     commands.opaque_terrain_draws.push_back(draw);

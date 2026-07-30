@@ -510,21 +510,34 @@ core::Status validate_render_frame_submission_shape(const RenderFrameSubmission&
                 return core::Status::failure("renderer.invalid_draw_pipeline",
                                              "render draw must reference a graphics pipeline");
             }
-            if (!draw.vertex_buffer.is_valid()) {
-                return core::Status::failure("renderer.invalid_vertex_buffer",
-                                             "render draw must reference a vertex buffer");
-            }
-            if (!draw.index_buffer.is_valid()) {
-                return core::Status::failure("renderer.invalid_index_buffer",
-                                             "render draw must reference an index buffer");
-            }
-            if (draw.index_count == 0) {
-                return core::Status::failure("renderer.invalid_index_count",
-                                             "indexed render draw count must be non-zero");
-            }
-            if (draw.first_index > std::numeric_limits<std::uint32_t>::max() - draw.index_count) {
-                return core::Status::failure("renderer.draw_index_range_overflow",
-                                             "render draw index range overflows uint32");
+            // An index buffer selects an indexed draw. A non-indexed draw needs neither an index
+            // nor a vertex buffer, so a fullscreen pass can generate its geometry in the shader.
+            if (draw.index_buffer.is_valid()) {
+                if (!draw.vertex_buffer.is_valid()) {
+                    return core::Status::failure("renderer.invalid_vertex_buffer",
+                                                 "indexed render draw must reference a vertex "
+                                                 "buffer");
+                }
+                if (draw.index_count == 0) {
+                    return core::Status::failure("renderer.invalid_index_count",
+                                                 "indexed render draw count must be non-zero");
+                }
+                if (draw.first_index >
+                    std::numeric_limits<std::uint32_t>::max() - draw.index_count) {
+                    return core::Status::failure("renderer.draw_index_range_overflow",
+                                                 "render draw index range overflows uint32");
+                }
+            } else {
+                if (draw.vertex_count == 0) {
+                    return core::Status::failure("renderer.invalid_vertex_count",
+                                                 "non-indexed render draw vertex count must be "
+                                                 "non-zero");
+                }
+                if (draw.index_count != 0) {
+                    return core::Status::failure("renderer.missing_index_buffer",
+                                                 "render draw sets an index count without an index "
+                                                 "buffer");
+                }
             }
             if (!std::isfinite(draw.sort_depth)) {
                 return core::Status::failure("renderer.invalid_draw_sort_depth",

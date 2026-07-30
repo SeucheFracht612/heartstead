@@ -235,16 +235,14 @@ void test_unified_headless_frame_submission() {
     RenderFrameSubmission frame;
     frame.plan = plan.value();
     frame.camera.view_projection = math::Mat4f::identity();
-    frame.pass_commands.push_back({0,
-                                   {RenderDrawCommand{pipeline.value().handle,
-                                                      vertex_upload.value().handle,
-                                                      index_upload.value().handle,
-                                                      3,
-                                                      0,
-                                                      0,
-                                                      1,
-                                                      0,
-                                                      {32.0F, 0.0F, -32.0F}}}});
+    RenderDrawCommand milestone_draw;
+    milestone_draw.pipeline = pipeline.value().handle;
+    milestone_draw.vertex_buffer = vertex_upload.value().handle;
+    milestone_draw.index_buffer = index_upload.value().handle;
+    milestone_draw.index_count = 3;
+    milestone_draw.instance_count = 1;
+    milestone_draw.camera_relative_origin = {32.0F, 0.0F, -32.0F};
+    frame.pass_commands.push_back({0, {milestone_draw}});
 
     auto stats = device.value()->execute_frame(frame);
     assert(stats);

@@ -178,36 +178,42 @@ class HeadlessRenderDevice final : public IRenderDevice {
                             "renderer.unknown_graphics_pipeline",
                             "render draw references a graphics pipeline not owned by this device");
                     }
-                    const auto vertex = resources_.find(draw.vertex_buffer.value);
-                    if (vertex == resources_.end()) {
-                        return core::Result<RenderFrameStats>::failure(
-                            "renderer.unknown_vertex_buffer",
-                            "render draw references a vertex buffer not owned by this device");
+                    // A non-indexed draw carries neither buffer: it generates its vertices in the
+                    // shader, so there is nothing to look up or bounds check.
+                    if (draw.vertex_buffer.is_valid()) {
+                        const auto vertex = resources_.find(draw.vertex_buffer.value);
+                        if (vertex == resources_.end()) {
+                            return core::Result<RenderFrameStats>::failure(
+                                "renderer.unknown_vertex_buffer",
+                                "render draw references a vertex buffer not owned by this device");
+                        }
+                        if (vertex->second.usage != RenderBufferUsage::vertex) {
+                            return core::Result<RenderFrameStats>::failure(
+                                "renderer.invalid_vertex_buffer_usage",
+                                "render draw vertex buffer has non-vertex usage");
+                        }
                     }
-                    if (vertex->second.usage != RenderBufferUsage::vertex) {
-                        return core::Result<RenderFrameStats>::failure(
-                            "renderer.invalid_vertex_buffer_usage",
-                            "render draw vertex buffer has non-vertex usage");
-                    }
-                    const auto index = resources_.find(draw.index_buffer.value);
-                    if (index == resources_.end()) {
-                        return core::Result<RenderFrameStats>::failure(
-                            "renderer.unknown_index_buffer",
-                            "render draw references an index buffer not owned by this device");
-                    }
-                    if (index->second.usage != RenderBufferUsage::index) {
-                        return core::Result<RenderFrameStats>::failure(
-                            "renderer.invalid_index_buffer_usage",
-                            "render draw index buffer has non-index usage");
-                    }
-                    const auto available_indices =
-                        index->second.byte_size / render_index_type_size(draw.index_type);
-                    const auto end_index = static_cast<std::size_t>(draw.first_index) +
-                                           static_cast<std::size_t>(draw.index_count);
-                    if (end_index > available_indices) {
-                        return core::Result<RenderFrameStats>::failure(
-                            "renderer.draw_index_range_out_of_bounds",
-                            "render draw index range exceeds its index buffer");
+                    if (draw.index_buffer.is_valid()) {
+                        const auto index = resources_.find(draw.index_buffer.value);
+                        if (index == resources_.end()) {
+                            return core::Result<RenderFrameStats>::failure(
+                                "renderer.unknown_index_buffer",
+                                "render draw references an index buffer not owned by this device");
+                        }
+                        if (index->second.usage != RenderBufferUsage::index) {
+                            return core::Result<RenderFrameStats>::failure(
+                                "renderer.invalid_index_buffer_usage",
+                                "render draw index buffer has non-index usage");
+                        }
+                        const auto available_indices =
+                            index->second.byte_size / render_index_type_size(draw.index_type);
+                        const auto end_index = static_cast<std::size_t>(draw.first_index) +
+                                               static_cast<std::size_t>(draw.index_count);
+                        if (end_index > available_indices) {
+                            return core::Result<RenderFrameStats>::failure(
+                                "renderer.draw_index_range_out_of_bounds",
+                                "render draw index range exceeds its index buffer");
+                        }
                     }
 
                     const auto layout =
@@ -260,9 +266,11 @@ class HeadlessRenderDevice final : public IRenderDevice {
                         ++stats.pipeline_bind_count;
                     }
                     ++stats.draw_count;
-                    ++stats.indexed_draw_count;
-                    stats.total_indices +=
-                        static_cast<std::size_t>(draw.index_count) * draw.instance_count;
+                    if (draw.index_buffer.is_valid()) {
+                        ++stats.indexed_draw_count;
+                        stats.total_indices +=
+                            static_cast<std::size_t>(draw.index_count) * draw.instance_count;
+                    }
                 }
             }
         }
