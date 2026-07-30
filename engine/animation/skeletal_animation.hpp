@@ -9,12 +9,16 @@
 
 namespace heartstead::animation {
 
-struct SkeletalPose {
+struct NodePose {
     std::vector<assets::ModelNodeTransform> local_transforms;
     std::vector<std::vector<float>> morph_weights;
 
-    friend bool operator==(const SkeletalPose&, const SkeletalPose&) = default;
+    friend bool operator==(const NodePose&, const NodePose&) = default;
 };
+
+// Compatibility name for callers that still describe the shared node pose by its
+// skinning consumer. Rigid-node and skinned animation use the same pose type.
+using SkeletalPose = NodePose;
 
 struct AnimationClipPlayback {
     std::uint32_t clip = assets::no_model_index;
@@ -33,27 +37,35 @@ struct CpuSkinnedVertex {
     math::Vec3f normal{};
 };
 
-[[nodiscard]] SkeletalPose bind_pose(const assets::ModelAsset& model);
+[[nodiscard]] NodePose bind_node_pose(const assets::ModelAsset& model);
+[[nodiscard]] core::Status validate_node_pose(const assets::ModelAsset& model,
+                                              const NodePose& pose);
+[[nodiscard]] core::Result<NodePose> blend_node_poses(const assets::ModelAsset& model,
+                                                      const NodePose& first,
+                                                      const NodePose& second,
+                                                      float second_weight);
+
+[[nodiscard]] NodePose bind_pose(const assets::ModelAsset& model);
 [[nodiscard]] core::Status validate_skeletal_pose(const assets::ModelAsset& model,
                                                   const SkeletalPose& pose);
-[[nodiscard]] core::Result<SkeletalPose>
+[[nodiscard]] core::Result<NodePose>
 sample_animation_clip(const assets::ModelAsset& model, const AnimationClipPlayback& playback);
-[[nodiscard]] core::Result<SkeletalPose> blend_skeletal_poses(const assets::ModelAsset& model,
-                                                              const SkeletalPose& first,
-                                                              const SkeletalPose& second,
-                                                              float second_weight);
-[[nodiscard]] core::Result<SkeletalPose>
+[[nodiscard]] core::Result<NodePose> blend_skeletal_poses(const assets::ModelAsset& model,
+                                                          const SkeletalPose& first,
+                                                          const SkeletalPose& second,
+                                                          float second_weight);
+[[nodiscard]] core::Result<NodePose>
 sample_blended_animation(const assets::ModelAsset& model, const AnimationClipPlayback& first,
                          const AnimationClipPlayback& second, float second_weight);
 [[nodiscard]] core::Result<std::vector<math::Mat4f>>
-evaluate_model_node_matrices(const assets::ModelAsset& model, const SkeletalPose& pose);
+evaluate_model_node_matrices(const assets::ModelAsset& model, const NodePose& pose);
 [[nodiscard]] core::Result<SkinningPalette> build_skinning_palette(const assets::ModelAsset& model,
                                                                    std::uint32_t skin,
                                                                    std::uint32_t mesh_node,
-                                                                   const SkeletalPose& pose);
+                                                                   const NodePose& pose);
 [[nodiscard]] core::Result<SkinningPalette>
 build_model_space_skinning_palette(const assets::ModelAsset& model, std::uint32_t skin,
-                                   std::uint32_t mesh_node, const SkeletalPose& pose);
+                                   std::uint32_t mesh_node, const NodePose& pose);
 [[nodiscard]] core::Result<CpuSkinnedVertex>
 skin_model_vertex(const assets::ModelVertex& vertex, std::span<const math::Mat4f> joint_matrices);
 

@@ -50,7 +50,7 @@ resolve_locomotion_clips(const assets::ModelAsset& model, std::string_view idle,
                          std::string_view fall, std::string_view swim,
                          std::uint32_t transition_ticks = 9);
 
-[[nodiscard]] core::Result<SkeletalPose>
+[[nodiscard]] core::Result<NodePose>
 sample_locomotion_animation(const assets::ModelAsset& model, const LocomotionClipSet& clips,
                             const ReplicatedLocomotionAnimation& animation,
                             std::uint64_t render_tick);

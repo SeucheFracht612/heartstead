@@ -1368,6 +1368,28 @@ std::string_view model_alpha_mode_name(ModelAlphaMode mode) noexcept {
     return "unknown";
 }
 
+ModelCapabilities model_capabilities(const ModelAsset& model) noexcept {
+    ModelCapabilities result;
+    result.has_animation_clips = !model.animations.empty();
+    result.has_skins =
+        std::ranges::any_of(model.primitives, [](const ModelPrimitive& primitive) {
+            return primitive.skin != no_model_index;
+        });
+    result.has_morph_targets =
+        std::ranges::any_of(model.primitives, [](const ModelPrimitive& primitive) {
+            return !primitive.morph_targets.empty();
+        });
+    result.has_animated_nodes =
+        std::ranges::any_of(model.animations, [](const ModelAnimationClip& clip) {
+            return std::ranges::any_of(clip.channels, [](const ModelAnimationChannel& channel) {
+                return channel.path == ModelAnimationPath::translation ||
+                       channel.path == ModelAnimationPath::rotation ||
+                       channel.path == ModelAnimationPath::scale;
+            });
+        });
+    return result;
+}
+
 core::Result<std::uint32_t> resolve_model_animation_clip(const ModelAsset& model,
                                                          std::string_view clip_name) {
     if (clip_name.empty()) {

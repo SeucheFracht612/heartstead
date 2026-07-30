@@ -89,10 +89,16 @@ heartstead::assets::ModelAsset make_animated_model() {
 int main() {
     using namespace heartstead;
     const auto model = make_animated_model();
+    const auto capabilities = assets::model_capabilities(model);
+    assert(capabilities.has_animation_clips);
+    assert(capabilities.has_skins);
+    assert(!capabilities.has_morph_targets);
+    assert(capabilities.has_animated_nodes);
+    assert(capabilities.supports_animation());
 
-    const auto bind = animation::bind_pose(model);
+    const auto bind = animation::bind_node_pose(model);
     assert(bind.local_transforms.size() == model.nodes.size());
-    assert(animation::validate_skeletal_pose(model, bind));
+    assert(animation::validate_node_pose(model, bind));
 
     auto half_walk = animation::sample_animation_clip(model, {0, 0.5F, false});
     assert(half_walk);
@@ -128,7 +134,7 @@ int main() {
     assert(nearly_equal(stepped_before.value().local_transforms[1].scale.x, 1.0F));
     assert(nearly_equal(stepped_after.value().local_transforms[1].scale.x, 2.0F));
 
-    auto blended = animation::blend_skeletal_poses(model, bind, half_walk.value(), 0.25F);
+    auto blended = animation::blend_node_poses(model, bind, half_walk.value(), 0.25F);
     assert(blended);
     assert(nearly_equal(blended.value().local_transforms[1].translation.y, 0.25F));
     auto sampled_blend =
@@ -138,7 +144,7 @@ int main() {
 
     auto bad_clip = animation::sample_animation_clip(model, {assets::no_model_index, 0.0F, true});
     assert(!bad_clip);
-    auto bad_blend = animation::blend_skeletal_poses(model, bind, half_walk.value(), 1.01F);
+    auto bad_blend = animation::blend_node_poses(model, bind, half_walk.value(), 1.01F);
     assert(!bad_blend);
     auto bad_palette = animation::build_skinning_palette(model, 7, 0, half_walk.value());
     assert(!bad_palette);
@@ -208,13 +214,32 @@ int main() {
                                      std::vector<float>{0.0F, 1.0F});
     morph_model.animations.push_back(std::move(morph_clip));
     assert(assets::validate_model_asset(morph_model));
+    const auto morph_capabilities = assets::model_capabilities(morph_model);
+    assert(morph_capabilities.has_morph_targets);
     auto half_morph = animation::sample_animation_clip(morph_model, {3, 0.5F, false});
     assert(half_morph);
     assert(nearly_equal(half_morph.value().morph_weights[0][0], 0.5F));
-    auto blended_morph = animation::blend_skeletal_poses(
-        morph_model, animation::bind_pose(morph_model), half_morph.value(), 0.5F);
+    auto blended_morph = animation::blend_node_poses(
+        morph_model, animation::bind_node_pose(morph_model), half_morph.value(), 0.5F);
     assert(blended_morph);
     assert(nearly_equal(blended_morph.value().morph_weights[0][0], 0.25F));
+
+    auto rigid_model = model;
+    rigid_model.primitives[0].skin = assets::no_model_index;
+    rigid_model.skins.clear();
+    assert(assets::validate_model_asset(rigid_model));
+    const auto rigid_capabilities = assets::model_capabilities(rigid_model);
+    assert(rigid_capabilities.has_animation_clips);
+    assert(!rigid_capabilities.has_skins);
+    assert(rigid_capabilities.has_animated_nodes);
+    auto rigid_pose = animation::sample_animation_clip(rigid_model, {0, 0.5F, false});
+    assert(rigid_pose);
+    auto rigid_matrices =
+        animation::evaluate_model_node_matrices(rigid_model, rigid_pose.value());
+    assert(rigid_matrices);
+    const auto rigid_origin =
+        rigid_matrices.value()[1] * math::Vec4f{0.0F, 0.0F, 0.0F, 1.0F};
+    assert(nearly_equal(rigid_origin.y, 1.0F));
 
     return 0;
 }

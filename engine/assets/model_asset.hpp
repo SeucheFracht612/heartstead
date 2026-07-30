@@ -259,6 +259,19 @@ struct ModelAsset {
     }
 };
 
+struct ModelCapabilities {
+    bool has_animation_clips = false;
+    bool has_skins = false;
+    bool has_morph_targets = false;
+    bool has_animated_nodes = false;
+
+    [[nodiscard]] bool supports_animation() const noexcept {
+        return has_animation_clips;
+    }
+
+    friend bool operator==(const ModelCapabilities&, const ModelCapabilities&) = default;
+};
+
 struct ModelAssetLimits {
     std::size_t maximum_source_bytes = 256U * 1024U * 1024U;
     std::uint32_t maximum_vertices = 1'000'000;
@@ -293,6 +306,7 @@ discover_gltf_external_dependencies(const std::filesystem::path& path,
 encode_model_asset(const ModelAsset& asset, const ModelAssetLimits& limits = {});
 [[nodiscard]] core::Result<ModelAsset> decode_model_asset(std::span<const std::uint8_t> bytes,
                                                           const ModelAssetLimits& limits = {});
+[[nodiscard]] ModelCapabilities model_capabilities(const ModelAsset& model) noexcept;
 [[nodiscard]] core::Result<std::uint32_t> resolve_model_animation_clip(const ModelAsset& model,
                                                                        std::string_view clip_name);
 

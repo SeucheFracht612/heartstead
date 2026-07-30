@@ -260,8 +260,8 @@ constexpr float minimum_affine_determinant = 1.0e-8F;
 
 } // namespace
 
-SkeletalPose bind_pose(const assets::ModelAsset& model) {
-    SkeletalPose result;
+NodePose bind_node_pose(const assets::ModelAsset& model) {
+    NodePose result;
     result.local_transforms.reserve(model.nodes.size());
     result.morph_weights.reserve(model.nodes.size());
     for (const auto& node : model.nodes) {
@@ -271,7 +271,7 @@ SkeletalPose bind_pose(const assets::ModelAsset& model) {
     return result;
 }
 
-core::Status validate_skeletal_pose(const assets::ModelAsset& model, const SkeletalPose& pose) {
+core::Status validate_node_pose(const assets::ModelAsset& model, const NodePose& pose) {
     if (pose.local_transforms.size() != model.nodes.size() ||
         pose.morph_weights.size() != model.nodes.size() ||
         !std::ranges::all_of(pose.local_transforms,
@@ -292,14 +292,22 @@ core::Status validate_skeletal_pose(const assets::ModelAsset& model, const Skele
     return core::Status::ok();
 }
 
-core::Result<SkeletalPose> sample_animation_clip(const assets::ModelAsset& model,
-                                                 const AnimationClipPlayback& playback) {
+NodePose bind_pose(const assets::ModelAsset& model) {
+    return bind_node_pose(model);
+}
+
+core::Status validate_skeletal_pose(const assets::ModelAsset& model, const SkeletalPose& pose) {
+    return validate_node_pose(model, pose);
+}
+
+core::Result<NodePose> sample_animation_clip(const assets::ModelAsset& model,
+                                             const AnimationClipPlayback& playback) {
     if (playback.clip >= model.animations.size() || !std::isfinite(playback.time_seconds)) {
-        return core::Result<SkeletalPose>::failure(
+        return core::Result<NodePose>::failure(
             "skeletal_animation.invalid_playback",
             "animation playback requires a valid clip and finite time");
     }
-    auto pose = bind_pose(model);
+    auto pose = bind_node_pose(model);
     const auto& clip = model.animations[playback.clip];
     const auto time_seconds = sampled_time(clip, playback);
     for (const auto& channel : clip.channels) {
@@ -313,7 +321,7 @@ core::Result<SkeletalPose> sample_animation_clip(const assets::ModelAsset& model
                               channel.weight_values.size() != expected_weight_values ||
                               !channel.values.empty()
                         : channel.values.size() != channel.times.size() * value_multiplier)) {
-            return core::Result<SkeletalPose>::failure(
+            return core::Result<NodePose>::failure(
                 "skeletal_animation.invalid_channel",
                 "animation channel has invalid runtime bounds or references a missing model node");
         }
@@ -340,30 +348,29 @@ core::Result<SkeletalPose> sample_animation_clip(const assets::ModelAsset& model
             break;
         }
     }
-    auto status = validate_skeletal_pose(model, pose);
+    auto status = validate_node_pose(model, pose);
     if (!status) {
-        return core::Result<SkeletalPose>::failure(status.error().code, status.error().message);
+        return core::Result<NodePose>::failure(status.error().code, status.error().message);
     }
-    return core::Result<SkeletalPose>::success(std::move(pose));
+    return core::Result<NodePose>::success(std::move(pose));
 }
 
-core::Result<SkeletalPose> blend_skeletal_poses(const assets::ModelAsset& model,
-                                                const SkeletalPose& first,
-                                                const SkeletalPose& second, float second_weight) {
-    auto status = validate_skeletal_pose(model, first);
+core::Result<NodePose> blend_node_poses(const assets::ModelAsset& model, const NodePose& first,
+                                        const NodePose& second, float second_weight) {
+    auto status = validate_node_pose(model, first);
     if (!status) {
-        return core::Result<SkeletalPose>::failure(status.error().code, status.error().message);
+        return core::Result<NodePose>::failure(status.error().code, status.error().message);
     }
-    status = validate_skeletal_pose(model, second);
+    status = validate_node_pose(model, second);
     if (!status) {
-        return core::Result<SkeletalPose>::failure(status.error().code, status.error().message);
+        return core::Result<NodePose>::failure(status.error().code, status.error().message);
     }
     if (!std::isfinite(second_weight) || second_weight < 0.0F || second_weight > 1.0F) {
-        return core::Result<SkeletalPose>::failure(
+        return core::Result<NodePose>::failure(
             "skeletal_animation.invalid_blend",
             "animation blend weight must be finite and in the inclusive [0, 1] range");
     }
-    SkeletalPose result;
+    NodePose result;
     result.local_transforms.resize(first.local_transforms.size());
     result.morph_weights.resize(first.morph_weights.size());
     for (std::size_t index = 0; index < result.local_transforms.size(); ++index) {
@@ -384,13 +391,19 @@ core::Result<SkeletalPose> blend_skeletal_poses(const assets::ModelAsset& model,
                     second_weight;
         }
     }
-    return core::Result<SkeletalPose>::success(std::move(result));
+    return core::Result<NodePose>::success(std::move(result));
 }
 
-core::Result<SkeletalPose> sample_blended_animation(const assets::ModelAsset& model,
-                                                    const AnimationClipPlayback& first,
-                                                    const AnimationClipPlayback& second,
-                                                    float second_weight) {
+core::Result<NodePose> blend_skeletal_poses(const assets::ModelAsset& model,
+                                            const SkeletalPose& first,
+                                            const SkeletalPose& second, float second_weight) {
+    return blend_node_poses(model, first, second, second_weight);
+}
+
+core::Result<NodePose> sample_blended_animation(const assets::ModelAsset& model,
+                                                const AnimationClipPlayback& first,
+                                                const AnimationClipPlayback& second,
+                                                float second_weight) {
     auto first_pose = sample_animation_clip(model, first);
     if (!first_pose) {
         return first_pose;
@@ -399,12 +412,12 @@ core::Result<SkeletalPose> sample_blended_animation(const assets::ModelAsset& mo
     if (!second_pose) {
         return second_pose;
     }
-    return blend_skeletal_poses(model, first_pose.value(), second_pose.value(), second_weight);
+    return blend_node_poses(model, first_pose.value(), second_pose.value(), second_weight);
 }
 
 core::Result<std::vector<math::Mat4f>> evaluate_model_node_matrices(const assets::ModelAsset& model,
-                                                                    const SkeletalPose& pose) {
-    auto status = validate_skeletal_pose(model, pose);
+                                                                    const NodePose& pose) {
+    auto status = validate_node_pose(model, pose);
     if (!status) {
         return core::Result<std::vector<math::Mat4f>>::failure(status.error().code,
                                                                status.error().message);
@@ -454,7 +467,7 @@ core::Result<std::vector<math::Mat4f>> evaluate_model_node_matrices(const assets
 
 core::Result<SkinningPalette> build_skinning_palette(const assets::ModelAsset& model,
                                                      std::uint32_t skin, std::uint32_t mesh_node,
-                                                     const SkeletalPose& pose) {
+                                                     const NodePose& pose) {
     if (skin >= model.skins.size() || mesh_node >= model.nodes.size()) {
         return core::Result<SkinningPalette>::failure(
             "skeletal_animation.invalid_skin_binding",
@@ -491,7 +504,7 @@ core::Result<SkinningPalette> build_skinning_palette(const assets::ModelAsset& m
 core::Result<SkinningPalette> build_model_space_skinning_palette(const assets::ModelAsset& model,
                                                                  std::uint32_t skin,
                                                                  std::uint32_t mesh_node,
-                                                                 const SkeletalPose& pose) {
+                                                                 const NodePose& pose) {
     if (skin >= model.skins.size() || mesh_node >= model.nodes.size()) {
         return core::Result<SkinningPalette>::failure(
             "skeletal_animation.invalid_skin_binding",

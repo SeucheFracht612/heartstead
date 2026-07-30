@@ -121,17 +121,17 @@ resolve_locomotion_clips(const assets::ModelAsset& model, std::string_view idle,
     return core::Result<LocomotionClipSet>::success(result);
 }
 
-core::Result<SkeletalPose>
+core::Result<NodePose>
 sample_locomotion_animation(const assets::ModelAsset& model, const LocomotionClipSet& clips,
                             const ReplicatedLocomotionAnimation& animation,
                             std::uint64_t render_tick) {
     auto status = clips.validate(model);
     if (!status) {
-        return core::Result<SkeletalPose>::failure(status.error().code, status.error().message);
+        return core::Result<NodePose>::failure(status.error().code, status.error().message);
     }
     status = animation.validate(std::max(render_tick, animation.transition_tick));
     if (!status) {
-        return core::Result<SkeletalPose>::failure(status.error().code, status.error().message);
+        return core::Result<NodePose>::failure(status.error().code, status.error().message);
     }
     const auto target_clip = clips.clip_for(animation.kind);
     auto target_pose = sample_animation_clip(
@@ -155,7 +155,7 @@ sample_locomotion_animation(const assets::ModelAsset& model, const LocomotionCli
                                                        clips.transition_ticks)
                              : 0;
     const auto weight = static_cast<float>(elapsed) / static_cast<float>(clips.transition_ticks);
-    return blend_skeletal_poses(model, source_pose.value(), target_pose.value(), weight);
+    return blend_node_poses(model, source_pose.value(), target_pose.value(), weight);
 }
 
 std::string_view locomotion_animation_kind_name(LocomotionAnimationKind kind) noexcept {
