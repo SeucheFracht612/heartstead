@@ -1256,10 +1256,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         VkImageView color_view = VK_NULL_HANDLE;
         VkDeviceMemory color_memory = VK_NULL_HANDLE;
         VkImageLayout color_layout = VK_IMAGE_LAYOUT_UNDEFINED;
-        VkImage depth_image = VK_NULL_HANDLE;
-        VkImageView depth_view = VK_NULL_HANDLE;
-        VkDeviceMemory depth_memory = VK_NULL_HANDLE;
-        VkImageLayout depth_layout = VK_IMAGE_LAYOUT_UNDEFINED;
         rhi::RenderExtent extent{};
     };
 
@@ -3158,15 +3154,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
     }
 
     void destroy_frame_target(VulkanFrameTarget& target) noexcept {
-        if (target.depth_view != VK_NULL_HANDLE) {
-            vkDestroyImageView(device_, target.depth_view, nullptr);
-        }
-        if (target.depth_image != VK_NULL_HANDLE) {
-            vkDestroyImage(device_, target.depth_image, nullptr);
-        }
-        if (target.depth_memory != VK_NULL_HANDLE) {
-            vkFreeMemory(device_, target.depth_memory, nullptr);
-        }
         if (target.color_view != VK_NULL_HANDLE) {
             vkDestroyImageView(device_, target.color_view, nullptr);
         }
@@ -4101,18 +4088,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
     }
 
     void destroy_offscreen_target() noexcept {
-        if (depth_image_view_ != VK_NULL_HANDLE) {
-            vkDestroyImageView(device_, depth_image_view_, nullptr);
-            depth_image_view_ = VK_NULL_HANDLE;
-        }
-        if (depth_image_ != VK_NULL_HANDLE) {
-            vkDestroyImage(device_, depth_image_, nullptr);
-            depth_image_ = VK_NULL_HANDLE;
-        }
-        if (depth_memory_ != VK_NULL_HANDLE) {
-            vkFreeMemory(device_, depth_memory_, nullptr);
-            depth_memory_ = VK_NULL_HANDLE;
-        }
         if (offscreen_image_view_ != VK_NULL_HANDLE) {
             vkDestroyImageView(device_, offscreen_image_view_, nullptr);
             offscreen_image_view_ = VK_NULL_HANDLE;
@@ -4127,7 +4102,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         }
         offscreen_extent_ = {};
         offscreen_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
-        depth_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
     [[nodiscard]] core::Status upload_sampled_image(VulkanUploadContext& upload_context,
@@ -4356,8 +4330,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
     }
 
     [[nodiscard]] core::Status ensure_offscreen_target(rhi::RenderExtent extent) {
-        if (offscreen_image_ != VK_NULL_HANDLE && depth_image_ != VK_NULL_HANDLE &&
-            offscreen_extent_.width == extent.width && offscreen_extent_.height == extent.height) {
+        if (offscreen_image_ != VK_NULL_HANDLE && offscreen_extent_.width == extent.width &&
+            offscreen_extent_.height == extent.height) {
             return core::Status::ok();
         }
 
@@ -4438,89 +4412,14 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                                              std::string(vk_result_name(view_result)));
         }
 
-        VkImageCreateInfo depth_image_info{};
-        depth_image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        depth_image_info.imageType = VK_IMAGE_TYPE_2D;
-        depth_image_info.format = depth_format_;
-        depth_image_info.extent = VkExtent3D{extent.width, extent.height, 1};
-        depth_image_info.mipLevels = 1;
-        depth_image_info.arrayLayers = 1;
-        depth_image_info.samples = VK_SAMPLE_COUNT_1_BIT;
-        depth_image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-        depth_image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-        depth_image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        depth_image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        const auto depth_image_result =
-            vkCreateImage(device_, &depth_image_info, nullptr, &depth_image_);
-        if (depth_image_result != VK_SUCCESS) {
-            destroy_offscreen_target();
-            return core::Status::failure("renderer.vulkan_depth_image_failed",
-                                         "failed to create Vulkan depth image: " +
-                                             std::string(vk_result_name(depth_image_result)));
-        }
-
-        VkMemoryRequirements depth_requirements{};
-        vkGetImageMemoryRequirements(device_, depth_image_, &depth_requirements);
-        auto depth_memory_type =
-            find_memory_type(physical_device_, depth_requirements.memoryTypeBits,
-                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (!depth_memory_type) {
-            destroy_offscreen_target();
-            return core::Status::failure(depth_memory_type.error().code,
-                                         depth_memory_type.error().message);
-        }
-
-        VkMemoryAllocateInfo depth_allocation_info{};
-        depth_allocation_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        depth_allocation_info.allocationSize = depth_requirements.size;
-        depth_allocation_info.memoryTypeIndex = depth_memory_type.value();
-        const auto depth_memory_result =
-            vkAllocateMemory(device_, &depth_allocation_info, nullptr, &depth_memory_);
-        if (depth_memory_result != VK_SUCCESS) {
-            destroy_offscreen_target();
-            return core::Status::failure("renderer.vulkan_depth_memory_failed",
-                                         "failed to allocate Vulkan depth memory: " +
-                                             std::string(vk_result_name(depth_memory_result)));
-        }
-
-        const auto depth_bind_result = vkBindImageMemory(device_, depth_image_, depth_memory_, 0);
-        if (depth_bind_result != VK_SUCCESS) {
-            destroy_offscreen_target();
-            return core::Status::failure("renderer.vulkan_depth_bind_failed",
-                                         "failed to bind Vulkan depth image memory: " +
-                                             std::string(vk_result_name(depth_bind_result)));
-        }
-
-        VkImageViewCreateInfo depth_view_info{};
-        depth_view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        depth_view_info.image = depth_image_;
-        depth_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        depth_view_info.format = depth_format_;
-        depth_view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        if (vulkan_format_has_stencil(depth_format_)) {
-            depth_view_info.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
-        }
-        depth_view_info.subresourceRange.baseMipLevel = 0;
-        depth_view_info.subresourceRange.levelCount = 1;
-        depth_view_info.subresourceRange.baseArrayLayer = 0;
-        depth_view_info.subresourceRange.layerCount = 1;
-        const auto depth_view_result =
-            vkCreateImageView(device_, &depth_view_info, nullptr, &depth_image_view_);
-        if (depth_view_result != VK_SUCCESS) {
-            destroy_offscreen_target();
-            return core::Status::failure("renderer.vulkan_depth_view_failed",
-                                         "failed to create Vulkan depth image view: " +
-                                             std::string(vk_result_name(depth_view_result)));
-        }
-        depth_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
         return core::Status::ok();
     }
 
     [[nodiscard]] core::Status ensure_frame_target(VulkanFrameContext& context,
                                                    rhi::RenderExtent extent) {
         auto& target = context.target;
-        if (target.color_image != VK_NULL_HANDLE && target.depth_image != VK_NULL_HANDLE &&
-            target.extent.width == extent.width && target.extent.height == extent.height) {
+        if (target.color_image != VK_NULL_HANDLE && target.extent.width == extent.width &&
+            target.extent.height == extent.height) {
             return core::Status::ok();
         }
         destroy_frame_target(target);
@@ -4532,10 +4431,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         target.color_view = std::exchange(offscreen_image_view_, VK_NULL_HANDLE);
         target.color_memory = std::exchange(offscreen_memory_, VK_NULL_HANDLE);
         target.color_layout = std::exchange(offscreen_layout_, VK_IMAGE_LAYOUT_UNDEFINED);
-        target.depth_image = std::exchange(depth_image_, VK_NULL_HANDLE);
-        target.depth_view = std::exchange(depth_image_view_, VK_NULL_HANDLE);
-        target.depth_memory = std::exchange(depth_memory_, VK_NULL_HANDLE);
-        target.depth_layout = std::exchange(depth_layout_, VK_IMAGE_LAYOUT_UNDEFINED);
         target.extent = std::exchange(offscreen_extent_, rhi::RenderExtent{});
         return core::Status::ok();
     }
@@ -6170,10 +6065,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
     VkDeviceMemory offscreen_memory_ = VK_NULL_HANDLE;
     rhi::RenderExtent offscreen_extent_{};
     VkImageLayout offscreen_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkImage depth_image_ = VK_NULL_HANDLE;
-    VkImageView depth_image_view_ = VK_NULL_HANDLE;
-    VkDeviceMemory depth_memory_ = VK_NULL_HANDLE;
-    VkImageLayout depth_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     std::uint64_t completed_frame_count_ = 0;
     std::uint64_t next_frame_index_ = 0;
     std::uint64_t last_submission_serial_ = 0;

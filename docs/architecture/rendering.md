@@ -22,19 +22,34 @@ follow-up work and is not required for graph-driven attachments.
 
 ## Colour pipeline
 
-`FrameBuilder` builds one of two graphs, selected by `FrameColorPipeline`:
+There is one colour path. World shading writes linear radiance into a transient `rgba16_sfloat`
+`scene_hdr` target, a single `tone_map` post-process pass applies exposure, the tone curve, and the
+display transfer function while writing the output image, and UI composites on top in display
+space. No world pass may write the presentable image; `renderer_frame_graph_tests` enforces this.
 
-- **`linear_hdr`** (production target): world shading writes linear radiance into a transient
-  `rgba16_sfloat` `scene_hdr` target. A single `tone_map` post-process pass applies exposure, the
-  tone curve, and the display transfer function, writing the swapchain image. UI composites on top
-  in display space. No world pass may write the presentable image; `renderer_frame_graph_tests`
-  enforces this.
-- **`legacy_ldr`** (being retired): world shaders each apply their own `linear_to_srgb()` and write
-  straight into the swapchain. This remains the default only until the Vulkan backend executes the
-  HDR graph, at which point it and the per-shader gamma encoding are deleted together.
+**World shaders must not apply a transfer function.** `linear_to_srgb()` belongs in exactly two
+places: `tone_map.frag`, which performs the single display encode, and `ui.frag`, which composites
+after that encode has already happened. Adding it to a world shader double-encodes the image.
 
 Exposure is expressed in stops and validated at the boundary. Tone mapping operators are
 `none`, `reinhard`, `aces_approx` (default), and `khronos_pbr_neutral`.
+
+`renderer_tone_mapping_tests` reads back the resolved image from a real device and asserts over the
+pixels, so an exposure sign error, an unbound `scene_hdr` binding, or a resolve pass that ignores
+its push constants fails in CI rather than reaching someone's screen.
+
+### Pass attachments are per-pass
+
+Each pass records into its own `vkCmdBeginRendering` block bound to the resources it declares it
+writes, and load ops derive from whether a resource has already been written this frame. Anything
+that reasons about attachments must do so per pass: colour format compatibility, whether depth is
+bound, and which push constants a draw receives all differ between a world pass and a post-process
+pass. Frame-wide assumptions about these were the main obstacle to running the HDR graph at all.
+
+A pass may sample a graph resource by declaring `sampled_resources`, which maps a resource name onto
+a named descriptor binding. Resources have no device handle, so the backend resolves the binding from
+the resource pool every frame. Layouts that do this set `per_frame_descriptors`, because a descriptor
+set bound to an in-flight command buffer must not be rewritten.
 
 ## Backends
 
