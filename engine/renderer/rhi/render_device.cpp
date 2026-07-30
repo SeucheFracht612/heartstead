@@ -1634,6 +1634,8 @@ std::string_view render_image_format_name(RenderImageFormat format) noexcept {
         return "rgba8_unorm";
     case RenderImageFormat::rgba8_srgb:
         return "rgba8_srgb";
+    case RenderImageFormat::rgba16_sfloat:
+        return "rgba16_sfloat";
     case RenderImageFormat::d32_sfloat:
         return "d32_sfloat";
     case RenderImageFormat::d32_sfloat_s8_uint:
@@ -1649,6 +1651,8 @@ std::size_t render_image_format_bytes_per_pixel(RenderImageFormat format) noexce
     case RenderImageFormat::rgba8_unorm:
     case RenderImageFormat::rgba8_srgb:
         return 4;
+    case RenderImageFormat::rgba16_sfloat:
+        return 8;
     case RenderImageFormat::d32_sfloat:
         return 4;
     case RenderImageFormat::d32_sfloat_s8_uint:
@@ -1803,6 +1807,7 @@ bool is_depth_format(RenderImageFormat format) noexcept {
     switch (format) {
     case RenderImageFormat::rgba8_unorm:
     case RenderImageFormat::rgba8_srgb:
+    case RenderImageFormat::rgba16_sfloat:
         return false;
     case RenderImageFormat::d32_sfloat:
     case RenderImageFormat::d32_sfloat_s8_uint:
@@ -1810,6 +1815,69 @@ bool is_depth_format(RenderImageFormat format) noexcept {
         return true;
     }
     return false;
+}
+
+bool is_hdr_format(RenderImageFormat format) noexcept {
+    switch (format) {
+    case RenderImageFormat::rgba16_sfloat:
+        return true;
+    case RenderImageFormat::rgba8_unorm:
+    case RenderImageFormat::rgba8_srgb:
+    case RenderImageFormat::d32_sfloat:
+    case RenderImageFormat::d32_sfloat_s8_uint:
+    case RenderImageFormat::d24_unorm_s8_uint:
+        return false;
+    }
+    return false;
+}
+
+std::string_view render_tone_mapping_name(RenderToneMapping value) noexcept {
+    switch (value) {
+    case RenderToneMapping::none:
+        return "none";
+    case RenderToneMapping::reinhard:
+        return "reinhard";
+    case RenderToneMapping::aces_approx:
+        return "aces_approx";
+    case RenderToneMapping::khronos_pbr_neutral:
+        return "khronos_pbr_neutral";
+    }
+    return "unknown";
+}
+
+core::Status validate_render_exposure(const RenderExposureSettings& exposure) {
+    // Keep exposure inside a range that stays finite in half precision after the scene target is
+    // scaled. +/-24 stops is far wider than any authored lighting needs.
+    if (!std::isfinite(exposure.exposure_stops) || exposure.exposure_stops < -24.0F ||
+        exposure.exposure_stops > 24.0F) {
+        return core::Status::failure("renderer.invalid_exposure_stops",
+                                     "exposure compensation must be finite and within -24..24 "
+                                     "stops");
+    }
+    if (!std::isfinite(exposure.white_point) || exposure.white_point <= 0.0F) {
+        return core::Status::failure("renderer.invalid_exposure_white_point",
+                                     "exposure white point must be finite and positive");
+    }
+    switch (exposure.tone_mapping) {
+    case RenderToneMapping::none:
+    case RenderToneMapping::reinhard:
+    case RenderToneMapping::aces_approx:
+    case RenderToneMapping::khronos_pbr_neutral:
+        break;
+    default:
+        return core::Status::failure("renderer.invalid_tone_mapping",
+                                     "unknown tone mapping operator");
+    }
+    return core::Status::ok();
+}
+
+ToneMapPushConstants
+make_tone_map_push_constants(const RenderExposureSettings& exposure) noexcept {
+    ToneMapPushConstants constants;
+    constants.exposure_scale = std::exp2(exposure.exposure_stops);
+    constants.white_point = exposure.white_point;
+    constants.tone_mapping = static_cast<std::uint32_t>(exposure.tone_mapping);
+    return constants;
 }
 
 } // namespace heartstead::renderer::rhi

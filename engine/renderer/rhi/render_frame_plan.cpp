@@ -473,6 +473,10 @@ core::Status validate_render_frame_submission_shape(const RenderFrameSubmission&
     if (!status) {
         return status;
     }
+    status = validate_render_exposure(frame.exposure);
+    if (!status) {
+        return status;
+    }
 
     std::unordered_set<std::size_t> commanded_passes;
     for (const auto& pass_commands : frame.pass_commands) {

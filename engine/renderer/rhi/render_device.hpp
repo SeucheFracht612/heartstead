@@ -58,6 +58,9 @@ enum class RenderIndexType : std::uint8_t {
 enum class RenderImageFormat {
     rgba8_unorm,
     rgba8_srgb,
+    // Linear HDR scene format. All world shading writes linear radiance into a target of this
+    // format; display encoding happens once, in the tone mapping pass.
+    rgba16_sfloat,
     d32_sfloat,
     d32_sfloat_s8_uint,
     d24_unorm_s8_uint,
@@ -516,6 +519,37 @@ struct RenderEnvironmentData {
     float fog_end = 512.0F;
 };
 
+enum class RenderToneMapping : std::uint8_t {
+    // Clamp only. Useful for debugging the linear scene target, not for shipping.
+    none,
+    reinhard,
+    // Narkowicz ACES fit. Cheap, filmic, and the renderer default.
+    aces_approx,
+    // Khronos PBR neutral. Preserves saturated albedo better than the ACES fit.
+    khronos_pbr_neutral,
+};
+
+// Frame-wide exposure and display-encoding controls consumed by the tone mapping pass.
+struct RenderExposureSettings {
+    // Exposure compensation in stops. The scene target is scaled by 2^exposure_stops before
+    // tone mapping.
+    float exposure_stops = 0.0F;
+    RenderToneMapping tone_mapping = RenderToneMapping::aces_approx;
+    // Scene luminance mapped to display white before the curve is applied.
+    float white_point = 1.0F;
+};
+
+// Shader-visible constants for the tone mapping pass. Mirrors ToneMapPushConstants in
+// shaders/builtin/tone_map.frag.
+struct ToneMapPushConstants {
+    float exposure_scale = 1.0F;
+    float white_point = 1.0F;
+    std::uint32_t tone_mapping = 2U;
+    std::uint32_t padding = 0U;
+};
+
+static_assert(sizeof(ToneMapPushConstants) == 16);
+
 // Shader-visible constants. Mat4f is column-major and all vectors occupy complete 16-byte lanes.
 struct ChunkPushConstants {
     math::Mat4f view_projection = math::Mat4f::identity();
@@ -684,5 +718,10 @@ render_primitive_topology_name(RenderPrimitiveTopology value) noexcept;
 [[nodiscard]] std::string_view render_compare_operation_name(RenderCompareOperation value) noexcept;
 [[nodiscard]] std::string_view render_blend_mode_name(RenderBlendMode value) noexcept;
 [[nodiscard]] bool is_depth_format(RenderImageFormat format) noexcept;
+[[nodiscard]] bool is_hdr_format(RenderImageFormat format) noexcept;
+[[nodiscard]] std::string_view render_tone_mapping_name(RenderToneMapping value) noexcept;
+[[nodiscard]] core::Status validate_render_exposure(const RenderExposureSettings& exposure);
+[[nodiscard]] ToneMapPushConstants
+make_tone_map_push_constants(const RenderExposureSettings& exposure) noexcept;
 
 } // namespace heartstead::renderer::rhi

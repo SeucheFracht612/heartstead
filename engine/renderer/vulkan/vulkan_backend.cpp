@@ -736,6 +736,8 @@ find_required_memory_type(VkPhysicalDevice physical_device, std::uint32_t type_b
         return VK_FORMAT_R8G8B8A8_UNORM;
     case rhi::RenderImageFormat::rgba8_srgb:
         return VK_FORMAT_R8G8B8A8_SRGB;
+    case rhi::RenderImageFormat::rgba16_sfloat:
+        return VK_FORMAT_R16G16B16A16_SFLOAT;
     case rhi::RenderImageFormat::d32_sfloat:
         return VK_FORMAT_D32_SFLOAT;
     case rhi::RenderImageFormat::d32_sfloat_s8_uint:

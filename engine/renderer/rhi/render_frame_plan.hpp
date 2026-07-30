@@ -148,8 +148,15 @@ struct RenderFrameSubmission {
     RenderFramePlan plan;
     RenderCameraData camera;
     RenderEnvironmentData environment;
+    RenderExposureSettings exposure;
     std::vector<RenderPassCommands> pass_commands;
 };
+
+// Names the graph uses for the resources every frame owns. Passes and backends refer to these
+// instead of repeating string literals.
+inline constexpr std::string_view scene_color_resource_name = "scene_hdr";
+inline constexpr std::string_view depth_resource_name = "depth";
+inline constexpr std::string_view output_resource_name = "output";
 
 class RenderFramePlanBuilder {
   public:
