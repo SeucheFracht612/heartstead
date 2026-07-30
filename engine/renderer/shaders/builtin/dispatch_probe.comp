@@ -1,0 +1,24 @@
+#version 450
+
+// Minimal compute shader used to prove the compute pass path executes end to end. Each invocation
+// writes its own global index into a storage buffer, so a reader can tell the difference between
+// "the dispatch ran", "the dispatch ran with the wrong group count", and "nothing ran at all".
+
+layout(local_size_x = 64) in;
+
+layout(std430, set = 0, binding = 0) buffer DispatchProbe {
+    uint values[];
+} probe;
+
+layout(push_constant) uniform DispatchProbeConstants {
+    uint element_count;
+    uint bias;
+} constants;
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= constants.element_count) {
+        return;
+    }
+    probe.values[index] = index + constants.bias;
+}

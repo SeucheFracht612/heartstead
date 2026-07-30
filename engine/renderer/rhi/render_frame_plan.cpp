@@ -508,13 +508,35 @@ core::Status validate_render_frame_submission_shape(const RenderFrameSubmission&
             return core::Status::failure("renderer.duplicate_draw_pass_commands",
                                          "render frame contains duplicate commands for a pass");
         }
-        if (pass_commands.draws.empty()) {
-            return core::Status::failure("renderer.empty_pass_draw_list",
-                                         "render pass command draw list must not be empty");
+        // A compute pass carries dispatches instead of draws, so the entry is empty of one or the
+        // other by design. Only an entry carrying neither is meaningless.
+        const auto& commanded_pass = frame.plan.passes[pass_commands.pass_index];
+        if (pass_commands.draws.empty() && pass_commands.dispatches.empty()) {
+            return core::Status::failure("renderer.empty_pass_command_list",
+                                         "render pass commands must carry draws or dispatches");
         }
-        if (frame.plan.passes[pass_commands.pass_index].kind == RenderPassKind::present) {
+        if (commanded_pass.kind == RenderPassKind::present) {
             return core::Status::failure("renderer.draws_in_present_pass",
                                          "present passes cannot contain graphics draws");
+        }
+        if (commanded_pass.kind == RenderPassKind::compute && !pass_commands.draws.empty()) {
+            return core::Status::failure("renderer.draws_in_compute_pass",
+                                         "compute passes record dispatches, not graphics draws");
+        }
+        if (commanded_pass.kind != RenderPassKind::compute && !pass_commands.dispatches.empty()) {
+            return core::Status::failure("renderer.dispatches_outside_compute_pass",
+                                         "only compute passes may record dispatches");
+        }
+        for (const auto& dispatch : pass_commands.dispatches) {
+            if (!dispatch.pipeline.is_valid()) {
+                return core::Status::failure("renderer.invalid_dispatch_pipeline",
+                                             "compute dispatch must reference a pipeline");
+            }
+            if (dispatch.group_count_x == 0 || dispatch.group_count_y == 0 ||
+                dispatch.group_count_z == 0) {
+                return core::Status::failure("renderer.invalid_dispatch_group_count",
+                                             "compute dispatch group counts must be non-zero");
+            }
         }
 
         for (const auto& draw : pass_commands.draws) {
@@ -632,6 +654,8 @@ std::string_view render_pass_kind_name(RenderPassKind kind) noexcept {
         return "ui";
     case RenderPassKind::debug:
         return "debug";
+    case RenderPassKind::compute:
+        return "compute";
     case RenderPassKind::present:
         return "present";
     }

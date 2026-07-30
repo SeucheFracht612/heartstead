@@ -640,6 +640,10 @@ class IRenderDevice {
     // extent. For tests and tooling only: it idles the GPU, so it is not a per-frame operation.
     // Backends that cannot produce real pixels report renderer.readback_unsupported.
     [[nodiscard]] virtual core::Result<std::vector<std::uint8_t>> read_back_output_image() = 0;
+    // Copies a buffer's contents back to the CPU. Same caveats as image readback: it idles the
+    // device, so it is for tests and tooling rather than per-frame use.
+    [[nodiscard]] virtual core::Result<std::vector<std::uint8_t>>
+    read_back_buffer(RenderResourceHandle buffer) = 0;
     [[nodiscard]] virtual core::Status resize(RenderExtent extent) = 0;
     [[nodiscard]] virtual core::Result<RenderFrameStats> render_frame(RenderFrameDesc desc) = 0;
     [[nodiscard]] virtual core::Result<RenderFrameStats>

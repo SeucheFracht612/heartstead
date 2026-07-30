@@ -686,17 +686,22 @@ find_required_memory_type(VkPhysicalDevice physical_device, std::uint32_t type_b
 }
 
 [[nodiscard]] VkBufferUsageFlags vulkan_buffer_usage_flags(rhi::RenderBufferUsage usage) noexcept {
+    // Every buffer is transferable in both directions: uploads stage into them, and tooling and
+    // tests copy out of them. Without TRANSFER_SRC a buffer a compute pass wrote cannot be read
+    // back to check what it produced.
+    const VkBufferUsageFlags transfer =
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     switch (usage) {
     case rhi::RenderBufferUsage::vertex:
-        return VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        return VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | transfer;
     case rhi::RenderBufferUsage::index:
-        return VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        return VK_BUFFER_USAGE_INDEX_BUFFER_BIT | transfer;
     case rhi::RenderBufferUsage::uniform:
-        return VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        return VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | transfer;
     case rhi::RenderBufferUsage::storage:
-        return VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        return VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | transfer;
     }
-    return VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    return VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | transfer;
 }
 
 [[nodiscard]] VkFilter vulkan_sampler_filter(rhi::RenderSamplerFilter value) noexcept {
@@ -1608,6 +1613,114 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         destroy_buffer_resource(staging);
         // The image the frame renders into is R8G8B8A8_UNORM, so this is already display-ready.
         return Result::success(std::move(pixels));
+    }
+
+    [[nodiscard]] core::Result<std::vector<std::uint8_t>>
+    read_back_buffer(rhi::RenderResourceHandle buffer) override {
+        using Result = core::Result<std::vector<std::uint8_t>>;
+        const auto resource = buffer_resources_.find(buffer.value);
+        if (resource == buffer_resources_.end()) {
+            return Result::failure("renderer.unknown_resource",
+                                   "readback references a buffer not owned by this device");
+        }
+        auto idle = wait_idle();
+        if (!idle) {
+            return Result::failure(idle.error().code, idle.error().message);
+        }
+        const auto byte_size = static_cast<VkDeviceSize>(resource->second.byte_size);
+        if (byte_size == 0) {
+            return Result::success({});
+        }
+
+        VulkanBufferResource staging;
+        staging.byte_size = resource->second.byte_size;
+        VkBufferCreateInfo buffer_info{};
+        buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        buffer_info.size = byte_size;
+        buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        auto result = vkCreateBuffer(device_, &buffer_info, nullptr, &staging.buffer);
+        if (result != VK_SUCCESS) {
+            return Result::failure("renderer.vulkan_buffer_failed",
+                                   "failed to create buffer readback staging: " +
+                                       std::string(vk_result_name(result)));
+        }
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device_, staging.buffer, &requirements);
+        auto memory_type = find_required_memory_type(
+            physical_device_, requirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            "buffer readback");
+        if (!memory_type) {
+            destroy_buffer_resource(staging);
+            return Result::failure(memory_type.error().code, memory_type.error().message);
+        }
+        VkMemoryAllocateInfo allocation_info{};
+        allocation_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocation_info.allocationSize = requirements.size;
+        allocation_info.memoryTypeIndex = memory_type.value();
+        result = vkAllocateMemory(device_, &allocation_info, nullptr, &staging.memory);
+        if (result == VK_SUCCESS) {
+            result = vkBindBufferMemory(device_, staging.buffer, staging.memory, 0);
+        }
+        if (result != VK_SUCCESS) {
+            destroy_buffer_resource(staging);
+            return Result::failure("renderer.vulkan_buffer_memory_failed",
+                                   "failed to back buffer readback staging: " +
+                                       std::string(vk_result_name(result)));
+        }
+
+        result = vkResetFences(device_, 1, &fence_);
+        if (result == VK_SUCCESS) {
+            result = vkResetCommandBuffer(command_buffer_, 0);
+        }
+        VkCommandBufferBeginInfo begin_info{};
+        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (result == VK_SUCCESS) {
+            result = vkBeginCommandBuffer(command_buffer_, &begin_info);
+        }
+        if (result != VK_SUCCESS) {
+            destroy_buffer_resource(staging);
+            return Result::failure("renderer.vulkan_begin_command_buffer_failed",
+                                   "failed to begin buffer readback: " +
+                                       std::string(vk_result_name(result)));
+        }
+        VkBufferCopy copy{};
+        copy.size = byte_size;
+        vkCmdCopyBuffer(command_buffer_, resource->second.buffer, staging.buffer, 1, &copy);
+        result = vkEndCommandBuffer(command_buffer_);
+        if (result == VK_SUCCESS) {
+            VkSubmitInfo submit_info{};
+            submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit_info.commandBufferCount = 1;
+            submit_info.pCommandBuffers = &command_buffer_;
+            result = vkQueueSubmit(queue_, 1, &submit_info, fence_);
+        }
+        if (result == VK_SUCCESS) {
+            result = vkWaitForFences(device_, 1, &fence_, VK_TRUE,
+                                     std::numeric_limits<std::uint64_t>::max());
+        }
+        if (result != VK_SUCCESS) {
+            destroy_buffer_resource(staging);
+            return Result::failure("renderer.vulkan_buffer_readback_failed",
+                                   "failed to copy buffer for readback: " +
+                                       std::string(vk_result_name(result)));
+        }
+
+        void* mapped = nullptr;
+        result = vkMapMemory(device_, staging.memory, 0, byte_size, 0, &mapped);
+        if (result != VK_SUCCESS) {
+            destroy_buffer_resource(staging);
+            return Result::failure("renderer.vulkan_map_memory_failed",
+                                   "failed to map buffer readback staging: " +
+                                       std::string(vk_result_name(result)));
+        }
+        std::vector<std::uint8_t> bytes(resource->second.byte_size);
+        std::memcpy(bytes.data(), mapped, bytes.size());
+        vkUnmapMemory(device_, staging.memory);
+        destroy_buffer_resource(staging);
+        return Result::success(std::move(bytes));
     }
 
     [[nodiscard]] core::Status resize(rhi::RenderExtent extent) override {
@@ -4622,6 +4735,11 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 }
             }
 
+            // Attachment compatibility only means something for a pass that rasterizes. A compute
+            // pass records no draws, so there is no pipeline to be compatible with.
+            if (reference_pipeline == nullptr) {
+                continue;
+            }
             const auto has_color_target = std::ranges::any_of(
                 pass.writes, [&frame, reference_pipeline](const std::string& resource_name) {
                     const auto* resource = frame.plan.find_resource(resource_name);
@@ -4746,6 +4864,80 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         }
         vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0,
                                nullptr);
+        return core::Status::ok();
+    }
+
+    // Records a compute pass: the resources it samples are moved to a readable layout and bound
+    // through this frame's descriptor set, then each dispatch runs. No attachments are involved.
+    [[nodiscard]] core::Status
+    record_compute_pass(const rhi::RenderFrameSubmission& frame, const rhi::RenderPassDesc& pass,
+                        std::size_t pass_index, VulkanFrameContext& frame_context,
+                        std::size_t frame_context_index, VkCommandBuffer commands,
+                        std::size_t& submitted_barrier_count) {
+        if (!pass.sampled_resources.empty()) {
+            auto sampled_status = prepare_sampled_resources(frame, pass, pass_index, frame_context,
+                                                            frame_context_index, commands,
+                                                            submitted_barrier_count);
+            if (!sampled_status) {
+                return sampled_status;
+            }
+        }
+
+        const auto pass_commands = std::ranges::find_if(
+            frame.pass_commands, [pass_index](const rhi::RenderPassCommands& candidate) {
+                return candidate.pass_index == pass_index;
+            });
+        if (pass_commands == frame.pass_commands.end() || pass_commands->dispatches.empty()) {
+            return core::Status::ok();
+        }
+
+        begin_debug_label(commands, pass.name.c_str(), 0.36F, 0.72F, 0.90F);
+        for (const auto& dispatch : pass_commands->dispatches) {
+            const auto pipeline = compute_pipelines_.find(dispatch.pipeline.value);
+            if (pipeline == compute_pipelines_.end()) {
+                end_debug_label(commands);
+                return core::Status::failure(
+                    "renderer.unknown_compute_pipeline",
+                    "compute dispatch references a pipeline not owned by this device");
+            }
+            const auto layout = pipeline_layouts_.find(pipeline->second.desc.material_id.value());
+            if (layout == pipeline_layouts_.end()) {
+                end_debug_label(commands);
+                return core::Status::failure("renderer.unbound_compute_pipeline_layout",
+                                             "compute dispatch pipeline layout is no longer bound");
+            }
+            vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->second.pipeline);
+            const auto descriptor_set =
+                layout->second.per_frame_descriptor_sets.empty()
+                    ? layout->second.descriptor_set
+                    : layout->second.per_frame_descriptor_sets[frame_context_index];
+            if (descriptor_set != VK_NULL_HANDLE) {
+                vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                        layout->second.pipeline_layout, 0, 1, &descriptor_set, 0,
+                                        nullptr);
+            }
+            if (!dispatch.push_constants.empty()) {
+                vkCmdPushConstants(commands, layout->second.pipeline_layout,
+                                   VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                   static_cast<std::uint32_t>(dispatch.push_constants.size()),
+                                   dispatch.push_constants.data());
+            }
+            vkCmdDispatch(commands, dispatch.group_count_x, dispatch.group_count_y,
+                          dispatch.group_count_z);
+        }
+        end_debug_label(commands);
+
+        // Compute writes are consumed by later passes, so publish them before anything reads.
+        VkMemoryBarrier compute_to_consumers{};
+        compute_to_consumers.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        compute_to_consumers.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        compute_to_consumers.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+        vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 1, &compute_to_consumers, 0, nullptr, 0, nullptr);
+        ++submitted_barrier_count;
         return core::Status::ok();
     }
 
@@ -4919,12 +5111,23 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 "frame graph does not declare the depth resource the Vulkan backend requires");
         }
 
-        const auto has_draws = !frame.pass_commands.empty();
+        // A frame may carry compute work and no drawing at all, and a command entry for a compute
+        // pass holds dispatches rather than draws, so the first drawing pass has to be searched for
+        // rather than assumed to be the first command entry.
+        const auto first_draw_commands = std::ranges::find_if(
+            frame.pass_commands,
+            [](const rhi::RenderPassCommands& commands) { return !commands.draws.empty(); });
+        const auto has_draws = first_draw_commands != frame.pass_commands.end();
         std::size_t frame_pipeline_bind_count = 0;
         VulkanGraphicsPipelineResource* first_pipeline = nullptr;
         if (has_draws) {
             const auto first_pipeline_it =
-                graphics_pipelines_.find(frame.pass_commands.front().draws.front().pipeline.value);
+                graphics_pipelines_.find(first_draw_commands->draws.front().pipeline.value);
+            if (first_pipeline_it == graphics_pipelines_.end()) {
+                return core::Result<rhi::RenderFrameStats>::failure(
+                    "renderer.unknown_graphics_pipeline",
+                    "render draw references a graphics pipeline not owned by this device");
+            }
             first_pipeline = &first_pipeline_it->second;
         }
 
@@ -4959,6 +5162,25 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         const VkImageSubresourceRange color_range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         std::size_t submitted_barrier_count = 1;
         const auto clear_color = frame.plan.first_clear_color();
+
+        // Compute passes record before any rasterization, and independently of whether the frame
+        // draws at all. Culling and similar work produces the data the graphics passes consume, so
+        // this ordering is what those passes want. A compute pass that needs to run *between* two
+        // graphics passes is not expressible yet and would need this merged into the pass loop.
+        for (std::size_t pass_index = 0; pass_index < frame.plan.passes.size(); ++pass_index) {
+            const auto& compute_pass = frame.plan.passes[pass_index];
+            if (compute_pass.kind != rhi::RenderPassKind::compute) {
+                continue;
+            }
+            auto compute_status =
+                record_compute_pass(frame, compute_pass, pass_index, frame_context,
+                                    frame_context_index, frame_commands, submitted_barrier_count);
+            if (!compute_status) {
+                return core::Result<rhi::RenderFrameStats>::failure(compute_status.error().code,
+                                                                    compute_status.error().message);
+            }
+        }
+
         if (has_draws) {
             VkImageMemoryBarrier color_to_attachment{};
             color_to_attachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -5231,6 +5453,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             for (std::size_t pass_index = 0; pass_index < frame.plan.passes.size(); ++pass_index) {
                 const auto& pass = frame.plan.passes[pass_index];
                 if (pass.kind == rhi::RenderPassKind::present) {
+                    continue;
+                }
+                // Compute passes were already recorded ahead of all rasterization.
+                if (pass.kind == rhi::RenderPassKind::compute) {
                     continue;
                 }
                 const auto* colour_name = colour_write_of(pass);

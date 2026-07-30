@@ -21,6 +21,9 @@ enum class RenderPassKind {
     post_process,
     ui,
     debug,
+    // Dispatches compute work instead of rasterizing. Records no rendering block and binds no
+    // attachments; its resources are reached through descriptors.
+    compute,
     present,
 };
 
@@ -157,9 +160,22 @@ struct RenderDrawCommand {
     std::uint32_t texture_variation_seed = 0;
 };
 
+// One compute dispatch recorded into a compute pass.
+struct RenderComputeDispatch {
+    RenderResourceHandle pipeline;
+    std::uint32_t group_count_x = 1;
+    std::uint32_t group_count_y = 1;
+    std::uint32_t group_count_z = 1;
+    // Constants for the dispatch, pushed at offset zero to the compute stage. A compute shader
+    // that statically uses push constants must be given them, so the caller supplies the bytes
+    // rather than the backend guessing at a layout the way graphics draws do.
+    std::vector<std::byte> push_constants{};
+};
+
 struct RenderPassCommands {
     std::size_t pass_index = 0;
     std::vector<RenderDrawCommand> draws;
+    std::vector<RenderComputeDispatch> dispatches{};
 };
 
 struct RenderFrameSubmission {

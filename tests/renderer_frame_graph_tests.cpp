@@ -101,6 +101,7 @@ void test_only_tone_map_and_ui_write_the_presentable_image() {
         case rhi::RenderPassKind::clear:
         case rhi::RenderPassKind::world:
         case rhi::RenderPassKind::debug:
+        case rhi::RenderPassKind::compute:
             assert(!writes_output);
             break;
         case rhi::RenderPassKind::post_process:
