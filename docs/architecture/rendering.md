@@ -5,6 +5,37 @@ meaning. Higher layers provide renderer-neutral resources and extracted scene da
 implementations own Vulkan objects, synchronization, swapchains, descriptor sets, pipelines, or
 GPU allocation details.
 
+## Vulkan baseline
+
+The Vulkan backend targets **Vulkan 1.3 core** and requires the `dynamicRendering` feature. A
+physical device that does not report API version 1.3 with dynamic rendering is skipped during
+selection, and device creation fails rather than falling back to a legacy path.
+
+There are no `VkRenderPass` or `VkFramebuffer` objects. Pipelines declare the attachment formats
+they are compatible with through `VkPipelineRenderingCreateInfo`, and the frame supplies the actual
+image views at `vkCmdBeginRendering` time. This is what allows scene passes to target an HDR image
+while the tone mapping pass targets the swapchain, without pipelines being coupled to a shared
+render pass object.
+
+Synchronization still uses `vkCmdPipelineBarrier`. Converting to `synchronization2` is deliberate
+follow-up work and is not required for graph-driven attachments.
+
+## Colour pipeline
+
+`FrameBuilder` builds one of two graphs, selected by `FrameColorPipeline`:
+
+- **`linear_hdr`** (production target): world shading writes linear radiance into a transient
+  `rgba16_sfloat` `scene_hdr` target. A single `tone_map` post-process pass applies exposure, the
+  tone curve, and the display transfer function, writing the swapchain image. UI composites on top
+  in display space. No world pass may write the presentable image; `renderer_frame_graph_tests`
+  enforces this.
+- **`legacy_ldr`** (being retired): world shaders each apply their own `linear_to_srgb()` and write
+  straight into the swapchain. This remains the default only until the Vulkan backend executes the
+  HDR graph, at which point it and the per-shader gamma encoding are deleted together.
+
+Exposure is expressed in stops and validated at the boundary. Tone mapping operators are
+`none`, `reinhard`, `aces_approx` (default), and `khronos_pbr_neutral`.
+
 ## Backends
 
 Heartstead has two maintained renderer backends:

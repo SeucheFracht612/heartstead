@@ -219,7 +219,9 @@ create_instance(const rhi::RenderDeviceDesc& desc) {
     app_info.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
     app_info.pEngineName = "Heartstead";
     app_info.engineVersion = VK_MAKE_VERSION(0, 1, 0);
-    app_info.apiVersion = VK_API_VERSION_1_0;
+    // Dynamic rendering and synchronization2 are core in 1.3. The renderer targets that
+    // baseline so render passes and framebuffers stay out of the frame graph.
+    app_info.apiVersion = VK_API_VERSION_1_3;
 
     VkInstanceCreateInfo instance_info{};
     instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -328,7 +330,9 @@ create_native_surface(VkInstance instance, const platform::NativeWindowHandle& h
     app_info.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
     app_info.pEngineName = "Heartstead";
     app_info.engineVersion = VK_MAKE_VERSION(0, 1, 0);
-    app_info.apiVersion = VK_API_VERSION_1_0;
+    // Dynamic rendering and synchronization2 are core in 1.3. The renderer targets that
+    // baseline so render passes and framebuffers stay out of the frame graph.
+    app_info.apiVersion = VK_API_VERSION_1_3;
 
     VkInstanceCreateInfo instance_info{};
     instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -383,6 +387,24 @@ struct SwapchainSupport {
         extensions, [extension_name](const VkExtensionProperties& extension) {
             return std::string_view(extension.extensionName) == extension_name;
         });
+}
+
+// The frame graph records with vkCmdBeginRendering, so a device without dynamic rendering
+// cannot execute a frame at all and must not be selected.
+[[nodiscard]] bool physical_device_supports_dynamic_rendering(VkPhysicalDevice physical_device) {
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(physical_device, &properties);
+    if (properties.apiVersion < VK_API_VERSION_1_3) {
+        return false;
+    }
+
+    VkPhysicalDeviceVulkan13Features features_13{};
+    features_13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    VkPhysicalDeviceFeatures2 features{};
+    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features.pNext = &features_13;
+    vkGetPhysicalDeviceFeatures2(physical_device, &features);
+    return features_13.dynamicRendering == VK_TRUE;
 }
 
 [[nodiscard]] core::Result<SwapchainSupport>
@@ -542,6 +564,9 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
         if (graphics_family == queue_families.end()) {
             continue;
         }
+        if (!physical_device_supports_dynamic_rendering(physical_device)) {
+            continue;
+        }
         if (surface != VK_NULL_HANDLE) {
             if (!physical_device_supports_extension(physical_device,
                                                     VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
@@ -573,8 +598,10 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
         surface == VK_NULL_HANDLE ? "renderer.vulkan_no_graphics_queue"
                                   : "renderer.vulkan_no_surface_queue",
         surface == VK_NULL_HANDLE
-            ? "no Vulkan physical device exposes a graphics queue family"
-            : "no Vulkan physical device exposes a graphics queue family for the window surface");
+            ? "no Vulkan physical device exposes a graphics queue family with Vulkan 1.3 dynamic "
+              "rendering"
+            : "no Vulkan physical device exposes a graphics queue family with Vulkan 1.3 dynamic "
+              "rendering for the window surface");
 }
 
 [[nodiscard]] core::Result<VkDevice> create_logical_device(VkPhysicalDevice physical_device,
@@ -587,8 +614,16 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
     queue_info.queueCount = 1;
     queue_info.pQueuePriorities = &queue_priority;
 
+    VkPhysicalDeviceVulkan13Features features_13{};
+    features_13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    features_13.dynamicRendering = VK_TRUE;
+    VkPhysicalDeviceFeatures2 features{};
+    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features.pNext = &features_13;
+
     VkDeviceCreateInfo device_info{};
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    device_info.pNext = &features;
     device_info.queueCreateInfoCount = 1;
     device_info.pQueueCreateInfos = &queue_info;
     const std::array<const char*, 1> swapchain_extensions{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
@@ -1259,8 +1294,11 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
 
     struct VulkanGraphicsPipelineResource {
         rhi::RenderGraphicsPipelineDesc desc;
-        VkRenderPass render_pass = VK_NULL_HANDLE;
         VkPipeline pipeline = VK_NULL_HANDLE;
+        // Attachment formats the pipeline was created against. Kept so a frame can assert that the
+        // images it binds match what the pipeline expects.
+        VkFormat color_format = VK_FORMAT_UNDEFINED;
+        VkFormat depth_format = VK_FORMAT_UNDEFINED;
         bool uses_depth = false;
     };
 
@@ -1317,7 +1355,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         VkCommandBuffer graphics_commands = VK_NULL_HANDLE;
         VkFence completion_fence = VK_NULL_HANDLE;
         VkSemaphore image_available = VK_NULL_HANDLE;
-        VkFramebuffer framebuffer = VK_NULL_HANDLE;
         VulkanFrameTarget target;
         std::uint64_t submission_serial = 0;
         bool in_flight = false;
@@ -1526,10 +1563,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         }
         destroy_offscreen_target();
         for (auto& context : frame_contexts_) {
-            if (context.framebuffer != VK_NULL_HANDLE) {
-                vkDestroyFramebuffer(device_, context.framebuffer, nullptr);
-                context.framebuffer = VK_NULL_HANDLE;
-            }
             destroy_frame_target(context.target);
         }
         return core::Status::ok();
@@ -2457,58 +2490,18 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         resource.desc = desc;
         resource.uses_depth = desc.depth_test_enable || desc.depth_write_enable;
 
-        VkAttachmentDescription color_attachment{};
-        color_attachment.format = vulkan_image_format(desc.color_target_format);
-        color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
-        color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        color_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        color_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        color_attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        color_attachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        // Dynamic rendering: the pipeline records the attachment formats it is compatible with,
+        // and the frame graph supplies the actual images at vkCmdBeginRendering time. Pipelines are
+        // therefore no longer tied to one render pass object, which is what lets scene passes
+        // target an HDR image while the tone mapping pass targets the swapchain.
+        resource.color_format = vulkan_image_format(desc.color_target_format);
+        resource.depth_format = resource.uses_depth ? depth_format_ : VK_FORMAT_UNDEFINED;
 
-        VkAttachmentReference color_attachment_ref{};
-        color_attachment_ref.attachment = 0;
-        color_attachment_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-        std::vector<VkAttachmentDescription> attachments{color_attachment};
-        VkAttachmentReference depth_attachment_ref{};
-        if (resource.uses_depth) {
-            VkAttachmentDescription depth_attachment{};
-            depth_attachment.format = depth_format_;
-            depth_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
-            depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            depth_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-            depth_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            depth_attachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            depth_attachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            attachments.push_back(depth_attachment);
-            depth_attachment_ref.attachment = 1;
-            depth_attachment_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        }
-
-        VkSubpassDescription subpass{};
-        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount = 1;
-        subpass.pColorAttachments = &color_attachment_ref;
-        subpass.pDepthStencilAttachment = resource.uses_depth ? &depth_attachment_ref : nullptr;
-
-        VkRenderPassCreateInfo render_pass_info{};
-        render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        render_pass_info.attachmentCount = static_cast<std::uint32_t>(attachments.size());
-        render_pass_info.pAttachments = attachments.data();
-        render_pass_info.subpassCount = 1;
-        render_pass_info.pSubpasses = &subpass;
-
-        auto result =
-            vkCreateRenderPass(device_, &render_pass_info, nullptr, &resource.render_pass);
-        if (result != VK_SUCCESS) {
-            return core::Result<rhi::RenderGraphicsPipelineStats>::failure(
-                "renderer.vulkan_render_pass_failed",
-                "failed to create Vulkan graphics smoke render pass: " +
-                    std::string(vk_result_name(result)));
-        }
+        VkPipelineRenderingCreateInfo rendering_info{};
+        rendering_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        rendering_info.colorAttachmentCount = 1;
+        rendering_info.pColorAttachmentFormats = &resource.color_format;
+        rendering_info.depthAttachmentFormat = resource.depth_format;
 
         const std::array<VkPipelineShaderStageCreateInfo, 2> shader_stages{
             VkPipelineShaderStageCreateInfo{
@@ -2661,11 +2654,12 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         pipeline_info.pColorBlendState = &color_blend;
         pipeline_info.pDynamicState = &dynamic_state;
         pipeline_info.layout = pipeline_layout->second.pipeline_layout;
-        pipeline_info.renderPass = resource.render_pass;
+        pipeline_info.pNext = &rendering_info;
+        pipeline_info.renderPass = VK_NULL_HANDLE;
         pipeline_info.subpass = 0;
 
-        result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipeline_info, nullptr,
-                                           &resource.pipeline);
+        const auto result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipeline_info,
+                                                      nullptr, &resource.pipeline);
         if (result != VK_SUCCESS) {
             destroy_graphics_pipeline_resource(resource);
             return core::Result<rhi::RenderGraphicsPipelineStats>::failure(
@@ -3106,9 +3100,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
     }
 
     void destroy_frame_context(VulkanFrameContext& context) noexcept {
-        if (context.framebuffer != VK_NULL_HANDLE) {
-            vkDestroyFramebuffer(device_, context.framebuffer, nullptr);
-        }
         destroy_frame_target(context.target);
         if (context.image_available != VK_NULL_HANDLE) {
             vkDestroySemaphore(device_, context.image_available, nullptr);
@@ -3193,13 +3184,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         }
         staging_ring_.release_completed(completed_submission_serial_);
         collect_completed_upload_timings();
-        for (auto& context : frame_contexts_) {
-            if (context.framebuffer != VK_NULL_HANDLE &&
-                context.submission_serial <= completed_submission_serial_) {
-                vkDestroyFramebuffer(device_, context.framebuffer, nullptr);
-                context.framebuffer = VK_NULL_HANDLE;
-            }
-        }
         collect_retired_resources();
     }
 
@@ -3304,10 +3288,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             }
             advance_completed_submission(context.submission_serial);
             context.in_flight = false;
-        }
-        if (context.framebuffer != VK_NULL_HANDLE) {
-            vkDestroyFramebuffer(device_, context.framebuffer, nullptr);
-            context.framebuffer = VK_NULL_HANDLE;
         }
         auto result = vkResetFences(device_, 1, &context.completion_fence);
         if (result == VK_SUCCESS) {
@@ -3784,10 +3764,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         if (resource.pipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(device_, resource.pipeline, nullptr);
             resource.pipeline = VK_NULL_HANDLE;
-        }
-        if (resource.render_pass != VK_NULL_HANDLE) {
-            vkDestroyRenderPass(device_, resource.render_pass, nullptr);
-            resource.render_pass = VK_NULL_HANDLE;
         }
     }
 
@@ -4698,10 +4674,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             destroy_swapchain();
             destroy_offscreen_target();
             for (auto& context : frame_contexts_) {
-                if (context.framebuffer != VK_NULL_HANDLE) {
-                    vkDestroyFramebuffer(device_, context.framebuffer, nullptr);
-                    context.framebuffer = VK_NULL_HANDLE;
-                }
                 destroy_frame_target(context.target);
             }
         }
@@ -4818,32 +4790,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         auto& frame_depth_view = frame_context.target.depth_view;
         auto& frame_depth_layout = frame_context.target.depth_layout;
 
-        std::array<VkImageView, 2> framebuffer_attachments{frame_color_view, frame_depth_view};
-        auto& framebuffer = frame_context.framebuffer;
+        // Dynamic rendering binds image views directly, so there is no framebuffer object to
+        // create, cache, or retire alongside the frame's submission serial.
         auto result = VK_SUCCESS;
-        if (has_draws) {
-            VkFramebufferCreateInfo framebuffer_info{};
-            framebuffer_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-            framebuffer_info.renderPass = first_pipeline->render_pass;
-            framebuffer_info.attachmentCount = first_pipeline->uses_depth ? 2U : 1U;
-            framebuffer_info.pAttachments = framebuffer_attachments.data();
-            framebuffer_info.width = target_extent.width;
-            framebuffer_info.height = target_extent.height;
-            framebuffer_info.layers = 1;
-            result = vkCreateFramebuffer(device_, &framebuffer_info, nullptr, &framebuffer);
-            if (result != VK_SUCCESS) {
-                return core::Result<rhi::RenderFrameStats>::failure(
-                    "renderer.vulkan_framebuffer_failed",
-                    "failed to create Vulkan terrain framebuffer: " +
-                        std::string(vk_result_name(result)));
-            }
-        }
-        const auto destroy_framebuffer = [&]() noexcept {
-            if (framebuffer != VK_NULL_HANDLE) {
-                vkDestroyFramebuffer(device_, framebuffer, nullptr);
-                framebuffer = VK_NULL_HANDLE;
-            }
-        };
 
         const auto command_recording_started = Clock::now();
         VkCommandBufferBeginInfo begin_info{};
@@ -4851,7 +4800,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         result = vkBeginCommandBuffer(frame_commands, &begin_info);
         if (result != VK_SUCCESS) {
-            destroy_framebuffer();
             return core::Result<rhi::RenderFrameStats>::failure(
                 "renderer.vulkan_begin_command_buffer_failed",
                 "failed to begin Vulkan terrain command buffer: " +
@@ -4914,19 +4862,34 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 ++submitted_barrier_count;
             }
 
-            std::array<VkClearValue, 2> clear_values{};
-            clear_values[0].color = VkClearColorValue{
+            VkRenderingAttachmentInfo color_attachment{};
+            color_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            color_attachment.imageView = frame_color_view;
+            color_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            color_attachment.clearValue.color = VkClearColorValue{
                 {clear_color.red, clear_color.green, clear_color.blue, clear_color.alpha}};
-            clear_values[1].depthStencil = VkClearDepthStencilValue{1.0F, 0};
-            VkRenderPassBeginInfo render_pass_begin{};
-            render_pass_begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-            render_pass_begin.renderPass = first_pipeline->render_pass;
-            render_pass_begin.framebuffer = framebuffer;
-            render_pass_begin.renderArea.extent =
-                VkExtent2D{target_extent.width, target_extent.height};
-            render_pass_begin.clearValueCount = first_pipeline->uses_depth ? 2U : 1U;
-            render_pass_begin.pClearValues = clear_values.data();
-            vkCmdBeginRenderPass(frame_commands, &render_pass_begin, VK_SUBPASS_CONTENTS_INLINE);
+
+            VkRenderingAttachmentInfo depth_attachment{};
+            depth_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            depth_attachment.imageView = frame_depth_view;
+            depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            // Depth is transient within the frame and is never sampled afterwards.
+            depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            depth_attachment.clearValue.depthStencil = VkClearDepthStencilValue{1.0F, 0};
+
+            VkRenderingInfo rendering_info{};
+            rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            rendering_info.renderArea.extent = VkExtent2D{target_extent.width,
+                                                          target_extent.height};
+            rendering_info.layerCount = 1;
+            rendering_info.colorAttachmentCount = 1;
+            rendering_info.pColorAttachments = &color_attachment;
+            rendering_info.pDepthAttachment =
+                first_pipeline->uses_depth ? &depth_attachment : nullptr;
+            vkCmdBeginRendering(frame_commands, &rendering_info);
 
             VkViewport viewport{};
             viewport.width = static_cast<float>(target_extent.width);
@@ -5035,7 +4998,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                               0.86F);
             record_labelled_pass("debug", "Debug pass", 0.86F, 0.28F, 0.76F);
             record_labelled_pass("ui", "UI pass", 0.80F, 0.80F, 0.80F);
-            vkCmdEndRenderPass(frame_commands);
+            vkCmdEndRendering(frame_commands);
             frame_pipeline_bind_count = pipeline_bind_count;
         } else {
             VkImageMemoryBarrier color_to_clear{};
@@ -5159,7 +5122,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
 
         result = vkEndCommandBuffer(frame_commands);
         if (result != VK_SUCCESS) {
-            destroy_framebuffer();
             return core::Result<rhi::RenderFrameStats>::failure(
                 "renderer.vulkan_end_command_buffer_failed",
                 "failed to end Vulkan terrain command buffer: " +
@@ -5184,7 +5146,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         const auto submission_serial = last_submission_serial_ + 1;
         result = vkQueueSubmit(queue_, 1, &submit_info, frame_fence);
         if (result != VK_SUCCESS) {
-            destroy_framebuffer();
             return core::Result<rhi::RenderFrameStats>::failure(
                 "renderer.vulkan_queue_submit_failed",
                 "failed to submit unified Vulkan terrain frame: " +
@@ -5318,31 +5279,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                                          "mesh draw material must have a graphics pipeline");
         }
 
-        VkFramebuffer framebuffer = VK_NULL_HANDLE;
-        VkFramebufferCreateInfo framebuffer_info{};
-        framebuffer_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        framebuffer_info.renderPass = first_pipeline->render_pass;
-        framebuffer_info.attachmentCount = 1;
-        framebuffer_info.pAttachments = &offscreen_image_view_;
-        framebuffer_info.width = offscreen_extent_.width;
-        framebuffer_info.height = offscreen_extent_.height;
-        framebuffer_info.layers = 1;
-        auto result = vkCreateFramebuffer(device_, &framebuffer_info, nullptr, &framebuffer);
+        auto result = vkResetFences(device_, 1, &fence_);
         if (result != VK_SUCCESS) {
-            return core::Status::failure("renderer.vulkan_framebuffer_failed",
-                                         "failed to create Vulkan draw framebuffer: " +
-                                             std::string(vk_result_name(result)));
-        }
-        const auto destroy_framebuffer = [&]() noexcept {
-            if (framebuffer != VK_NULL_HANDLE) {
-                vkDestroyFramebuffer(device_, framebuffer, nullptr);
-                framebuffer = VK_NULL_HANDLE;
-            }
-        };
-
-        result = vkResetFences(device_, 1, &fence_);
-        if (result != VK_SUCCESS) {
-            destroy_framebuffer();
             return core::Status::failure("renderer.vulkan_reset_fence_failed",
                                          "failed to reset Vulkan fence: " +
                                              std::string(vk_result_name(result)));
@@ -5350,7 +5288,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
 
         result = vkResetCommandBuffer(command_buffer_, 0);
         if (result != VK_SUCCESS) {
-            destroy_framebuffer();
             return core::Status::failure("renderer.vulkan_reset_command_buffer_failed",
                                          "failed to reset Vulkan command buffer: " +
                                              std::string(vk_result_name(result)));
@@ -5361,7 +5298,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         result = vkBeginCommandBuffer(command_buffer_, &begin_info);
         if (result != VK_SUCCESS) {
-            destroy_framebuffer();
             return core::Status::failure("renderer.vulkan_begin_command_buffer_failed",
                                          "failed to begin Vulkan draw command buffer: " +
                                              std::string(vk_result_name(result)));
@@ -5391,19 +5327,23 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0,
                              nullptr, 1, &to_color_attachment);
 
-        VkClearValue clear_value{};
-        clear_value.color = VkClearColorValue{{0.0F, 0.0F, 0.0F, 1.0F}};
+        VkRenderingAttachmentInfo color_attachment{};
+        color_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        color_attachment.imageView = offscreen_image_view_;
+        color_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        color_attachment.clearValue.color = VkClearColorValue{{0.0F, 0.0F, 0.0F, 1.0F}};
 
-        VkRenderPassBeginInfo render_pass_begin{};
-        render_pass_begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        render_pass_begin.renderPass = first_pipeline->render_pass;
-        render_pass_begin.framebuffer = framebuffer;
-        render_pass_begin.renderArea.offset = VkOffset2D{0, 0};
-        render_pass_begin.renderArea.extent =
+        VkRenderingInfo rendering_info{};
+        rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        rendering_info.renderArea.offset = VkOffset2D{0, 0};
+        rendering_info.renderArea.extent =
             VkExtent2D{offscreen_extent_.width, offscreen_extent_.height};
-        render_pass_begin.clearValueCount = 1;
-        render_pass_begin.pClearValues = &clear_value;
-        vkCmdBeginRenderPass(command_buffer_, &render_pass_begin, VK_SUBPASS_CONTENTS_INLINE);
+        rendering_info.layerCount = 1;
+        rendering_info.colorAttachmentCount = 1;
+        rendering_info.pColorAttachments = &color_attachment;
+        vkCmdBeginRendering(command_buffer_, &rendering_info);
 
         VkViewport viewport{};
         viewport.x = 0.0F;
@@ -5422,17 +5362,15 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         for (const auto& draw : draws) {
             auto* pipeline = find_graphics_pipeline_for_material(draw.material_id);
             if (pipeline == nullptr) {
-                vkCmdEndRenderPass(command_buffer_);
+                vkCmdEndRendering(command_buffer_);
                 vkEndCommandBuffer(command_buffer_);
-                destroy_framebuffer();
                 return core::Status::failure("renderer.unbound_material_graphics_pipeline",
                                              "mesh draw material must have a graphics pipeline");
             }
             const auto vertex = buffer_resources_.find(draw.vertex_buffer.value);
             if (vertex == buffer_resources_.end()) {
-                vkCmdEndRenderPass(command_buffer_);
+                vkCmdEndRendering(command_buffer_);
                 vkEndCommandBuffer(command_buffer_);
-                destroy_framebuffer();
                 return core::Status::failure(
                     "renderer.unknown_vertex_buffer",
                     "mesh draw references a vertex buffer handle not owned by this device");
@@ -5445,9 +5383,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             if (draw.index_buffer.is_valid()) {
                 const auto index = buffer_resources_.find(draw.index_buffer.value);
                 if (index == buffer_resources_.end()) {
-                    vkCmdEndRenderPass(command_buffer_);
+                    vkCmdEndRendering(command_buffer_);
                     vkEndCommandBuffer(command_buffer_);
-                    destroy_framebuffer();
                     return core::Status::failure(
                         "renderer.unknown_index_buffer",
                         "mesh draw references an index buffer handle not owned by this device");
@@ -5460,11 +5397,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             }
         }
 
-        vkCmdEndRenderPass(command_buffer_);
+        vkCmdEndRendering(command_buffer_);
 
         result = vkEndCommandBuffer(command_buffer_);
         if (result != VK_SUCCESS) {
-            destroy_framebuffer();
             return core::Status::failure("renderer.vulkan_end_command_buffer_failed",
                                          "failed to end Vulkan draw command buffer: " +
                                              std::string(vk_result_name(result)));
@@ -5476,7 +5412,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         submit_info.pCommandBuffers = &command_buffer_;
         result = vkQueueSubmit(queue_, 1, &submit_info, fence_);
         if (result != VK_SUCCESS) {
-            destroy_framebuffer();
             return core::Status::failure("renderer.vulkan_queue_submit_failed",
                                          "failed to submit Vulkan draw command buffer: " +
                                              std::string(vk_result_name(result)));
@@ -5484,7 +5419,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
 
         result = vkWaitForFences(device_, 1, &fence_, VK_TRUE,
                                  std::numeric_limits<std::uint64_t>::max());
-        destroy_framebuffer();
         if (result != VK_SUCCESS) {
             return core::Status::failure("renderer.vulkan_wait_fence_failed",
                                          "failed to wait for Vulkan draw fence: " +

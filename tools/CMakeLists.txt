@@ -1,6 +1,7 @@
 add_subdirectory(asset_cooker)
 add_subdirectory(block_model_viewer)
 add_subdirectory(chunk_inspector)
+add_subdirectory(dynamic_rendering_smoke)
 add_subdirectory(log_viewer)
 add_subdirectory(map_profile_inspector)
 add_subdirectory(mod_validator)

@@ -22,6 +22,12 @@ heartstead_configure_test_target(heartstead_engine_tests)
 
 heartstead_register_unit_test(heartstead_engine_tests)
 
+add_executable(heartstead_renderer_frame_graph_tests renderer_frame_graph_tests.cpp)
+target_link_libraries(heartstead_renderer_frame_graph_tests PRIVATE Heartstead::Engine)
+heartstead_configure_test_target(heartstead_renderer_frame_graph_tests)
+
+heartstead_register_unit_test(heartstead_renderer_frame_graph_tests)
+
 add_executable(heartstead_game_runtime_tests game_runtime_tests.cpp)
 target_link_libraries(heartstead_game_runtime_tests PRIVATE Heartstead::GameRuntime)
 target_compile_definitions(

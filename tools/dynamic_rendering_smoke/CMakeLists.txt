@@ -1,0 +1,6 @@
+add_executable(heartstead_dynamic_rendering_smoke main.cpp)
+target_link_libraries(heartstead_dynamic_rendering_smoke PRIVATE Heartstead::Engine)
+target_compile_definitions(
+  heartstead_dynamic_rendering_smoke PRIVATE HEARTSTEAD_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+)
+heartstead_configure_target(heartstead_dynamic_rendering_smoke)
