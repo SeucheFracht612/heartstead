@@ -13,8 +13,10 @@ Implemented foundation:
   - payload string, opaque to transport and replay
   - client timestamp
 
-- `CommandPayload` and `CommandPayloadTextCodec`
-  - deterministic key/value payload format for structured engine commands
+- `CommandPayload`, `CommandPayloadTextCodec`, and `CommandPayloadBinaryCodec`
+  - one structured key/value command model shared by tools, replay, and live networking
+  - deterministic text encoding for fixtures, replay, and the command-handler boundary
+  - bounded versioned binary encoding for live transport
   - lowercase validated field keys
   - percent-escaped delimiters and line breaks
   - duplicate-key and malformed-escape rejection
@@ -153,7 +155,8 @@ session so connected clients can observe authoritative world changes.
 `CommandReplayRunner` executes recorded command envelopes through this dispatcher so
 command behavior and transaction traces can be inspected without a live transport connection.
 
-Transport and replay still carry command payloads as strings, but structured engine
-commands now use the deterministic command payload codec inside that string. Production
-networking can replace the byte transport later without changing handler ownership or
-world-operation semantics.
+`CommandEnvelope` retains the canonical payload string at the dispatcher and replay boundary.
+Live networking uses `CommandPayloadBinaryCodec` on the wire and reconstructs that same
+canonical command model before dispatch; tools and replay retain the deterministic text codec.
+Transport encoding can therefore evolve without changing handler ownership or world-operation
+semantics.

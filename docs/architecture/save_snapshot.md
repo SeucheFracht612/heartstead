@@ -54,7 +54,7 @@ This is the engine-side contract that binary or database-backed save files shoul
 preserve: typed sections, stable ids, prototype references, and rebuildable derived data.
 
 `SaveTextCodec` can encode and decode the current `SaveSnapshot` as deterministic text.
-This is intended for early persistence tests, golden files, and inspector tools.
+This format is retained for tests, golden files, compatibility fixtures, and inspector tools.
 
 `WorldSnapshotBridge` exports authoritative `WorldState` data into these typed sections
 and imports snapshots back into world state. Runtime-only identities such as entity
@@ -71,9 +71,9 @@ and prototypes that no longer exist resolve to named missing-voxel definitions. 
 collision, selection, command validation, and subsequent saves all consume that same restored
 palette for the lifetime of the session.
 
-`SaveBinaryCodec` can encode and decode the current `SaveSnapshot` as a versioned binary
-payload with explicit typed sections. It is the first binary backend foundation; a later
-database save system should preserve the same section boundaries.
+`SaveBinaryCodec` encodes and decodes the current `SaveSnapshot` as a versioned binary
+payload with explicit typed sections. `FileSaveDatabase` uses this representation for each
+committed snapshot generation; future storage backends must preserve the same boundaries.
 
 Text and binary codecs preserve persisted cargo transport mode bitmasks exactly. Unknown
 transport bits are rejected by snapshot validation instead of being silently dropped.

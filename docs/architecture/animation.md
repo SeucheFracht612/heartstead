@@ -62,9 +62,9 @@ Player locomotion travels in the authoritative controller snapshot. Non-player a
 use the bounded `entity.motion_snapshot.v1` boundary: network identity, prototype, previous/current
 world transform, locomotion state, and simulation tick. Reliable tombstones remove retained client
 state. `ClientPresentationSynchronizer` maps both snapshot families into the same presentation
-world, so the renderer does not know whether an animated object is a player or an animal. M7 will
-replace the current bounded text payloads with the planned binary replication codec without
-changing this semantic boundary.
+world, so the renderer does not know whether an animated object is a player or an animal. Player
+and entity motion snapshots use bounded, versioned binary replication codecs while preserving
+this semantic boundary.
 
 The base test animal is a normal gameplay module and entity prototype. Its server-side wander
 system uses a seeded, fixed-step state machine, mirrors transforms into the generic replicated

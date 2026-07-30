@@ -113,13 +113,14 @@ Implemented foundation:
     is accepted only after Jolt validates the complete character shape at that position; a tight
     voxel-support probe suppresses transient false-airborne states without creating ledge hover
   - ladder, fluid, unloaded-chunk, and ledge queries deliberately remain voxel-semantic queries;
-    swimming movement is present while M3 will add buoyancy and currents
+    swimming and physical-resource buoyancy use the authoritative fluid-volume query while Jolt
+    retains terrain and build collision ownership
   - the third-person camera sweeps a radius against each voxel prototype's declared collision
     bounds, retracts immediately when the safe boom distance shrinks, and restores outward at a
     time-based speed after space clears; unloaded chunks remain conservative solid occluders
   - each controller tick returns non-persistent diagnostics for requested, applied, and
     depenetration displacement plus axis hits, ceiling contact, step-up, and unloaded-chunk
-    blocking; the local prediction client retains the latest tick for the Foundation overlay
+    blocking; the local prediction client retains the latest tick for the development overlay
   - `dev_game` selects Jolt for interactive sessions while deterministic headless smoke runs and
     dedicated-server fixtures retain the reference backend
 
@@ -134,5 +135,5 @@ correction, and sleeping state. `physics_sandbox` repeats the same settling scen
 backends and fails if either backend is internally nondeterministic or if their final position,
 velocity, contact, and sleeping results exceed the published tolerances.
 
-The detailed milestone contract and acceptance budgets live in
-`docs/roadmap/gameplay_foundations_m1_m8.md`.
+Runtime verification belongs in [testing](../dev/testing.md). Current executable coverage and
+known limits live in [project status](../project_status.md).

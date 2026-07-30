@@ -71,9 +71,9 @@ partially updated connected light field.
 changed chunks/cells, stale work, and budget overruns. `Renderer::set_voxel_lighting_stats` mirrors
 the current values into `RendererStats`; `dev_game` does this every frame.
 
-Until the M7 binary replication pass, a changed light patch is replicated to connected clients as
-a newer revision of the affected chunk's existing bounded snapshot slices. This is intentionally
-correct before it is bandwidth-optimal.
+A changed light patch is replicated to connected clients through a newer revision of the affected
+chunk's bounded binary snapshot slices. This favors correctness and bounded reuse over a
+specialized light-delta codec.
 
 Fire prototypes retain their existing 8-bit field. Legacy fire values in the conventional `0..15`
 range are expanded to the full voxel-light range when they become spatial sources. A fire is

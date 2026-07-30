@@ -1,7 +1,12 @@
 # Heartstead Engine Specification v0.2
 
-Status: normative architecture contract  
-Scope: engine infrastructure only; gameplay/content rules are deliberately out of scope
+**Status:** normative architecture contract
+
+**Scope:** engine infrastructure; gameplay/content rules are deliberately out of scope
+
+This specification describes the intended durable engine shape. It is not an implementation-status
+checklist. Read [Project status](../project_status.md) for current coverage and limitations, and use
+architecture decision records for the rationale behind foundational choices.
 
 ## 0. North Star
 
@@ -311,41 +316,53 @@ Log queries support real time, world time, player UUID, historical display name,
 message content, and server session. Administrator actions use the same permission, logging,
 stable-ID, and server-authoritative command boundaries as player actions.
 
-## 19. Required directory shape
+## 19. Repository boundaries
+
+The repository is organized by ownership rather than by one vertical-slice milestone:
 
 ```text
-engine/world/coords/          engine/world/blocks/
-engine/world/chunks/          engine/world/regions/
-engine/world/map_discovery/   engine/workpieces/
-engine/assemblies/            engine/processes/
-engine/server_logs/           engine/player_profiles/
-
-game/systems/time/            game/systems/fire/
-game/systems/clay/            game/systems/casting/
-game/systems/workpieces/
-
-tools/log_viewer/             tools/map_profile_inspector/
-tools/block_model_viewer/     tools/prototype_inspector/
-tools/save_inspector/         tools/chunk_inspector/
+engine/     reusable infrastructure and public engine contracts
+ game/      Heartstead runtime composition and game-owned systems
+ mods/base/ base content loaded through the public mod/prototype pipeline
+ apps/      executable server, client, development, smoke, and benchmark compositions
+ samples/   focused demonstrations of one or a few boundaries
+ tools/     cookers, validators, inspectors, and diagnostics
+ tests/     executable contracts, fixtures, integration, and regression coverage
+ docs/      maintained contracts, status, workflows, and benchmark methodology
 ```
 
-Base-mod content has prototype folders for blocks, block models, workpieces, patterns, processes,
-assemblies, fire, and map layers, plus `assets/textures`, `assets/models`, `assets/shaders`, and
-`migrations`.
+`engine/` must not depend on `game/` or hard-code `mods/base` content identity. Applications choose
+roles and backends but do not redefine authority. Tools use public formats and inspection APIs
+instead of reaching into private implementation storage. Base content must remain replaceable and
+patchable through the same mod lifecycle exposed to other mods.
 
-## 20. Foundation milestones
+Subsystem directories may evolve. Directory names are not an architecture contract unless a public
+asset, save, or mod format explicitly relies on them.
 
-1. Core/CMake/platform/logging/assert/filesystem/tests.
-2. Canonical i64 coordinates, 32 cubed chunks, negative/large tests, one-chunk persistence.
-3. Prototype database loading `mods/base` and all foundation prototype kinds.
-4. Window/Vulkan validation/swapchain/triangle/basic mesh.
-5. Cube plus out-of-cell rich blocks meshed with a neighbor halo and bounds overlay.
-6. Authoritative edit/remesh/save/reload loop at negative/large coordinates.
-7. Append join/leave/chat logs and persist profiles/discovery.
-8. 2D/3D workpiece sandbox with templates and server validation.
-9. Persisted `world_time`, lazy process evaluation, fire buffer, time skip.
-10. Ghost-guided kiln assembly with construction/drying/maiden firing states.
-11. Server discovery restored after deleting all client-local map data.
+## 20. Change requirements
+
+Changes to engine behavior follow these rules:
+
+1. Change the architecture contract, implementation, tests, and maintained documentation together.
+2. Route authoritative mutation through commands, validation, and transactions.
+3. Give asynchronous workers immutable bounded snapshots and reject stale results by revision or
+   generation on the owner thread.
+4. Put explicit limits on queues, allocations, payloads, retries, scans, per-frame work, and
+   persistent records; make overflow visible.
+5. Version save, network, replay, cooked-asset, and script/API formats before incompatible changes.
+6. Preserve stable string identity and migration/placeholder behavior across compact runtime
+   mappings.
+7. Keep headless, local server/client, remote client, and dedicated-server roles first-class where
+   the relevant subsystem applies.
+8. Keep backend-native types private behind engine-owned interfaces.
+9. Put reusable mechanisms in `engine/`, Heartstead orchestration in `game/`, and authored meaning
+   in mods.
+10. Verify changes with focused tests plus the appropriate compiler, sanitizer, native, socket, or
+    benchmark path described in [Testing](../dev/testing.md).
+
+Completed milestone reports are evidence in version history, not permanent sources of current
+truth. Maintained pages describe durable contracts, current status, operations, and reproducible
+measurement.
 
 ## 21. Non-negotiable constraints
 
@@ -379,7 +396,7 @@ Heartstead Engine
  `- Tools: block/chunk/save/prototype/map/log/replay inspectors
 ```
 
-The first proving slice remains: open a window, initialize Vulkan, load `mods/base`, load rich
-block prototypes, create a cubic chunk at a 64-bit coordinate, render a cube and out-of-cell rich
-block, edit/save/reload it, create a player profile, append join/chat/leave logs, and persist a
-discovery region.
+The implementation may realize these capabilities incrementally, but a temporary executable or
+milestone must not weaken the contracts above. Current implementation coverage and known gaps are
+tracked in [Project status](../project_status.md); operational verification lives in
+[Testing](../dev/testing.md).

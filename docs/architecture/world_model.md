@@ -56,7 +56,7 @@ Implemented foundation:
 - `engine/workpieces/WorkpieceGrid`
   - compact local editable grid
   - add/remove/set cell operations
-  - operation history suitable for later server validation
+  - operation history suitable for authoritative server validation
   - template matching and grid text codec
 
 - `engine/build/BuildPieceRecord`
@@ -105,7 +105,8 @@ Implemented foundation:
     world-layer report while skipping partial deltas that require snapshot/resync fallback
   - drains queued typed delta envelopes from client protocol sessions without moving world-store
     decoding into networking
-  - encodes/decodes deterministic text delta snapshots for early replication tools and tests
+  - encodes/decodes bounded versioned binary delta snapshots for live transport
+  - retains deterministic text delta snapshots for tools and compatibility fixtures
   - reports unresolved subject ids so the server/client can choose snapshot/resync fallback before
     applying invalid assumptions
 

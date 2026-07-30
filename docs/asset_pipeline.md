@@ -1,10 +1,10 @@
-# Asset Pipeline V1: Artist and Audio Guide
+# Asset pipeline: artist and audio guide
 
 This guide explains what Heartstead accepts today, what each format is for, where finished files
-go, and how to get them into the Foundation game. It is for contributors who create models,
+go, and how to get them into the development game. It is for contributors who create models,
 textures, animation, particles, or audio and do not intend to change C++.
 
-The dependable path in the current game is:
+The dependable path in the current development runtime is:
 
 ```text
 finished source file
@@ -21,7 +21,7 @@ finished source file
 | --- | --- | --- |
 | Static or skinned model | glTF 2.0 `.glb` or `.gltf` | Fully cooked and rendered through an `entity_visual` |
 | Model material texture | 8-bit `.png`; `.jpg`/`.jpeg` for opaque art; Basis Universal `.ktx2` through `KHR_texture_basisu` | Decoded to RGBA8 during cooking and sampled by the model shader |
-| Standalone texture | `.png`, `.jpg`, `.jpeg` | Decoded to a versioned RGBA8 payload, but not yet bindable to terrain, UI, or particles through contributor data |
+| Standalone texture | `.png`, `.jpg`, `.jpeg` | Production-cooked and bindable by terrain materials; no authored UI or particle consumer yet |
 | Prebuilt texture container | `.ktx2` | Basis Universal KTX2 works in glTF; standalone KTX2 remains container-cooked without a general material binding |
 | Short sound effect | PCM/float `.wav` | Playable through a `sound_event`; mono 48 kHz is recommended for positional sound |
 | Long ambience or music | `.flac` or PCM `.wav` | Playable through a `sound_event`; set `streaming = true` |
@@ -97,7 +97,7 @@ resource_packs/my_art_pass/
 id = "my_art_pass"
 name = "My Art Pass"
 version = "1.0.0"
-description = "Replacement Foundation art."
+description = "Replacement base-game art."
 target_namespace = "base"
 ```
 
@@ -216,7 +216,7 @@ without an application or renderer change.
 
 ### Skinned player visual and named clips
 
-Skinned Foundation player visuals map semantic roles to authored clip names:
+Skinned player visuals map semantic roles to authored clip names:
 
 ```toml
 kind = "entity_visual"
@@ -239,7 +239,7 @@ sounds.footstep_default = "base:audio/earth_footstep"
 ```
 
 Clip names, not numeric positions, are used. Every mapped name must exist exactly once. For the
-Foundation player, all six locomotion roles are required. The clips may use STEP, LINEAR, or
+base player visual, all six locomotion roles are required. The clips may use STEP, LINEAR, or
 CUBICSPLINE interpolation and may animate node translation, rotation, scale, or morph weights.
 
 For other skinned entity types, the current general presenter still expects the same locomotion
@@ -372,7 +372,7 @@ intentionally synthetic effects, not as the preferred final format for recorded 
 
 ## Particles
 
-Foundation particles are data-driven but currently untextured. A particle prototype controls
+Base particles are data-driven but currently untextured. A particle prototype controls
 color, size, lifetime, motion, and atlas timing:
 
 ```toml
@@ -450,8 +450,8 @@ cmake --build --preset default-debug \
 ```
 
 The validator checks mods, resource packs, prototypes, visual definitions, asset references,
-animation-role syntax, sound events, voxel feedback, and dependency discovery. A ready Foundation
-content report has zero warnings and zero errors.
+animation-role syntax, sound events, voxel feedback, and dependency discovery. A ready base-content
+report has zero warnings and zero errors.
 
 ### 2. Production-cook one delivery
 
@@ -475,11 +475,11 @@ For audio:
 
 The development cooker is permissive. A production cook is the authoritative media/import check.
 
-### 3. Cook the complete Foundation presentation set
+### 3. Cook the complete base presentation set
 
 ```bash
 ./build/default-debug/tools/asset_cooker/heartstead_asset_cooker \
-  . build/foundation-presentation/asset_manifest.txt production \
+  . build/base-presentation/asset_manifest.txt production \
   --presentation-assets --inspect
 ```
 
@@ -493,14 +493,14 @@ visual models and sound-event assets do not require editing the application or a
 
 Use `--entity-visuals` when you intentionally want only the declared model set.
 
-### 4. Preview in the Foundation game
+### 4. Preview in the development game
 
 ```bash
 cmake --build --preset default-debug -j2 --target heartstead_dev_game
 ./build/default-debug/apps/dev_game/heartstead_dev_game --no-save
 ```
 
-Use the existing deterministic Foundation scene for model/material/animation and positional-audio
+Use the existing deterministic development scene for model/material/animation and positional-audio
 review. A model visual only appears when its entity is present in the replicated scene.
 
 For a short automated startup check:
@@ -521,7 +521,7 @@ For a deliberate native fallback review:
 This opt-in probe adds a missing-model visual, a skinned visual with only its required idle
 mapping, and an unregistered positional sound request. The overlay and log identify the missing
 logical ID, source/cooked path, failing dependency, and selected fallback. It never changes the
-authoritative Foundation scene or save.
+authoritative development scene or save.
 
 ## Fallbacks and failure behavior
 
@@ -585,7 +585,7 @@ be ignored as glTF permits, so do not rely on them for the model's essential app
       recorded.
 - [ ] `heartstead_mod_validator` reports zero errors.
 - [ ] The focused production cook succeeds.
-- [ ] The model/audio is reviewed in the real Foundation executable.
+- [ ] The model/audio is reviewed in the real development executable.
 
 ## Common failures
 
@@ -599,7 +599,7 @@ be ignored as glTF permits, so do not rely on them for the model's essential app
 - A KTX2 image is not Basis Universal (or plain RGBA8 for the low-level decoder).
 - A mapped animation name is missing or duplicated.
 - A valid sound file has no `sound_event`, or the event is never referenced by presentation data.
-- OGG was assumed to be playable because it passed cooking.
+- An `.ogg` file contains Opus or another codec instead of Vorbis.
 - A standalone UI/particle texture was assumed to have a runtime consumer.
 - A terrain material references KTX2 even though runtime terrain currently requires PNG/JPEG.
 

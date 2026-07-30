@@ -51,7 +51,7 @@ unit enables stb_vorbis, so production-cooked Ogg Vorbis data is an end-to-end p
 Opus-in-Ogg remains unsupported.
 
 `GameRuntime` owns the active asset catalog and event registry used to create an audio system.
-The Foundation executable also supplies its verified `CookedAssetStore`. Production playback loads
+The development executable also supplies its verified `CookedAssetStore`. Production playback loads
 the event's payload from that store, registers encoded audio or generated tone PCM with miniaudio
 under the stable logical asset ID, and reuses that registration for later voices. Source paths are
 retained only as a compatibility path for tools or tests that do not provide a cooked store.

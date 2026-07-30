@@ -1,181 +1,147 @@
 # Runtime composition and gameplay boundary
 
-This document is the ownership contract for the executable game runtime. It complements the
-engine-specific documents: engine code supplies reusable technology, while `game/` composes that
-technology into an authoritative simulation and client presentation.
+Heartstead uses the same server-authoritative command and replication model in local, remote, and
+test compositions. Applications choose which roles and presentation backends exist; they do not
+redefine gameplay semantics.
 
 ## Supported compositions
 
-`GameRuntime` is the composition root and owns at most one `RuntimeSession`. A
-`RuntimeConfiguration` selects the session shape:
+| Composition | Roles | Transport | Presentation | Persistence |
+| --- | --- | --- | --- | --- |
+| Interactive local development game | server + client | in-memory | native X11/Vulkan | default or explicit local save |
+| Bounded/headless development run | server + client | in-memory | headless or bounded native | only with explicit `--save` |
+| Remote development client | client only | POSIX UDP to numeric IPv4 | native or bounded/headless | none; server owns truth |
+| Dedicated server | server only | POSIX UDP bind | headless | memory-only in the current executable |
+| Tests and samples | selected roles | in-memory or socket-backed | usually headless | fixture/explicit only |
 
-| Mode | Server | Client | Transport | Renderer/audio |
-|---|---:|---:|---|---|
-| Development game | yes | yes | in-memory | application-owned |
-| Single-player | yes | yes | in-memory | application-owned |
-| Listen server foundation | yes | yes | in-memory today | application-owned |
-| Dedicated server | yes | no | configuration-selected; executable defaults in-memory | none |
-| Headless integration test | yes | optional | in-memory | none |
+The same runtime library can be configured programmatically for focused tests, but shipped
+applications should use one of the explicit ownership shapes above.
 
-The development executable uses the same local server/client path as headless tests. The dedicated
-server creates no platform window, renderer, audio, or presentation world. A remote-client-only
-session is deliberately rejected until connection establishment for the external transport is
-wired into `RuntimeSession`; the protocol and transport backend remain separate so this does not
-change gameplay commands or systems.
+## Lifecycle and ownership
 
-The current `heartstead_dedicated_server` executable is a long-lived headless process by default. It
-uses the in-memory transport and advances fixed ticks until `SIGINT` or `SIGTERM`; `--ticks N`
-selects a positive bounded count for smoke tests and server-path validation. It is not remotely
-joinable because the runtime still has no remote accept/identity/authentication path.
+An application owns the top-level `GameApplication` or server loop and constructs only the roles it
+needs. The server role owns authoritative `WorldState`, command dispatch, simulation ticks,
+replication, and any configured save lifecycle. The client role owns input collection, protocol
+state, predicted presentation state, and renderer/audio/UI extraction.
 
-Applications own platform graphics and audio services. `GameRuntime` owns content references,
-session lifetime, the fixed-step clock, and the local runtime composition. It never exposes Vulkan
-objects.
+Subsystem shutdown occurs in reverse ownership order. Native presentation must finish in-flight
+backend work before releasing dependent resources. Network sessions receive a graceful disconnect
+where possible, then queues and runtime stores are destroyed by their owners.
 
-## Authoritative frame path
+No process-global world, script VM, renderer, session, or save database is required for normal
+operation.
 
-The implemented local path is:
+## Local frame path
+
+A local interactive frame follows the same conceptual boundary as remote play:
 
 ```text
-platform events
-  -> InputActionMap / PlayerInputFrame
-  -> ClientRuntime command envelope
-  -> in-memory transport
-  -> ServerRuntime command gateway
-  -> fixed SimulationScheduler phases
-  -> WorldState / EntityWorld mutation
-  -> sealed TickEvents and replication deltas
-  -> ClientRuntime replicated state
-  -> PresentationWorld synchronization
-  -> immutable RenderSnapshot
+platform input
+  -> client input/actions
+  -> in-memory transport command/input bundle
+  -> authoritative server tick and transactions
+  -> command result + replication/state snapshots
+  -> client intake/prediction reconciliation
+  -> presentation extraction
+  -> renderer, audio, UI, particles
 ```
 
-`ServerRuntime` is the sole commit owner for authoritative state. Command handlers receive a
-bounded `CommandExecutionContext` and `WorldOperation`; clients, presentation, and render code do
-not receive mutable server stores. Fixed phases are commands, movement, physics, world operations,
-gameplay, environment, derived state, finalize, and replication. Systems declare phase and `after`
-dependencies, and startup rejects missing dependencies or cycles.
+Sharing a process is an optimization and development convenience. Client code must not reach into
+server stores to make gameplay changes.
 
-The current application coordinates simulation and rendering from the platform thread. This is an
-intentional first implementation of the ownership rules, not permission for worker jobs to mutate
-the world. Renderer chunk workers already consume immutable snapshots. Future simulation/render
-threads must preserve the same command, event, and snapshot boundaries.
+## Remote frame path
 
-## Commands, events, and entity lifecycle
+Remote play replaces only the transport and process boundary:
 
-Commands request an operation; events describe a completed operation. Reliable typed voxel and
-player-input commands travel through the same host dispatcher used by headless tests. Validation
-occurs before mutation. Failed commands return typed error codes and cannot silently dirty save or
-replication state.
+```text
+client process                         server process
+input/prediction                       UDP intake/session validation
+  -> encoded bundle/datagram   --->      -> authoritative tick
+  <- results/snapshots/events   <---      -> recipient-filtered replication
+reconcile/interpolate                   maintenance/timeout/rate limits
+  -> presentation
+```
 
-`TickEvents` owns explicit typed streams for entity creation/destruction, voxel changes, inventory
-changes, and character movement. Streams are writable only during their tick and sealed before
-consumers observe them. There is no unrestricted global event bus.
+Command meaning, transaction rules, event types, stable IDs, and world codecs stay above the
+transport. See [Networking](networking.md) and [Replication](replication.md).
 
-`EntityWorld` owns generation-safe IDs, typed sparse component stores, activation/sleeping state,
-pending destruction, cleanup callbacks, and tombstones. Finalization removes all registered
-components and emits one destruction event. Player removal is replicated as a reliable tombstone;
-the client deletes the replicated movement record and the presentation synchronizer removes the
-corresponding generation-safe proxy.
+## Commands, events, and entities
 
-Voxels remain in `ChunkDatabase` and are not ECS entities. Chunk instance generations and content
-revisions distinguish reloads and edits. Dirty regions and immutable meshing requests drive the
-renderer pipeline described in `chunk_meshing.md` and `renderer_v1_handoff.md`.
+Input, UI, scripts, admin tools, and network clients express meaningful changes as commands or
+bounded host events. The authoritative dispatcher validates identity, permission, reach, ownership,
+prototype/schema, expected revisions, and command-specific preconditions before mutation.
+
+Transactions either commit all intended store changes and emit deterministic events, or roll back.
+Entity runtime handles are process-local; save IDs and prototype IDs carry durable identity.
+Replication materializes recipient-appropriate events and typed state deltas without teaching the
+transport about world stores.
 
 ## Client and presentation ownership
 
-The client representations are separate:
+The client may own:
 
-- `ClientRuntime` owns accepted replicated chunks, player snapshots, a bounded 256-entry recent
-  command-result window, and protocol state. It owns no GPU resources; overflow drops the oldest
-  diagnostic result and is reported in frame statistics.
-- `PresentationWorld` retains client-only object proxies by replicated source ID, remembers previous
-  and current exact transforms, and applies revision checks and explicit removals.
-- `RenderSnapshot` is an immutable-by-ownership value extracted for a frame. It contains exact
-  `WorldPosition` values and prototype asset references, not Vulkan or RHI handles.
-- `Renderer` owns GPU assets, caches, draw construction, and submission. Only the camera-relative
-  delta is converted to float.
+- input mapping and action state;
+- a bounded history for predicted movement;
+- interpolated remote presentation state;
+- decoded client-visible replicas and UI models;
+- camera, renderer, audio, animation, particle, and UI resources;
+- diagnostics and developer overlays.
 
-The Foundation diagnostic overlay consumes these public boundaries rather than backend internals.
-It reports authoritative and presentation ticks, the last command/rejection, local prediction
-movement diagnostics, the supporting voxel, player collision token, and authoritative collision
-cook queue plus support-chunk content/cooked revisions. This keeps a failed edit or stale terrain
-body diagnosable from the running game.
+The client does not own authoritative inventory, terrain, entities, processes, permissions,
+profiles, discovery, or save state. Prediction may improve responsiveness but never grants the
+ability to commit a world change.
 
-The development application still uses the renderer's V1 chunk synchronization entry point for
-terrain cell snapshot construction. Dynamic presentation objects use the retained scene boundary.
-Replacing terrain synchronization with chunk presentation change sets does not alter the RHI or
-meshing worker contracts.
+Headless mode replaces presentation backends with deterministic validators or omits presentation
+work while preserving server/client protocol behavior required by the test.
 
 ## Gameplay module extension
 
-Features implement `IGameplayModule` and are supplied in `RuntimeConfiguration::gameplay_modules`.
-At startup each module may:
+`engine/` defines reusable mechanisms and contracts. `game/` composes those mechanisms and owns
+Heartstead-specific systems. `mods/base` defines base prototypes, assets, recipes, scripts, and
+other content through public pipelines.
 
-1. validate the immutable prototype registry;
-2. register typed component metadata;
-3. register typed domain-service interfaces;
-4. register command handlers;
-5. register fixed-phase systems;
-6. register versioned serializers;
-7. register typed persistence capture and restore callbacks;
-8. register replication payload contracts and client apply callbacks;
-9. register presentation synchronization callbacks.
+When adding a gameplay feature:
 
-The callbacks are executable boundaries, not labels. Client replication dispatch invokes the
-registered feature handler after world-owned records are applied, and presentation synchronization
-invokes every retained feature adapter. Registration rejects persistence, replication, or
-presentation entries that do not name a real handler. All names and interface types are duplicate
-checked. The complete registration report is available from `ServerRuntime::gameplay_modules()`
-for diagnostics. The built-in voxel interaction feature is registered through this contract rather
-than special-cased command installation.
+1. put generic storage/validation/scheduling capability in the engine only when more than one game
+   feature can use it without Heartstead-specific meaning;
+2. put orchestration and game rules in `game/`;
+3. put authored values and content identity in mods;
+4. route mutations through commands/transactions;
+5. expose presentation through extracted data and stable engine-facing descriptors;
+6. version persistent or network data before incompatibly changing it.
 
-Cross-feature calls use `DomainServiceRegistry`. A feature registers a narrow interface type and
-other features request that type; they do not reach into private component arrays or domain stores.
-Declarative vanilla content remains in `mods/base` and is loaded through the same immutable content
-pipeline as other mods.
+Avoid adding a new top-level runtime or bypass path for one feature. Extend the existing server,
+client, command, snapshot, and presentation owners.
 
 ## Persistence
 
-`capture_save_snapshot()` exports only authoritative state. `save_to()` commits it through the
-generation-staged file database, and `start_session_from_save()` validates the snapshot against the
-active content before creating a session. Feature persistence callbacks can append or validate
-typed snapshot state; restore callbacks run only after the authoritative stores have been imported.
-A callback failure aborts capture or load with the registration name in the diagnostic.
+A normal unbounded local native `heartstead_dev_game` run opens
+`saves/foundation_slice_0_1` unless overridden. Bounded/headless runs persist only with an explicit
+`--save DIRECTORY`; `--no-save` disables persistence. A remote client cannot use `--save` because
+it has no authoritative world.
 
-For a new world, the selected materialized `ScenarioDefinition` records its id, start region, and
-spawn mode in authoritative state, creates the starting terrain and cargo, and grants each new
-player the declared starting item stacks. A save carries the scenario id and reload resolves it
-automatically. Loading imports saved terrain, cargo, inventories, entities, and mod state rather
-than applying the new-world bootstrap again, and rejects an explicitly conflicting scenario. The
-client receives the resulting authoritative state through normal initial replication.
+The current `heartstead_dedicated_server` accepts `--bind` and optional `--ticks`, but does not
+construct a save database or expose a save option. Its world is lost when the process exits. This
+is an implementation limit, not permission for a client to save the server's state.
 
-Render objects, GPU buffers, client interpolation, physics broadphase caches, and presentation
-state are never saved. Disk writing is currently an explicit caller operation. Moving compression
-and I/O behind immutable tick-boundary save inputs is the next persistence scheduling step and must
-not grant background jobs mutable world access.
+Save ownership should be added to the dedicated composition by reusing the same versioned snapshot,
+database, migration, log, and shutdown boundaries—not by creating a second server format.
 
-## Headless testing
+## Headless and bounded execution
 
-`HeadlessSessionHarness` validates content, creates the normal `GameRuntime`, starts either a local
-server/client or dedicated-server session, and advances a requested fixed-tick count without any
-platform or graphics services. New features should test at least command validation, authoritative
-commit, emitted events, replication/presentation where relevant, save reload, and teardown through
-this path.
+Headless and bounded modes exist for tests, CI, tools, replay, diagnostics, and deterministic
+integration checks. They must not silently change command authority or data formats. A bounded run
+reports failures and exits; it should not leave background threads or pending publication work.
 
-## Shutdown and failures
+## Failure behavior
 
-Shutdown disconnects the local client, finalizes runtime ownership, stops the host, clears
-presentation state, and destroys the session. Renderer shutdown remains application-owned and is
-performed before the native window closes. Startup is transactional: invalid content, duplicate
-module contracts, scheduler cycles, incompatible saves, transport failures, or missing player
-content return a typed error and do not yield a partially running session.
+- Invalid command-line combinations fail before runtime mutation.
+- Failed subsystem initialization unwinds already-created owners in reverse order.
+- Command validation failure returns a result and leaves authoritative state unchanged.
+- Stale asynchronous results are rejected by revision/generation checks.
+- Transport timeout or retry exhaustion disconnects the affected session rather than stalling the
+  authoritative loop.
+- Save publication failure retains the previous committed state and surfaces an error.
+- Presentation failure does not grant the client authority or corrupt durable state.
 
-An error after a frame has begun authoritative or client synchronization is terminal for that
-session because event/delta intake may already have advanced. `RuntimeSession` records the original
-typed fault, rejects subsequent frames and commands, exposes the fault through `GameInspector`, and
-still permits deterministic shutdown. Snapshot capture failures do not fault the session because
-they operate on a disposable snapshot and perform no disk commit.
-
-No globals or service locator participate in the frame path. Dependencies are constructor inputs,
-registration contexts, or narrowly scoped tick contexts.
+Operational commands and controls are documented in [Running Heartstead](../dev/running.md).

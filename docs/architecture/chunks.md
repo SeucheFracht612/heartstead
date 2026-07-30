@@ -104,9 +104,10 @@ Generated chunks and loaded saved edit deltas only mark mesh, collision, and lig
 rebuild state. They do not mark save or replication dirty until a player/world operation
 changes stored voxel data after load.
 
-Future work:
+Current extension areas:
 
 - budgeted/asynchronous streaming jobs for large load and eviction waves
-- further mesh compression, LOD, and rich-model batching optimization
-- collision generation
-- lighting propagation
+- further mesh compression, simulation/render LOD, and rich-model batching optimization
+
+Collision cooking and voxel-light propagation are maintained as separate systems; see
+[physics](physics.md) and [voxel lighting](voxel_lighting.md).

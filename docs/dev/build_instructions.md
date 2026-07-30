@@ -1,148 +1,109 @@
-# Build Instructions
+# Build instructions
 
-Heartstead uses vcpkg manifest mode for native dependencies. Install and bootstrap vcpkg, then
-export its root before configuring:
+Heartstead is a C++23 CMake project. It uses checked-in CMake presets, Ninja, and vcpkg manifest
+mode so dependency versions and common build configurations stay reproducible.
+
+## Requirements
+
+- CMake 3.25 or newer;
+- Ninja;
+- a C++23-capable compiler (the maintained Linux presets use GCC or Clang);
+- Git and a bootstrapped vcpkg checkout;
+- development packages needed by the selected optional backends.
+
+For the complete native Linux presentation path, install a Vulkan loader/SDK and X11/XRandR
+development packages. CMake can build headless configurations without Vulkan. Jolt, miniaudio,
+Luau, and other dependencies are restored through the repository's vcpkg manifest when enabled.
+
+Point CMake at vcpkg before configuring:
 
 ```bash
 export VCPKG_ROOT=/absolute/path/to/vcpkg
 ```
 
-The checked-in manifest pins the registry baseline and dependency versions. CMake restores the
-manifest into the selected build tree through the vcpkg toolchain.
+The manifest and vcpkg baseline are the dependency-version source of truth.
 
-Configure:
+## Configure, build, and test
 
 ```bash
 cmake --preset default-debug
-```
-
-Build:
-
-```bash
 cmake --build --preset default-debug
-```
-
-Test:
-
-```bash
 ctest --preset default-debug
 ```
 
-The default CTest preset runs the unit tests and headless-safe smoke tests for the default-built
-samples and tools. The commands below are still useful when you want to run one boundary manually.
-
-Strict warning build:
+Build one target while iterating:
 
 ```bash
-cmake --preset default-debug-werror
-cmake --build --preset default-debug-werror
-ctest --preset default-debug-werror
+cmake --build --preset default-debug --target heartstead_dev_game
 ```
 
-Pin the strict build to each supported Linux compiler when checking portability-sensitive changes:
+List targets known to the configured build:
+
+```bash
+cmake --build --preset default-debug --target help
+```
+
+## Presets
+
+| Configure/build preset | Purpose |
+| --- | --- |
+| `default-debug` | Host-default compiler, debug build, normal development features. |
+| `default-debug-werror` | Host-default compiler with warnings treated as errors. |
+| `default-release` | Optimized build for benchmarks and release-like checks. |
+| `linux-clang-debug` | Explicit Clang debug configuration. |
+| `linux-clang-debug-werror` | Explicit Clang with warnings as errors. |
+| `linux-gcc-debug` | Explicit GCC debug configuration. |
+| `linux-gcc-debug-werror` | Explicit GCC with warnings as errors. |
+| `linux-clang-asan` | Clang AddressSanitizer + UndefinedBehaviorSanitizer build. |
+| `linux-clang-tsan` | Clang ThreadSanitizer build. |
+
+CTest also defines `linux-clang-asan-leaks`, which runs the ASan-built suite with leak detection
+enabled. The default ASan test preset disables LeakSanitizer because debugger/managed environments
+that use `ptrace` can make LeakSanitizer abort before tests start.
+
+Examples:
 
 ```bash
 cmake --preset linux-clang-debug-werror
 cmake --build --preset linux-clang-debug-werror
 ctest --preset linux-clang-debug-werror
 
-cmake --preset linux-gcc-debug-werror
-cmake --build --preset linux-gcc-debug-werror
-ctest --preset linux-gcc-debug-werror
-```
-
-AddressSanitizer plus UndefinedBehaviorSanitizer build:
-
-```bash
 cmake --preset linux-clang-asan
 cmake --build --preset linux-clang-asan
 ctest --preset linux-clang-asan
 ctest --preset linux-clang-asan-leaks
-```
 
-ThreadSanitizer build:
-
-```bash
 cmake --preset linux-clang-tsan
 cmake --build --preset linux-clang-tsan
 ctest --preset linux-clang-tsan
 ```
 
-The sanitizer presets use Clang, enable warnings-as-errors, and disable Vulkan so the checks focus
-on Heartstead-owned foundation code instead of graphics driver behavior. Use `linux-clang-asan` for memory and
-undefined-behavior checks. Use `linux-clang-tsan` separately for data-race checks; it cannot be
-combined with AddressSanitizer. The default ASan CTest preset disables LeakSanitizer detection
-because managed/debugger-style environments can run tests under `ptrace`, where LeakSanitizer
-aborts at startup. Run the `linux-clang-asan-leaks` preset outside such an environment to execute
-the same complete suite with leak detection enabled.
+ASan/UBSan and TSan are separate configurations and must not be combined. The sanitizer presets
+turn Vulkan off so they focus on Heartstead-owned code rather than graphics-driver internals.
 
-Run the development asset cooker:
+## CMake options
 
-```bash
-./build/default-debug/tools/asset_cooker/heartstead_asset_cooker
-./build/default-debug/tools/shader_compiler/heartstead_shader_compiler
-```
-
-Print cooked asset store inspection data while cooking, or inspect an existing cooked output:
+The top-level project builds applications, samples, tools, and tests by default. Optional engine
+backends are discovered or enabled through CMake options, including Vulkan, X11/XRandR, Jolt,
+miniaudio, and Luau. Inspect the cache of an already configured preset rather than copying an old option list:
 
 ```bash
-./build/default-debug/tools/asset_cooker/heartstead_asset_cooker . build/cooked_assets/asset_manifest.txt development --inspect
-./build/default-debug/tools/asset_cooker/heartstead_asset_cooker --inspect-store build/cooked_assets
+cmake -N -LAH build/default-debug
 ```
 
-Cook one active logical asset with the production converter, which is useful for staging a focused
-runtime or tool fixture without requiring unrelated partial production converters:
+For a focused headless configure, pass the relevant `HEARTSTEAD_ENABLE_*` options explicitly or use
+one of the sanitizer presets as a reference. Do not assume that a backend being disabled means its
+higher-level contract disappears; headless and disabled backends intentionally keep many tools and
+tests functional.
 
-```bash
-./build/default-debug/tools/asset_cooker/heartstead_asset_cooker . build/cooked_model/asset_manifest.txt production --only base:models/entities/storybook_player.gltf
-```
+## Shaders
 
-Print shader compile inspection data:
+Built-in shader source and checked-in validated SPIR-V live under
+`engine/renderer/shaders/builtin`. When `glslangValidator` or `glslang` is available, CMake rebuilds
+SPIR-V in the build tree after source changes. Otherwise it stages the checked-in payloads. Normal
+runtime rendering does not compile shader source.
 
-```bash
-./build/default-debug/tools/shader_compiler/heartstead_shader_compiler . build/compiled_shaders/shader_manifest.txt development --inspect
-```
-
-Run the production shader profile for validated SPIR-V passthrough:
-
-```bash
-./build/default-debug/tools/shader_compiler/heartstead_shader_compiler . build/compiled_shaders/production_shader_manifest.txt production
-```
-
-Run smoke samples:
-
-```bash
-./build/default-debug/samples/platform_smoke/heartstead_platform_smoke
-./build/default-debug/samples/renderer_smoke/heartstead_renderer_smoke
-./build/default-debug/samples/physics_sandbox/heartstead_physics_sandbox
-./build/default-debug/samples/network_sandbox/heartstead_network_sandbox
-./build/default-debug/samples/scripting_sandbox/heartstead_scripting_sandbox
-./build/default-debug/samples/jobs_sandbox/heartstead_jobs_sandbox
-./build/default-debug/samples/math_sandbox/heartstead_math_sandbox
-./build/default-debug/samples/world_state_sandbox/heartstead_world_state_sandbox
-```
-
-Run the retained Milestone 2 terrain renderer:
-
-```bash
-./build/default-debug/apps/render_smoke/heartstead_render_smoke
-```
-
-This application requires an X11 display and a Vulkan device that can present to it. It creates a
-known nine-chunk far-world terrain set and exercises the retained `Renderer`, budgeted asynchronous
-meshing, staged upload queues, GPU chunk cache, frustum culling, and unified indexed-draw frame
-path. Use
-WASD to move, Space to rise, hold the right mouse button to look, and press Escape or close the
-window to exit. Resizing and minimizing the window preserve resident chunk buffers. If
-`VK_LAYER_KHRONOS_validation` is installed, it is enabled automatically; otherwise startup
-continues with a visible warning.
-
-The shared, checked-in shader sources and production SPIR-V are under
-`engine/renderer/shaders/builtin`. CMake detects `glslangValidator` (or the newer `glslang` binary)
-and, when available, recompiles
-the GLSL into the build tree whenever a source changes. Otherwise it stages the checked-in SPIR-V,
-so release builds never require a runtime shader compiler. To regenerate and validate the
-checked-in artifacts with external Khronos tools:
+To regenerate the checked-in built-in shaders with Khronos tools:
 
 ```bash
 for shader in \
@@ -158,59 +119,44 @@ for shader in \
 done
 ```
 
-Both renderer applications stage the selected artifacts beside their executable. The runtime loads
-and validates the SPIR-V header before creating Vulkan shader modules; it never compiles shader
-source during normal rendering.
+The general asset shader compiler is a separate cook/validation boundary. Its production profile
+accepts validated SPIR-V passthrough; production Slang/HLSL compilation requires a linked compiler
+backend.
 
-Run a deterministic renderer benchmark headlessly:
+## Asset and validation tools
 
-```bash
-./build/default-debug/apps/render_benchmark/heartstead_render_benchmark \
-  --scene mountains --warmup 120 --frames 1000 --radius 2 \
-  --output build/benchmarks/mountains.json
-```
-
-Use the `default-release` preset for optimized renderer measurements. Add `--reference-mesher` to
-run the readable correctness mesher through the same benchmark pipeline as an optimization
-baseline. Milestone 8 reference results and machine details are recorded in
-`docs/performance/renderer_milestone_8.md`.
-
-Use the native Vulkan backend to collect delayed GPU timestamp measurements:
+Examples after a debug build:
 
 ```bash
-./build/default-debug/apps/render_benchmark/heartstead_render_benchmark \
-  --vulkan --scene checkerboard --warmup 120 --frames 1000 --radius 1 \
-  --format csv --output build/benchmarks/checkerboard-vulkan.csv
-```
-
-The runner is uncapped by default. Add `--frame-cap 60` only when a capped comparison is intended.
-Use `--list-scenes` for all deterministic workloads. JSON contains a summary plus full per-frame
-records; CSV contains the same timing and renderer-counter columns and repeats the run summary on
-each row for standalone analysis. Both formats record a versioned schema plus backend, mesher,
-initial resolution, chunk radius, warm-up/measured frame counts, frame cap, validation request,
-scene, and seed so a result file carries the configuration needed to reproduce it. The summary
-reports median, 95th/99th percentiles, 1%/0.1% low FPS, maximum frame time, and mean CPU, GPU,
-meshing, upload, and GPU-wait times. It also reports mean extraction, synchronization, culling,
-draw-list, command-build, command-recording, snapshot, upload-preparation, and GPU pass intervals,
-plus the full CPU timing breakdown of the slowest measured frame. Vulkan validation is requested by
-default and remains optional when the Khronos layer is not installed.
-The measurement semantics and latest verification matrix are recorded in
-`docs/performance/renderer_milestone_3.md`.
-
-Run mod/prototype validation tools:
-
-```bash
-./build/default-debug/tools/mod_validator/heartstead_mod_validator
+./build/default-debug/tools/asset_cooker/heartstead_asset_cooker
+./build/default-debug/tools/shader_compiler/heartstead_shader_compiler
 ./build/default-debug/tools/mod_validator/heartstead_mod_validator . --inspect
 ./build/default-debug/tools/prototype_inspector/heartstead_prototype_inspector
-./build/default-debug/tools/prototype_inspector/heartstead_prototype_inspector base:items/raw_clay
-./build/default-debug/tools/replay_inspector/heartstead_replay_inspector tests/fixtures/sample_command_replay.txt
-./build/default-debug/tools/save_inspector/heartstead_save_inspector tests/fixtures/minimal_save_snapshot.txt
-./build/default-debug/tools/save_inspector/heartstead_save_inspector --slots tests/fixtures/save_slots
-./build/default-debug/tools/shader_compiler/heartstead_shader_compiler
-./build/default-debug/tools/workpiece_inspector/heartstead_workpiece_inspector tests/fixtures/sample_workpiece_grid.txt
-./build/default-debug/tools/world_inspector/heartstead_world_inspector tests/fixtures/minimal_save_snapshot.txt .
 ```
 
-The `linux-clang-debug` and `linux-gcc-debug` presets pin specific compilers for CLion
-profiles. Use `default-debug` when the host default compiler is preferred.
+Cook one active asset without requiring unrelated production converters:
+
+```bash
+./build/default-debug/tools/asset_cooker/heartstead_asset_cooker \
+  . build/cooked_model/asset_manifest.txt production \
+  --only base:models/entities/storybook_player.gltf
+```
+
+See [the asset pipeline guide](../asset_pipeline.md) for source layout, formats, licenses, cooking,
+and runtime lookup.
+
+## Troubleshooting
+
+- **Preset cannot find vcpkg:** verify `VCPKG_ROOT` points to a bootstrapped checkout before the
+  first configure, then remove the failed build directory and configure again.
+- **Vulkan application is unavailable:** confirm the Vulkan loader, headers, and a present-capable
+  driver are installed and that CMake found Vulkan.
+- **Native window path is unavailable:** the current maintained path requires X11 and XRandR.
+- **Validation layer warning:** `VK_LAYER_KHRONOS_validation` is optional at runtime. Install it for
+  graphics validation; the application reports when it is not present.
+- **Stale generated files:** use a fresh preset build directory rather than mixing generators,
+  compilers, or vcpkg roots in one tree.
+- **A command in documentation differs from the executable:** check the executable's `--help`; it
+  is the command-line source of truth.
+
+Continue with [Running Heartstead](running.md) or [Testing](testing.md).
