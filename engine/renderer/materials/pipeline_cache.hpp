@@ -20,6 +20,9 @@ enum class RenderPhase : std::uint8_t {
     fluid_terrain,
     static_instances,
     debug,
+    // Resolves an offscreen graph resource to another target. Draws a fullscreen triangle with no
+    // vertex input and no depth, so it shares none of the world phases' pipeline state.
+    post_process,
     ui,
 };
 

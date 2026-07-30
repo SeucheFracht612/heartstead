@@ -241,6 +241,8 @@ std::string_view render_phase_name(RenderPhase phase) noexcept {
         return "static_instances";
     case RenderPhase::debug:
         return "debug";
+    case RenderPhase::post_process:
+        return "post_process";
     case RenderPhase::ui:
         return "ui";
     }

@@ -221,6 +221,11 @@ class Renderer {
                            std::span<const std::uint32_t> fragment_spirv);
     [[nodiscard]] core::Status create_ui_pipeline(std::span<const std::uint32_t> vertex_spirv,
                                                   std::span<const std::uint32_t> fragment_spirv);
+    // Builds the material that resolves the linear scene target to the display image. Only needed
+    // by the linear HDR graph, so it is skipped when no tone map SPIR-V was supplied.
+    [[nodiscard]] core::Status
+    create_tone_map_pipeline(std::span<const std::uint32_t> vertex_spirv,
+                             std::span<const std::uint32_t> fragment_spirv);
     void update_frontend_stats(std::size_t loaded_chunk_count) noexcept;
     void update_backend_stats(const rhi::RenderFrameStats& frame) noexcept;
 
@@ -235,11 +240,16 @@ class Renderer {
     std::array<GraphicsPipelineKey, 2> debug_pipeline_keys_{};
     rhi::RenderResourceHandle ui_pipeline_{};
     GraphicsPipelineKey ui_pipeline_key_{};
+    // Invalid when no tone map SPIR-V was supplied, which is also what makes the linear HDR graph
+    // unavailable.
+    rhi::RenderResourceHandle tone_map_pipeline_{};
+    GraphicsPipelineKey tone_map_pipeline_key_{};
     ShaderProgramHandle terrain_shader_program_;
     ShaderProgramHandle sky_shader_program_;
     ShaderProgramHandle scene_shader_program_;
     ShaderProgramHandle debug_shader_program_;
     ShaderProgramHandle ui_shader_program_;
+    ShaderProgramHandle tone_map_shader_program_;
     TextureHandle terrain_texture_array_;
     std::unique_ptr<SurfaceTextureArray> surface_texture_array_;
     std::unique_ptr<SurfaceTextureArray> surface_data_texture_array_;

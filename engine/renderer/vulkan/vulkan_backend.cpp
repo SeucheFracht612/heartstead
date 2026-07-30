@@ -5052,12 +5052,37 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 });
             };
 
+            // Whether a pass binds depth follows from the pipelines recorded into that pass, not
+            // from the frame's first pipeline: a post-process pass draws with a depth-free pipeline
+            // while the world passes around it do not, and binding an attachment the pipeline was
+            // not created against is invalid under dynamic rendering. A pass with no draws has
+            // nothing to stay compatible with, so it follows the frame default and still clears
+            // depth for whatever comes after it.
+            const auto pass_binds_depth = [&](std::size_t index) {
+                const auto& candidate = frame.plan.passes[index];
+                if (candidate.kind == rhi::RenderPassKind::present || !writes_depth(candidate)) {
+                    return false;
+                }
+                const auto pass_commands = std::ranges::find_if(
+                    frame.pass_commands, [index](const rhi::RenderPassCommands& commands) {
+                        return commands.pass_index == index;
+                    });
+                if (pass_commands == frame.pass_commands.end() || pass_commands->draws.empty()) {
+                    return first_pipeline->uses_depth;
+                }
+                const auto pipeline =
+                    graphics_pipelines_.find(pass_commands->draws.front().pipeline.value);
+                return pipeline == graphics_pipelines_.end() ? first_pipeline->uses_depth
+                                                             : pipeline->second.uses_depth;
+            };
+
             // Depth has to survive between blocks now that every pass opens its own, so only the
-            // final depth user may discard it.
+            // final pass that actually binds depth may discard it.
+            std::vector<bool> binds_depth(frame.plan.passes.size(), false);
             std::size_t last_depth_pass = 0;
             for (std::size_t index = 0; index < frame.plan.passes.size(); ++index) {
-                if (frame.plan.passes[index].kind != rhi::RenderPassKind::present &&
-                    writes_depth(frame.plan.passes[index])) {
+                binds_depth[index] = pass_binds_depth(index);
+                if (binds_depth[index]) {
                     last_depth_pass = index;
                 }
             }
@@ -5158,7 +5183,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
 
                 // Pipelines declare their depth format at creation, so a pass may only bind depth
                 // when the pipelines recorded into it were built expecting one.
-                const auto bind_depth = first_pipeline->uses_depth && writes_depth(pass);
+                const auto bind_depth = binds_depth[pass_index];
                 VkRenderingAttachmentInfo depth_attachment{};
                 depth_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
                 depth_attachment.imageView = frame_depth_view;

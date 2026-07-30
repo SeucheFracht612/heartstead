@@ -205,6 +205,33 @@ make_ui_shader_program(std::span<const std::uint32_t> vertex_spirv,
     return shader_program;
 }
 
+[[nodiscard]] ShaderProgramDesc
+make_tone_map_shader_program(std::span<const std::uint32_t> vertex_spirv,
+                             std::span<const std::uint32_t> fragment_spirv) {
+    ShaderProgramDesc shader_program;
+    shader_program.id = "tone_map";
+    shader_program.stages = {
+        {rhi::RenderShaderStage::vertex,
+         "main",
+         {vertex_spirv.begin(), vertex_spirv.end()},
+         "tone_map.vert.spv"},
+        {rhi::RenderShaderStage::fragment,
+         "main",
+         {fragment_spirv.begin(), fragment_spirv.end()},
+         "tone_map.frag.spv"},
+    };
+    // No vertex inputs at all: the fullscreen triangle comes from gl_VertexIndex.
+    shader_program.interface.vertex_stride = 0;
+    shader_program.interface.descriptors = {
+        {"scene_hdr", rhi::RenderDescriptorKind::sampled_texture, 0, true,
+         rhi::RenderShaderStageFlags::fragment},
+    };
+    shader_program.interface.push_constant_ranges.push_back(
+        {rhi::RenderShaderStageFlags::fragment, 0, sizeof(rhi::ToneMapPushConstants)});
+    shader_program.dependencies = {"scene_hdr_v1"};
+    return shader_program;
+}
+
 [[nodiscard]] std::array<std::uint8_t, 7> fallback_glyph_rows(unsigned char character) {
     if (character >= 'a' && character <= 'z') {
         character = static_cast<unsigned char>(character - 'a' + 'A');
@@ -450,6 +477,26 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         const auto error = pipeline_status.error();
         (void)shutdown();
         return core::Status::failure(error.code, error.message);
+    }
+    // Only the linear HDR graph needs tone mapping, so a caller that never selects it may omit the
+    // shaders. Selecting that graph without them is rejected below rather than silently presenting
+    // an unresolved scene target.
+    if (!desc.tone_map_vertex_spirv.empty() && !desc.tone_map_fragment_spirv.empty()) {
+        pipeline_status =
+            create_tone_map_pipeline(desc.tone_map_vertex_spirv, desc.tone_map_fragment_spirv);
+        if (!pipeline_status) {
+            const auto error = pipeline_status.error();
+            (void)shutdown();
+            return core::Status::failure(error.code, error.message);
+        }
+    }
+    if (frame_builder_ != nullptr &&
+        frame_builder_->color_pipeline() == FrameColorPipeline::linear_hdr &&
+        !tone_map_pipeline_.is_valid()) {
+        (void)shutdown();
+        return core::Status::failure(
+            "renderer.tone_map_shaders_required",
+            "the linear HDR frame graph needs tone map shaders, which were not supplied");
     }
     pipeline_cache_->seal();
 
@@ -2306,6 +2353,75 @@ core::Status Renderer::create_ui_pipeline(std::span<const std::uint32_t> vertex_
     if (!binding) {
         return core::Status::failure(binding.error().code, binding.error().message);
     }
+    return core::Status::ok();
+}
+
+core::Status Renderer::create_tone_map_pipeline(std::span<const std::uint32_t> vertex_spirv,
+                                                std::span<const std::uint32_t> fragment_spirv) {
+    if (shader_manager_ == nullptr || pipeline_cache_ == nullptr) {
+        return core::Status::failure("renderer.runtime_assets_uninitialized",
+                                     "tone map runtime asset managers must be initialized first");
+    }
+    const auto material = core::PrototypeId::parse("base:materials/tone_map");
+    if (!material) {
+        return core::Status::failure("renderer.invalid_tone_map_material",
+                                     "internal tone map material id is invalid");
+    }
+    auto shader =
+        shader_manager_->create_program(make_tone_map_shader_program(vertex_spirv, fragment_spirv));
+    if (!shader) {
+        return core::Status::failure(shader.error().code, shader.error().message);
+    }
+    tone_map_shader_program_ = shader.value();
+
+    rhi::RenderPipelineLayoutDesc layout;
+    layout.material_id = material.value();
+    layout.shader_template = {"base", "shaders/tone_map.vert"};
+    layout.descriptors = {
+        {"scene_hdr", rhi::RenderDescriptorKind::sampled_texture, 0, true,
+         rhi::RenderShaderStageFlags::fragment},
+    };
+    layout.push_constant_ranges.push_back(
+        {rhi::RenderShaderStageFlags::fragment, 0, sizeof(rhi::ToneMapPushConstants)});
+    layout.debug_name = "tone_map_layout";
+    // The scene target this samples is a frame graph resource, so the bound image changes every
+    // frame and the descriptor set cannot be shared across frames in flight.
+    layout.per_frame_descriptors = true;
+
+    rhi::RenderGraphicsPipelineDesc pipeline;
+    pipeline.material_id = material.value();
+    pipeline.debug_name = "tone_map_pipeline";
+    // No vertex buffer is bound; the vertex shader builds the triangle from gl_VertexIndex.
+    pipeline.vertex_stride = 0;
+    pipeline.topology = rhi::RenderPrimitiveTopology::triangle_list;
+    pipeline.polygon_mode = rhi::RenderPolygonMode::fill;
+    pipeline.cull_mode = rhi::RenderCullMode::none;
+    pipeline.front_face = rhi::RenderFrontFace::counter_clockwise;
+    // Depth is deliberately off. The pass writes the display image and must not bind the scene
+    // depth target, which is what makes per-pass depth selection in the backend necessary.
+    pipeline.depth_test_enable = false;
+    pipeline.depth_write_enable = false;
+    pipeline.blend_mode = rhi::RenderBlendMode::disabled;
+    pipeline.color_target_format = rhi::RenderImageFormat::rgba8_unorm;
+    tone_map_pipeline_key_.shader_program = tone_map_shader_program_;
+    tone_map_pipeline_key_.vertex_layout =
+        hash_vertex_layout(pipeline.vertex_stride, pipeline.vertex_attributes);
+    tone_map_pipeline_key_.render_phase = RenderPhase::post_process;
+    tone_map_pipeline_key_.color_format = pipeline.color_target_format;
+    tone_map_pipeline_key_.depth_format = pipeline.depth_target_format;
+    tone_map_pipeline_key_.cull_mode = pipeline.cull_mode;
+    tone_map_pipeline_key_.front_face = pipeline.front_face;
+    tone_map_pipeline_key_.depth_test = pipeline.depth_test_enable;
+    tone_map_pipeline_key_.depth_write = pipeline.depth_write_enable;
+    tone_map_pipeline_key_.depth_compare = pipeline.depth_compare;
+    tone_map_pipeline_key_.blend_mode = pipeline.blend_mode;
+    auto created = pipeline_cache_->prewarm(tone_map_pipeline_key_, layout, std::move(pipeline));
+    if (!created) {
+        return core::Status::failure(created.error().code, created.error().message);
+    }
+    tone_map_pipeline_ = created.value();
+    // No descriptor write here on purpose: the scene_hdr binding is resolved by the backend from
+    // the frame graph, every frame.
     return core::Status::ok();
 }
 
