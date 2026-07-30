@@ -117,6 +117,13 @@ is the contributor-facing source of truth.
 Alpha-tested surfaces discard by material cutoff. Transparent/fluid surfaces blend without depth
 writes. Lighting is evaluated in linear space and encoded for the current scene target.
 
+The maintained scene target is RGBA8 UNORM containing shader-encoded sRGB values. Native
+presentation therefore prefers an RGBA8 or BGRA8 UNORM swapchain with
+`SRGB_NONLINEAR` presentation color space. Using an sRGB storage format for that final blit would
+encode the already encoded scene a second time, washing out midtones and reducing visible texture
+contrast. Sky, terrain, static/model, debug, and UI fragment paths all follow the same explicit
+output-transfer contract.
+
 The surface-material storage buffer has an explicit 224-byte CPU/GPU record contract. Its final
 flag word and padding are exposed to GLSL as one aligned `uvec4`; splitting that tail into a scalar
 and `uvec3` changes the std430 array stride and causes later materials to read neighboring records.

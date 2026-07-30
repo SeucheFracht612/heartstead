@@ -192,7 +192,9 @@ the decoded images in one model share a 128 MiB limit.
 retain their base-color texture/factor, alpha mode, and double-sided state, but bypass sun and
 ambient lighting. They still participate in scene fog. This is stored as a material flag and uses
 the shared static-mesh shader, so it does not create extra textures, draw calls, or pipeline
-variants.
+variants. The base Kenney character is authored this way, so its texture should retain the same
+flat-shaded color relationship as an unlit Blender/glTF preview; Heartstead does not add specular
+lighting that the material did not request.
 
 ### Static visual definition
 

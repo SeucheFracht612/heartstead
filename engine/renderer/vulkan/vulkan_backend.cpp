@@ -440,7 +440,8 @@ query_swapchain_support(VkPhysicalDevice physical_device, VkSurfaceKHR surface) 
 [[nodiscard]] VkSurfaceFormatKHR
 choose_surface_format(const std::vector<VkSurfaceFormatKHR>& formats) noexcept {
     const auto preferred = std::ranges::find_if(formats, [](const VkSurfaceFormatKHR& format) {
-        return format.format == VK_FORMAT_B8G8R8A8_SRGB &&
+        return (format.format == VK_FORMAT_B8G8R8A8_UNORM ||
+                format.format == VK_FORMAT_R8G8B8A8_UNORM) &&
                format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     });
     return preferred != formats.end() ? *preferred : formats.front();
