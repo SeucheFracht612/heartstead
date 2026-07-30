@@ -72,6 +72,11 @@ struct RendererInitDesc {
     std::vector<std::uint32_t> debug_fragment_spirv;
     std::vector<std::uint32_t> ui_vertex_spirv;
     std::vector<std::uint32_t> ui_fragment_spirv;
+    // Resolves the linear scene target to the display format. Only required by the linear HDR
+    // frame graph; initialization fails rather than rendering an unresolved frame if that graph is
+    // selected without them.
+    std::vector<std::uint32_t> tone_map_vertex_spirv;
+    std::vector<std::uint32_t> tone_map_fragment_spirv;
     const world::VoxelPalette* voxel_palette = nullptr;
     materials::TerrainMaterialAssetSet terrain_material_assets;
     ChunkRenderConfig chunk_config{};

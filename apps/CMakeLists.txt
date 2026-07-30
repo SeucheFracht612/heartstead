@@ -19,6 +19,8 @@ function(heartstead_attach_terrain_shader_assets target)
   set(debug_fragment_source "${shader_source_dir}/debug_line.frag")
   set(ui_vertex_source "${shader_source_dir}/ui.vert")
   set(ui_fragment_source "${shader_source_dir}/ui.frag")
+  set(tone_map_vertex_source "${shader_source_dir}/tone_map.vert")
+  set(tone_map_fragment_source "${shader_source_dir}/tone_map.frag")
 
   if(HEARTSTEAD_GLSLANG_VALIDATOR)
     set(sky_vertex_spirv "${compiled_shader_dir}/sky.vert.spv")
@@ -31,11 +33,14 @@ function(heartstead_attach_terrain_shader_assets target)
     set(debug_fragment_spirv "${compiled_shader_dir}/debug_line.frag.spv")
     set(ui_vertex_spirv "${compiled_shader_dir}/ui.vert.spv")
     set(ui_fragment_spirv "${compiled_shader_dir}/ui.frag.spv")
+    set(tone_map_vertex_spirv "${compiled_shader_dir}/tone_map.vert.spv")
+    set(tone_map_fragment_spirv "${compiled_shader_dir}/tone_map.frag.spv")
     add_custom_command(
       OUTPUT "${sky_vertex_spirv}" "${sky_fragment_spirv}"
              "${vertex_spirv}" "${fragment_spirv}" "${static_vertex_spirv}"
              "${static_fragment_spirv}" "${debug_vertex_spirv}" "${debug_fragment_spirv}"
              "${ui_vertex_spirv}" "${ui_fragment_spirv}"
+             "${tone_map_vertex_spirv}" "${tone_map_fragment_spirv}"
       COMMAND ${CMAKE_COMMAND} -E make_directory "${compiled_shader_dir}"
       COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
               "${sky_vertex_source}" -o "${sky_vertex_spirv}"
@@ -57,10 +62,15 @@ function(heartstead_attach_terrain_shader_assets target)
               "${ui_vertex_source}" -o "${ui_vertex_spirv}"
       COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
               "${ui_fragment_source}" -o "${ui_fragment_spirv}"
+      COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
+              "${tone_map_vertex_source}" -o "${tone_map_vertex_spirv}"
+      COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
+              "${tone_map_fragment_source}" -o "${tone_map_fragment_spirv}"
       DEPENDS "${sky_vertex_source}" "${sky_fragment_source}"
               "${vertex_source}" "${fragment_source}" "${static_vertex_source}"
               "${static_fragment_source}" "${debug_vertex_source}" "${debug_fragment_source}"
               "${ui_vertex_source}" "${ui_fragment_source}"
+              "${tone_map_vertex_source}" "${tone_map_fragment_source}"
       COMMENT "Compiling renderer GLSL to SPIR-V"
       VERBATIM
     )
@@ -75,6 +85,8 @@ function(heartstead_attach_terrain_shader_assets target)
     set(debug_fragment_spirv "${shader_source_dir}/debug_line.frag.spv")
     set(ui_vertex_spirv "${shader_source_dir}/ui.vert.spv")
     set(ui_fragment_spirv "${shader_source_dir}/ui.frag.spv")
+    set(tone_map_vertex_spirv "${shader_source_dir}/tone_map.vert.spv")
+    set(tone_map_fragment_spirv "${shader_source_dir}/tone_map.frag.spv")
   endif()
 
   add_custom_target(
@@ -120,10 +132,19 @@ function(heartstead_attach_terrain_shader_assets target)
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/ui.vert.spv"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ui_fragment_spirv}"
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/ui.frag.spv"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${tone_map_vertex_source}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/tone_map.vert"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${tone_map_fragment_source}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/tone_map.frag"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${tone_map_vertex_spirv}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/tone_map.vert.spv"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${tone_map_fragment_spirv}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/tone_map.frag.spv"
     DEPENDS "${sky_vertex_spirv}" "${sky_fragment_spirv}"
             "${vertex_spirv}" "${fragment_spirv}" "${static_vertex_spirv}"
             "${static_fragment_spirv}" "${debug_vertex_spirv}" "${debug_fragment_spirv}"
             "${ui_vertex_spirv}" "${ui_fragment_spirv}"
+            "${tone_map_vertex_spirv}" "${tone_map_fragment_spirv}"
     COMMENT "Staging compiled renderer shader assets for ${target}"
     VERBATIM
   )

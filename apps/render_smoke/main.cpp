@@ -118,6 +118,10 @@ int main(int argc, char** argv) {
             renderer::shaders::load_spirv_file(shader_root / "debug_line.frag.spv");
         auto ui_vertex_spirv = renderer::shaders::load_spirv_file(shader_root / "ui.vert.spv");
         auto ui_fragment_spirv = renderer::shaders::load_spirv_file(shader_root / "ui.frag.spv");
+        auto tone_map_vertex_spirv =
+            renderer::shaders::load_spirv_file(shader_root / "tone_map.vert.spv");
+        auto tone_map_fragment_spirv =
+            renderer::shaders::load_spirv_file(shader_root / "tone_map.frag.spv");
         if (!sky_vertex_spirv || !sky_fragment_spirv) {
             return fail("Sky shader loading failed visibly: " +
                         (!sky_vertex_spirv ? sky_vertex_spirv.error().message
@@ -145,6 +149,11 @@ int main(int argc, char** argv) {
                         (!ui_vertex_spirv ? ui_vertex_spirv.error().message
                                           : ui_fragment_spirv.error().message));
         }
+        if (!tone_map_vertex_spirv || !tone_map_fragment_spirv) {
+            return fail("Tone map shader loading failed visibly: " +
+                        (!tone_map_vertex_spirv ? tone_map_vertex_spirv.error().message
+                                                : tone_map_fragment_spirv.error().message));
+        }
 
         renderer::RendererInitDesc renderer_init;
         renderer_init.device = std::move(device).value();
@@ -158,6 +167,8 @@ int main(int argc, char** argv) {
         renderer_init.debug_fragment_spirv = std::move(debug_fragment_spirv).value();
         renderer_init.ui_vertex_spirv = std::move(ui_vertex_spirv).value();
         renderer_init.ui_fragment_spirv = std::move(ui_fragment_spirv).value();
+        renderer_init.tone_map_vertex_spirv = std::move(tone_map_vertex_spirv).value();
+        renderer_init.tone_map_fragment_spirv = std::move(tone_map_fragment_spirv).value();
         renderer_init.chunk_config.max_chunks_meshed_per_frame = 2;
         renderer_init.chunk_config.max_bytes_uploaded_per_frame = 4 * 1024 * 1024;
         renderer::Renderer retained_renderer;

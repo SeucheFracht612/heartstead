@@ -470,6 +470,8 @@ int main(int argc, char** argv) {
         std::vector<std::uint32_t> debug_fragment_spirv;
         std::vector<std::uint32_t> ui_vertex_spirv;
         std::vector<std::uint32_t> ui_fragment_spirv;
+        std::vector<std::uint32_t> tone_map_vertex_spirv;
+        std::vector<std::uint32_t> tone_map_fragment_spirv;
         if (options.backend == renderer::rhi::RenderBackend::vulkan) {
             const auto shader_root =
                 std::filesystem::path{HEARTSTEAD_RENDER_BENCHMARK_ASSET_DIR} / "shaders";
@@ -487,9 +489,13 @@ int main(int argc, char** argv) {
                 renderer::shaders::load_spirv_file(shader_root / "debug_line.frag.spv");
             auto ui_vertex = renderer::shaders::load_spirv_file(shader_root / "ui.vert.spv");
             auto ui_fragment = renderer::shaders::load_spirv_file(shader_root / "ui.frag.spv");
+            auto tone_map_vertex =
+                renderer::shaders::load_spirv_file(shader_root / "tone_map.vert.spv");
+            auto tone_map_fragment =
+                renderer::shaders::load_spirv_file(shader_root / "tone_map.frag.spv");
             if (!sky_vertex || !sky_fragment || !vertex || !fragment || !static_vertex ||
                 !static_fragment || !debug_vertex || !debug_fragment || !ui_vertex ||
-                !ui_fragment) {
+                !ui_fragment || !tone_map_vertex || !tone_map_fragment) {
                 const auto& error = !sky_vertex        ? sky_vertex.error()
                                     : !sky_fragment    ? sky_fragment.error()
                                     : !vertex          ? vertex.error()
@@ -499,7 +505,9 @@ int main(int argc, char** argv) {
                                     : !debug_vertex    ? debug_vertex.error()
                                     : !debug_fragment  ? debug_fragment.error()
                                     : !ui_vertex       ? ui_vertex.error()
-                                                       : ui_fragment.error();
+                                    : !ui_fragment     ? ui_fragment.error()
+                                    : !tone_map_vertex ? tone_map_vertex.error()
+                                                       : tone_map_fragment.error();
                 return fail(error.message);
             }
             sky_vertex_spirv = std::move(sky_vertex).value();
@@ -512,6 +520,8 @@ int main(int argc, char** argv) {
             debug_fragment_spirv = std::move(debug_fragment).value();
             ui_vertex_spirv = std::move(ui_vertex).value();
             ui_fragment_spirv = std::move(ui_fragment).value();
+            tone_map_vertex_spirv = std::move(tone_map_vertex).value();
+            tone_map_fragment_spirv = std::move(tone_map_fragment).value();
         } else {
             vertex_spirv = {0x07230203, 0x00010000, 0, 1, 0};
             fragment_spirv = vertex_spirv;
@@ -523,6 +533,8 @@ int main(int argc, char** argv) {
             debug_fragment_spirv = vertex_spirv;
             ui_vertex_spirv = vertex_spirv;
             ui_fragment_spirv = vertex_spirv;
+            tone_map_vertex_spirv = vertex_spirv;
+            tone_map_fragment_spirv = vertex_spirv;
         }
 
         renderer::RendererInitDesc renderer_init;
@@ -537,6 +549,8 @@ int main(int argc, char** argv) {
         renderer_init.debug_fragment_spirv = std::move(debug_fragment_spirv);
         renderer_init.ui_vertex_spirv = std::move(ui_vertex_spirv);
         renderer_init.ui_fragment_spirv = std::move(ui_fragment_spirv);
+        renderer_init.tone_map_vertex_spirv = std::move(tone_map_vertex_spirv);
+        renderer_init.tone_map_fragment_spirv = std::move(tone_map_fragment_spirv);
         renderer_init.voxel_palette = &scene.value()->palette();
         renderer_init.chunk_config.max_chunks_meshed_per_frame = 64;
         renderer_init.chunk_config.max_bytes_uploaded_per_frame = 512U * 1024U * 1024U;

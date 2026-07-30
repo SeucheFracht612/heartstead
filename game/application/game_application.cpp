@@ -26,6 +26,8 @@ struct ApplicationShaderSet {
     std::vector<std::uint32_t> debug_fragment;
     std::vector<std::uint32_t> ui_vertex;
     std::vector<std::uint32_t> ui_fragment;
+    std::vector<std::uint32_t> tone_map_vertex;
+    std::vector<std::uint32_t> tone_map_fragment;
 };
 
 [[nodiscard]] core::Result<ApplicationShaderSet>
@@ -34,14 +36,16 @@ load_application_shaders(const std::filesystem::path& root) {
         root / "sky.vert.spv",        root / "sky.frag.spv",         root / "terrain.vert.spv",
         root / "terrain.frag.spv",    root / "static_mesh.vert.spv", root / "static_mesh.frag.spv",
         root / "debug_line.vert.spv", root / "debug_line.frag.spv",  root / "ui.vert.spv",
-        root / "ui.frag.spv",
+        root / "ui.frag.spv",         root / "tone_map.vert.spv",    root / "tone_map.frag.spv",
     };
-    std::array<core::Result<std::vector<std::uint32_t>>, 10> loaded{
+    std::array<core::Result<std::vector<std::uint32_t>>, 12> loaded{
         renderer::shaders::load_spirv_file(paths[0]), renderer::shaders::load_spirv_file(paths[1]),
         renderer::shaders::load_spirv_file(paths[2]), renderer::shaders::load_spirv_file(paths[3]),
         renderer::shaders::load_spirv_file(paths[4]), renderer::shaders::load_spirv_file(paths[5]),
         renderer::shaders::load_spirv_file(paths[6]), renderer::shaders::load_spirv_file(paths[7]),
         renderer::shaders::load_spirv_file(paths[8]), renderer::shaders::load_spirv_file(paths[9]),
+        renderer::shaders::load_spirv_file(paths[10]),
+        renderer::shaders::load_spirv_file(paths[11]),
     };
     for (std::size_t index = 0; index < loaded.size(); ++index) {
         if (!loaded[index]) {
@@ -62,6 +66,8 @@ load_application_shaders(const std::filesystem::path& root) {
     result.debug_fragment = std::move(loaded[7]).value();
     result.ui_vertex = std::move(loaded[8]).value();
     result.ui_fragment = std::move(loaded[9]).value();
+    result.tone_map_vertex = std::move(loaded[10]).value();
+    result.tone_map_fragment = std::move(loaded[11]).value();
     return core::Result<ApplicationShaderSet>::success(std::move(result));
 }
 
@@ -328,6 +334,8 @@ core::Status GameApplication::initialize_shell() {
     renderer_desc.static_mesh_fragment_spirv = std::move(shaders.value().static_fragment);
     renderer_desc.debug_vertex_spirv = std::move(shaders.value().debug_vertex);
     renderer_desc.debug_fragment_spirv = std::move(shaders.value().debug_fragment);
+    renderer_desc.tone_map_vertex_spirv = std::move(shaders.value().tone_map_vertex);
+    renderer_desc.tone_map_fragment_spirv = std::move(shaders.value().tone_map_fragment);
     renderer_desc.ui_vertex_spirv = std::move(shaders.value().ui_vertex);
     renderer_desc.ui_fragment_spirv = std::move(shaders.value().ui_fragment);
     renderer_desc.voxel_palette = config_.voxel_palette;
