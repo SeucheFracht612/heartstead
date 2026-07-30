@@ -43,8 +43,10 @@ class VulkanFrameResourcePool {
     VulkanFrameResourcePool() = default;
     VulkanFrameResourcePool(const VulkanFrameResourcePool&) = delete;
     VulkanFrameResourcePool& operator=(const VulkanFrameResourcePool&) = delete;
-    VulkanFrameResourcePool(VulkanFrameResourcePool&&) = delete;
-    VulkanFrameResourcePool& operator=(VulkanFrameResourcePool&&) = delete;
+    // Frame contexts live in a vector, so the pool has to move. The moved-from pool is left empty
+    // and its destructor becomes a no-op rather than double-freeing the images.
+    VulkanFrameResourcePool(VulkanFrameResourcePool&& other) noexcept;
+    VulkanFrameResourcePool& operator=(VulkanFrameResourcePool&& other) noexcept;
     ~VulkanFrameResourcePool();
 
     void initialize(VkDevice device, VkPhysicalDevice physical_device) noexcept;

@@ -1272,6 +1272,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         VkFence completion_fence = VK_NULL_HANDLE;
         VkSemaphore image_available = VK_NULL_HANDLE;
         VulkanFrameTarget target;
+        // Backs the resources the frame graph declares. Per frame context, because a frame in
+        // flight must not have its attachments overwritten by the next one.
+        VulkanFrameResourcePool resources;
         std::uint64_t submission_serial = 0;
         bool in_flight = false;
     };
@@ -4687,6 +4690,36 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                                                                 status.error().message);
         }
 
+        // Back the resources the graph declares. Transients (the depth target today, the HDR scene
+        // target once the recorder is fully graph-driven) come from the pool at the format the plan
+        // asked for. The external output resource is backed by the offscreen colour image that the
+        // frame blits to the swapchain.
+        frame_context.resources.initialize(device_, physical_device_);
+        std::vector<rhi::RenderResourceDesc> graph_resources(frame.plan.resources.begin(),
+                                                             frame.plan.resources.end());
+        for (auto& resource : graph_resources) {
+            resource.extent = target_extent;
+        }
+        status = frame_context.resources.ensure_transients(graph_resources);
+        if (!status) {
+            return core::Result<rhi::RenderFrameStats>::failure(status.error().code,
+                                                                status.error().message);
+        }
+        const auto* output_desc = frame.plan.find_resource(rhi::output_resource_name);
+        frame_context.resources.bind_external(
+            rhi::output_resource_name, frame_context.target.color_image,
+            frame_context.target.color_view,
+            output_desc == nullptr ? VK_FORMAT_R8G8B8A8_UNORM
+                                   : vulkan_image_format(output_desc->format),
+            frame_context.target.color_layout, target_extent);
+
+        auto* graph_depth = frame_context.resources.find(rhi::depth_resource_name);
+        if (graph_depth == nullptr) {
+            return core::Result<rhi::RenderFrameStats>::failure(
+                "renderer.vulkan_missing_depth_resource",
+                "frame graph does not declare the depth resource the Vulkan backend requires");
+        }
+
         const auto has_draws = !frame.pass_commands.empty();
         std::size_t frame_pipeline_bind_count = 0;
         VulkanGraphicsPipelineResource* first_pipeline = nullptr;
@@ -4702,9 +4735,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         auto& frame_color_image = frame_context.target.color_image;
         auto& frame_color_view = frame_context.target.color_view;
         auto& frame_color_layout = frame_context.target.color_layout;
-        auto& frame_depth_image = frame_context.target.depth_image;
-        auto& frame_depth_view = frame_context.target.depth_view;
-        auto& frame_depth_layout = frame_context.target.depth_layout;
+        auto& frame_depth_image = graph_depth->image;
+        auto& frame_depth_view = graph_depth->view;
+        auto& frame_depth_layout = graph_depth->layout;
 
         // Dynamic rendering binds image views directly, so there is no framebuffer object to
         // create, cache, or retire alongside the frame's submission serial.

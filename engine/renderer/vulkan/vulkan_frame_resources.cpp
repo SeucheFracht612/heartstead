@@ -34,6 +34,32 @@ namespace {
 
 } // namespace
 
+VulkanFrameResourcePool::VulkanFrameResourcePool(VulkanFrameResourcePool&& other) noexcept
+    : device_(other.device_), physical_device_(other.physical_device_),
+      transients_(std::move(other.transients_)), externals_(std::move(other.externals_)) {
+    other.transients_.clear();
+    other.externals_.clear();
+    other.device_ = VK_NULL_HANDLE;
+    other.physical_device_ = VK_NULL_HANDLE;
+}
+
+VulkanFrameResourcePool&
+VulkanFrameResourcePool::operator=(VulkanFrameResourcePool&& other) noexcept {
+    if (this == &other) {
+        return *this;
+    }
+    destroy();
+    device_ = other.device_;
+    physical_device_ = other.physical_device_;
+    transients_ = std::move(other.transients_);
+    externals_ = std::move(other.externals_);
+    other.transients_.clear();
+    other.externals_.clear();
+    other.device_ = VK_NULL_HANDLE;
+    other.physical_device_ = VK_NULL_HANDLE;
+    return *this;
+}
+
 VulkanFrameResourcePool::~VulkanFrameResourcePool() {
     destroy();
 }
