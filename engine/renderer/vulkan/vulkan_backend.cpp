@@ -4733,7 +4733,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         const auto frame_fence = frame_context.completion_fence;
         const auto frame_image_available = frame_context.image_available;
         auto& frame_color_image = frame_context.target.color_image;
-        auto& frame_color_view = frame_context.target.color_view;
+        // The colour attachment view now comes from the graph resource pool; the image and its
+        // layout are still needed here for the barriers and the final blit.
         auto& frame_color_layout = frame_context.target.color_layout;
         auto& frame_depth_image = graph_depth->image;
         auto& frame_depth_view = graph_depth->view;
@@ -4811,35 +4812,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 ++submitted_barrier_count;
             }
 
-            VkRenderingAttachmentInfo color_attachment{};
-            color_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            color_attachment.imageView = frame_color_view;
-            color_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            color_attachment.clearValue.color = VkClearColorValue{
-                {clear_color.red, clear_color.green, clear_color.blue, clear_color.alpha}};
-
-            VkRenderingAttachmentInfo depth_attachment{};
-            depth_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            depth_attachment.imageView = frame_depth_view;
-            depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            // Depth is transient within the frame and is never sampled afterwards.
-            depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            depth_attachment.clearValue.depthStencil = VkClearDepthStencilValue{1.0F, 0};
-
-            VkRenderingInfo rendering_info{};
-            rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-            rendering_info.renderArea.extent = VkExtent2D{target_extent.width,
-                                                          target_extent.height};
-            rendering_info.layerCount = 1;
-            rendering_info.colorAttachmentCount = 1;
-            rendering_info.pColorAttachments = &color_attachment;
-            rendering_info.pDepthAttachment =
-                first_pipeline->uses_depth ? &depth_attachment : nullptr;
-            vkCmdBeginRendering(frame_commands, &rendering_info);
-
+            // Dynamic state is command-buffer scoped, so setting it once here applies to every
+            // rendering block below.
             VkViewport viewport{};
             viewport.width = static_cast<float>(target_extent.width);
             viewport.height = static_cast<float>(target_extent.height);
@@ -4916,38 +4890,160 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                                      draw.first_index, draw.vertex_offset, draw.first_instance);
                 }
             };
-            const auto record_timed_pass = [&](std::string_view pass_name, const char* label,
-                                               TimestampIndex start, TimestampIndex end, float red,
-                                               float green, float blue) {
-                begin_debug_label(frame_commands, label, red, green, blue);
-                write_timestamp(frame_commands, frame_index, start,
-                                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
-                record_draws(pass_name);
-                write_timestamp(frame_commands, frame_index, end,
-                                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-                end_debug_label(frame_commands);
+
+            // Each pass records into its own rendering block, bound to the attachments the pass
+            // declares it writes. A single frame-wide block could only ever target one image set,
+            // which is why a post-process pass reading what the world wrote was not expressible.
+            const auto colour_write_of =
+                [](const rhi::RenderPassDesc& pass) -> const std::string* {
+                for (const auto& written : pass.writes) {
+                    if (written != rhi::depth_resource_name) {
+                        return &written;
+                    }
+                }
+                return nullptr;
             };
-            const auto record_labelled_pass = [&](std::string_view pass_name, const char* label,
-                                                  float red, float green, float blue) {
-                begin_debug_label(frame_commands, label, red, green, blue);
-                record_draws(pass_name);
-                end_debug_label(frame_commands);
+            const auto writes_depth = [](const rhi::RenderPassDesc& pass) {
+                return std::ranges::any_of(pass.writes, [](const std::string& written) {
+                    return written == rhi::depth_resource_name;
+                });
             };
 
-            record_labelled_pass("sky", "Sky gradient pass", 0.20F, 0.42F, 0.86F);
-            record_timed_pass("opaque_terrain", "Opaque terrain pass", opaque_start_timestamp,
-                              opaque_end_timestamp, 0.20F, 0.72F, 0.28F);
-            record_timed_pass("alpha_tested_terrain", "Alpha-tested terrain pass",
-                              alpha_tested_start_timestamp, alpha_tested_end_timestamp, 0.46F,
-                              0.76F, 0.24F);
-            record_labelled_pass("rich_static_instances", "Rich/static instances pass", 0.75F,
-                                 0.62F, 0.20F);
-            record_timed_pass("transparent_terrain", "Transparent terrain and fluids pass",
-                              transparent_start_timestamp, transparent_end_timestamp, 0.20F, 0.60F,
-                              0.86F);
-            record_labelled_pass("debug", "Debug pass", 0.86F, 0.28F, 0.76F);
-            record_labelled_pass("ui", "UI pass", 0.80F, 0.80F, 0.80F);
-            vkCmdEndRendering(frame_commands);
+            // Depth has to survive between blocks now that every pass opens its own, so only the
+            // final depth user may discard it.
+            std::size_t last_depth_pass = 0;
+            for (std::size_t index = 0; index < frame.plan.passes.size(); ++index) {
+                if (frame.plan.passes[index].kind != rhi::RenderPassKind::present &&
+                    writes_depth(frame.plan.passes[index])) {
+                    last_depth_pass = index;
+                }
+            }
+
+            struct PassPresentation {
+                const char* label;
+                float red;
+                float green;
+                float blue;
+                bool timed;
+                TimestampIndex start;
+                TimestampIndex end;
+            };
+            const auto presentation_for = [&](std::string_view name) -> PassPresentation {
+                if (name == "sky") {
+                    return {"Sky gradient pass", 0.20F, 0.42F, 0.86F, false, {}, {}};
+                }
+                if (name == "opaque_terrain") {
+                    return {"Opaque terrain pass", 0.20F,           0.72F,
+                            0.28F,                 true,            opaque_start_timestamp,
+                            opaque_end_timestamp};
+                }
+                if (name == "alpha_tested_terrain") {
+                    return {"Alpha-tested terrain pass",
+                            0.46F,
+                            0.76F,
+                            0.24F,
+                            true,
+                            alpha_tested_start_timestamp,
+                            alpha_tested_end_timestamp};
+                }
+                if (name == "rich_static_instances") {
+                    return {"Rich/static instances pass", 0.75F, 0.62F, 0.20F, false, {}, {}};
+                }
+                if (name == "transparent_terrain") {
+                    return {"Transparent terrain and fluids pass",
+                            0.20F,
+                            0.60F,
+                            0.86F,
+                            true,
+                            transparent_start_timestamp,
+                            transparent_end_timestamp};
+                }
+                if (name == "debug") {
+                    return {"Debug pass", 0.86F, 0.28F, 0.76F, false, {}, {}};
+                }
+                if (name == "ui") {
+                    return {"UI pass", 0.80F, 0.80F, 0.80F, false, {}, {}};
+                }
+                if (name == "tone_map") {
+                    return {"Tone mapping pass", 0.94F, 0.62F, 0.24F, false, {}, {}};
+                }
+                return {"Graph pass", 0.60F, 0.60F, 0.60F, false, {}, {}};
+            };
+
+            std::unordered_set<std::string> cleared_colour;
+            bool depth_cleared = false;
+            for (std::size_t pass_index = 0; pass_index < frame.plan.passes.size(); ++pass_index) {
+                const auto& pass = frame.plan.passes[pass_index];
+                if (pass.kind == rhi::RenderPassKind::present) {
+                    continue;
+                }
+                const auto* colour_name = colour_write_of(pass);
+                if (colour_name == nullptr) {
+                    continue;
+                }
+                auto* colour = frame_context.resources.find(*colour_name);
+                if (colour == nullptr || colour->view == VK_NULL_HANDLE) {
+                    return core::Result<rhi::RenderFrameStats>::failure(
+                        "renderer.vulkan_unbacked_frame_resource",
+                        "frame graph pass '" + pass.name + "' writes resource '" + *colour_name +
+                            "' which has no backing image");
+                }
+
+                VkRenderingAttachmentInfo colour_attachment{};
+                colour_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                colour_attachment.imageView = colour->view;
+                colour_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                colour_attachment.loadOp = cleared_colour.contains(*colour_name)
+                                               ? VK_ATTACHMENT_LOAD_OP_LOAD
+                                               : VK_ATTACHMENT_LOAD_OP_CLEAR;
+                colour_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                colour_attachment.clearValue.color = VkClearColorValue{
+                    {clear_color.red, clear_color.green, clear_color.blue, clear_color.alpha}};
+
+                // Pipelines declare their depth format at creation, so a pass may only bind depth
+                // when the pipelines recorded into it were built expecting one.
+                const auto bind_depth = first_pipeline->uses_depth && writes_depth(pass);
+                VkRenderingAttachmentInfo depth_attachment{};
+                depth_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                depth_attachment.imageView = frame_depth_view;
+                depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                depth_attachment.loadOp = depth_cleared ? VK_ATTACHMENT_LOAD_OP_LOAD
+                                                        : VK_ATTACHMENT_LOAD_OP_CLEAR;
+                depth_attachment.storeOp = pass_index == last_depth_pass
+                                               ? VK_ATTACHMENT_STORE_OP_DONT_CARE
+                                               : VK_ATTACHMENT_STORE_OP_STORE;
+                depth_attachment.clearValue.depthStencil = VkClearDepthStencilValue{1.0F, 0};
+
+                VkRenderingInfo rendering_info{};
+                rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+                rendering_info.renderArea.extent =
+                    VkExtent2D{target_extent.width, target_extent.height};
+                rendering_info.layerCount = 1;
+                rendering_info.colorAttachmentCount = 1;
+                rendering_info.pColorAttachments = &colour_attachment;
+                rendering_info.pDepthAttachment = bind_depth ? &depth_attachment : nullptr;
+
+                const auto presentation = presentation_for(pass.name);
+                begin_debug_label(frame_commands, presentation.label, presentation.red,
+                                  presentation.green, presentation.blue);
+                if (presentation.timed) {
+                    write_timestamp(frame_commands, frame_index, presentation.start,
+                                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+                }
+                vkCmdBeginRendering(frame_commands, &rendering_info);
+                record_draws(pass.name);
+                vkCmdEndRendering(frame_commands);
+                if (presentation.timed) {
+                    write_timestamp(frame_commands, frame_index, presentation.end,
+                                    VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+                }
+                end_debug_label(frame_commands);
+
+                cleared_colour.insert(*colour_name);
+                if (bind_depth) {
+                    depth_cleared = true;
+                }
+            }
             frame_pipeline_bind_count = pipeline_bind_count;
         } else {
             VkImageMemoryBarrier color_to_clear{};
