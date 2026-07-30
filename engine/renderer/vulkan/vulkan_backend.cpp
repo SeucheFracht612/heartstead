@@ -900,58 +900,52 @@ find_descriptor_binding(const rhi::RenderPipelineLayoutDesc& layout,
     return core::Status::ok();
 }
 
-[[nodiscard]] bool pass_matches(const rhi::RenderPassDesc& pass, std::string_view name,
-                                rhi::RenderPassKind kind,
-                                std::initializer_list<std::string_view> reads,
-                                std::initializer_list<std::string_view> writes, bool presents) {
-    if (pass.name != name || pass.kind != kind || pass.reads.size() != reads.size() ||
-        pass.writes.size() != writes.size() || pass.presents != presents) {
-        return false;
-    }
-    return std::ranges::equal(pass.reads, reads) && std::ranges::equal(pass.writes, writes);
-}
-
+// The backend executes whatever graph the plan describes, so this checks only what the recorder
+// genuinely cannot honour rather than pinning one hardcoded pass layout. It used to require an
+// exact eight-pass colour/depth frame by name, which is why no other graph could run at all.
 [[nodiscard]] core::Status
-validate_vulkan_unified_frame_plan(const rhi::RenderFrameSubmission& frame) {
+validate_vulkan_frame_plan_is_executable(const rhi::RenderFrameSubmission& frame) {
     const auto& plan = frame.plan;
-    if (plan.resources.size() != 2 || plan.passes.size() != 8) {
+    const auto* depth = plan.find_resource(rhi::depth_resource_name);
+    if (depth == nullptr || !rhi::is_depth_format(depth->format)) {
         return core::Status::failure(
             "renderer.vulkan_unsupported_frame_plan",
-            "Vulkan execute_frame supports the renderer unified color/depth frame plan");
+            "Vulkan execute_frame needs the graph to declare a depth resource");
     }
-    const auto& color = plan.resources[0];
-    const auto& depth = plan.resources[1];
-    const auto resources_supported =
-        color.name == "output" && color.lifetime == rhi::RenderResourceLifetime::external &&
-        color.format == rhi::RenderImageFormat::rgba8_unorm &&
-        same_extent(color.extent, plan.extent) && depth.name == "depth" &&
-        depth.lifetime == rhi::RenderResourceLifetime::transient &&
-        depth.format == rhi::RenderImageFormat::d32_sfloat &&
-        same_extent(depth.extent, plan.extent);
-    const auto passes_supported =
-        pass_matches(plan.passes[0], "sky", rhi::RenderPassKind::clear, {}, {"output", "depth"},
-                     false) &&
-        pass_matches(plan.passes[1], "opaque_terrain", rhi::RenderPassKind::world, {"output"},
-                     {"output", "depth"}, false) &&
-        pass_matches(plan.passes[2], "alpha_tested_terrain", rhi::RenderPassKind::world,
-                     {"output", "depth"}, {"output", "depth"}, false) &&
-        pass_matches(plan.passes[3], "rich_static_instances", rhi::RenderPassKind::world,
-                     {"output", "depth"}, {"output", "depth"}, false) &&
-        pass_matches(plan.passes[4], "transparent_terrain", rhi::RenderPassKind::world,
-                     {"output", "depth"}, {"output", "depth"}, false) &&
-        pass_matches(plan.passes[5], "debug", rhi::RenderPassKind::debug, {"output", "depth"},
-                     {"output", "depth"}, false) &&
-        pass_matches(plan.passes[6], "ui", rhi::RenderPassKind::ui, {"output", "depth"},
-                     {"output", "depth"}, false) &&
-        pass_matches(plan.passes[7], "present", rhi::RenderPassKind::present, {"output"}, {}, true);
-    const auto command_passes_supported =
-        std::ranges::all_of(frame.pass_commands, [](const rhi::RenderPassCommands& commands) {
-            return commands.pass_index <= 6;
+    for (const auto& resource : plan.resources) {
+        if (!same_extent(resource.extent, plan.extent)) {
+            return core::Status::failure("renderer.vulkan_unsupported_frame_plan",
+                                         "frame graph resource '" + resource.name +
+                                             "' does not match the frame extent");
+        }
+    }
+    for (const auto& pass : plan.passes) {
+        if (pass.kind == rhi::RenderPassKind::present) {
+            continue;
+        }
+        // One colour attachment per pass: multiple render targets are not wired through the
+        // recorder yet, and silently dropping the extras would be worse than refusing.
+        const auto colour_writes = std::ranges::count_if(
+            pass.writes, [](const std::string& written) {
+                return written != rhi::depth_resource_name;
+            });
+        if (colour_writes > 1) {
+            return core::Status::failure(
+                "renderer.vulkan_unsupported_frame_plan",
+                "frame graph pass '" + pass.name +
+                    "' writes more than one colour attachment, which the Vulkan recorder does not "
+                    "support yet");
+        }
+    }
+    const auto pass_count = plan.passes.size();
+    const auto command_passes_supported = std::ranges::all_of(
+        frame.pass_commands, [pass_count](const rhi::RenderPassCommands& commands) {
+            return commands.pass_index < pass_count;
         });
-    if (!resources_supported || !passes_supported || !command_passes_supported) {
-        return core::Status::failure(
-            "renderer.vulkan_unsupported_frame_plan",
-            "Vulkan execute_frame received operations it cannot execute faithfully");
+    if (!command_passes_supported) {
+        return core::Status::failure("renderer.vulkan_unsupported_frame_plan",
+                                     "frame submission records draws for a pass the plan does not "
+                                     "declare");
     }
     return core::Status::ok();
 }
@@ -1610,7 +1604,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             return core::Result<rhi::RenderFrameStats>::failure(status.error().code,
                                                                 status.error().message);
         }
-        status = validate_vulkan_unified_frame_plan(frame);
+        status = validate_vulkan_frame_plan_is_executable(frame);
         if (!status) {
             return core::Result<rhi::RenderFrameStats>::failure(status.error().code,
                                                                 status.error().message);
@@ -2914,9 +2908,20 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
 
   private:
     [[nodiscard]] core::Status
-    validate_required_descriptors(const VulkanPipelineLayoutResource& layout) const {
+    validate_required_descriptors(
+        const VulkanPipelineLayoutResource& layout,
+        std::span<const rhi::RenderPassSampledResource> graph_supplied = {}) const {
         for (const auto& binding : layout.desc.descriptors) {
             if (!binding.required) {
+                continue;
+            }
+            // Bindings the frame graph fills are resolved from the pool every frame rather than
+            // written once through write_descriptors, so they are satisfied by construction.
+            const auto supplied_by_graph = std::ranges::any_of(
+                graph_supplied, [&binding](const rhi::RenderPassSampledResource& sampled) {
+                    return sampled.binding_name == binding.name;
+                });
+            if (supplied_by_graph) {
                 continue;
             }
             const auto key = layout.desc.material_id.value() + "|" + binding.name;
@@ -4476,9 +4481,12 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         if (frame.pass_commands.empty()) {
             return core::Status::ok();
         }
-        const VulkanGraphicsPipelineResource* reference_pipeline = nullptr;
         for (const auto& pass_commands : frame.pass_commands) {
             const auto& pass = frame.plan.passes[pass_commands.pass_index];
+            // Compatibility is a per-pass property, not a frame-wide one. Each pass binds its own
+            // attachments, so a post-process pass drawing to the display image alongside world
+            // passes drawing to an HDR target is correct and must not be rejected.
+            const VulkanGraphicsPipelineResource* reference_pipeline = nullptr;
             for (const auto& draw : pass_commands.draws) {
                 const auto pipeline = graphics_pipelines_.find(draw.pipeline.value);
                 if (pipeline == graphics_pipelines_.end()) {
@@ -4496,35 +4504,44 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                         "draw passes in one Vulkan frame require compatible color/depth targets");
                 }
 
-                const auto vertex = buffer_resources_.find(draw.vertex_buffer.value);
-                if (vertex == buffer_resources_.end()) {
-                    return core::Status::failure(
-                        "renderer.unknown_vertex_buffer",
-                        "render draw references a vertex buffer not owned by this Vulkan device");
-                }
-                if (vertex->second.desc.usage != rhi::RenderBufferUsage::vertex) {
-                    return core::Status::failure("renderer.invalid_vertex_buffer_usage",
-                                                 "render draw vertex buffer has non-vertex usage");
+                // A non-indexed draw binds neither buffer; a fullscreen pass has no geometry.
+                if (draw.vertex_buffer.is_valid()) {
+                    const auto vertex = buffer_resources_.find(draw.vertex_buffer.value);
+                    if (vertex == buffer_resources_.end()) {
+                        return core::Status::failure(
+                            "renderer.unknown_vertex_buffer",
+                            "render draw references a vertex buffer not owned by this Vulkan "
+                            "device");
+                    }
+                    if (vertex->second.desc.usage != rhi::RenderBufferUsage::vertex) {
+                        return core::Status::failure(
+                            "renderer.invalid_vertex_buffer_usage",
+                            "render draw vertex buffer has non-vertex usage");
+                    }
                 }
 
-                const auto index = buffer_resources_.find(draw.index_buffer.value);
-                if (index == buffer_resources_.end()) {
-                    return core::Status::failure(
-                        "renderer.unknown_index_buffer",
-                        "render draw references an index buffer not owned by this Vulkan device");
-                }
-                if (index->second.desc.usage != rhi::RenderBufferUsage::index) {
-                    return core::Status::failure("renderer.invalid_index_buffer_usage",
-                                                 "render draw index buffer has non-index usage");
-                }
-                const auto available_indices =
-                    index->second.byte_size / rhi::render_index_type_size(draw.index_type);
-                const auto end_index = static_cast<std::size_t>(draw.first_index) +
-                                       static_cast<std::size_t>(draw.index_count);
-                if (end_index > available_indices) {
-                    return core::Status::failure(
-                        "renderer.draw_index_range_out_of_bounds",
-                        "render draw index range exceeds its index buffer");
+                if (draw.index_buffer.is_valid()) {
+                    const auto index = buffer_resources_.find(draw.index_buffer.value);
+                    if (index == buffer_resources_.end()) {
+                        return core::Status::failure(
+                            "renderer.unknown_index_buffer",
+                            "render draw references an index buffer not owned by this Vulkan "
+                            "device");
+                    }
+                    if (index->second.desc.usage != rhi::RenderBufferUsage::index) {
+                        return core::Status::failure("renderer.invalid_index_buffer_usage",
+                                                     "render draw index buffer has non-index "
+                                                     "usage");
+                    }
+                    const auto available_indices =
+                        index->second.byte_size / rhi::render_index_type_size(draw.index_type);
+                    const auto end_index = static_cast<std::size_t>(draw.first_index) +
+                                           static_cast<std::size_t>(draw.index_count);
+                    if (end_index > available_indices) {
+                        return core::Status::failure(
+                            "renderer.draw_index_range_out_of_bounds",
+                            "render draw index range exceeds its index buffer");
+                    }
                 }
 
                 const auto layout =
@@ -4534,21 +4551,26 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                         "renderer.unbound_graphics_pipeline_layout",
                         "render draw graphics pipeline layout is no longer bound");
                 }
-                const auto descriptor_status = validate_required_descriptors(layout->second);
+                const auto descriptor_status =
+                    validate_required_descriptors(layout->second, pass.sampled_resources);
                 if (!descriptor_status) {
                     return descriptor_status;
                 }
-                const auto has_chunk_constants = std::ranges::any_of(
-                    layout->second.desc.push_constant_ranges,
-                    [](const rhi::RenderPushConstantRange& range) {
-                        return rhi::any(range.stages & rhi::RenderShaderStageFlags::vertex) &&
-                               range.byte_offset == 0 &&
-                               range.byte_size >= sizeof(rhi::ChunkPushConstants);
-                    });
-                if (!has_chunk_constants) {
-                    return core::Status::failure(
-                        "renderer.missing_chunk_push_constants",
-                        "render draw pipeline layout must expose chunk push constants");
+                // Post-process passes carry their own constants; only scene draws consume the
+                // chunk block the recorder pushes for them.
+                if (pass.kind != rhi::RenderPassKind::post_process) {
+                    const auto has_chunk_constants = std::ranges::any_of(
+                        layout->second.desc.push_constant_ranges,
+                        [](const rhi::RenderPushConstantRange& range) {
+                            return rhi::any(range.stages & rhi::RenderShaderStageFlags::vertex) &&
+                                   range.byte_offset == 0 &&
+                                   range.byte_size >= sizeof(rhi::ChunkPushConstants);
+                        });
+                    if (!has_chunk_constants) {
+                        return core::Status::failure(
+                            "renderer.missing_chunk_push_constants",
+                            "render draw pipeline layout must expose chunk push constants");
+                    }
                 }
             }
 
@@ -4596,9 +4618,12 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                                                  "' which has no backing image");
             }
             if (image->layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+                // TOP_OF_PIPE supports no access flags, so an untouched image must declare none.
+                const auto undefined = image->layout == VK_IMAGE_LAYOUT_UNDEFINED;
                 VkImageMemoryBarrier to_read{};
                 to_read.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                to_read.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                to_read.srcAccessMask =
+                    undefined ? 0 : static_cast<VkAccessFlags>(VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
                 to_read.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
                 to_read.oldLayout = image->layout;
                 to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -4610,9 +4635,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 to_read.subresourceRange.levelCount = 1;
                 to_read.subresourceRange.layerCount = 1;
                 vkCmdPipelineBarrier(commands,
-                                     image->layout == VK_IMAGE_LAYOUT_UNDEFINED
-                                         ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-                                         : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                     undefined ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                                               : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
                                      nullptr, 1, &to_read);
                 image->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -4907,6 +4931,12 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                                      : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0,
                                  nullptr, 1, &color_to_attachment);
+            // The pool borrows this image, so its recorded layout has to follow the transition
+            // just issued or the per-pass transition below would use a stale oldLayout.
+            if (auto* output_image = frame_context.resources.find(rhi::output_resource_name);
+                output_image != nullptr) {
+                output_image->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            }
 
             if (first_pipeline->uses_depth) {
                 VkImageSubresourceRange depth_range{};
@@ -4961,8 +4991,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                     });
                 return found == frame.pass_commands.end() ? nullptr : &*found;
             };
-            const auto record_draws = [&](std::string_view pass_name) {
-                const auto* commands = find_commands(pass_name);
+            const auto record_draws = [&](const rhi::RenderPassDesc& recorded_pass) {
+                const auto* commands = find_commands(recorded_pass.name);
                 if (commands == nullptr) {
                     return;
                 }
@@ -5009,21 +5039,31 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                         draw_scissor.extent = {target_extent.width, target_extent.height};
                     }
                     vkCmdSetScissor(frame_commands, 0, 1, &draw_scissor);
-                    const rhi::ChunkPushConstants constants{
-                        frame.camera.view_projection,
-                        {draw.camera_relative_origin.x, draw.camera_relative_origin.y,
-                         draw.camera_relative_origin.z,
-                         std::bit_cast<float>(draw.texture_variation_seed)},
-                        {frame.environment.sun_direction.x, frame.environment.sun_direction.y,
-                         frame.environment.sun_direction.z, frame.environment.sun_intensity},
-                        {frame.environment.ambient_color.x, frame.environment.ambient_color.y,
-                         frame.environment.ambient_color.z, frame.environment.fog_start},
-                        {frame.environment.fog_color.x, frame.environment.fog_color.y,
-                         frame.environment.fog_color.z, frame.environment.fog_end},
-                    };
-                    vkCmdPushConstants(frame_commands, layout.pipeline_layout,
-                                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                                       sizeof(constants), &constants);
+                    // A post-process pass resolves an image rather than shading the world, so it
+                    // takes exposure and tone curve constants instead of the chunk block.
+                    if (recorded_pass.kind == rhi::RenderPassKind::post_process) {
+                        const auto constants = rhi::make_tone_map_push_constants(frame.exposure);
+                        vkCmdPushConstants(frame_commands, layout.pipeline_layout,
+                                           VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants),
+                                           &constants);
+                    } else {
+                        const rhi::ChunkPushConstants constants{
+                            frame.camera.view_projection,
+                            {draw.camera_relative_origin.x, draw.camera_relative_origin.y,
+                             draw.camera_relative_origin.z,
+                             std::bit_cast<float>(draw.texture_variation_seed)},
+                            {frame.environment.sun_direction.x, frame.environment.sun_direction.y,
+                             frame.environment.sun_direction.z, frame.environment.sun_intensity},
+                            {frame.environment.ambient_color.x, frame.environment.ambient_color.y,
+                             frame.environment.ambient_color.z, frame.environment.fog_start},
+                            {frame.environment.fog_color.x, frame.environment.fog_color.y,
+                             frame.environment.fog_color.z, frame.environment.fog_end},
+                        };
+                        vkCmdPushConstants(frame_commands, layout.pipeline_layout,
+                                           VK_SHADER_STAGE_VERTEX_BIT |
+                                               VK_SHADER_STAGE_FRAGMENT_BIT,
+                                           0, sizeof(constants), &constants);
+                    }
                     if (indexed) {
                         vkCmdDrawIndexed(frame_commands, draw.index_count, draw.instance_count,
                                          draw.first_index, draw.vertex_offset, draw.first_instance);
@@ -5170,6 +5210,30 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                     }
                 }
 
+                // A transient graph target starts each frame undefined, and a target an earlier
+                // pass sampled is left in shader-read layout, so move it back before writing.
+                if (colour->layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+                    const auto undefined = colour->layout == VK_IMAGE_LAYOUT_UNDEFINED;
+                    VkImageMemoryBarrier to_attachment{};
+                    to_attachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    to_attachment.srcAccessMask =
+                        undefined ? 0 : static_cast<VkAccessFlags>(VK_ACCESS_SHADER_READ_BIT);
+                    to_attachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                    to_attachment.oldLayout = colour->layout;
+                    to_attachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                    to_attachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    to_attachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    to_attachment.image = colour->image;
+                    to_attachment.subresourceRange = color_range;
+                    vkCmdPipelineBarrier(frame_commands,
+                                         undefined ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                                                   : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0,
+                                         nullptr, 0, nullptr, 1, &to_attachment);
+                    colour->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                    ++submitted_barrier_count;
+                }
+
                 VkRenderingAttachmentInfo colour_attachment{};
                 colour_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
                 colour_attachment.imageView = colour->view;
@@ -5212,7 +5276,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
                 }
                 vkCmdBeginRendering(frame_commands, &rendering_info);
-                record_draws(pass.name);
+                record_draws(pass);
                 vkCmdEndRendering(frame_commands);
                 if (presentation.timed) {
                     write_timestamp(frame_commands, frame_index, presentation.end,

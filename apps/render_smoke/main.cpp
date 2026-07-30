@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <string_view>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -169,6 +171,12 @@ int main(int argc, char** argv) {
         renderer_init.ui_fragment_spirv = std::move(ui_fragment_spirv).value();
         renderer_init.tone_map_vertex_spirv = std::move(tone_map_vertex_spirv).value();
         renderer_init.tone_map_fragment_spirv = std::move(tone_map_fragment_spirv).value();
+        // Opt in to the linear HDR graph for testing without changing anyone's default.
+        if (const auto* pipeline_choice = std::getenv("HEARTSTEAD_COLOR_PIPELINE");
+            pipeline_choice != nullptr && std::string_view{pipeline_choice} == "linear_hdr") {
+            renderer_init.color_pipeline = renderer::FrameColorPipeline::linear_hdr;
+            core::log(core::LogLevel::info, "Colour pipeline: linear_hdr");
+        }
         renderer_init.chunk_config.max_chunks_meshed_per_frame = 2;
         renderer_init.chunk_config.max_bytes_uploaded_per_frame = 4 * 1024 * 1024;
         renderer::Renderer retained_renderer;

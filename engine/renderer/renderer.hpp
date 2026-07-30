@@ -85,6 +85,8 @@ struct RendererInitDesc {
     SceneRenderConfig scene_render_config{};
     DebugRendererConfig debug_renderer_config{};
     UiRendererConfig ui_renderer_config{};
+    // Selects how scene colour reaches the display. Choosing linear_hdr requires tone map SPIR-V.
+    FrameColorPipeline color_pipeline = FrameColorPipeline::legacy_ldr;
     rhi::ClearColor clear_color{0.055F, 0.09F, 0.14F, 1.0F};
     rhi::RenderEnvironmentData environment{};
     bool development_shader_hot_reload = false;
@@ -242,6 +244,9 @@ class Renderer {
     GraphicsPipelineKey ui_pipeline_key_{};
     // Invalid when no tone map SPIR-V was supplied, which is also what makes the linear HDR graph
     // unavailable.
+    // Held here rather than read back from the frame builder: pipelines are created before the
+    // frame builder exists, and they must be built against the format the chosen graph uses.
+    FrameColorPipeline color_pipeline_ = FrameColorPipeline::legacy_ldr;
     rhi::RenderResourceHandle tone_map_pipeline_{};
     GraphicsPipelineKey tone_map_pipeline_key_{};
     ShaderProgramHandle terrain_shader_program_;

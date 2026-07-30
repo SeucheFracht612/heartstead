@@ -445,6 +445,9 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         return core::Status::failure(error.code, error.message);
     }
     fallback_material_ = created_fallback_material.value();
+    // Must be settled before any pipeline is created: pipelines bake in the colour format of the
+    // attachment the chosen graph will bind them to.
+    color_pipeline_ = desc.color_pipeline;
     auto pipeline_status = create_sky_pipeline(desc.sky_vertex_spirv, desc.sky_fragment_spirv);
     if (!pipeline_status) {
         const auto error = pipeline_status.error();
@@ -490,9 +493,7 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
             return core::Status::failure(error.code, error.message);
         }
     }
-    if (frame_builder_ != nullptr &&
-        frame_builder_->color_pipeline() == FrameColorPipeline::linear_hdr &&
-        !tone_map_pipeline_.is_valid()) {
+    if (color_pipeline_ == FrameColorPipeline::linear_hdr && !tone_map_pipeline_.is_valid()) {
         (void)shutdown();
         return core::Status::failure(
             "renderer.tone_map_shaders_required",
@@ -560,6 +561,8 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         return core::Status::failure(error.code, error.message);
     }
     frame_builder_ = std::make_unique<FrameBuilder>(device_->current_extent(), desc.clear_color);
+    frame_builder_->set_color_pipeline(color_pipeline_);
+    frame_builder_->set_tone_map_pipeline(tone_map_pipeline_);
     environment_ = desc.environment;
     return core::Status::ok();
 }
@@ -1612,8 +1615,7 @@ void Renderer::update_backend_stats(const rhi::RenderFrameStats& frame) noexcept
 }
 
 rhi::RenderImageFormat Renderer::scene_color_format() const noexcept {
-    return frame_builder_ != nullptr &&
-                   frame_builder_->color_pipeline() == FrameColorPipeline::linear_hdr
+    return color_pipeline_ == FrameColorPipeline::linear_hdr
                ? rhi::RenderImageFormat::rgba16_sfloat
                : rhi::RenderImageFormat::rgba8_unorm;
 }
@@ -2420,6 +2422,9 @@ core::Status Renderer::create_tone_map_pipeline(std::span<const std::uint32_t> v
         return core::Status::failure(created.error().code, created.error().message);
     }
     tone_map_pipeline_ = created.value();
+    if (frame_builder_ != nullptr) {
+        frame_builder_->set_tone_map_pipeline(tone_map_pipeline_);
+    }
     // No descriptor write here on purpose: the scene_hdr binding is resolved by the backend from
     // the frame graph, every frame.
     return core::Status::ok();

@@ -41,6 +41,14 @@ rhi::RenderExposureSettings FrameBuilder::exposure() const noexcept {
     return exposure_;
 }
 
+void FrameBuilder::set_tone_map_pipeline(rhi::RenderResourceHandle pipeline) noexcept {
+    tone_map_pipeline_ = pipeline;
+}
+
+rhi::RenderResourceHandle FrameBuilder::tone_map_pipeline() const noexcept {
+    return tone_map_pipeline_;
+}
+
 core::Result<rhi::RenderFramePlan> FrameBuilder::build_plan() const {
     return color_pipeline_ == FrameColorPipeline::linear_hdr ? build_linear_hdr_plan()
                                                             : build_legacy_ldr_plan();
@@ -258,8 +266,20 @@ FrameBuilder::build(const RenderCamera& camera, RenderCommandLists commands,
     append(3, commands.rich_instance_draws);
     append(4, commands.transparent_terrain_draws);
     append(5, commands.debug_draws);
-    // The tone mapping pass owns index 6 in the HDR graph and records no external draws, so UI
-    // shifts one slot. The legacy path keeps UI at index 6.
+    // The tone mapping pass takes no caller-supplied geometry: it is a fullscreen triangle the
+    // graph owns, generated in the vertex shader, so the draw is synthesized here rather than
+    // being something every caller has to remember to submit.
+    std::vector<rhi::RenderDrawCommand> tone_map_draws;
+    if (color_pipeline_ == FrameColorPipeline::linear_hdr && tone_map_pipeline_.is_valid()) {
+        rhi::RenderDrawCommand tone_map_draw;
+        tone_map_draw.pipeline = tone_map_pipeline_;
+        tone_map_draw.vertex_count = 3;
+        tone_map_draw.instance_count = 1;
+        tone_map_draws.push_back(tone_map_draw);
+        append(hdr_pass_index::tone_map, tone_map_draws);
+    }
+    // UI shifts one slot in the HDR graph because tone mapping owns index 6. The legacy path keeps
+    // UI at index 6.
     append(color_pipeline_ == FrameColorPipeline::linear_hdr ? hdr_pass_index::ui : 6,
            commands.ui_draws);
     auto status = rhi::validate_render_frame_submission_shape(result);

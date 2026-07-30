@@ -49,6 +49,10 @@ class FrameBuilder {
     [[nodiscard]] FrameColorPipeline color_pipeline() const noexcept;
     [[nodiscard]] core::Status set_exposure(rhi::RenderExposureSettings exposure);
     [[nodiscard]] rhi::RenderExposureSettings exposure() const noexcept;
+    // Pipeline the synthesized fullscreen tone map draw uses. Without it the linear HDR graph
+    // builds a tone_map pass that records nothing, so the renderer supplies this at startup.
+    void set_tone_map_pipeline(rhi::RenderResourceHandle pipeline) noexcept;
+    [[nodiscard]] rhi::RenderResourceHandle tone_map_pipeline() const noexcept;
 
     [[nodiscard]] core::Result<rhi::RenderFramePlan> build_plan() const;
     [[nodiscard]] core::Result<rhi::RenderFrameSubmission> build(const RenderCamera& camera,
@@ -65,6 +69,7 @@ class FrameBuilder {
     rhi::ClearColor clear_color_{};
     FrameColorPipeline color_pipeline_ = FrameColorPipeline::legacy_ldr;
     rhi::RenderExposureSettings exposure_{};
+    rhi::RenderResourceHandle tone_map_pipeline_{};
 };
 
 } // namespace heartstead::renderer
