@@ -184,9 +184,14 @@ int main(int argc, char** argv) {
                 : name == "pbr_neutral" ? renderer::rhi::RenderToneMapping::khronos_pbr_neutral
                                         : renderer::rhi::RenderToneMapping::aces_approx;
         }
+        // Log the resolved scale, not just the stops: a brightness that disagrees with this
+        // number means the constants are not reaching the resolve pass.
+        const auto exposure_constants =
+            renderer::rhi::make_tone_map_push_constants(renderer_init.exposure);
         core::log(core::LogLevel::info,
                   "Exposure: " + std::to_string(renderer_init.exposure.exposure_stops) +
-                      " stops, tone map: " +
+                      " stops (scale x" + std::to_string(exposure_constants.exposure_scale) +
+                      "), tone map: " +
                       std::string(renderer::rhi::render_tone_mapping_name(
                           renderer_init.exposure.tone_mapping)));
         renderer_init.chunk_config.max_chunks_meshed_per_frame = 2;
