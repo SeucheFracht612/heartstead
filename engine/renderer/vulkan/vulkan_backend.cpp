@@ -1461,6 +1461,159 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         return core::Status::ok();
     }
 
+    // Copies the image the last frame resolved into back to the CPU. Idles the device and uses a
+    // throwaway staging buffer, so this is a test and tooling facility, not a frame operation.
+    [[nodiscard]] core::Result<std::vector<std::uint8_t>> read_back_output_image() override {
+        using Result = core::Result<std::vector<std::uint8_t>>;
+        if (frame_contexts_.empty()) {
+            return Result::failure("renderer.readback_unavailable",
+                                   "no frame context has rendered an image to read back");
+        }
+        auto idle = wait_idle();
+        if (!idle) {
+            return Result::failure(idle.error().code, idle.error().message);
+        }
+        // next_frame_context_ has already advanced past the frame that was just submitted.
+        const auto completed =
+            (next_frame_context_ + frame_contexts_.size() - 1) % frame_contexts_.size();
+        const auto& target = frame_contexts_[completed].target;
+        if (target.color_image == VK_NULL_HANDLE || !target.extent.is_valid()) {
+            return Result::failure("renderer.readback_unavailable",
+                                   "the last frame context holds no colour image");
+        }
+        const auto extent = target.extent;
+        const auto byte_size =
+            static_cast<VkDeviceSize>(extent.width) * extent.height * 4U;
+
+        VulkanBufferResource staging;
+        staging.byte_size = static_cast<std::size_t>(byte_size);
+        VkBufferCreateInfo buffer_info{};
+        buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        buffer_info.size = byte_size;
+        buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        auto result = vkCreateBuffer(device_, &buffer_info, nullptr, &staging.buffer);
+        if (result != VK_SUCCESS) {
+            return Result::failure("renderer.vulkan_buffer_failed",
+                                   "failed to create readback buffer: " +
+                                       std::string(vk_result_name(result)));
+        }
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device_, staging.buffer, &requirements);
+        auto memory_type = find_required_memory_type(
+            physical_device_, requirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            "image readback");
+        if (!memory_type) {
+            destroy_buffer_resource(staging);
+            return Result::failure(memory_type.error().code, memory_type.error().message);
+        }
+        VkMemoryAllocateInfo allocation_info{};
+        allocation_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocation_info.allocationSize = requirements.size;
+        allocation_info.memoryTypeIndex = memory_type.value();
+        result = vkAllocateMemory(device_, &allocation_info, nullptr, &staging.memory);
+        if (result == VK_SUCCESS) {
+            result = vkBindBufferMemory(device_, staging.buffer, staging.memory, 0);
+        }
+        if (result != VK_SUCCESS) {
+            destroy_buffer_resource(staging);
+            return Result::failure("renderer.vulkan_buffer_memory_failed",
+                                   "failed to back readback buffer: " +
+                                       std::string(vk_result_name(result)));
+        }
+
+        const auto record = [&]() -> core::Status {
+            auto status = vkResetFences(device_, 1, &fence_);
+            if (status == VK_SUCCESS) {
+                status = vkResetCommandBuffer(command_buffer_, 0);
+            }
+            if (status != VK_SUCCESS) {
+                return core::Status::failure("renderer.vulkan_reset_failed",
+                                             "failed to reset readback command state: " +
+                                                 std::string(vk_result_name(status)));
+            }
+            VkCommandBufferBeginInfo begin_info{};
+            begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            status = vkBeginCommandBuffer(command_buffer_, &begin_info);
+            if (status != VK_SUCCESS) {
+                return core::Status::failure("renderer.vulkan_begin_command_buffer_failed",
+                                             "failed to begin readback command buffer: " +
+                                                 std::string(vk_result_name(status)));
+            }
+            // The frame leaves the image in transfer-source layout after its blit to the
+            // swapchain, but an offscreen frame may not have transitioned it at all.
+            VkImageMemoryBarrier to_source{};
+            to_source.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            to_source.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+            to_source.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            to_source.oldLayout = target.color_layout;
+            to_source.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            to_source.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            to_source.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            to_source.image = target.color_image;
+            to_source.subresourceRange =
+                VkImageSubresourceRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdPipelineBarrier(command_buffer_, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                                 &to_source);
+
+            VkBufferImageCopy copy{};
+            copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            copy.imageSubresource.layerCount = 1;
+            copy.imageExtent = VkExtent3D{extent.width, extent.height, 1};
+            vkCmdCopyImageToBuffer(command_buffer_, target.color_image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging.buffer, 1, &copy);
+
+            status = vkEndCommandBuffer(command_buffer_);
+            if (status != VK_SUCCESS) {
+                return core::Status::failure("renderer.vulkan_end_command_buffer_failed",
+                                             "failed to end readback command buffer: " +
+                                                 std::string(vk_result_name(status)));
+            }
+            VkSubmitInfo submit_info{};
+            submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit_info.commandBufferCount = 1;
+            submit_info.pCommandBuffers = &command_buffer_;
+            status = vkQueueSubmit(queue_, 1, &submit_info, fence_);
+            if (status != VK_SUCCESS) {
+                return core::Status::failure("renderer.vulkan_queue_submit_failed",
+                                             "failed to submit readback: " +
+                                                 std::string(vk_result_name(status)));
+            }
+            status = vkWaitForFences(device_, 1, &fence_, VK_TRUE,
+                                     std::numeric_limits<std::uint64_t>::max());
+            if (status != VK_SUCCESS) {
+                return core::Status::failure("renderer.vulkan_wait_fence_failed",
+                                             "failed to wait for readback: " +
+                                                 std::string(vk_result_name(status)));
+            }
+            return core::Status::ok();
+        };
+
+        const auto recorded = record();
+        if (!recorded) {
+            destroy_buffer_resource(staging);
+            return Result::failure(recorded.error().code, recorded.error().message);
+        }
+
+        void* mapped = nullptr;
+        result = vkMapMemory(device_, staging.memory, 0, byte_size, 0, &mapped);
+        if (result != VK_SUCCESS) {
+            destroy_buffer_resource(staging);
+            return Result::failure("renderer.vulkan_map_memory_failed",
+                                   "failed to map readback buffer: " +
+                                       std::string(vk_result_name(result)));
+        }
+        std::vector<std::uint8_t> pixels(static_cast<std::size_t>(byte_size));
+        std::memcpy(pixels.data(), mapped, pixels.size());
+        vkUnmapMemory(device_, staging.memory);
+        destroy_buffer_resource(staging);
+        // The image the frame renders into is R8G8B8A8_UNORM, so this is already display-ready.
+        return Result::success(std::move(pixels));
+    }
+
     [[nodiscard]] core::Status resize(rhi::RenderExtent extent) override {
         auto status = rhi::validate_render_extent(extent);
         if (!status) {

@@ -127,6 +127,12 @@ class HeadlessRenderDevice final : public IRenderDevice {
         return execute_frame_plan(plan);
     }
 
+    [[nodiscard]] core::Result<std::vector<std::uint8_t>> read_back_output_image() override {
+        return core::Result<std::vector<std::uint8_t>>::failure(
+            "renderer.readback_unsupported",
+            "the headless device simulates frames and produces no pixels to read back");
+    }
+
     [[nodiscard]] core::Result<RenderFrameStats>
     execute_frame_plan(const RenderFramePlan& plan) override {
         return execute_frame(RenderFrameSubmission{plan, {}, {}, {}, {}});
@@ -917,6 +923,11 @@ class OwnerThreadRenderDevice final : public IRenderDevice {
 
     [[nodiscard]] core::Status resize(RenderExtent extent) override {
         return invoke_status([&] { return implementation_->resize(extent); });
+    }
+
+    [[nodiscard]] core::Result<std::vector<std::uint8_t>> read_back_output_image() override {
+        return invoke<std::vector<std::uint8_t>>(
+            [&] { return implementation_->read_back_output_image(); });
     }
 
     [[nodiscard]] core::Result<RenderFrameStats> render_frame(RenderFrameDesc desc) override {

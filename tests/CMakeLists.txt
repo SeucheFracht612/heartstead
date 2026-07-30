@@ -28,6 +28,16 @@ heartstead_configure_test_target(heartstead_renderer_frame_graph_tests)
 
 heartstead_register_unit_test(heartstead_renderer_frame_graph_tests)
 
+add_executable(heartstead_renderer_tone_mapping_tests renderer_tone_mapping_tests.cpp)
+target_link_libraries(heartstead_renderer_tone_mapping_tests PRIVATE Heartstead::Engine)
+target_compile_definitions(
+  heartstead_renderer_tone_mapping_tests
+  PRIVATE HEARTSTEAD_BUILTIN_SHADER_DIR="${PROJECT_SOURCE_DIR}/engine/renderer/shaders/builtin"
+)
+heartstead_configure_test_target(heartstead_renderer_tone_mapping_tests)
+
+heartstead_register_unit_test(heartstead_renderer_tone_mapping_tests)
+
 add_executable(heartstead_game_runtime_tests game_runtime_tests.cpp)
 target_link_libraries(heartstead_game_runtime_tests PRIVATE Heartstead::GameRuntime)
 target_compile_definitions(
