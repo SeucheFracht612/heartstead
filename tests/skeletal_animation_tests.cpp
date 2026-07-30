@@ -234,12 +234,35 @@ int main() {
     assert(rigid_capabilities.has_animated_nodes);
     auto rigid_pose = animation::sample_animation_clip(rigid_model, {0, 0.5F, false});
     assert(rigid_pose);
-    auto rigid_matrices =
-        animation::evaluate_model_node_matrices(rigid_model, rigid_pose.value());
+    auto rigid_matrices = animation::evaluate_model_node_matrices(rigid_model, rigid_pose.value());
     assert(rigid_matrices);
-    const auto rigid_origin =
-        rigid_matrices.value()[1] * math::Vec4f{0.0F, 0.0F, 0.0F, 1.0F};
+    const auto rigid_origin = rigid_matrices.value()[1] * math::Vec4f{0.0F, 0.0F, 0.0F, 1.0F};
     assert(nearly_equal(rigid_origin.y, 1.0F));
+
+    auto root_motion_model = rigid_model;
+    root_motion_model.nodes = {
+        {"scene", assets::no_model_index, {}},
+        {"root_motion", 0, {}},
+        {"mesh", 1, {}},
+    };
+    root_motion_model.primitives[0].node = 2;
+    for (auto& clip : root_motion_model.animations) {
+        for (auto& channel : clip.channels) {
+            channel.node = 1;
+        }
+    }
+    root_motion_model.animations[0].channels[0].values[1] = {4.0F, 2.0F, 6.0F, 0.0F};
+    auto root_motion_pose = animation::sample_animation_clip(root_motion_model, {0, 0.5F, false});
+    assert(root_motion_pose);
+    assert(nearly_equal(root_motion_pose.value().local_transforms[1].translation.x, 2.0F));
+    assert(nearly_equal(root_motion_pose.value().local_transforms[1].translation.y, 1.0F));
+    assert(nearly_equal(root_motion_pose.value().local_transforms[1].translation.z, 3.0F));
+    assert(animation::apply_root_motion_policy(
+        root_motion_model, root_motion_pose.value(),
+        animation::RootMotionPolicy::ignore_horizontal_translation));
+    assert(nearly_equal(root_motion_pose.value().local_transforms[1].translation.x, 0.0F));
+    assert(nearly_equal(root_motion_pose.value().local_transforms[1].translation.y, 1.0F));
+    assert(nearly_equal(root_motion_pose.value().local_transforms[1].translation.z, 0.0F));
 
     return 0;
 }

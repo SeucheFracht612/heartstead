@@ -46,9 +46,10 @@ void add_stats(AnimatedModelPresentationStats& total,
     total.removed_entities += value.removed_entities;
 }
 
-[[nodiscard]] PresentationAssetLoadDiagnostic make_load_diagnostic(
-    const assets::CookedAssetStore& store, std::string logical_id,
-    std::string failing_dependency, std::string fallback_used, const core::Error& error) {
+[[nodiscard]] PresentationAssetLoadDiagnostic
+make_load_diagnostic(const assets::CookedAssetStore& store, std::string logical_id,
+                     std::string failing_dependency, std::string fallback_used,
+                     const core::Error& error) {
     PresentationAssetLoadDiagnostic diagnostic;
     diagnostic.logical_id = std::move(logical_id);
     diagnostic.failing_dependency = std::move(failing_dependency);
@@ -70,9 +71,9 @@ void log_load_diagnostic(const PresentationAssetLoadDiagnostic& diagnostic) {
     core::log(core::LogLevel::warning,
               "model_presentation.asset_fallback: logical_id=" + diagnostic.logical_id +
                   " source=" + diagnostic.source_path + " cooked=" + diagnostic.cooked_path +
-                  " dependency=" + diagnostic.failing_dependency + " error=" +
-                  diagnostic.error_code + " fallback=" + diagnostic.fallback_used + ": " +
-                  diagnostic.message);
+                  " dependency=" + diagnostic.failing_dependency +
+                  " error=" + diagnostic.error_code + " fallback=" + diagnostic.fallback_used +
+                  ": " + diagnostic.message);
 }
 
 } // namespace
@@ -106,16 +107,15 @@ core::Status ModelPresentationSystem::initialize(
     auto fallback_model_asset =
         load_production_model(store.value(), fallback_definition->model_asset);
     if (!fallback_model_asset) {
-        return core::Status::failure(
-            fallback_model_asset.error().code,
-            "fallback visual model '" + fallback_definition->model_asset +
-                "' could not be loaded from the cooked store: " +
-                fallback_model_asset.error().message);
+        return core::Status::failure(fallback_model_asset.error().code,
+                                     "fallback visual model '" + fallback_definition->model_asset +
+                                         "' could not be loaded from the cooked store: " +
+                                         fallback_model_asset.error().message);
     }
 
     std::unordered_map<std::string, std::shared_ptr<const assets::ModelAsset>> model_cache;
-    auto fallback_model = std::make_shared<assets::ModelAsset>(
-        std::move(fallback_model_asset).value());
+    auto fallback_model =
+        std::make_shared<assets::ModelAsset>(std::move(fallback_model_asset).value());
     model_cache.emplace(fallback_definition->model_asset, fallback_model);
     presentations_.reserve(visual_definitions.size());
     const auto rollback = [&]() {
@@ -138,11 +138,11 @@ core::Status ModelPresentationSystem::initialize(
                 using_model_fallback = true;
                 cached = model_cache.find(fallback_definition->model_asset);
             } else {
-                cached = model_cache
-                             .emplace(definition.model_asset,
-                                      std::make_shared<assets::ModelAsset>(
-                                          std::move(model).value()))
-                             .first;
+                cached =
+                    model_cache
+                        .emplace(definition.model_asset,
+                                 std::make_shared<assets::ModelAsset>(std::move(model).value()))
+                        .first;
             }
         }
         const auto& model = *cached->second;
@@ -153,16 +153,19 @@ core::Status ModelPresentationSystem::initialize(
         presentation_config.visual_prototype = definition.entity_prototype;
         presentation_config.model = cached->second;
         presentation_config.animated_bounds = model.bounds.expanded(definition.bounds_padding);
+        presentation_config.bounds_padding = definition.bounds_padding;
         presentation_config.flags = definition.cast_shadow
                                         ? renderer::RenderObjectFlags::cast_shadow
                                         : renderer::RenderObjectFlags::none;
-        const auto has_skinned_primitives =
-            std::ranges::any_of(model.primitives, [](const assets::ModelPrimitive& primitive) {
-                return primitive.skin != assets::no_model_index;
-            });
-        if (has_skinned_primitives) {
-            const auto* fallback_animation =
-                definition.animation(config.fallback_animation_role);
+        if (!definition.animation_clips.empty() && !using_model_fallback) {
+            if (!assets::model_capabilities(model).has_animation_clips) {
+                rollback();
+                return core::Status::failure(
+                    "model_presentation.model_has_no_animation_clips",
+                    "visual maps animations but its model has no animation clips: " +
+                        definition.id.value());
+            }
+            const auto* fallback_animation = definition.animation(config.fallback_animation_role);
             auto fallback_clip =
                 fallback_animation == nullptr
                     ? core::Result<std::uint32_t>::failure(
@@ -173,22 +176,21 @@ core::Status ModelPresentationSystem::initialize(
                 rollback();
                 return core::Status::failure(
                     fallback_clip.error().code,
-                    "skinned visual '" + definition.id.value() +
+                    "animated visual '" + definition.id.value() +
                         "' cannot resolve its named fallback animation role '" +
                         config.fallback_animation_role + "': " + fallback_clip.error().message);
             }
-            constexpr std::array<std::string_view, 6> locomotion_roles{
-                "idle", "walk", "run", "jump", "fall", "swim"};
+            constexpr std::array<std::string_view, 6> locomotion_roles{"idle", "walk", "run",
+                                                                       "jump", "fall", "swim"};
             std::array<std::uint32_t, locomotion_roles.size()> resolved{};
             for (std::size_t index = 0; index < locomotion_roles.size(); ++index) {
                 const auto role = locomotion_roles[index];
                 const auto* mapped = definition.animation(role);
-                auto clip =
-                    mapped == nullptr
-                        ? core::Result<std::uint32_t>::failure(
-                              "model_presentation.missing_locomotion_mapping",
-                              "visual does not map locomotion role " + std::string(role))
-                        : assets::resolve_model_animation_clip(model, *mapped);
+                auto clip = mapped == nullptr
+                                ? core::Result<std::uint32_t>::failure(
+                                      "model_presentation.missing_locomotion_mapping",
+                                      "visual does not map locomotion role " + std::string(role))
+                                : assets::resolve_model_animation_clip(model, *mapped);
                 if (clip) {
                     resolved[index] = clip.value();
                     continue;
@@ -216,11 +218,6 @@ core::Status ModelPresentationSystem::initialize(
                 return clips_status;
             }
             presentation_config.locomotion_clips = clips;
-        } else if (!definition.animation_clips.empty() && !using_model_fallback) {
-            rollback();
-            return core::Status::failure("model_presentation.static_model_has_animations",
-                                         "static visual cannot declare animation mappings: " +
-                                             definition.id.value());
         }
 
         PresentationEntry entry;

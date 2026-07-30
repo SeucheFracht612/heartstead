@@ -437,10 +437,40 @@ void test_base_storybook_player_asset() {
     assert(runtime_model.value() == imported.value());
 }
 
+void test_base_rigid_node_player_asset() {
+    const auto model_path = std::filesystem::path{HEARTSTEAD_TEST_SOURCE_DIR} /
+                            "mods/base/assets/models/entities/test_player.glb";
+    auto imported = heartstead::assets::import_gltf_model(model_path);
+    assert(imported);
+    assert(imported.value().nodes.size() == 8);
+    assert(imported.value().primitives.size() == 6);
+    assert(imported.value().skins.empty());
+    assert(imported.value().animations.size() == 27);
+    assert(imported.value().images.size() == 1);
+    const auto capabilities = heartstead::assets::model_capabilities(imported.value());
+    assert(capabilities.has_animation_clips);
+    assert(capabilities.has_animated_nodes);
+    assert(!capabilities.has_skins);
+    assert(!capabilities.has_morph_targets);
+    for (const auto& primitive : imported.value().primitives) {
+        assert(primitive.node < imported.value().nodes.size());
+        assert(primitive.skin == heartstead::assets::no_model_index);
+    }
+    assert(heartstead::assets::resolve_model_animation_clip(imported.value(), "idle"));
+    assert(heartstead::assets::resolve_model_animation_clip(imported.value(), "walk"));
+    assert(heartstead::assets::resolve_model_animation_clip(imported.value(), "sprint"));
+    auto encoded = heartstead::assets::encode_model_asset(imported.value());
+    assert(encoded);
+    auto runtime_model = heartstead::assets::decode_model_asset(encoded.value());
+    assert(runtime_model);
+    assert(runtime_model.value() == imported.value());
+}
+
 } // namespace
 
 int main() {
     test_typed_gltf_import_and_codec();
     test_base_storybook_player_asset();
+    test_base_rigid_node_player_asset();
     return 0;
 }

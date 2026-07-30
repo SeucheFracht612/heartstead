@@ -25,6 +25,8 @@ struct AnimatedModelPresentationConfig {
     renderer::RenderLayer layer = renderer::RenderLayer::opaque;
     renderer::RenderObjectFlags flags = renderer::RenderObjectFlags::cast_shadow;
     math::Bounds3f animated_bounds{};
+    float bounds_padding = 0.25F;
+    bool ignore_horizontal_root_motion = true;
     std::array<float, 4> color{1.0F, 1.0F, 1.0F, 1.0F};
 
     [[nodiscard]] core::Status validate() const;
@@ -58,6 +60,7 @@ class AnimatedModelPresentation final {
         renderer::MaterialRuntimeHandle material;
         renderer::RenderLayer layer = renderer::RenderLayer::opaque;
         renderer::RenderObjectFlags flags = renderer::RenderObjectFlags::none;
+        math::Bounds3f local_bounds{};
     };
 
     struct PrimitiveVisual {
@@ -72,9 +75,11 @@ class AnimatedModelPresentation final {
 
     AnimatedModelPresentationConfig config_;
     std::vector<PrimitiveBinding> primitives_;
+    animation::NodePose bind_pose_;
+    std::vector<math::Mat4f> bind_node_matrices_;
     std::unordered_map<std::uint64_t, EntityVisual> entities_;
     AnimatedModelPresentationStats stats_;
-    bool has_deformed_primitives_ = false;
+    bool has_active_animation_ = false;
     bool initialized_ = false;
 };
 

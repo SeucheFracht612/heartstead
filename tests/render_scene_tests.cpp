@@ -53,17 +53,26 @@ void test_model_local_transform_is_shared_by_rendering_and_bounds() {
     object.model_transform = math::translation_matrix({2.0F, 3.0F, 0.0F});
     auto id = scene.create_object(object);
     assert(id);
+    object.layer = renderer::RenderLayer::alpha_tested;
+    object.material = renderer::MaterialRuntimeHandle{2, 1};
+    assert(scene.create_object(object));
+    object.layer = renderer::RenderLayer::transparent;
+    object.material = renderer::MaterialRuntimeHandle{3, 1};
+    assert(scene.create_object(object));
 
     renderer::RenderCamera camera;
     assert(camera.update_matrices());
     auto extracted = scene.extract(camera, 1.0F);
     assert(extracted);
-    assert(extracted.value().stats.visible_objects == 1);
-    const auto& instance = extracted.value().batches.front().instances.front();
-    assert(std::abs(instance.camera_relative_transform.at(0, 3) - 3.0F) < 0.0001F);
-    assert(std::abs(instance.camera_relative_transform.at(1, 3) - 3.0F) < 0.0001F);
-    assert(std::abs(instance.camera_relative_bounds.min.x - 2.5F) < 0.0001F);
-    assert(std::abs(instance.camera_relative_bounds.max.y - 3.5F) < 0.0001F);
+    assert(extracted.value().stats.visible_objects == 3);
+    assert(extracted.value().batches.size() == 3);
+    for (const auto& batch : extracted.value().batches) {
+        const auto& instance = batch.instances.front();
+        assert(std::abs(instance.camera_relative_transform.at(0, 3) - 3.0F) < 0.0001F);
+        assert(std::abs(instance.camera_relative_transform.at(1, 3) - 3.0F) < 0.0001F);
+        assert(std::abs(instance.camera_relative_bounds.min.x - 2.5F) < 0.0001F);
+        assert(std::abs(instance.camera_relative_bounds.max.y - 3.5F) < 0.0001F);
+    }
 }
 
 void test_generation_safe_retained_scene_and_interpolation() {

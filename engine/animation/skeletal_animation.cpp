@@ -394,9 +394,72 @@ core::Result<NodePose> blend_node_poses(const assets::ModelAsset& model, const N
     return core::Result<NodePose>::success(std::move(result));
 }
 
+core::Status apply_root_motion_policy(const assets::ModelAsset& model, NodePose& pose,
+                                      RootMotionPolicy policy) {
+    auto status = validate_node_pose(model, pose);
+    if (!status) {
+        return status;
+    }
+    switch (policy) {
+    case RootMotionPolicy::preserve:
+        return core::Status::ok();
+    case RootMotionPolicy::ignore_horizontal_translation: {
+        std::vector<std::vector<std::uint32_t>> children(model.nodes.size());
+        std::vector<std::size_t> subtree_primitive_counts(model.nodes.size(), 0);
+        std::vector<std::size_t> direct_primitive_counts(model.nodes.size(), 0);
+        std::vector<bool> skeleton_roots(model.nodes.size(), false);
+        for (std::size_t node = 0; node < model.nodes.size(); ++node) {
+            const auto parent = model.nodes[node].parent;
+            if (parent != assets::no_model_index) {
+                children[parent].push_back(static_cast<std::uint32_t>(node));
+            }
+        }
+        for (const auto& primitive : model.primitives) {
+            ++subtree_primitive_counts[primitive.node];
+            ++direct_primitive_counts[primitive.node];
+        }
+        for (const auto& skin : model.skins) {
+            if (skin.skeleton_root != assets::no_model_index) {
+                skeleton_roots[skin.skeleton_root] = true;
+            }
+        }
+        const std::function<std::size_t(std::size_t)> count_subtree_primitives =
+            [&](std::size_t node) {
+                auto count = subtree_primitive_counts[node];
+                for (const auto child : children[node]) {
+                    count += count_subtree_primitives(child);
+                }
+                subtree_primitive_counts[node] = count;
+                return count;
+            };
+        for (std::size_t node = 0; node < model.nodes.size(); ++node) {
+            if (model.nodes[node].parent == assets::no_model_index) {
+                (void)count_subtree_primitives(node);
+            }
+        }
+        for (std::size_t node = 0; node < model.nodes.size(); ++node) {
+            const auto is_hierarchy_root = model.nodes[node].parent == assets::no_model_index;
+            const auto is_common_geometry_ancestor =
+                subtree_primitive_counts[node] == model.primitives.size() &&
+                direct_primitive_counts[node] == 0;
+            if (!is_hierarchy_root && !is_common_geometry_ancestor && !skeleton_roots[node]) {
+                continue;
+            }
+            pose.local_transforms[node].translation.x =
+                model.nodes[node].bind_transform.translation.x;
+            pose.local_transforms[node].translation.z =
+                model.nodes[node].bind_transform.translation.z;
+        }
+        return core::Status::ok();
+    }
+    }
+    return core::Status::failure("skeletal_animation.invalid_root_motion_policy",
+                                 "node pose root-motion policy is unknown");
+}
+
 core::Result<NodePose> blend_skeletal_poses(const assets::ModelAsset& model,
-                                            const SkeletalPose& first,
-                                            const SkeletalPose& second, float second_weight) {
+                                            const SkeletalPose& first, const SkeletalPose& second,
+                                            float second_weight) {
     return blend_node_poses(model, first, second, second_weight);
 }
 
@@ -515,6 +578,21 @@ core::Result<SkinningPalette> build_model_space_skinning_palette(const assets::M
         return core::Result<SkinningPalette>::failure(globals.error().code,
                                                       globals.error().message);
     }
+    return build_model_space_skinning_palette(model, skin, mesh_node, globals.value());
+}
+
+core::Result<SkinningPalette>
+build_model_space_skinning_palette(const assets::ModelAsset& model, std::uint32_t skin,
+                                   std::uint32_t mesh_node,
+                                   std::span<const math::Mat4f> model_node_matrices) {
+    if (skin >= model.skins.size() || mesh_node >= model.nodes.size() ||
+        model_node_matrices.size() != model.nodes.size() ||
+        !std::ranges::all_of(model_node_matrices,
+                             [](const math::Mat4f& matrix) { return matrix.is_finite(); })) {
+        return core::Result<SkinningPalette>::failure(
+            "skeletal_animation.invalid_skin_binding",
+            "skinning palette requires valid skin, mesh-node, and evaluated node matrices");
+    }
     SkinningPalette result;
     result.skin = skin;
     result.mesh_node = mesh_node;
@@ -522,12 +600,13 @@ core::Result<SkinningPalette> build_model_space_skinning_palette(const assets::M
     result.joint_matrices.reserve(source_skin.joints.size());
     for (std::size_t joint = 0; joint < source_skin.joints.size(); ++joint) {
         const auto node = source_skin.joints[joint];
-        if (node >= globals.value().size() || joint >= source_skin.inverse_bind_matrices.size()) {
+        if (node >= model_node_matrices.size() ||
+            joint >= source_skin.inverse_bind_matrices.size()) {
             return core::Result<SkinningPalette>::failure(
                 "skeletal_animation.invalid_skin",
                 "skin joint or inverse-bind matrix is outside the model");
         }
-        result.joint_matrices.push_back(globals.value()[node] *
+        result.joint_matrices.push_back(model_node_matrices[node] *
                                         source_skin.inverse_bind_matrices[joint]);
     }
     return core::Result<SkinningPalette>::success(std::move(result));

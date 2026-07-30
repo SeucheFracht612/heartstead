@@ -19,6 +19,40 @@ namespace {
         color, [](float value) { return std::isfinite(value) && value >= 0.0F && value <= 1.0F; });
 }
 
+[[nodiscard]] bool has_any_locomotion_clip(const animation::LocomotionClipSet& clips) noexcept {
+    return clips.idle != assets::no_model_index || clips.walk != assets::no_model_index ||
+           clips.run != assets::no_model_index || clips.jump != assets::no_model_index ||
+           clips.fall != assets::no_model_index || clips.swim != assets::no_model_index;
+}
+
+[[nodiscard]] bool has_all_locomotion_clips(const animation::LocomotionClipSet& clips) noexcept {
+    return clips.idle != assets::no_model_index && clips.walk != assets::no_model_index &&
+           clips.run != assets::no_model_index && clips.jump != assets::no_model_index &&
+           clips.fall != assets::no_model_index && clips.swim != assets::no_model_index;
+}
+
+[[nodiscard]] math::Bounds3f primitive_local_bounds(const assets::ModelAsset& model,
+                                                    const assets::ModelPrimitive& primitive) {
+    const auto& first = model.vertices[primitive.first_vertex].position;
+    math::Bounds3f result{first, first};
+    for (std::size_t offset = 0; offset < primitive.vertex_count; ++offset) {
+        const auto& position = model.vertices[primitive.first_vertex + offset].position;
+        math::Vec3f maximum_delta{};
+        for (const auto& target : primitive.morph_targets) {
+            if (target.position_deltas.empty()) {
+                continue;
+            }
+            const auto delta = target.position_deltas[offset];
+            maximum_delta.x += std::abs(delta.x);
+            maximum_delta.y += std::abs(delta.y);
+            maximum_delta.z += std::abs(delta.z);
+        }
+        result.min = math::component_min(result.min, position - maximum_delta);
+        result.max = math::component_max(result.max, position + maximum_delta);
+    }
+    return result;
+}
+
 [[nodiscard]] bool can_convert_to_float(double value) noexcept {
     return std::isfinite(value) &&
            std::abs(value) <= static_cast<double>(std::numeric_limits<float>::max());
@@ -75,21 +109,29 @@ core::Status AnimatedModelPresentationConfig::validate() const {
     if (!status) {
         return status;
     }
-    const auto has_skinned_primitives =
-        std::ranges::any_of(model->primitives, [](const assets::ModelPrimitive& primitive) {
-            return primitive.skin != assets::no_model_index;
-        });
-    if (has_skinned_primitives) {
+    const auto any_locomotion_clip = has_any_locomotion_clip(locomotion_clips);
+    if (any_locomotion_clip != has_all_locomotion_clips(locomotion_clips)) {
+        return core::Status::failure(
+            "animated_model_presentation.partial_locomotion_clips",
+            "animated model presentation must map either all locomotion roles or none");
+    }
+    if (any_locomotion_clip) {
+        if (!assets::model_capabilities(*model).has_animation_clips) {
+            return core::Status::failure(
+                "animated_model_presentation.model_has_no_animation_clips",
+                "animated model presentation cannot map clips on a model without animation");
+        }
         status = locomotion_clips.validate(*model);
         if (!status) {
             return status;
         }
     }
     if (asset_id.empty() || !visual_prototype.is_valid() || !animated_bounds.is_valid() ||
+        !std::isfinite(bounds_padding) || bounds_padding < 0.0F || bounds_padding > 100.0F ||
         !finite_color(color)) {
         return core::Status::failure(
             "animated_model_presentation.invalid_config",
-            "model presentation requires an id, prototype, finite bounds, and color");
+            "model presentation requires an id, prototype, finite bounds/padding, and color");
     }
     return core::Status::ok();
 }
@@ -106,6 +148,12 @@ core::Status AnimatedModelPresentation::initialize(renderer::Renderer& renderer,
     }
 
     const auto& model = *config.model;
+    auto bind_pose = animation::bind_node_pose(model);
+    auto bind_node_matrices = animation::evaluate_model_node_matrices(model, bind_pose);
+    if (!bind_node_matrices) {
+        return core::Status::failure(bind_node_matrices.error().code,
+                                     bind_node_matrices.error().message);
+    }
     std::vector<renderer::ModelRenderMaterialBinding> model_materials;
     if (!config.material.is_valid()) {
         auto created_materials = renderer.create_model_materials(config.asset_id, model);
@@ -134,6 +182,10 @@ core::Status AnimatedModelPresentation::initialize(renderer::Renderer& renderer,
         binding.material = config.material;
         binding.layer = config.layer;
         binding.flags = config.flags;
+        binding.local_bounds =
+            primitive.skin == assets::no_model_index
+                ? primitive_local_bounds(model, primitive).expanded(config.bounds_padding)
+                : config.animated_bounds;
         if (!binding.material.is_valid() && primitive.material != assets::no_model_index) {
             const auto& model_material = model_materials[primitive.material];
             binding.material = model_material.material;
@@ -148,12 +200,11 @@ core::Status AnimatedModelPresentation::initialize(renderer::Renderer& renderer,
 
     config_ = std::move(config);
     primitives_ = std::move(uploaded);
+    bind_pose_ = std::move(bind_pose);
+    bind_node_matrices_ = std::move(bind_node_matrices).value();
     entities_.clear();
     stats_ = {};
-    has_deformed_primitives_ =
-        std::ranges::any_of(config_.model->primitives, [](const assets::ModelPrimitive& primitive) {
-            return primitive.skin != assets::no_model_index || !primitive.morph_targets.empty();
-        });
+    has_active_animation_ = has_any_locomotion_clip(config_.locomotion_clips);
     initialized_ = true;
     return core::Status::ok();
 }
@@ -187,8 +238,11 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
             continue;
         }
 
-        std::optional<animation::SkeletalPose> pose;
-        if (has_deformed_primitives_) {
+        const animation::NodePose* pose = &bind_pose_;
+        const std::vector<math::Mat4f>* node_matrices = &bind_node_matrices_;
+        std::optional<animation::NodePose> animated_pose;
+        std::optional<std::vector<math::Mat4f>> animated_node_matrices;
+        if (has_active_animation_) {
             auto sampled = animation::sample_locomotion_animation(model, config_.locomotion_clips,
                                                                   source.current_locomotion,
                                                                   snapshot.simulation_tick);
@@ -196,7 +250,24 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
                 return core::Result<AnimatedModelPresentationStats>::failure(
                     sampled.error().code, sampled.error().message);
             }
-            pose.emplace(std::move(sampled).value());
+            animated_pose.emplace(std::move(sampled).value());
+            if (config_.ignore_horizontal_root_motion) {
+                auto root_motion = animation::apply_root_motion_policy(
+                    model, *animated_pose,
+                    animation::RootMotionPolicy::ignore_horizontal_translation);
+                if (!root_motion) {
+                    return core::Result<AnimatedModelPresentationStats>::failure(
+                        root_motion.error().code, root_motion.error().message);
+                }
+            }
+            auto evaluated = animation::evaluate_model_node_matrices(model, *animated_pose);
+            if (!evaluated) {
+                return core::Result<AnimatedModelPresentationStats>::failure(
+                    evaluated.error().code, evaluated.error().message);
+            }
+            animated_node_matrices.emplace(std::move(evaluated).value());
+            pose = &*animated_pose;
+            node_matrices = &*animated_node_matrices;
             ++frame_stats.evaluated_poses;
         }
         auto previous_transform =
@@ -234,7 +305,7 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
                 renderer::RenderSkinPaletteId palette_id;
                 if (primitive.skin != assets::no_model_index) {
                     auto palette = animation::build_model_space_skinning_palette(
-                        model, primitive.skin, primitive.node, pose.value());
+                        model, primitive.skin, primitive.node, *node_matrices);
                     if (!palette) {
                         rollback_entity();
                         return core::Result<AnimatedModelPresentationStats>::failure(
@@ -256,12 +327,14 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
                 object.anchor = source.current_transform.position;
                 object.previous_transform = previous_transform.value();
                 object.current_transform = current_transform.value();
+                object.model_transform = primitive.skin == assets::no_model_index
+                                             ? (*node_matrices)[primitive.node]
+                                             : math::Mat4f::identity();
                 object.mesh = binding.mesh;
                 object.material = binding.material;
-                object.local_bounds = config_.animated_bounds;
+                object.local_bounds = binding.local_bounds;
                 object.skin_palette = palette_id;
-                object.morph_weights = pose.has_value() ? pose->morph_weights[primitive.node]
-                                                        : model.nodes[primitive.node].morph_weights;
+                object.morph_weights = pose->morph_weights[primitive.node];
                 object.layer = binding.layer;
                 object.flags = binding.flags;
                 if (source.teleported) {
@@ -292,7 +365,7 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
             const auto& visual = retained->second.primitives[index];
             if (primitive.skin != assets::no_model_index) {
                 auto palette = animation::build_model_space_skinning_palette(
-                    model, primitive.skin, primitive.node, pose.value());
+                    model, primitive.skin, primitive.node, *node_matrices);
                 if (!palette) {
                     return core::Result<AnimatedModelPresentationStats>::failure(
                         palette.error().code, palette.error().message);
@@ -312,13 +385,14 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
             object_update.object.anchor = source.current_transform.position;
             object_update.object.previous_transform = previous_transform.value();
             object_update.object.current_transform = current_transform.value();
+            object_update.object.model_transform = primitive.skin == assets::no_model_index
+                                                       ? (*node_matrices)[primitive.node]
+                                                       : math::Mat4f::identity();
             object_update.object.mesh = binding.mesh;
             object_update.object.material = binding.material;
-            object_update.object.local_bounds = config_.animated_bounds;
+            object_update.object.local_bounds = binding.local_bounds;
             object_update.object.skin_palette = visual.palette;
-            object_update.object.morph_weights = pose.has_value()
-                                                     ? pose->morph_weights[primitive.node]
-                                                     : model.nodes[primitive.node].morph_weights;
+            object_update.object.morph_weights = pose->morph_weights[primitive.node];
             object_update.object.layer = binding.layer;
             object_update.object.flags = binding.flags;
             if (source.teleported) {
@@ -404,9 +478,11 @@ core::Status AnimatedModelPresentation::shutdown(renderer::Renderer& renderer) {
     }
     entities_.clear();
     primitives_.clear();
+    bind_pose_ = {};
+    bind_node_matrices_.clear();
     config_ = {};
     stats_ = {};
-    has_deformed_primitives_ = false;
+    has_active_animation_ = false;
     initialized_ = false;
     return core::Status::ok();
 }
