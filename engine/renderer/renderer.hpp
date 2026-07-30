@@ -87,6 +87,7 @@ struct RendererInitDesc {
     UiRendererConfig ui_renderer_config{};
     rhi::ClearColor clear_color{0.055F, 0.09F, 0.14F, 1.0F};
     rhi::RenderEnvironmentData environment{};
+    rhi::RenderExposureSettings exposure{};
     bool development_shader_hot_reload = false;
 };
 
@@ -138,6 +139,10 @@ class Renderer {
     [[nodiscard]] core::Result<RenderFrameResult> render_frame(const RenderFrameInput& input);
     [[nodiscard]] core::Status resize(rhi::RenderExtent extent);
     [[nodiscard]] core::Status set_environment(rhi::RenderEnvironmentData environment);
+    // Exposure and tone curve for the resolve pass. Validated at the boundary, so an out-of-range
+    // or non-finite value is rejected here rather than becoming a NaN frame.
+    [[nodiscard]] core::Status set_exposure(rhi::RenderExposureSettings exposure);
+    [[nodiscard]] rhi::RenderExposureSettings exposure() const noexcept;
     void set_voxel_fluid_stats(const world::ChunkFluidSystemStats& fluids) noexcept;
     void set_voxel_lighting_stats(const world::ChunkLightSystemStats& lighting) noexcept;
     void set_particle_stats(const ParticleSystemStats& particles, double presentation_ms,

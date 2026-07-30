@@ -171,6 +171,24 @@ int main(int argc, char** argv) {
         renderer_init.ui_fragment_spirv = std::move(ui_fragment_spirv).value();
         renderer_init.tone_map_vertex_spirv = std::move(tone_map_vertex_spirv).value();
         renderer_init.tone_map_fragment_spirv = std::move(tone_map_fragment_spirv).value();
+        // Exposure and tone curve are overridable so the resolve pass can be observed doing its
+        // job: a pipeline that ignored its push constants would not respond to either.
+        if (const auto* stops = std::getenv("HEARTSTEAD_EXPOSURE"); stops != nullptr) {
+            renderer_init.exposure.exposure_stops = std::strtof(stops, nullptr);
+        }
+        if (const auto* curve = std::getenv("HEARTSTEAD_TONE_MAP"); curve != nullptr) {
+            const std::string_view name{curve};
+            renderer_init.exposure.tone_mapping =
+                name == "none"          ? renderer::rhi::RenderToneMapping::none
+                : name == "reinhard"    ? renderer::rhi::RenderToneMapping::reinhard
+                : name == "pbr_neutral" ? renderer::rhi::RenderToneMapping::khronos_pbr_neutral
+                                        : renderer::rhi::RenderToneMapping::aces_approx;
+        }
+        core::log(core::LogLevel::info,
+                  "Exposure: " + std::to_string(renderer_init.exposure.exposure_stops) +
+                      " stops, tone map: " +
+                      std::string(renderer::rhi::render_tone_mapping_name(
+                          renderer_init.exposure.tone_mapping)));
         renderer_init.chunk_config.max_chunks_meshed_per_frame = 2;
         renderer_init.chunk_config.max_bytes_uploaded_per_frame = 4 * 1024 * 1024;
         renderer::Renderer retained_renderer;

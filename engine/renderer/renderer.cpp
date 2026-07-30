@@ -557,6 +557,12 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
     }
     frame_builder_ = std::make_unique<FrameBuilder>(device_->current_extent(), desc.clear_color);
     frame_builder_->set_tone_map_pipeline(tone_map_pipeline_);
+    auto exposure_status = frame_builder_->set_exposure(desc.exposure);
+    if (!exposure_status) {
+        const auto error = exposure_status.error();
+        (void)shutdown();
+        return core::Status::failure(error.code, error.message);
+    }
     environment_ = desc.environment;
     return core::Status::ok();
 }
@@ -1005,6 +1011,18 @@ core::Status Renderer::reload_ui_shaders(std::span<const std::uint32_t> vertex_s
     }
     ui_pipeline_ = pipeline.value();
     return ui_renderer_->set_pipeline(ui_pipeline_);
+}
+
+core::Status Renderer::set_exposure(rhi::RenderExposureSettings exposure) {
+    if (frame_builder_ == nullptr) {
+        return core::Status::failure("renderer.not_initialized",
+                                     "renderer must be initialized before setting exposure");
+    }
+    return frame_builder_->set_exposure(exposure);
+}
+
+rhi::RenderExposureSettings Renderer::exposure() const noexcept {
+    return frame_builder_ == nullptr ? rhi::RenderExposureSettings{} : frame_builder_->exposure();
 }
 
 core::Status Renderer::set_environment(rhi::RenderEnvironmentData environment) {
