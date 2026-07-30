@@ -1034,10 +1034,10 @@ void add_model_runtime_metadata(CookedAssetMetadataFields& metadata, const Model
     add_metadata(metadata, "model.images", model.images.size());
     add_metadata(metadata, "model.materials", model.materials.size());
     add_metadata(metadata, "model.unlit_materials",
-                 std::ranges::count_if(model.materials,
-                                       [](const ModelMaterial& material) {
-                                           return material.unlit;
-                                       }));
+                 static_cast<std::uint64_t>(
+                     std::ranges::count_if(model.materials, [](const ModelMaterial& material) {
+                         return material.unlit;
+                     })));
     add_metadata(metadata, "model.skins", model.skins.size());
     add_metadata(metadata, "model.animations", model.animations.size());
 }

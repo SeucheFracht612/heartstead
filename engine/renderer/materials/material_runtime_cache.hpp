@@ -91,8 +91,6 @@ struct GpuSurfaceMaterial {
     float roughness_normal_occlusion_alpha[4]{1.0F, 1.0F, 1.0F, 0.5F};
     std::uint32_t flags = 0;
     std::uint32_t padding[3]{};
-
-    friend bool operator==(const GpuSurfaceMaterial&, const GpuSurfaceMaterial&) = default;
 };
 
 static_assert(sizeof(GpuSurfaceMaterial) == 224);

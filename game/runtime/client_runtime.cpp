@@ -94,7 +94,10 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render
     if (command_results_.size() > client_command_result_history_capacity) {
         const auto dropped = command_results_.size() - client_command_result_history_capacity;
         dropped_command_result_count = static_cast<std::uint32_t>(dropped);
-        command_results_.erase(command_results_.begin(), command_results_.begin() + dropped);
+        command_results_.erase(
+            command_results_.begin(),
+            command_results_.begin() +
+                static_cast<decltype(command_results_)::difference_type>(dropped));
     }
     auto movement_messages =
         session_.drain_replication_messages(movement::movement_snapshot_payload_type);
