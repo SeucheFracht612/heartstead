@@ -50,13 +50,27 @@ struct RenderResourceDesc {
     RenderImageFormat format = RenderImageFormat::rgba8_unorm;
 };
 
+// Feeds a frame graph resource into a named descriptor binding of the material a pass draws with.
+// This is how a post-process pass samples what an earlier pass wrote: the resource has no device
+// handle of its own, so it is addressed by graph name and resolved by the backend each frame.
+struct RenderPassSampledResource {
+    // Matches a RenderDescriptorBinding name on the material's pipeline layout.
+    std::string binding_name{};
+    // Graph resource to sample. Must also appear in the pass's reads.
+    std::string resource_name{};
+};
+
+// Every member carries a default initializer so passes can be written with designated
+// initializers naming only what they use, and so adding a field never silently repoints a value
+// in an existing positional initializer.
 struct RenderPassDesc {
-    std::string name;
+    std::string name{};
     RenderPassKind kind = RenderPassKind::clear;
-    std::vector<std::string> reads;
-    std::vector<std::string> writes;
+    std::vector<std::string> reads{};
+    std::vector<std::string> writes{};
     ClearColor clear_color{};
     bool presents = false;
+    std::vector<RenderPassSampledResource> sampled_resources{};
 };
 
 struct RenderFrameResourceUse {

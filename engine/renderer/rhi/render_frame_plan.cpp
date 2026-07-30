@@ -244,6 +244,26 @@ core::Status RenderFramePlan::validate() const {
                 ++presented_external_resource_count;
             }
         }
+        // A sampled resource is a read expressed through a descriptor binding, so it has to be
+        // declared as a read too. Otherwise the graph would derive no dependency for it and the
+        // backend would sample an image nothing transitioned to a readable layout.
+        for (const auto& sampled : pass.sampled_resources) {
+            if (sampled.binding_name.empty()) {
+                return core::Status::failure(
+                    "renderer_plan.invalid_sampled_binding",
+                    "render pass '" + pass.name + "' samples a resource without a binding name");
+            }
+            status = validate_resource_ref(*this, sampled.resource_name, pass.name);
+            if (!status) {
+                return status;
+            }
+            if (!contains_name(pass.reads, sampled.resource_name)) {
+                return core::Status::failure(
+                    "renderer_plan.sampled_resource_not_read",
+                    "render pass '" + pass.name + "' samples '" + sampled.resource_name +
+                        "' without declaring it as a read");
+            }
+        }
         for (const auto& write : pass.writes) {
             status = validate_resource_ref(*this, write, pass.name);
             if (!status) {

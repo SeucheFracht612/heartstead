@@ -302,6 +302,10 @@ struct RenderPipelineLayoutDesc {
     std::vector<RenderDescriptorBinding> descriptors;
     std::vector<RenderPushConstantRange> push_constant_ranges;
     std::string debug_name;
+    // Set when the material samples frame graph resources. The bound image then changes every
+    // frame, so the backend keeps one descriptor set per frame in flight: a set bound to a command
+    // buffer that is still executing must not be rewritten.
+    bool per_frame_descriptors = false;
 };
 
 struct RenderPipelineLayoutStats {

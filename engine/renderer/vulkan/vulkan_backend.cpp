@@ -1200,6 +1200,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
         VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
+        // Populated only when the layout declares per_frame_descriptors. Indexed by frame context,
+        // so updating this frame's set cannot touch one a previous frame is still reading.
+        std::vector<VkDescriptorSet> per_frame_descriptor_sets;
         std::uint64_t last_used_submission_serial = 0;
     };
 
@@ -3869,11 +3872,20 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 "failed to create Vulkan pipeline layout: " + std::string(vk_result_name(result)));
         }
 
-        const auto pool_sizes = make_descriptor_pool_sizes(resource.desc);
+        auto pool_sizes = make_descriptor_pool_sizes(resource.desc);
+        // A layout that samples frame graph resources needs one set per frame in flight, so the
+        // pool has to be sized for all of them.
+        const auto set_count =
+            resource.desc.per_frame_descriptors && !frame_contexts_.empty()
+                ? static_cast<std::uint32_t>(frame_contexts_.size())
+                : 1U;
         if (!pool_sizes.empty()) {
+            for (auto& pool_size : pool_sizes) {
+                pool_size.descriptorCount *= set_count;
+            }
             VkDescriptorPoolCreateInfo pool_info{};
             pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-            pool_info.maxSets = 1;
+            pool_info.maxSets = set_count;
             pool_info.poolSizeCount = static_cast<std::uint32_t>(pool_sizes.size());
             pool_info.pPoolSizes = pool_sizes.data();
             result =
@@ -3886,18 +3898,27 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                         std::string(vk_result_name(result)));
             }
 
+            const std::vector<VkDescriptorSetLayout> set_layouts(set_count,
+                                                                 resource.descriptor_set_layout);
+            std::vector<VkDescriptorSet> allocated(set_count, VK_NULL_HANDLE);
             VkDescriptorSetAllocateInfo allocate_info{};
             allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
             allocate_info.descriptorPool = resource.descriptor_pool;
-            allocate_info.descriptorSetCount = 1;
-            allocate_info.pSetLayouts = &resource.descriptor_set_layout;
-            result = vkAllocateDescriptorSets(device_, &allocate_info, &resource.descriptor_set);
+            allocate_info.descriptorSetCount = set_count;
+            allocate_info.pSetLayouts = set_layouts.data();
+            result = vkAllocateDescriptorSets(device_, &allocate_info, allocated.data());
             if (result != VK_SUCCESS) {
                 destroy_pipeline_layout_resource(resource);
                 return core::Result<VulkanPipelineLayoutResource>::failure(
                     "renderer.vulkan_descriptor_set_failed",
                     "failed to allocate Vulkan descriptor set: " +
                         std::string(vk_result_name(result)));
+            }
+            // The first set stays the one non-graph descriptor writes target, so materials that do
+            // not sample graph resources behave exactly as before.
+            resource.descriptor_set = allocated.front();
+            if (resource.desc.per_frame_descriptors) {
+                resource.per_frame_descriptor_sets = std::move(allocated);
             }
         }
 

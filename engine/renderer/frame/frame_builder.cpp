@@ -66,53 +66,62 @@ core::Result<rhi::RenderFramePlan> FrameBuilder::build_legacy_ldr_plan() const {
         return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
     }
     status = builder.add_pass(
-        {"sky", RenderPassKind::clear, {}, {"output", "depth"}, clear_color_, false});
+        {.name = "sky",
+         .kind = RenderPassKind::clear,
+         .writes = {"output", "depth"},
+         .clear_color = clear_color_});
     if (!status) {
         return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
     }
     status = builder.add_pass(
-        {"opaque_terrain", RenderPassKind::world, {"output"}, {"output", "depth"}, {}, false});
+        {.name = "opaque_terrain",
+         .kind = RenderPassKind::world,
+         .reads = {"output"},
+         .writes = {"output", "depth"}});
     if (!status) {
         return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
     }
-    status = builder.add_pass({"alpha_tested_terrain",
-                               RenderPassKind::world,
-                               {"output", "depth"},
-                               {"output", "depth"},
-                               {},
-                               false});
+    status = builder.add_pass({.name = "alpha_tested_terrain",
+                               .kind = RenderPassKind::world,
+                               .reads = {"output", "depth"},
+                               .writes = {"output", "depth"}});
     if (!status) {
         return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
     }
-    status = builder.add_pass({"rich_static_instances",
-                               RenderPassKind::world,
-                               {"output", "depth"},
-                               {"output", "depth"},
-                               {},
-                               false});
+    status = builder.add_pass({.name = "rich_static_instances",
+                               .kind = RenderPassKind::world,
+                               .reads = {"output", "depth"},
+                               .writes = {"output", "depth"}});
     if (!status) {
         return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
     }
-    status = builder.add_pass({"transparent_terrain",
-                               RenderPassKind::world,
-                               {"output", "depth"},
-                               {"output", "depth"},
-                               {},
-                               false});
-    if (!status) {
-        return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
-    }
-    status = builder.add_pass(
-        {"debug", RenderPassKind::debug, {"output", "depth"}, {"output", "depth"}, {}, false});
+    status = builder.add_pass({.name = "transparent_terrain",
+                               .kind = RenderPassKind::world,
+                               .reads = {"output", "depth"},
+                               .writes = {"output", "depth"}});
     if (!status) {
         return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
     }
     status = builder.add_pass(
-        {"ui", RenderPassKind::ui, {"output", "depth"}, {"output", "depth"}, {}, false});
+        {.name = "debug",
+         .kind = RenderPassKind::debug,
+         .reads = {"output", "depth"},
+         .writes = {"output", "depth"}});
     if (!status) {
         return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
     }
-    status = builder.add_pass({"present", RenderPassKind::present, {"output"}, {}, {}, true});
+    status = builder.add_pass(
+        {.name = "ui",
+         .kind = RenderPassKind::ui,
+         .reads = {"output", "depth"},
+         .writes = {"output", "depth"}});
+    if (!status) {
+        return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
+    }
+    status = builder.add_pass({.name = "present",
+                               .kind = RenderPassKind::present,
+                               .reads = {"output"},
+                               .presents = true});
     if (!status) {
         return core::Result<RenderFramePlan>::failure(status.error().code, status.error().message);
     }
@@ -159,45 +168,64 @@ core::Result<rhi::RenderFramePlan> FrameBuilder::build_linear_hdr_plan() const {
 
     // Scene passes, in the order the frame records them. Every one of these writes linear
     // radiance; none of them encodes a display transfer function.
-    status = builder.add_pass({"sky", RenderPassKind::clear, {}, {scene, depth}, clear_color_,
-                               false});
+    status = builder.add_pass({.name = "sky",
+                               .kind = RenderPassKind::clear,
+                               .writes = {scene, depth},
+                               .clear_color = clear_color_});
     if (!status) {
         return fail(status);
     }
-    status =
-        builder.add_pass({"opaque_terrain", RenderPassKind::world, {scene}, {scene, depth}, {},
-                          false});
+    status = builder.add_pass({.name = "opaque_terrain",
+                               .kind = RenderPassKind::world,
+                               .reads = {scene},
+                               .writes = {scene, depth}});
     if (!status) {
         return fail(status);
     }
     for (const auto* name : {"alpha_tested_terrain", "rich_static_instances",
                              "transparent_terrain"}) {
-        status = builder.add_pass(
-            {name, RenderPassKind::world, {scene, depth}, {scene, depth}, {}, false});
+        status = builder.add_pass({.name = name,
+                                   .kind = RenderPassKind::world,
+                                   .reads = {scene, depth},
+                                   .writes = {scene, depth}});
         if (!status) {
             return fail(status);
         }
     }
-    status = builder.add_pass(
-        {"debug", RenderPassKind::debug, {scene, depth}, {scene, depth}, {}, false});
+    status = builder.add_pass({.name = "debug",
+                               .kind = RenderPassKind::debug,
+                               .reads = {scene, depth},
+                               .writes = {scene, depth}});
     if (!status) {
         return fail(status);
     }
 
     // The single point where exposure, the tone curve, and the display transfer function are
     // applied.
+    // Samples the linear scene target through the tone map material's scene_hdr binding. The
+    // resource has no device handle, so the graph resolves it by name each frame.
     status = builder.add_pass(
-        {"tone_map", RenderPassKind::post_process, {scene}, {output}, {}, false});
+        {.name = "tone_map",
+         .kind = RenderPassKind::post_process,
+         .reads = {scene},
+         .writes = {output},
+         .sampled_resources = {{.binding_name = "scene_hdr", .resource_name = scene}}});
     if (!status) {
         return fail(status);
     }
 
     // UI composites in display space, on top of the tone mapped image.
-    status = builder.add_pass({"ui", RenderPassKind::ui, {output}, {output}, {}, false});
+    status = builder.add_pass({.name = "ui",
+                               .kind = RenderPassKind::ui,
+                               .reads = {output},
+                               .writes = {output}});
     if (!status) {
         return fail(status);
     }
-    status = builder.add_pass({"present", RenderPassKind::present, {output}, {}, {}, true});
+    status = builder.add_pass({.name = "present",
+                               .kind = RenderPassKind::present,
+                               .reads = {output},
+                               .presents = true});
     if (!status) {
         return fail(status);
     }
