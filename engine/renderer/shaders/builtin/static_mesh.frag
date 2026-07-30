@@ -22,8 +22,7 @@ struct GpuSurfaceMaterial {
     vec4 base_color;
     vec4 emissive_metallic;
     vec4 roughness_normal_occlusion_alpha;
-    uint flags;
-    uvec3 padding;
+    uvec4 flags_and_padding;
 };
 
 layout(std430, set = 0, binding = 3) readonly buffer SurfaceMaterials {
@@ -146,7 +145,8 @@ void main() {
     vec4 base_color =
         sample_binding(surface_textures, material.textures[0]) *
         material.base_color * fragment_color;
-    if ((material.flags & MATERIAL_ALPHA_TESTED) != 0U &&
+    const uint material_flags = material.flags_and_padding.x;
+    if ((material_flags & MATERIAL_ALPHA_TESTED) != 0U &&
         base_color.a < material.roughness_normal_occlusion_alpha.w) {
         discard;
     }
@@ -154,9 +154,9 @@ void main() {
         sample_binding(surface_textures, material.textures[4]).rgb *
         material.emissive_metallic.rgb;
     vec3 color = base_color.rgb + emissive;
-    if ((material.flags & MATERIAL_UNLIT) == 0U) {
+    if ((material_flags & MATERIAL_UNLIT) == 0U) {
         vec3 normal = normalize(fragment_normal);
-        if ((material.flags & MATERIAL_TWO_SIDED) != 0U && !gl_FrontFacing) {
+        if ((material_flags & MATERIAL_TWO_SIDED) != 0U && !gl_FrontFacing) {
             normal = -normal;
         }
         vec3 tangent = normalize(fragment_tangent.xyz -

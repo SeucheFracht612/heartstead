@@ -1,3 +1,4 @@
+#include "engine/animation/skeletal_animation.hpp"
 #include "engine/assets/model_asset.hpp"
 
 #include <algorithm>
@@ -5,6 +6,7 @@
 #include <bit>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -447,6 +449,8 @@ void test_base_rigid_node_player_asset() {
     assert(imported.value().skins.empty());
     assert(imported.value().animations.size() == 27);
     assert(imported.value().images.size() == 1);
+    assert(imported.value().materials.size() == 1);
+    assert(imported.value().materials[0].base_color_texture.image == 0);
     const auto capabilities = heartstead::assets::model_capabilities(imported.value());
     assert(capabilities.has_animation_clips);
     assert(capabilities.has_animated_nodes);
@@ -455,10 +459,45 @@ void test_base_rigid_node_player_asset() {
     for (const auto& primitive : imported.value().primitives) {
         assert(primitive.node < imported.value().nodes.size());
         assert(primitive.skin == heartstead::assets::no_model_index);
+        assert(primitive.material == 0);
     }
-    assert(heartstead::assets::resolve_model_animation_clip(imported.value(), "idle"));
+    const auto idle = heartstead::assets::resolve_model_animation_clip(imported.value(), "idle");
+    assert(idle);
     assert(heartstead::assets::resolve_model_animation_clip(imported.value(), "walk"));
     assert(heartstead::assets::resolve_model_animation_clip(imported.value(), "sprint"));
+    const auto head_node =
+        std::ranges::find(imported.value().nodes, "head", &heartstead::assets::ModelNode::name);
+    assert(head_node != imported.value().nodes.end());
+    const auto head_index =
+        static_cast<std::size_t>(std::distance(imported.value().nodes.begin(), head_node));
+    assert(std::abs(head_node->bind_transform.scale.x - 0.1F) < 0.0001F);
+    assert(std::abs(head_node->bind_transform.scale.y - 0.1F) < 0.0001F);
+    assert(std::abs(head_node->bind_transform.scale.z - 0.1F) < 0.0001F);
+    auto idle_pose =
+        heartstead::animation::sample_animation_clip(imported.value(), {idle.value(), 0.5F, true});
+    assert(idle_pose);
+    assert(std::abs(idle_pose.value().local_transforms[head_index].scale.x - 0.1F) < 0.0001F);
+    assert(std::abs(idle_pose.value().local_transforms[head_index].scale.y - 0.1F) < 0.0001F);
+    assert(std::abs(idle_pose.value().local_transforms[head_index].scale.z - 0.1F) < 0.0001F);
+    auto idle_matrices =
+        heartstead::animation::evaluate_model_node_matrices(imported.value(), idle_pose.value());
+    assert(idle_matrices);
+    const auto& head_matrix = idle_matrices.value()[head_index];
+    const auto head_x_scale = std::sqrt(head_matrix.at(0, 0) * head_matrix.at(0, 0) +
+                                        head_matrix.at(1, 0) * head_matrix.at(1, 0) +
+                                        head_matrix.at(2, 0) * head_matrix.at(2, 0));
+    assert(std::abs(head_x_scale - 0.1F) < 0.0001F);
+    const auto head_primitive =
+        std::ranges::find(imported.value().primitives, static_cast<std::uint32_t>(head_index),
+                          &heartstead::assets::ModelPrimitive::node);
+    assert(head_primitive != imported.value().primitives.end());
+    assert(head_primitive->material == 0);
+    bool head_has_nonzero_uv = false;
+    for (std::size_t offset = 0; offset < head_primitive->vertex_count; ++offset) {
+        const auto& uv = imported.value().vertices[head_primitive->first_vertex + offset].uv0;
+        head_has_nonzero_uv = head_has_nonzero_uv || uv.x != 0.0F || uv.y != 0.0F;
+    }
+    assert(head_has_nonzero_uv);
     auto encoded = heartstead::assets::encode_model_asset(imported.value());
     assert(encoded);
     auto runtime_model = heartstead::assets::decode_model_asset(encoded.value());
