@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -34,6 +35,18 @@ struct RuntimeSurfaceTextureBinding {
                            const RuntimeSurfaceTextureBinding&) = default;
 };
 
+struct RuntimeTerrainSurfaceLayer {
+    std::array<float, 4> tint{1.0F, 1.0F, 1.0F, 1.0F};
+    float strength = 0.0F;
+    float roughness = 1.0F;
+    float metallic = 0.0F;
+    float emissive_strength = 0.0F;
+    std::uint32_t texture_layer = std::numeric_limits<std::uint32_t>::max();
+
+    friend bool operator==(const RuntimeTerrainSurfaceLayer&,
+                           const RuntimeTerrainSurfaceLayer&) = default;
+};
+
 struct MaterialRuntimeDesc {
     core::PrototypeId id;
     MaterialRuntimeDomain domain = MaterialRuntimeDomain::voxel;
@@ -56,6 +69,15 @@ struct MaterialRuntimeDesc {
     float metallic = 1.0F;
     float normal_scale = 1.0F;
     float occlusion_strength = 1.0F;
+    float texel_density = 1.0F;
+    float biome_tint_strength = 0.0F;
+    float macro_color_strength = 0.08F;
+    float macro_roughness_strength = 0.08F;
+    float transition_width = 0.0F;
+    float transition_contrast = 1.0F;
+    float transition_noise_scale = 1.0F;
+    std::array<float, 4> biome_tint{1.0F, 1.0F, 1.0F, 1.0F};
+    std::array<RuntimeTerrainSurfaceLayer, 9> terrain_surface_layers{};
 
     friend bool operator==(const MaterialRuntimeDesc&, const MaterialRuntimeDesc&) = default;
 };

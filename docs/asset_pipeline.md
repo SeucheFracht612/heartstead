@@ -34,6 +34,10 @@ finished source file
 For a new model, prefer a self-contained GLB. For recorded audio, prefer WAV for short effects and
 FLAC for long files. PNG is the safest color-texture delivery.
 
+Terrain has a separate data-driven face/variant/PBR and surface-state contract. See
+[Terrain material authoring](terrain_material_authoring.md) for channel packing, face names,
+deterministic variants, overlays, and the production preview scene.
+
 Do not deliver FBX, OBJ, native Blender files, PSD/Krita files, MP3, or arbitrary working files as
 runtime assets.
 

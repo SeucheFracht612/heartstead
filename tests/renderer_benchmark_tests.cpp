@@ -113,8 +113,7 @@ void test_benchmark_statistics() {
     assert(recorder.to_json().find("\"voxel_relight_visited_cells\": 300") != std::string::npos);
     assert(recorder.to_json().find("\"p95_voxel_fluid_simulation_ms\": 1.425000") !=
            std::string::npos);
-    assert(recorder.to_json().find("\"voxel_fluid_processed_cells\": 6000") !=
-           std::string::npos);
+    assert(recorder.to_json().find("\"voxel_fluid_processed_cells\": 6000") != std::string::npos);
     assert(recorder.to_json().find("\"slowest_frame\": {\"frame\": 3") != std::string::npos);
     assert(
         recorder.to_csv().find(
@@ -148,12 +147,20 @@ void test_low_fps_windows_are_distinct() {
 void test_all_deterministic_scenes_construct() {
     using namespace heartstead::renderer::benchmark;
     constexpr std::array kinds{
-        BenchmarkSceneKind::flat_terrain,          BenchmarkSceneKind::mountainous_terrain,
-        BenchmarkSceneKind::dense_caves,           BenchmarkSceneKind::checkerboard_geometry,
-        BenchmarkSceneKind::forest_cross_planes,   BenchmarkSceneKind::rapid_voxel_edits,
-        BenchmarkSceneKind::high_speed_flythrough, BenchmarkSceneKind::chunk_load_unload_churn,
-        BenchmarkSceneKind::large_coordinates,     BenchmarkSceneKind::resize_minimize_stress,
-        BenchmarkSceneKind::active_water,          BenchmarkSceneKind::particle_stress,
+        BenchmarkSceneKind::flat_terrain,
+        BenchmarkSceneKind::mountainous_terrain,
+        BenchmarkSceneKind::dense_caves,
+        BenchmarkSceneKind::checkerboard_geometry,
+        BenchmarkSceneKind::forest_cross_planes,
+        BenchmarkSceneKind::rapid_voxel_edits,
+        BenchmarkSceneKind::high_speed_flythrough,
+        BenchmarkSceneKind::chunk_load_unload_churn,
+        BenchmarkSceneKind::large_coordinates,
+        BenchmarkSceneKind::resize_minimize_stress,
+        BenchmarkSceneKind::active_water,
+        BenchmarkSceneKind::particle_stress,
+        BenchmarkSceneKind::light_heavy_settlement,
+        BenchmarkSceneKind::terrain_material_preview,
     };
     for (const auto kind : kinds) {
         BenchmarkSceneConfig config;
@@ -163,7 +170,7 @@ void test_all_deterministic_scenes_construct() {
         auto scene = BenchmarkScene::create(config);
         assert(scene);
         assert(scene.value()->world().chunks().chunk_count() == 1);
-        assert(scene.value()->palette().size() == 5);
+        assert(scene.value()->palette().size() == 6);
         assert(scene.value()->camera().view_projection.is_finite());
         assert(parse_benchmark_scene(benchmark_scene_name(kind)) == kind);
     }
@@ -181,8 +188,8 @@ void test_active_water_scene_exposes_exact_stress_workload() {
     assert(fluids);
     scene.value()->activate_fluid_work(*fluids.value());
     assert(fluids.value()->update(scene.value()->world().chunks(),
-                                  scene.value()->world().dirty_regions(),
-                                  scene.value()->palette(), 3));
+                                  scene.value()->world().dirty_regions(), scene.value()->palette(),
+                                  3));
     assert(fluids.value()->stats().processed_cells_this_update == 32'768);
     assert(!fluids.value()->stats().budget_exhausted);
     assert(fluids.value()->stats().active_cell_count == 0);

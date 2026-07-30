@@ -23,15 +23,19 @@ follow-up work and is not required for graph-driven attachments.
 ## Colour pipeline
 
 There is one colour path. World shading writes linear radiance into a transient `rgba16_sfloat`
-`scene_hdr` target, a single `tone_map` post-process pass applies exposure, the tone curve, and the
-display transfer function while writing the output image, and UI composites on top in display
-space. No world pass may write the presentable image; `renderer_frame_graph_tests` enforces this.
+`scene_hdr` target. SSAO is evaluated from scene depth and composited before transparencies, FXAA
+stabilizes voxel/cutout edges, bloom filters HDR highlights, and `tone_map` combines bloom while
+applying adapted exposure, colour grading, the tone curve, and the display transfer function. UI
+then composites in display space. No world pass may write the presentable image;
+`renderer_frame_graph_tests` enforces this.
 
 **World shaders must not apply a transfer function.** `linear_to_srgb()` belongs in exactly two
 places: `tone_map.frag`, which performs the single display encode, and `ui.frag`, which composites
 after that encode has already happened. Adding it to a world shader double-encodes the image.
 
-Exposure is expressed in stops and validated at the boundary. Tone mapping operators are
+Exposure is expressed in stops and validated at the boundary. Automatic exposure uses a bounded,
+frame-rate-independent exponential adaptation toward the scene-light estimate. Tone mapping
+operators are
 `none`, `reinhard`, `aces_approx` (default), and `khronos_pbr_neutral`.
 
 `renderer_tone_mapping_tests` reads back the resolved image from a real device and asserts over the
@@ -50,6 +54,12 @@ A pass may sample a graph resource by declaring `sampled_resources`, which maps 
 a named descriptor binding. Resources have no device handle, so the backend resolves the binding from
 the resource pool every frame. Layouts that do this set `per_frame_descriptors`, because a descriptor
 set bound to an in-flight command buffer must not be rewritten.
+
+Depth-only passes are first-class: a pass with a depth write and no colour write records normally
+and cannot be silently skipped. Graph resources can also be storage images or storage buffers.
+Graphics, compute, and transfer work retain declaration order, so compute can consume a depth
+prepass and feed a later raster pass. Image declarations cover mip chains, arrays, cubemaps,
+compressed BC1/BC3/BC5/BC7 formats, comparison sampling, and multiple colour attachments.
 
 ## Backends
 
@@ -88,10 +98,11 @@ A normal native frame:
 7. submits once, presents once when native, and records timings/statistics;
 8. advances frame and submission generations.
 
-The maintained unified sequence contains sky, opaque terrain, alpha-tested terrain, rich/static
-geometry, transparent/fluid geometry, debug, UI, and present phases. Opaque, cutout, and transparent
-state are separate. The current renderer intentionally exposes a bounded frame schema rather than a
-general-purpose render graph.
+The maintained unified sequence contains four directional shadow cascades, two budgeted local
+shadow maps, sky, opaque terrain, alpha-tested terrain, rich/static geometry, SSAO and AO
+composition, transparent/fluid geometry, debug, FXAA, bloom, tone mapping, UI, and present.
+Opaque, cutout, and transparent state are separate. The public frame is a dependency-validated,
+bounded render graph schema rather than a parallel ad hoc frame path.
 
 Resize/minimize events recreate or suspend presentation targets without discarding authoritative
 state or retained chunk meshes. A zero drawable extent does not busy-loop submission.
@@ -149,9 +160,9 @@ node pose. Entity visuals may prepend a uniform presentation scale to either bra
 every maintained surface layer compose the model-local matrix after the interpolated entity
 transform, so opaque, alpha-tested, and transparent results stay aligned.
 
-The current frame sequence has a depth attachment but no shadow-map pass. `cast_shadow` is retained
-as presentation intent only; a future shadow implementation must reuse the same composed object
-matrix and skin palette.
+Terrain and retained model objects reuse the same composed object matrix, skin palette, morph data,
+and alpha cutoff in shadow passes. This keeps animated, cutout, two-sided, and ordinary geometry
+aligned between visible and shadow rendering.
 
 ## Materials, models, and textures
 
@@ -165,21 +176,50 @@ runtime data supported by the asset pipeline. Texture delivery includes the main
 Basis/KTX2 paths. Do not duplicate the full import matrix here; [the asset pipeline guide](../asset_pipeline.md)
 is the contributor-facing source of truth.
 
-Alpha-tested surfaces discard by material cutoff. Transparent/fluid surfaces blend without depth
-writes. Lighting is evaluated in linear space and encoded for the current scene target.
+The standard surface record carries base colour, normal, metallic/roughness, occlusion, emissive,
+alpha cutoff, double-sided/unlit flags, vertex colour, two UV sets, per-texture UV transforms and
+sampler state, and stable fallback layers. Terrain uses the same Cook-Torrance direct response,
+metallic/roughness, occlusion, emissive, alpha, two-sided, and unlit semantics with six independent
+face texture ranges. Alpha-tested surfaces discard by material cutoff. Transparent/fluid surfaces
+blend without depth writes. Runtime material overrides update GPU tables without changing the
+pipeline ABI.
 
-The maintained scene target is RGBA8 UNORM containing shader-encoded sRGB values. Native
-presentation therefore prefers an RGBA8 or BGRA8 UNORM swapchain with
-`SRGB_NONLINEAR` presentation color space. Using an sRGB storage format for that final blit would
-encode the already encoded scene a second time, washing out midtones and reducing visible texture
-contrast. Sky, terrain, static/model, debug, and UI fragment paths all follow the same explicit
-output-transfer contract.
+The maintained scene target is linear `rgba16_sfloat`. The final output image is RGBA8 UNORM
+containing shader-encoded sRGB values, so native presentation prefers an RGBA8 or BGRA8 UNORM
+swapchain with `SRGB_NONLINEAR` presentation colour space. Using an sRGB storage format for that
+final blit would encode the already encoded scene a second time.
 
 The surface-material storage buffer has an explicit 224-byte CPU/GPU record contract. Its final
 flag word and padding are exposed to GLSL as one aligned `uvec4`; splitting that tail into a scalar
 and `uvec3` changes the std430 array stride and causes later materials to read neighboring records.
 The separate voxel-material buffer uses a 112-byte std430 record: two `uvec4` lanes each for six
 face-range starts and counts, one flags/padding lane, base color, and surface parameters.
+
+## Lighting, shadows, and grounding
+
+Terrain and imported surfaces share Cook-Torrance GGX direct lighting for the sun, point lights,
+and spotlights. Local lights are CPU-binned into deterministic 16×16 screen tiles, uploaded as a
+bounded storage-buffer grid, and evaluated only by covered fragments. The default limits are 1,024
+submitted lights and 32 lights per tile; overflow is counted.
+
+Environment lighting uses a mipmapped cubemap. A high mip supplies diffuse sky irradiance,
+roughness selects the prefiltered specular mip, and a split-sum BRDF integration fit supplies the
+roughness/NdotV response. Intensity and Y rotation are frame controls. Material AO and the
+authoritative voxel light field attenuate the environment term; zero-light caves therefore do not
+receive a constant bright ambient value.
+
+Directional shadows use four 2048² cascades with practical split blending, texel-snapped
+projections, slope/constant bias, 3×3 PCF, and distance fade. Terrain, cutouts, static/rich meshes,
+skinning, morph targets, and two-sided vegetation cast through depth-only passes.
+
+Two 1024² local spotlight maps form the default local-shadow budget. Selection is stable and scores
+projected contribution (radius and distance), intensity, colour, gameplay importance, and whether
+the light or nearby geometry revision changed. Selected slots are written into tiled-light records
+and sampled with comparison PCF. Point lights remain fully supported for direct lighting; their
+omnidirectional shadow-map path is not yet enabled.
+
+Debug modes display base colour, normal, roughness, metallic, AO, emissive, cascade coverage, and
+local tile occupancy through `Renderer::set_lighting_debug_view`.
 
 ## Shader and pipeline lifecycle
 
@@ -226,10 +266,11 @@ construction, snapshot capture, meshing, upload preparation/copy, backend record
 passes, residency, and overflow. Vulkan timestamp results retain their source frame because GPU
 measurements arrive later than CPU frame data.
 
-`heartstead_render_benchmark` supplies deterministic static and stress scenes, excludes warm-up,
-settles initial residency, records complete per-frame counters, and exports versioned JSON or CSV.
-Use an optimized build and preserve run configuration when comparing changes. The maintained
-methodology and historical baseline are in
+`heartstead_render_benchmark` supplies deterministic static and stress scenes, including the
+128-local-light `light-heavy` settlement workload and the `terrain-materials` material/state/slope
+preview, excludes warm-up, settles initial residency, records complete per-frame counters, and
+exports versioned JSON or CSV. Use an optimized build and preserve run configuration when comparing
+changes. The maintained methodology and historical baseline are in
 [Renderer benchmarks](../performance/renderer_benchmarks.md).
 
 ## Extension rules

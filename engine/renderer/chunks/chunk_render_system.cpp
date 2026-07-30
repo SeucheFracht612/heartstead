@@ -1,6 +1,7 @@
 #include "engine/renderer/chunks/chunk_render_system.hpp"
 
 #include "engine/core/logging.hpp"
+#include "engine/renderer/terrain/terrain_mapping.hpp"
 #include "engine/world/blocks/block_model.hpp"
 
 #include <algorithm>
@@ -38,21 +39,6 @@ namespace {
         return static_cast<std::uint64_t>(left) - static_cast<std::uint64_t>(right);
     }
     return static_cast<std::uint64_t>(right) - static_cast<std::uint64_t>(left);
-}
-
-[[nodiscard]] constexpr std::uint32_t
-terrain_texture_variation_seed(world::ChunkCoord coordinate) noexcept {
-    const auto mix = [](std::uint64_t value) {
-        value ^= value >> 30U;
-        value *= 0xbf58476d1ce4e5b9ULL;
-        value ^= value >> 27U;
-        value *= 0x94d049bb133111ebULL;
-        return value ^ (value >> 31U);
-    };
-    auto hash = mix(static_cast<std::uint64_t>(coordinate.x) + 0x9e3779b97f4a7c15ULL);
-    hash ^= mix(static_cast<std::uint64_t>(coordinate.y) + 0x243f6a8885a308d3ULL);
-    hash ^= mix(static_cast<std::uint64_t>(coordinate.z) + 0x13198a2e03707344ULL);
-    return static_cast<std::uint32_t>(hash ^ (hash >> 32U));
 }
 
 [[nodiscard]] core::Result<world::ChunkCoord>
@@ -433,7 +419,7 @@ ChunkRenderSystem::build_draw_list(const RenderCamera& camera,
                 draw.instance_count = 1;
                 draw.camera_relative_origin = visible.origin;
                 draw.texture_variation_seed =
-                    terrain_texture_variation_seed(visible.entry->identity.coordinate);
+                    terrain::terrain_coordinate_key(visible.entry->identity.coordinate);
                 draw.index_type = visible.entry->mesh.index_type;
                 const auto center =
                     visible.origin +

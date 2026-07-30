@@ -108,6 +108,10 @@ void test_gpu_chunk_vertex_contract() {
     assert(decoded_uv[0] == fractional.u);
     assert(decoded_uv[1] == fractional.v);
     assert(packed.lighting[2] == 3);
+
+    auto occluded = cpu_vertex;
+    occluded.ambient_occlusion = 112;
+    assert(renderer::terrain::to_gpu_chunk_vertex(occluded).lighting[1] == 112);
 }
 
 void test_spirv_validation() {

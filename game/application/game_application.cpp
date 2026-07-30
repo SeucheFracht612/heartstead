@@ -22,30 +22,61 @@ struct ApplicationShaderSet {
     std::vector<std::uint32_t> terrain_fragment;
     std::vector<std::uint32_t> static_vertex;
     std::vector<std::uint32_t> static_fragment;
+    std::vector<std::uint32_t> shadow_terrain_fragment;
+    std::vector<std::uint32_t> shadow_static_fragment;
     std::vector<std::uint32_t> debug_vertex;
     std::vector<std::uint32_t> debug_fragment;
     std::vector<std::uint32_t> ui_vertex;
     std::vector<std::uint32_t> ui_fragment;
     std::vector<std::uint32_t> tone_map_vertex;
     std::vector<std::uint32_t> tone_map_fragment;
+    std::vector<std::uint32_t> ssao_fragment;
+    std::vector<std::uint32_t> ao_composite_fragment;
+    std::vector<std::uint32_t> fxaa_fragment;
+    std::vector<std::uint32_t> bloom_fragment;
 };
 
 [[nodiscard]] core::Result<ApplicationShaderSet>
 load_application_shaders(const std::filesystem::path& root) {
     const std::array paths{
-        root / "sky.vert.spv",        root / "sky.frag.spv",         root / "terrain.vert.spv",
-        root / "terrain.frag.spv",    root / "static_mesh.vert.spv", root / "static_mesh.frag.spv",
-        root / "debug_line.vert.spv", root / "debug_line.frag.spv",  root / "ui.vert.spv",
-        root / "ui.frag.spv",         root / "tone_map.vert.spv",    root / "tone_map.frag.spv",
+        root / "sky.vert.spv",
+        root / "sky.frag.spv",
+        root / "terrain.vert.spv",
+        root / "terrain.frag.spv",
+        root / "static_mesh.vert.spv",
+        root / "static_mesh.frag.spv",
+        root / "shadow_terrain.frag.spv",
+        root / "shadow_static.frag.spv",
+        root / "debug_line.vert.spv",
+        root / "debug_line.frag.spv",
+        root / "ui.vert.spv",
+        root / "ui.frag.spv",
+        root / "tone_map.vert.spv",
+        root / "tone_map.frag.spv",
+        root / "ssao.frag.spv",
+        root / "ao_composite.frag.spv",
+        root / "fxaa.frag.spv",
+        root / "bloom.frag.spv",
     };
-    std::array<core::Result<std::vector<std::uint32_t>>, 12> loaded{
-        renderer::shaders::load_spirv_file(paths[0]), renderer::shaders::load_spirv_file(paths[1]),
-        renderer::shaders::load_spirv_file(paths[2]), renderer::shaders::load_spirv_file(paths[3]),
-        renderer::shaders::load_spirv_file(paths[4]), renderer::shaders::load_spirv_file(paths[5]),
-        renderer::shaders::load_spirv_file(paths[6]), renderer::shaders::load_spirv_file(paths[7]),
-        renderer::shaders::load_spirv_file(paths[8]), renderer::shaders::load_spirv_file(paths[9]),
+    std::array<core::Result<std::vector<std::uint32_t>>, 18> loaded{
+        renderer::shaders::load_spirv_file(paths[0]),
+        renderer::shaders::load_spirv_file(paths[1]),
+        renderer::shaders::load_spirv_file(paths[2]),
+        renderer::shaders::load_spirv_file(paths[3]),
+        renderer::shaders::load_spirv_file(paths[4]),
+        renderer::shaders::load_spirv_file(paths[5]),
+        renderer::shaders::load_spirv_file(paths[6]),
+        renderer::shaders::load_spirv_file(paths[7]),
+        renderer::shaders::load_spirv_file(paths[8]),
+        renderer::shaders::load_spirv_file(paths[9]),
         renderer::shaders::load_spirv_file(paths[10]),
         renderer::shaders::load_spirv_file(paths[11]),
+        renderer::shaders::load_spirv_file(paths[12]),
+        renderer::shaders::load_spirv_file(paths[13]),
+        renderer::shaders::load_spirv_file(paths[14]),
+        renderer::shaders::load_spirv_file(paths[15]),
+        renderer::shaders::load_spirv_file(paths[16]),
+        renderer::shaders::load_spirv_file(paths[17]),
     };
     for (std::size_t index = 0; index < loaded.size(); ++index) {
         if (!loaded[index]) {
@@ -62,12 +93,18 @@ load_application_shaders(const std::filesystem::path& root) {
     result.terrain_fragment = std::move(loaded[3]).value();
     result.static_vertex = std::move(loaded[4]).value();
     result.static_fragment = std::move(loaded[5]).value();
-    result.debug_vertex = std::move(loaded[6]).value();
-    result.debug_fragment = std::move(loaded[7]).value();
-    result.ui_vertex = std::move(loaded[8]).value();
-    result.ui_fragment = std::move(loaded[9]).value();
-    result.tone_map_vertex = std::move(loaded[10]).value();
-    result.tone_map_fragment = std::move(loaded[11]).value();
+    result.shadow_terrain_fragment = std::move(loaded[6]).value();
+    result.shadow_static_fragment = std::move(loaded[7]).value();
+    result.debug_vertex = std::move(loaded[8]).value();
+    result.debug_fragment = std::move(loaded[9]).value();
+    result.ui_vertex = std::move(loaded[10]).value();
+    result.ui_fragment = std::move(loaded[11]).value();
+    result.tone_map_vertex = std::move(loaded[12]).value();
+    result.tone_map_fragment = std::move(loaded[13]).value();
+    result.ssao_fragment = std::move(loaded[14]).value();
+    result.ao_composite_fragment = std::move(loaded[15]).value();
+    result.fxaa_fragment = std::move(loaded[16]).value();
+    result.bloom_fragment = std::move(loaded[17]).value();
     return core::Result<ApplicationShaderSet>::success(std::move(result));
 }
 
@@ -168,8 +205,8 @@ GameApplication::~GameApplication() {
 
 core::Result<GameApplicationRunReport> GameApplication::run(IGameApplicationMode& mode) {
     if (running_) {
-        return core::Result<GameApplicationRunReport>::failure(
-            "game_application.already_running", "application is already running");
+        return core::Result<GameApplicationRunReport>::failure("game_application.already_running",
+                                                               "application is already running");
     }
     auto status = config_.validate();
     if (!status) {
@@ -198,8 +235,7 @@ core::Result<GameApplicationRunReport> GameApplication::run(IGameApplicationMode
     auto previous_time = std::chrono::steady_clock::now();
 
     while (!first_error.has_value() && platform_ != nullptr && !platform_->should_quit() &&
-           (!config_.maximum_frames.has_value() ||
-            report.frame_count < *config_.maximum_frames)) {
+           (!config_.maximum_frames.has_value() || report.frame_count < *config_.maximum_frames)) {
         std::optional<platform::WindowInputSnapshot> input;
         std::uint64_t delta_microseconds = 16'667;
         std::int64_t now_milliseconds = 0;
@@ -230,8 +266,11 @@ core::Result<GameApplicationRunReport> GameApplication::run(IGameApplicationMode
             }
         }
 
-        const GameApplicationFrame frame{report.frame_count, delta_microseconds, now_milliseconds,
-                                         extent_, input.has_value() ? &*input : nullptr,
+        const GameApplicationFrame frame{report.frame_count,
+                                         delta_microseconds,
+                                         now_milliseconds,
+                                         extent_,
+                                         input.has_value() ? &*input : nullptr,
                                          config_.headless};
         auto output = mode.update(services, frame);
         if (!output) {
@@ -283,8 +322,9 @@ core::Result<GameApplicationRunReport> GameApplication::run(IGameApplicationMode
 }
 
 core::Status GameApplication::initialize_shell() {
-    auto created_platform = platform::create_platform(
-        {config_.headless ? platform::PlatformBackend::headless : platform::PlatformBackend::native});
+    auto created_platform =
+        platform::create_platform({config_.headless ? platform::PlatformBackend::headless
+                                                    : platform::PlatformBackend::native});
     if (!created_platform) {
         return core::Status::failure(created_platform.error().code,
                                      created_platform.error().message);
@@ -332,10 +372,17 @@ core::Status GameApplication::initialize_shell() {
     renderer_desc.terrain_fragment_spirv = std::move(shaders.value().terrain_fragment);
     renderer_desc.static_mesh_vertex_spirv = std::move(shaders.value().static_vertex);
     renderer_desc.static_mesh_fragment_spirv = std::move(shaders.value().static_fragment);
+    renderer_desc.shadow_terrain_fragment_spirv =
+        std::move(shaders.value().shadow_terrain_fragment);
+    renderer_desc.shadow_static_fragment_spirv = std::move(shaders.value().shadow_static_fragment);
     renderer_desc.debug_vertex_spirv = std::move(shaders.value().debug_vertex);
     renderer_desc.debug_fragment_spirv = std::move(shaders.value().debug_fragment);
     renderer_desc.tone_map_vertex_spirv = std::move(shaders.value().tone_map_vertex);
     renderer_desc.tone_map_fragment_spirv = std::move(shaders.value().tone_map_fragment);
+    renderer_desc.ssao_fragment_spirv = std::move(shaders.value().ssao_fragment);
+    renderer_desc.ao_composite_fragment_spirv = std::move(shaders.value().ao_composite_fragment);
+    renderer_desc.fxaa_fragment_spirv = std::move(shaders.value().fxaa_fragment);
+    renderer_desc.bloom_fragment_spirv = std::move(shaders.value().bloom_fragment);
     renderer_desc.ui_vertex_spirv = std::move(shaders.value().ui_vertex);
     renderer_desc.ui_fragment_spirv = std::move(shaders.value().ui_fragment);
     renderer_desc.voxel_palette = config_.voxel_palette;

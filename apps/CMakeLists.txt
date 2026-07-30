@@ -15,12 +15,18 @@ function(heartstead_attach_terrain_shader_assets target)
   set(fragment_source "${shader_source_dir}/terrain.frag")
   set(static_vertex_source "${shader_source_dir}/static_mesh.vert")
   set(static_fragment_source "${shader_source_dir}/static_mesh.frag")
+  set(shadow_terrain_fragment_source "${shader_source_dir}/shadow_terrain.frag")
+  set(shadow_static_fragment_source "${shader_source_dir}/shadow_static.frag")
   set(debug_vertex_source "${shader_source_dir}/debug_line.vert")
   set(debug_fragment_source "${shader_source_dir}/debug_line.frag")
   set(ui_vertex_source "${shader_source_dir}/ui.vert")
   set(ui_fragment_source "${shader_source_dir}/ui.frag")
   set(tone_map_vertex_source "${shader_source_dir}/tone_map.vert")
   set(tone_map_fragment_source "${shader_source_dir}/tone_map.frag")
+  set(ssao_fragment_source "${shader_source_dir}/ssao.frag")
+  set(ao_composite_fragment_source "${shader_source_dir}/ao_composite.frag")
+  set(fxaa_fragment_source "${shader_source_dir}/fxaa.frag")
+  set(bloom_fragment_source "${shader_source_dir}/bloom.frag")
 
   if(HEARTSTEAD_GLSLANG_VALIDATOR)
     set(sky_vertex_spirv "${compiled_shader_dir}/sky.vert.spv")
@@ -29,18 +35,27 @@ function(heartstead_attach_terrain_shader_assets target)
     set(fragment_spirv "${compiled_shader_dir}/terrain.frag.spv")
     set(static_vertex_spirv "${compiled_shader_dir}/static_mesh.vert.spv")
     set(static_fragment_spirv "${compiled_shader_dir}/static_mesh.frag.spv")
+    set(shadow_terrain_fragment_spirv "${compiled_shader_dir}/shadow_terrain.frag.spv")
+    set(shadow_static_fragment_spirv "${compiled_shader_dir}/shadow_static.frag.spv")
     set(debug_vertex_spirv "${compiled_shader_dir}/debug_line.vert.spv")
     set(debug_fragment_spirv "${compiled_shader_dir}/debug_line.frag.spv")
     set(ui_vertex_spirv "${compiled_shader_dir}/ui.vert.spv")
     set(ui_fragment_spirv "${compiled_shader_dir}/ui.frag.spv")
     set(tone_map_vertex_spirv "${compiled_shader_dir}/tone_map.vert.spv")
     set(tone_map_fragment_spirv "${compiled_shader_dir}/tone_map.frag.spv")
+    set(ssao_fragment_spirv "${compiled_shader_dir}/ssao.frag.spv")
+    set(ao_composite_fragment_spirv "${compiled_shader_dir}/ao_composite.frag.spv")
+    set(fxaa_fragment_spirv "${compiled_shader_dir}/fxaa.frag.spv")
+    set(bloom_fragment_spirv "${compiled_shader_dir}/bloom.frag.spv")
     add_custom_command(
       OUTPUT "${sky_vertex_spirv}" "${sky_fragment_spirv}"
              "${vertex_spirv}" "${fragment_spirv}" "${static_vertex_spirv}"
              "${static_fragment_spirv}" "${debug_vertex_spirv}" "${debug_fragment_spirv}"
+             "${shadow_terrain_fragment_spirv}" "${shadow_static_fragment_spirv}"
              "${ui_vertex_spirv}" "${ui_fragment_spirv}"
              "${tone_map_vertex_spirv}" "${tone_map_fragment_spirv}"
+             "${ssao_fragment_spirv}" "${ao_composite_fragment_spirv}"
+             "${fxaa_fragment_spirv}" "${bloom_fragment_spirv}"
       COMMAND ${CMAKE_COMMAND} -E make_directory "${compiled_shader_dir}"
       COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
               "${sky_vertex_source}" -o "${sky_vertex_spirv}"
@@ -55,6 +70,10 @@ function(heartstead_attach_terrain_shader_assets target)
       COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
               "${static_fragment_source}" -o "${static_fragment_spirv}"
       COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
+              "${shadow_terrain_fragment_source}" -o "${shadow_terrain_fragment_spirv}"
+      COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
+              "${shadow_static_fragment_source}" -o "${shadow_static_fragment_spirv}"
+      COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
               "${debug_vertex_source}" -o "${debug_vertex_spirv}"
       COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
               "${debug_fragment_source}" -o "${debug_fragment_spirv}"
@@ -66,11 +85,22 @@ function(heartstead_attach_terrain_shader_assets target)
               "${tone_map_vertex_source}" -o "${tone_map_vertex_spirv}"
       COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
               "${tone_map_fragment_source}" -o "${tone_map_fragment_spirv}"
+      COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
+              "${ssao_fragment_source}" -o "${ssao_fragment_spirv}"
+      COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
+              "${ao_composite_fragment_source}" -o "${ao_composite_fragment_spirv}"
+      COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
+              "${fxaa_fragment_source}" -o "${fxaa_fragment_spirv}"
+      COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
+              "${bloom_fragment_source}" -o "${bloom_fragment_spirv}"
       DEPENDS "${sky_vertex_source}" "${sky_fragment_source}"
               "${vertex_source}" "${fragment_source}" "${static_vertex_source}"
-              "${static_fragment_source}" "${debug_vertex_source}" "${debug_fragment_source}"
+              "${static_fragment_source}" "${shadow_terrain_fragment_source}"
+              "${shadow_static_fragment_source}" "${debug_vertex_source}" "${debug_fragment_source}"
               "${ui_vertex_source}" "${ui_fragment_source}"
               "${tone_map_vertex_source}" "${tone_map_fragment_source}"
+              "${ssao_fragment_source}" "${ao_composite_fragment_source}"
+              "${fxaa_fragment_source}" "${bloom_fragment_source}"
       COMMENT "Compiling renderer GLSL to SPIR-V"
       VERBATIM
     )
@@ -81,12 +111,18 @@ function(heartstead_attach_terrain_shader_assets target)
     set(fragment_spirv "${shader_source_dir}/terrain.frag.spv")
     set(static_vertex_spirv "${shader_source_dir}/static_mesh.vert.spv")
     set(static_fragment_spirv "${shader_source_dir}/static_mesh.frag.spv")
+    set(shadow_terrain_fragment_spirv "${shader_source_dir}/shadow_terrain.frag.spv")
+    set(shadow_static_fragment_spirv "${shader_source_dir}/shadow_static.frag.spv")
     set(debug_vertex_spirv "${shader_source_dir}/debug_line.vert.spv")
     set(debug_fragment_spirv "${shader_source_dir}/debug_line.frag.spv")
     set(ui_vertex_spirv "${shader_source_dir}/ui.vert.spv")
     set(ui_fragment_spirv "${shader_source_dir}/ui.frag.spv")
     set(tone_map_vertex_spirv "${shader_source_dir}/tone_map.vert.spv")
     set(tone_map_fragment_spirv "${shader_source_dir}/tone_map.frag.spv")
+    set(ssao_fragment_spirv "${shader_source_dir}/ssao.frag.spv")
+    set(ao_composite_fragment_spirv "${shader_source_dir}/ao_composite.frag.spv")
+    set(fxaa_fragment_spirv "${shader_source_dir}/fxaa.frag.spv")
+    set(bloom_fragment_spirv "${shader_source_dir}/bloom.frag.spv")
   endif()
 
   add_custom_target(
@@ -104,6 +140,10 @@ function(heartstead_attach_terrain_shader_assets target)
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/static_mesh.vert"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${static_fragment_source}"
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/static_mesh.frag"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${shadow_terrain_fragment_source}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/shadow_terrain.frag"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${shadow_static_fragment_source}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/shadow_static.frag"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${debug_vertex_source}"
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/debug_line.vert"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${debug_fragment_source}"
@@ -124,6 +164,10 @@ function(heartstead_attach_terrain_shader_assets target)
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/static_mesh.vert.spv"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${static_fragment_spirv}"
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/static_mesh.frag.spv"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${shadow_terrain_fragment_spirv}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/shadow_terrain.frag.spv"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${shadow_static_fragment_spirv}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/shadow_static.frag.spv"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${debug_vertex_spirv}"
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/debug_line.vert.spv"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${debug_fragment_spirv}"
@@ -136,15 +180,34 @@ function(heartstead_attach_terrain_shader_assets target)
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/tone_map.vert"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${tone_map_fragment_source}"
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/tone_map.frag"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ssao_fragment_source}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/ssao.frag"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ao_composite_fragment_source}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/ao_composite.frag"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${fxaa_fragment_source}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/fxaa.frag"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${bloom_fragment_source}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/bloom.frag"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${tone_map_vertex_spirv}"
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/tone_map.vert.spv"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${tone_map_fragment_spirv}"
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/tone_map.frag.spv"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ssao_fragment_spirv}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/ssao.frag.spv"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ao_composite_fragment_spirv}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/ao_composite.frag.spv"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${fxaa_fragment_spirv}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/fxaa.frag.spv"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${bloom_fragment_spirv}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/bloom.frag.spv"
     DEPENDS "${sky_vertex_spirv}" "${sky_fragment_spirv}"
             "${vertex_spirv}" "${fragment_spirv}" "${static_vertex_spirv}"
-            "${static_fragment_spirv}" "${debug_vertex_spirv}" "${debug_fragment_spirv}"
+            "${static_fragment_spirv}" "${shadow_terrain_fragment_spirv}"
+            "${shadow_static_fragment_spirv}" "${debug_vertex_spirv}" "${debug_fragment_spirv}"
             "${ui_vertex_spirv}" "${ui_fragment_spirv}"
             "${tone_map_vertex_spirv}" "${tone_map_fragment_spirv}"
+            "${ssao_fragment_spirv}" "${ao_composite_fragment_spirv}"
+            "${fxaa_fragment_spirv}" "${bloom_fragment_spirv}"
     COMMENT "Staging compiled renderer shader assets for ${target}"
     VERBATIM
   )

@@ -35,6 +35,10 @@ class VulkanFrameResourcePool {
         // Tracked across passes so the executor can derive barriers without re-deriving state.
         VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
         rhi::RenderExtent extent{};
+        std::uint32_t array_layers = 1;
+        std::uint32_t mip_levels = 1;
+        bool cubemap = false;
+        bool storage = false;
         bool is_depth = false;
         // External images are borrowed; the pool must not destroy them.
         bool owned = false;

@@ -16,6 +16,7 @@ namespace heartstead::world {
 enum class MeshingGeometryKind : std::uint8_t {
     full_cube,
     boxes,
+    authored_faces,
     cross_plane,
     rich_model,
 };
@@ -45,6 +46,7 @@ struct MeshingBlockInfo {
     bool full_occluder = false;
     std::uint16_t neighbor_dependency_radius = 0;
     std::vector<BlockModelBox> boxes;
+    std::vector<BlockModelTriangle> triangles;
     core::PrototypeId model_prototype_id;
     math::Bounds3f render_bounds{};
 };

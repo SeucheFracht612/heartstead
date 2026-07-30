@@ -119,8 +119,11 @@ target_sources(
     renderer/chunks/chunk_render_system.cpp
     renderer/debug/debug_renderer.cpp
     renderer/environment/day_night.cpp
+    renderer/environment/environment_lighting.cpp
     renderer/environment/sky_renderer.cpp
     renderer/frame/frame_builder.cpp
+    renderer/lighting/clustered_lighting.cpp
+    renderer/lighting/cascaded_shadows.cpp
     renderer/memory/gpu_buffer_arena.cpp
     renderer/memory/staging_ring.cpp
     renderer/renderer.cpp
@@ -330,9 +333,12 @@ target_sources(
       renderer/chunks/chunk_render_system.hpp
       renderer/debug/debug_renderer.hpp
       renderer/environment/day_night.hpp
+      renderer/environment/environment_lighting.hpp
       renderer/environment/sky_renderer.hpp
       renderer/frame/frame_builder.hpp
       renderer/frame/render_commands.hpp
+      renderer/lighting/clustered_lighting.hpp
+      renderer/lighting/cascaded_shadows.hpp
       renderer/memory/gpu_buffer_arena.hpp
       renderer/memory/staging_ring.hpp
       renderer/renderer.hpp
@@ -346,6 +352,7 @@ target_sources(
       renderer/shaders/shader_compiler.hpp
       renderer/shaders/spirv_loader.hpp
       renderer/terrain/gpu_chunk_vertex.hpp
+      renderer/terrain/terrain_mapping.hpp
       renderer/ui/ui_renderer.hpp
       renderer/vulkan/vulkan_backend.hpp
       renderer/world_render_list.hpp
@@ -418,6 +425,7 @@ target_sources(
       world/voxel_change.hpp
       world/voxels/voxel_chunk.hpp
       world/voxels/voxel_palette.hpp
+      world/voxels/voxel_surface_state.hpp
       world/worldgen/terrain_generator.hpp
 )
 

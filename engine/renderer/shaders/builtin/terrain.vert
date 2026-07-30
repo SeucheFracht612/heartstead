@@ -14,6 +14,7 @@ layout(location = 2) flat out uint fragment_voxel_type;
 layout(location = 3) flat out uint fragment_light;
 layout(location = 4) flat out uint fragment_state_bits;
 layout(location = 5) out vec3 fragment_world_position;
+layout(location = 6) out float fragment_voxel_ao;
 
 layout(push_constant) uniform ChunkPushConstants {
     mat4 view_projection;
@@ -34,4 +35,5 @@ void main() {
     fragment_light = in_lighting.x;
     fragment_state_bits = in_state_bits;
     fragment_world_position = world_position;
+    fragment_voxel_ao = float(in_lighting.y) / 255.0;
 }

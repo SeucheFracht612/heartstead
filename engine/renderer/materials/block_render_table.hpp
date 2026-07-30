@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -19,6 +20,9 @@ enum class VoxelMaterialFlags : std::uint32_t {
     two_sided = 1U << 3U,
     animated = 1U << 4U,
     unlit = 1U << 5U,
+    fluid = 1U << 6U,
+    stable_rotations = 1U << 7U,
+    stable_mirroring = 1U << 8U,
 };
 
 [[nodiscard]] constexpr VoxelMaterialFlags operator|(VoxelMaterialFlags left,
@@ -26,6 +30,19 @@ enum class VoxelMaterialFlags : std::uint32_t {
     return static_cast<VoxelMaterialFlags>(static_cast<std::uint32_t>(left) |
                                            static_cast<std::uint32_t>(right));
 }
+
+struct GpuTerrainSurfaceLayer {
+    // Packed linear UNORM8 tint and strength/roughness/metallic/emissive parameters. Emissive is
+    // encoded in the 0..4 range. texture_layer is UINT_MAX when the layer is tint-only.
+    std::uint32_t tint_rgba8 = 0xffffffffU;
+    std::uint32_t parameters_unorm8 = 0;
+    std::uint32_t texture_layer = std::numeric_limits<std::uint32_t>::max();
+    std::uint32_t padding = 0;
+
+    friend bool operator==(const GpuTerrainSurfaceLayer&, const GpuTerrainSurfaceLayer&) = default;
+};
+
+static_assert(sizeof(GpuTerrainSurfaceLayer) == 16);
 
 struct GpuVoxelMaterial {
     std::uint32_t face_texture_starts[8]{};
@@ -35,19 +52,30 @@ struct GpuVoxelMaterial {
     float base_color[4]{1.0F, 1.0F, 1.0F, 1.0F};
     float emissive_strength = 0.0F;
     float roughness = 1.0F;
-    float animation_frame_time = 0.0F;
-    float parameter_padding = 0.0F;
+    float ambient_occlusion = 1.0F;
+    float metallic = 0.0F;
+    // texel density, normal scale, macro color strength, macro roughness strength
+    float mapping_parameters[4]{1.0F, 1.0F, 0.08F, 0.08F};
+    // biome tint strength, transition width, transition contrast, transition noise scale
+    float biome_transition[4]{0.0F, 0.0F, 1.0F, 1.0F};
+    float biome_tint[4]{1.0F, 1.0F, 1.0F, 1.0F};
+    GpuTerrainSurfaceLayer surface_layers[9]{};
 
     friend bool operator==(const GpuVoxelMaterial&, const GpuVoxelMaterial&) = default;
 };
 
-static_assert(sizeof(GpuVoxelMaterial) == 112);
+static_assert(sizeof(GpuVoxelMaterial) == 304);
 static_assert(offsetof(GpuVoxelMaterial, face_texture_starts) == 0);
 static_assert(offsetof(GpuVoxelMaterial, face_texture_counts) == 32);
 static_assert(offsetof(GpuVoxelMaterial, flags) == 64);
 static_assert(offsetof(GpuVoxelMaterial, base_color) == 80);
 static_assert(offsetof(GpuVoxelMaterial, emissive_strength) == 96);
 static_assert(offsetof(GpuVoxelMaterial, roughness) == 100);
+static_assert(offsetof(GpuVoxelMaterial, metallic) == 108);
+static_assert(offsetof(GpuVoxelMaterial, mapping_parameters) == 112);
+static_assert(offsetof(GpuVoxelMaterial, biome_transition) == 128);
+static_assert(offsetof(GpuVoxelMaterial, biome_tint) == 144);
+static_assert(offsetof(GpuVoxelMaterial, surface_layers) == 160);
 
 class BlockRenderTable {
   public:

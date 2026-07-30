@@ -128,9 +128,19 @@ enum class TextureFamily : std::uint8_t {
 
 inline constexpr std::size_t texture_family_count = 8;
 
+enum class TerrainTextureRole : std::uint8_t {
+    base_color,
+    normal,
+    surface,
+};
+
+inline constexpr std::size_t terrain_texture_role_count = 3;
+
 struct ParsedTextureBindingName {
+    TerrainTextureRole role = TerrainTextureRole::base_color;
     TextureFamily family = TextureFamily::albedo;
     std::uint32_t variant = 0;
+    std::optional<world::VoxelSurfaceState> overlay;
 };
 
 struct TextureBindingSet {
@@ -140,6 +150,10 @@ struct TextureBindingSet {
 
 [[nodiscard]] constexpr std::size_t texture_family_index(TextureFamily family) noexcept {
     return static_cast<std::size_t>(family);
+}
+
+[[nodiscard]] constexpr std::size_t texture_role_index(TerrainTextureRole role) noexcept {
+    return static_cast<std::size_t>(role);
 }
 
 [[nodiscard]] constexpr std::string_view texture_family_name(TextureFamily family) noexcept {
@@ -176,8 +190,35 @@ struct TextureBindingSet {
 
 [[nodiscard]] core::Result<ParsedTextureBindingName>
 parse_texture_binding_name(std::string_view name, std::string_view material_id) {
+    constexpr std::string_view overlay_prefix = "overlay.";
+    if (name.starts_with(overlay_prefix)) {
+        const auto state_name = name.substr(overlay_prefix.size());
+        for (const auto state : world::voxel_surface_states()) {
+            if (world::voxel_surface_state_name(state) == state_name) {
+                ParsedTextureBindingName result;
+                result.overlay = state;
+                return core::Result<ParsedTextureBindingName>::success(result);
+            }
+        }
+        return core::Result<ParsedTextureBindingName>::failure(
+            "terrain_material_assets.invalid_surface_overlay",
+            std::string(material_id) + ": unknown terrain surface overlay " +
+                std::string(state_name));
+    }
+
+    TerrainTextureRole role = TerrainTextureRole::base_color;
+    constexpr std::string_view normal_prefix = "normal.";
+    constexpr std::string_view surface_prefix = "surface.";
+    if (name.starts_with(normal_prefix)) {
+        role = TerrainTextureRole::normal;
+        name.remove_prefix(normal_prefix.size());
+    } else if (name.starts_with(surface_prefix)) {
+        role = TerrainTextureRole::surface;
+        name.remove_prefix(surface_prefix.size());
+    }
+
     if (const auto family = parse_texture_family(name)) {
-        return core::Result<ParsedTextureBindingName>::success({*family, 0});
+        return core::Result<ParsedTextureBindingName>::success({role, *family, 0, std::nullopt});
     }
 
     constexpr std::string_view variant_marker = ".variant.";
@@ -200,7 +241,7 @@ parse_texture_binding_name(std::string_view name, std::string_view material_id) 
             std::string(material_id) + ": terrain texture variants must use " +
                 "<face>.variant.<positive integer>");
     }
-    return core::Result<ParsedTextureBindingName>::success({*family, variant});
+    return core::Result<ParsedTextureBindingName>::success({role, *family, variant, std::nullopt});
 }
 
 [[nodiscard]] constexpr TextureFamily texture_family_for_face(VoxelMaterialFace face) noexcept {
@@ -224,6 +265,60 @@ parse_texture_binding_name(std::string_view name, std::string_view material_id) 
 [[nodiscard]] constexpr bool is_lateral_face(VoxelMaterialFace face) noexcept {
     return face == VoxelMaterialFace::west || face == VoxelMaterialFace::east ||
            face == VoxelMaterialFace::north || face == VoxelMaterialFace::south;
+}
+
+[[nodiscard]] TerrainSurfaceLayerAsset
+default_surface_layer(world::VoxelSurfaceState state) noexcept {
+    TerrainSurfaceLayerAsset layer;
+    layer.strength = 1.0F;
+    switch (state) {
+    case world::VoxelSurfaceState::wetness:
+        layer.tint = {0.48F, 0.54F, 0.60F, 0.72F};
+        layer.roughness = 0.12F;
+        break;
+    case world::VoxelSurfaceState::snow:
+        layer.tint = {0.92F, 0.96F, 1.0F, 0.95F};
+        layer.roughness = 0.78F;
+        break;
+    case world::VoxelSurfaceState::frost:
+        layer.tint = {0.76F, 0.90F, 1.0F, 0.72F};
+        layer.roughness = 0.58F;
+        break;
+    case world::VoxelSurfaceState::mud:
+        layer.tint = {0.24F, 0.14F, 0.075F, 0.76F};
+        layer.roughness = 0.86F;
+        break;
+    case world::VoxelSurfaceState::moss:
+        layer.tint = {0.20F, 0.38F, 0.12F, 0.68F};
+        layer.roughness = 0.92F;
+        break;
+    case world::VoxelSurfaceState::soot:
+        layer.tint = {0.055F, 0.045F, 0.04F, 0.86F};
+        layer.roughness = 0.96F;
+        break;
+    case world::VoxelSurfaceState::heat:
+        layer.tint = {1.0F, 0.18F, 0.025F, 0.58F};
+        layer.roughness = 0.42F;
+        layer.emissive_strength = 2.5F;
+        break;
+    case world::VoxelSurfaceState::corruption:
+        layer.tint = {0.30F, 0.035F, 0.45F, 0.72F};
+        layer.roughness = 0.48F;
+        layer.emissive_strength = 0.35F;
+        break;
+    case world::VoxelSurfaceState::magical_residue:
+        layer.tint = {0.03F, 0.68F, 0.92F, 0.64F};
+        layer.roughness = 0.32F;
+        layer.emissive_strength = 1.2F;
+        break;
+    }
+    return layer;
+}
+
+[[nodiscard]] std::string surface_parameter_name(world::VoxelSurfaceState state,
+                                                 std::string_view parameter) {
+    return "surface." + std::string(world::voxel_surface_state_name(state)) + "." +
+           std::string(parameter);
 }
 
 } // namespace
@@ -265,20 +360,73 @@ core::Status TerrainMaterialAssetSet::validate() const {
                 "terrain_material_assets.invalid_material",
                 "terrain material assets require unique, non-air voxel types");
         }
-        if (!std::ranges::all_of(material.face_textures, [&valid_texture](const auto& face) {
+        const auto valid_face_texture_set = [&valid_texture](const auto& faces) {
+            return std::ranges::all_of(faces, [&valid_texture](const auto& face) {
                 return std::ranges::all_of(face, valid_texture);
-            })) {
+            });
+        };
+        if (!valid_face_texture_set(material.face_textures) ||
+            !valid_face_texture_set(material.face_normal_textures) ||
+            !valid_face_texture_set(material.face_surface_textures)) {
             return core::Status::failure(
                 "terrain_material_assets.invalid_texture_reference",
                 "terrain material references a texture outside the asset set");
         }
+        for (std::size_t face = 0; face < material.face_textures.size(); ++face) {
+            const auto variants = material.face_textures[face].size();
+            const auto aligned = [variants](const auto& auxiliary) {
+                return auxiliary.empty() || auxiliary.size() == 1U || auxiliary.size() == variants;
+            };
+            if (!aligned(material.face_normal_textures[face]) ||
+                !aligned(material.face_surface_textures[face])) {
+                return core::Status::failure(
+                    "terrain_material_assets.unaligned_auxiliary_variants",
+                    "terrain normal and surface maps must have one entry or match the base-color "
+                    "variant count");
+            }
+        }
         if (!std::isfinite(material.roughness) || material.roughness < 0.0F ||
-            material.roughness > 1.0F || !std::ranges::all_of(material.base_color, [](float value) {
+            material.roughness > 1.0F || !std::isfinite(material.metallic) ||
+            material.metallic < 0.0F || material.metallic > 1.0F ||
+            !std::isfinite(material.ambient_occlusion) || material.ambient_occlusion < 0.0F ||
+            material.ambient_occlusion > 1.0F || !std::isfinite(material.emissive_strength) ||
+            material.emissive_strength < 0.0F || !std::isfinite(material.normal_scale) ||
+            material.normal_scale < 0.0F || !std::isfinite(material.texel_density) ||
+            material.texel_density <= 0.0F || !std::isfinite(material.biome_tint_strength) ||
+            material.biome_tint_strength < 0.0F || material.biome_tint_strength > 1.0F ||
+            !std::isfinite(material.macro_color_strength) || material.macro_color_strength < 0.0F ||
+            material.macro_color_strength > 1.0F ||
+            !std::isfinite(material.macro_roughness_strength) ||
+            material.macro_roughness_strength < 0.0F || material.macro_roughness_strength > 1.0F ||
+            !std::isfinite(material.transition_width) || material.transition_width < 0.0F ||
+            material.transition_width > 0.5F || !std::isfinite(material.transition_contrast) ||
+            material.transition_contrast <= 0.0F ||
+            !std::isfinite(material.transition_noise_scale) ||
+            material.transition_noise_scale <= 0.0F ||
+            !std::ranges::all_of(material.base_color,
+                                 [](float value) {
+                                     return std::isfinite(value) && value >= 0.0F && value <= 1.0F;
+                                 }) ||
+            !std::ranges::all_of(material.biome_tint, [](float value) {
                 return std::isfinite(value) && value >= 0.0F && value <= 1.0F;
             })) {
             return core::Status::failure(
                 "terrain_material_assets.invalid_parameters",
-                "terrain material tint and roughness values must be between zero and one");
+                "terrain material mapping, tint, and PBR parameters are outside valid ranges");
+        }
+        for (const auto& layer : material.surface_layers) {
+            if ((layer.texture != no_terrain_texture_asset && !valid_texture(layer.texture)) ||
+                !std::isfinite(layer.strength) || layer.strength < 0.0F || layer.strength > 1.0F ||
+                !std::isfinite(layer.roughness) || layer.roughness < 0.0F ||
+                layer.roughness > 1.0F || !std::isfinite(layer.metallic) || layer.metallic < 0.0F ||
+                layer.metallic > 1.0F || !std::isfinite(layer.emissive_strength) ||
+                layer.emissive_strength < 0.0F || !std::ranges::all_of(layer.tint, [](float value) {
+                    return std::isfinite(value) && value >= 0.0F && value <= 1.0F;
+                })) {
+                return core::Status::failure(
+                    "terrain_material_assets.invalid_surface_layer",
+                    "terrain surface-layer parameters are outside valid ranges");
+            }
         }
     }
     return core::Status::ok();
@@ -329,14 +477,22 @@ load_terrain_material_assets(const world::VoxelPalette& voxel_palette,
                 definition->id.value() + ": voxel terrain material must use the terrain domain");
         }
 
-        std::array<TextureBindingSet, texture_family_count> binding_sets;
+        std::array<std::array<TextureBindingSet, texture_family_count>, terrain_texture_role_count>
+            binding_sets;
+        std::array<const MaterialTextureBinding*, world::voxel_surface_state_count>
+            overlay_bindings{};
         for (const auto& texture : definition->textures) {
             auto parsed = parse_texture_binding_name(texture.name, definition->id.value());
             if (!parsed) {
                 return core::Result<TerrainMaterialAssetSet>::failure(parsed.error().code,
                                                                       parsed.error().message);
             }
-            auto& set = binding_sets[texture_family_index(parsed.value().family)];
+            if (parsed.value().overlay.has_value()) {
+                overlay_bindings[static_cast<std::size_t>(*parsed.value().overlay)] = &texture;
+                continue;
+            }
+            auto& set = binding_sets[texture_role_index(parsed.value().role)]
+                                    [texture_family_index(parsed.value().family)];
             if (parsed.value().variant == 0) {
                 set.primary = &texture;
             } else {
@@ -344,75 +500,109 @@ load_terrain_material_assets(const world::VoxelPalette& voxel_palette,
             }
         }
 
-        for (std::size_t index = 0; index < binding_sets.size(); ++index) {
-            const auto& set = binding_sets[index];
-            if (!set.variants.empty() && set.primary == nullptr) {
-                return core::Result<TerrainMaterialAssetSet>::failure(
-                    "terrain_material_assets.variant_without_primary",
-                    definition->id.value() + ": " +
-                        std::string(texture_family_name(static_cast<TextureFamily>(index))) +
-                        " variants require a primary texture binding");
-            }
-            std::uint32_t expected_variant = 1;
-            for (const auto& [variant, _] : set.variants) {
-                if (variant != expected_variant) {
+        for (const auto& role_sets : binding_sets) {
+            for (std::size_t index = 0; index < role_sets.size(); ++index) {
+                const auto& set = role_sets[index];
+                if (!set.variants.empty() && set.primary == nullptr) {
                     return core::Result<TerrainMaterialAssetSet>::failure(
-                        "terrain_material_assets.non_contiguous_variants",
+                        "terrain_material_assets.variant_without_primary",
                         definition->id.value() + ": " +
                             std::string(texture_family_name(static_cast<TextureFamily>(index))) +
-                            " texture variants must be contiguous from 1");
+                            " variants require a primary texture binding");
                 }
-                ++expected_variant;
+                std::uint32_t expected_variant = 1;
+                for (const auto& [variant, _] : set.variants) {
+                    if (variant != expected_variant) {
+                        return core::Result<TerrainMaterialAssetSet>::failure(
+                            "terrain_material_assets.non_contiguous_variants",
+                            definition->id.value() + ": " +
+                                std::string(
+                                    texture_family_name(static_cast<TextureFamily>(index))) +
+                                " texture variants must be contiguous from 1");
+                    }
+                    ++expected_variant;
+                }
             }
         }
 
-        std::array<std::vector<std::uint32_t>, texture_family_count> loaded_sets;
-        for (std::size_t index = 0; index < binding_sets.size(); ++index) {
-            const auto& binding_set = binding_sets[index];
-            if (binding_set.primary == nullptr) {
-                continue;
-            }
-            auto primary = load_texture(*binding_set.primary);
-            if (!primary) {
-                if (!binding_set.primary->required) {
+        std::array<std::array<std::vector<std::uint32_t>, texture_family_count>,
+                   terrain_texture_role_count>
+            loaded_sets;
+        for (std::size_t role = 0; role < binding_sets.size(); ++role) {
+            for (std::size_t index = 0; index < binding_sets[role].size(); ++index) {
+                const auto& binding_set = binding_sets[role][index];
+                if (binding_set.primary == nullptr) {
                     continue;
                 }
-                return core::Result<TerrainMaterialAssetSet>::failure(
-                    primary.error().code, definition->id.value() + ": " + primary.error().message);
+                auto primary = load_texture(*binding_set.primary);
+                if (!primary) {
+                    if (!binding_set.primary->required) {
+                        continue;
+                    }
+                    return core::Result<TerrainMaterialAssetSet>::failure(
+                        primary.error().code,
+                        definition->id.value() + ": " + primary.error().message);
+                }
+                auto& loaded_set = loaded_sets[role][index];
+                loaded_set.push_back(primary.value());
+                for (const auto& [_, variant] : binding_set.variants) {
+                    auto loaded = load_texture(*variant);
+                    if (!loaded) {
+                        if (!variant->required) {
+                            continue;
+                        }
+                        return core::Result<TerrainMaterialAssetSet>::failure(
+                            loaded.error().code,
+                            definition->id.value() + ": " + loaded.error().message);
+                    }
+                    loaded_set.push_back(loaded.value());
+                }
             }
-            auto& loaded_set = loaded_sets[index];
-            loaded_set.push_back(primary.value());
-            for (const auto& [_, variant] : binding_set.variants) {
-                auto loaded = load_texture(*variant);
+        }
+
+        TerrainVoxelMaterialAsset material;
+        material.voxel_type = voxel->type;
+        for (const auto state : world::voxel_surface_states()) {
+            material.surface_layers[static_cast<std::size_t>(state)] = default_surface_layer(state);
+        }
+        constexpr std::array faces{
+            VoxelMaterialFace::west, VoxelMaterialFace::east,  VoxelMaterialFace::bottom,
+            VoxelMaterialFace::top,  VoxelMaterialFace::north, VoxelMaterialFace::south,
+        };
+        const auto resolve_faces = [&loaded_sets, &faces](TerrainTextureRole role,
+                                                          auto& destinations) {
+            const auto& role_sets = loaded_sets[texture_role_index(role)];
+            for (const auto face : faces) {
+                const auto& specific =
+                    role_sets[texture_family_index(texture_family_for_face(face))];
+                const auto& side = role_sets[texture_family_index(TextureFamily::side)];
+                const auto& albedo = role_sets[texture_family_index(TextureFamily::albedo)];
+                auto& destination = destinations[voxel_material_face_index(face)];
+                if (!specific.empty()) {
+                    destination = specific;
+                } else if (is_lateral_face(face) && !side.empty()) {
+                    destination = side;
+                } else {
+                    destination = albedo;
+                }
+            }
+        };
+        resolve_faces(TerrainTextureRole::base_color, material.face_textures);
+        resolve_faces(TerrainTextureRole::normal, material.face_normal_textures);
+        resolve_faces(TerrainTextureRole::surface, material.face_surface_textures);
+        for (const auto state : world::voxel_surface_states()) {
+            const auto index = static_cast<std::size_t>(state);
+            if (overlay_bindings[index] != nullptr) {
+                auto loaded = load_texture(*overlay_bindings[index]);
                 if (!loaded) {
-                    if (!variant->required) {
+                    if (!overlay_bindings[index]->required) {
                         continue;
                     }
                     return core::Result<TerrainMaterialAssetSet>::failure(
                         loaded.error().code,
                         definition->id.value() + ": " + loaded.error().message);
                 }
-                loaded_set.push_back(loaded.value());
-            }
-        }
-
-        TerrainVoxelMaterialAsset material;
-        material.voxel_type = voxel->type;
-        constexpr std::array faces{
-            VoxelMaterialFace::west, VoxelMaterialFace::east,  VoxelMaterialFace::bottom,
-            VoxelMaterialFace::top,  VoxelMaterialFace::north, VoxelMaterialFace::south,
-        };
-        for (const auto face : faces) {
-            const auto& specific = loaded_sets[texture_family_index(texture_family_for_face(face))];
-            const auto& side = loaded_sets[texture_family_index(TextureFamily::side)];
-            const auto& albedo = loaded_sets[texture_family_index(TextureFamily::albedo)];
-            auto& destination = material.face_textures[voxel_material_face_index(face)];
-            if (!specific.empty()) {
-                destination = specific;
-            } else if (is_lateral_face(face) && !side.empty()) {
-                destination = side;
-            } else {
-                destination = albedo;
+                material.surface_layers[index].texture = loaded.value();
             }
         }
         material.blend_mode = definition->blend_mode;
@@ -421,8 +611,78 @@ load_terrain_material_assets(const world::VoxelPalette& voxel_palette,
             material.base_color = {tint->value.red, tint->value.green, tint->value.blue,
                                    tint->value.alpha};
         }
+        if (const auto* tint = find_color(*definition, "biome_tint")) {
+            material.biome_tint = {tint->value.red, tint->value.green, tint->value.blue,
+                                   tint->value.alpha};
+        }
         if (const auto* roughness = find_scalar(*definition, "roughness")) {
             material.roughness = roughness->value;
+        }
+        if (const auto* metallic = find_scalar(*definition, "metallic")) {
+            material.metallic = metallic->value;
+        }
+        if (const auto* ambient_occlusion = find_scalar(*definition, "ambient_occlusion")) {
+            material.ambient_occlusion = ambient_occlusion->value;
+        }
+        if (const auto* emissive = find_scalar(*definition, "emissive_strength")) {
+            material.emissive_strength = emissive->value;
+        }
+        if (const auto* unlit = find_scalar(*definition, "unlit")) {
+            material.unlit = unlit->value >= 0.5F;
+        }
+        if (const auto* value = find_scalar(*definition, "normal_scale")) {
+            material.normal_scale = value->value;
+        }
+        if (const auto* value = find_scalar(*definition, "texel_density")) {
+            material.texel_density = value->value;
+        }
+        if (const auto* value = find_scalar(*definition, "biome_tint_strength")) {
+            material.biome_tint_strength = value->value;
+        }
+        if (const auto* value = find_scalar(*definition, "macro_color_strength")) {
+            material.macro_color_strength = value->value;
+        }
+        if (const auto* value = find_scalar(*definition, "macro_roughness_strength")) {
+            material.macro_roughness_strength = value->value;
+        }
+        if (const auto* value = find_scalar(*definition, "transition_width")) {
+            material.transition_width = value->value;
+        }
+        if (const auto* value = find_scalar(*definition, "transition_contrast")) {
+            material.transition_contrast = value->value;
+        }
+        if (const auto* value = find_scalar(*definition, "transition_noise_scale")) {
+            material.transition_noise_scale = value->value;
+        }
+        if (const auto* value = find_scalar(*definition, "stable_rotations")) {
+            material.stable_rotations = value->value >= 0.5F;
+        }
+        if (const auto* value = find_scalar(*definition, "stable_mirroring")) {
+            material.stable_mirroring = value->value >= 0.5F;
+        }
+        for (const auto state : world::voxel_surface_states()) {
+            auto& layer = material.surface_layers[static_cast<std::size_t>(state)];
+            if (const auto* color =
+                    find_color(*definition, surface_parameter_name(state, "tint"))) {
+                layer.tint = {color->value.red, color->value.green, color->value.blue,
+                              color->value.alpha};
+            }
+            if (const auto* value =
+                    find_scalar(*definition, surface_parameter_name(state, "strength"))) {
+                layer.strength = value->value;
+            }
+            if (const auto* value =
+                    find_scalar(*definition, surface_parameter_name(state, "roughness"))) {
+                layer.roughness = value->value;
+            }
+            if (const auto* value =
+                    find_scalar(*definition, surface_parameter_name(state, "metallic"))) {
+                layer.metallic = value->value;
+            }
+            if (const auto* value =
+                    find_scalar(*definition, surface_parameter_name(state, "emissive_strength"))) {
+                layer.emissive_strength = value->value;
+            }
         }
         result.materials.push_back(std::move(material));
     }

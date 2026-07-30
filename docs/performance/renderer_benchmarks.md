@@ -42,6 +42,8 @@ The deterministic catalog includes static and stress coverage for:
 - caves;
 - checkerboard/worst-case face separation;
 - cross-plane forest/foliage;
+- terrain material bands, nine surface states, and authored slopes;
+- a 128-light settlement grid with mixed point/spot lights and shadow selection;
 - rapid edits and replacement meshes;
 - high-speed flythrough/streaming;
 - load/unload churn;
@@ -81,6 +83,51 @@ output with any conclusion.
 8. Treat Vulkan validation state as part of the configuration.
 9. Preserve output files; do not transcribe only a headline FPS number.
 10. Add a new dated baseline below only when it remains useful for future decisions.
+
+## Renderer V2 terrain-material baseline — 2026-07-30
+
+This closure run measures the unified terrain PBR path, three aligned mipmapped texture arrays,
+world-stable macro/variant mapping, nine shared surface-state layers, voxel AO, shadows, and mixed
+greedy/authored-slope geometry.
+
+- **Build:** dirty Task 3 worktree, GCC 13.3.0, Release
+- **Machine:** Intel Lunar Lake integrated graphics, Mesa 25.2.8, Linux 6.17.0-1030-oem
+- **Configuration:** Vulkan, validation requested, 1280×720, radius 1, 120 warm-up frames,
+  300 measured frames, immediate/uncapped, three sequential runs
+- **Command:** `heartstead_render_benchmark --vulkan --scene terrain-materials --warmup 120
+  --frames 300 --radius 1`
+- **Raw output:** `build/default-release/benchmarks/terrain-materials-task3-run{1,2,3}.json`
+
+| Run | Median ms | p95 ms | p99 ms | 1% low FPS | 0.1% low FPS | Max ms | Mean GPU ms |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 2.653 | 5.011 | 6.106 | 151.0 | 142.8 | 7.001 | 2.784 |
+| 2 | 2.779 | 6.532 | 7.432 | 122.8 | 119.4 | 8.375 | 3.269 |
+| 3 | 2.876 | 6.430 | 7.922 | 114.9 | 99.9 | 10.006 | 3.345 |
+
+Each measured frame held nine resident chunks, 3,251 terrain triangles, seven runtime terrain
+materials, 146 total draws, and no pending or failed chunk work. The spread is retained rather than
+selecting the fastest run; use the raw outputs for subsystem attribution.
+
+## Renderer V2 lighting baseline — 2026-07-30
+
+This closure run measures the new tiled direct-lighting, four-cascade directional-shadow, two-map
+local spotlight-shadow, SSAO, FXAA, bloom, and tone-map frame on the deterministic 128-light scene.
+
+- **Build:** dirty Task 2 worktree, Clang 18.1.3, Release
+- **Machine:** Intel Lunar Lake integrated graphics, Mesa 25.2.8, Linux 6.17.0-1030-oem
+- **Configuration:** Vulkan, validation requested, 1280×720, radius 1, 120 warm-up frames,
+  300 measured frames, immediate/uncapped
+- **Command:** `heartstead_render_benchmark --vulkan --scene light-heavy --warmup 120 --frames
+  300 --radius 1`
+- **Raw output:** `build/task2-release/benchmarks/light-heavy-task2.json`
+
+| Median ms | p95 ms | p99 ms | 1% low FPS | 0.1% low FPS | Max ms | Mean GPU ms |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1.650 | 3.522 | 5.360 | 169.0 | 161.4 | 6.196 | 1.536 |
+
+The measured frame held 128 submitted local lights, nine resident terrain chunks, and both selected
+local shadow slots. Treat this as the first V2 lighting reference, not a cross-machine comparison
+with the V1 data below.
 
 ## Historical renderer V1 baseline
 

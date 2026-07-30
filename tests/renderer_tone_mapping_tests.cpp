@@ -16,9 +16,9 @@
 #include "engine/renderer/shaders/spirv_loader.hpp"
 
 #include <cassert>
-#include <filesystem>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <memory>
 #include <numeric>
 #include <span>
@@ -62,8 +62,12 @@ using namespace heartstead::renderer;
     rhi::RenderPipelineLayoutDesc layout;
     layout.material_id = *material;
     layout.shader_template = {"base", "shaders/tone_map.vert"};
-    layout.descriptors = {{"scene_hdr", rhi::RenderDescriptorKind::sampled_texture, 0, true,
-                           rhi::RenderShaderStageFlags::fragment}};
+    layout.descriptors = {
+        {"scene_hdr", rhi::RenderDescriptorKind::sampled_texture, 0, true,
+         rhi::RenderShaderStageFlags::fragment},
+        {"bloom_hdr", rhi::RenderDescriptorKind::sampled_texture, 1, true,
+         rhi::RenderShaderStageFlags::fragment},
+    };
     layout.push_constant_ranges.push_back(
         {rhi::RenderShaderStageFlags::fragment, 0, sizeof(rhi::ToneMapPushConstants)});
     layout.debug_name = "tone_map_layout";

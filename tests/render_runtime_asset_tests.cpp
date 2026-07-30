@@ -5,6 +5,7 @@
 #include "engine/renderer/materials/material_runtime_cache.hpp"
 #include "engine/renderer/materials/pipeline_cache.hpp"
 #include "engine/renderer/terrain/gpu_chunk_vertex.hpp"
+#include "engine/renderer/terrain/terrain_mapping.hpp"
 
 #include <array>
 #include <cassert>
@@ -278,12 +279,16 @@ void test_texture_arrays_mips_fallbacks_and_sampler_cache() {
     sampler_desc.min_filter = renderer::rhi::RenderSamplerFilter::linear;
     sampler_desc.mag_filter = renderer::rhi::RenderSamplerFilter::nearest;
     sampler_desc.mipmap_mode = renderer::rhi::RenderSamplerMipmapMode::linear;
+    sampler_desc.max_anisotropy = 8.0F;
     sampler_desc.max_lod = 8.0F;
     auto sampler = samplers.get(sampler_desc);
     assert(sampler);
     assert(samplers.get(sampler_desc).value() == sampler.value());
     assert(samplers.stats().resident_sampler_count == 1);
     assert(samplers.stats().cache_hit_count == 1);
+    auto invalid_anisotropy = sampler_desc;
+    invalid_anisotropy.max_anisotropy = 17.0F;
+    assert(!samplers.get(invalid_anisotropy));
 
     auto material = core::PrototypeId::parse("base:materials/texture_test");
     assert(material);
@@ -457,6 +462,28 @@ void test_material_table_updates_without_mesh_changes() {
     assert(device.value()->live_resource_count() == baseline);
 }
 
+void test_terrain_variant_selection_is_coordinate_stable() {
+    using namespace heartstead;
+    constexpr world::ChunkCoord chunk{-4'000'000'001LL, 17, 9'000'000'003LL};
+    constexpr world::VoxelCoord local{31, 7, 0};
+    constexpr auto first =
+        renderer::terrain::select_terrain_variant(chunk, local, 3, 7, true, true);
+    constexpr auto reloaded =
+        renderer::terrain::select_terrain_variant(chunk, local, 3, 7, true, true);
+    static_assert(first == reloaded);
+    static_assert(first.variant < 7);
+    static_assert(first.quarter_turns < 4);
+    // The exact period used by the shader preserves the selection after very large coordinate
+    // rebases; camera and unrelated voxel state are deliberately not inputs.
+    constexpr world::ChunkCoord period_shifted{chunk.x + 1024, chunk.y, chunk.z - 2048};
+    static_assert(renderer::terrain::select_terrain_variant(period_shifted, local, 3, 7, true,
+                                                            true) == first);
+    constexpr auto fixed =
+        renderer::terrain::select_terrain_variant(chunk, local, 3, 7, false, false);
+    static_assert(fixed.quarter_turns == 0);
+    static_assert(!fixed.mirrored);
+}
+
 } // namespace
 
 int main() {
@@ -469,5 +496,6 @@ int main() {
     test_srgb_mip_generation();
     test_surface_texture_array_resizes_and_reuses_layers();
     test_material_table_updates_without_mesh_changes();
+    test_terrain_variant_selection_is_coordinate_stable();
     return 0;
 }

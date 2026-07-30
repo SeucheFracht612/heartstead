@@ -236,8 +236,101 @@ void append_section_indices(ChunkMesh& mesh, std::uint16_t material_index,
     mesh.sections.push_back({material_index, render_phase, first_index, index_count});
 }
 
+template <typename Occludes>
+[[nodiscard]] std::array<std::uint8_t, 4>
+face_ambient_occlusion(VoxelCoord coordinate, const FaceTemplate& face, Occludes&& occludes) {
+    std::array<std::uint8_t, 4> result{};
+    const std::array normal{face.offset_x, face.offset_y, face.offset_z};
+    std::array<std::size_t, 2> tangent_axes{};
+    std::size_t tangent_count = 0;
+    for (std::size_t axis = 0; axis < normal.size(); ++axis) {
+        if (normal[axis] == 0) {
+            tangent_axes[tangent_count++] = axis;
+        }
+    }
+    if (tangent_count != 2U) {
+        result.fill(255U);
+        return result;
+    }
+    const std::array origin{static_cast<std::int32_t>(coordinate.x),
+                            static_cast<std::int32_t>(coordinate.y),
+                            static_cast<std::int32_t>(coordinate.z)};
+    constexpr std::array<std::uint8_t, 4> brightness{112U, 156U, 204U, 255U};
+    for (std::size_t corner_index = 0; corner_index < face.corners.size(); ++corner_index) {
+        const auto corner = face.corners[corner_index];
+        const std::array corner_components{corner.x, corner.y, corner.z};
+        std::array<int, 3> first = normal;
+        std::array<int, 3> second = normal;
+        std::array<int, 3> diagonal = normal;
+        const auto first_axis = tangent_axes[0];
+        const auto second_axis = tangent_axes[1];
+        const auto first_sign = corner_components[first_axis] < 0.5F ? -1 : 1;
+        const auto second_sign = corner_components[second_axis] < 0.5F ? -1 : 1;
+        first[first_axis] += first_sign;
+        second[second_axis] += second_sign;
+        diagonal[first_axis] += first_sign;
+        diagonal[second_axis] += second_sign;
+        const bool side_a =
+            occludes(origin[0] + first[0], origin[1] + first[1], origin[2] + first[2]);
+        const bool side_b =
+            occludes(origin[0] + second[0], origin[1] + second[1], origin[2] + second[2]);
+        const bool corner_blocked =
+            occludes(origin[0] + diagonal[0], origin[1] + diagonal[1], origin[2] + diagonal[2]);
+        const auto open_level = side_a && side_b ? 0U
+                                                 : 3U - static_cast<std::uint32_t>(side_a) -
+                                                       static_cast<std::uint32_t>(side_b) -
+                                                       static_cast<std::uint32_t>(corner_blocked);
+        result[corner_index] = brightness[open_level];
+    }
+    return result;
+}
+
+template <typename Occludes>
+[[nodiscard]] std::uint8_t
+authored_vertex_ambient_occlusion(VoxelCoord coordinate, const FaceTemplate& face,
+                                  math::Vec3f local_position, Occludes&& occludes) {
+    const std::array normal{face.offset_x, face.offset_y, face.offset_z};
+    std::array<std::size_t, 2> tangent_axes{};
+    std::size_t tangent_count = 0;
+    for (std::size_t axis = 0; axis < normal.size(); ++axis) {
+        if (normal[axis] == 0) {
+            tangent_axes[tangent_count++] = axis;
+        }
+    }
+    if (tangent_count != 2U) {
+        return 255U;
+    }
+    const std::array origin{static_cast<std::int32_t>(coordinate.x),
+                            static_cast<std::int32_t>(coordinate.y),
+                            static_cast<std::int32_t>(coordinate.z)};
+    const std::array components{local_position.x, local_position.y, local_position.z};
+    std::array first = normal;
+    std::array second = normal;
+    std::array diagonal = normal;
+    const auto first_axis = tangent_axes[0];
+    const auto second_axis = tangent_axes[1];
+    const auto first_sign = components[first_axis] < 0.5F ? -1 : 1;
+    const auto second_sign = components[second_axis] < 0.5F ? -1 : 1;
+    first[first_axis] += first_sign;
+    second[second_axis] += second_sign;
+    diagonal[first_axis] += first_sign;
+    diagonal[second_axis] += second_sign;
+    const bool side_a = occludes(origin[0] + first[0], origin[1] + first[1], origin[2] + first[2]);
+    const bool side_b =
+        occludes(origin[0] + second[0], origin[1] + second[1], origin[2] + second[2]);
+    const bool corner =
+        occludes(origin[0] + diagonal[0], origin[1] + diagonal[1], origin[2] + diagonal[2]);
+    constexpr std::array<std::uint8_t, 4> brightness{112U, 156U, 204U, 255U};
+    const auto open_level = side_a && side_b ? 0U
+                                             : 3U - static_cast<std::uint32_t>(side_a) -
+                                                   static_cast<std::uint32_t>(side_b) -
+                                                   static_cast<std::uint32_t>(corner);
+    return brightness[open_level];
+}
+
 void add_quad(ChunkMesh& mesh, const std::array<math::Vec3f, 4>& positions, math::Vec3f normal,
-              VoxelCell cell, std::uint16_t material_index, MeshingRenderPhase render_phase) {
+              VoxelCell cell, std::uint16_t material_index, MeshingRenderPhase render_phase,
+              std::array<std::uint8_t, 4> ambient_occlusion = {255U, 255U, 255U, 255U}) {
     const auto base_index = static_cast<std::uint32_t>(mesh.vertices.size());
     const auto first_index = static_cast<std::uint32_t>(mesh.indices.size());
     constexpr std::array<std::pair<float, float>, 4> uvs{
@@ -246,12 +339,99 @@ void add_quad(ChunkMesh& mesh, const std::array<math::Vec3f, 4>& positions, math
         include_point(mesh, positions[index]);
         mesh.vertices.push_back(ChunkMeshVertex{positions[index], normal, uvs[index].first,
                                                 uvs[index].second, cell.type, cell.light,
-                                                cell.state_bits});
+                                                cell.state_bits, ambient_occlusion[index]});
     }
     mesh.indices.insert(mesh.indices.end(), {base_index, base_index + 1, base_index + 2, base_index,
                                              base_index + 2, base_index + 3});
     append_section_indices(mesh, material_index, render_phase, first_index, 6);
     ++mesh.face_count;
+}
+
+void add_triangle(ChunkMesh& mesh, const std::array<math::Vec3f, 3>& positions, math::Vec3f normal,
+                  VoxelCell cell, std::uint16_t material_index, MeshingRenderPhase render_phase,
+                  std::array<std::uint8_t, 3> ambient_occlusion = {255U, 255U, 255U}) {
+    const auto base_index = static_cast<std::uint32_t>(mesh.vertices.size());
+    const auto first_index = static_cast<std::uint32_t>(mesh.indices.size());
+    constexpr std::array<std::pair<float, float>, 3> uvs{
+        std::pair{0.0F, 0.0F}, std::pair{1.0F, 0.0F}, std::pair{0.0F, 1.0F}};
+    for (std::size_t index = 0; index < positions.size(); ++index) {
+        include_point(mesh, positions[index]);
+        mesh.vertices.push_back(ChunkMeshVertex{positions[index], normal, uvs[index].first,
+                                                uvs[index].second, cell.type, cell.light,
+                                                cell.state_bits, ambient_occlusion[index]});
+    }
+    mesh.indices.insert(mesh.indices.end(), {base_index, base_index + 1U, base_index + 2U});
+    append_section_indices(mesh, material_index, render_phase, first_index, 3);
+    ++mesh.face_count;
+    ++mesh.triangle_face_count;
+}
+
+[[nodiscard]] std::optional<FaceTemplate>
+authored_triangle_boundary(const BlockModelTriangle& triangle) noexcept {
+    for (const auto& face : face_templates()) {
+        const auto boundary = face.direction == ChunkMeshFaceDirection::negative_x ||
+                                      face.direction == ChunkMeshFaceDirection::negative_y ||
+                                      face.direction == ChunkMeshFaceDirection::negative_z
+                                  ? 0.0F
+                                  : 1.0F;
+        const auto on_plane = [&face, boundary](math::Vec3f position) {
+            switch (face.direction) {
+            case ChunkMeshFaceDirection::negative_x:
+            case ChunkMeshFaceDirection::positive_x:
+                return nearly_equal(position.x, boundary);
+            case ChunkMeshFaceDirection::negative_y:
+            case ChunkMeshFaceDirection::positive_y:
+                return nearly_equal(position.y, boundary);
+            case ChunkMeshFaceDirection::negative_z:
+            case ChunkMeshFaceDirection::positive_z:
+                return nearly_equal(position.z, boundary);
+            }
+            return false;
+        };
+        if (std::ranges::all_of(triangle.positions, on_plane)) {
+            return face;
+        }
+    }
+    return std::nullopt;
+}
+
+struct AuthoredNeighbor {
+    bool full_occluder = false;
+    std::uint8_t light = 0;
+};
+
+template <typename Query>
+void add_authored_triangle(ChunkMesh& mesh, VoxelCoord coordinate, VoxelCell cell,
+                           const BlockModelTriangle& triangle, std::uint16_t material_index,
+                           MeshingRenderPhase render_phase, Query&& query) {
+    const auto boundary = authored_triangle_boundary(triangle);
+    std::array<std::uint8_t, 3> ambient_occlusion{255U, 255U, 255U};
+    if (boundary) {
+        const auto neighbor = query(static_cast<std::int32_t>(coordinate.x) + boundary->offset_x,
+                                    static_cast<std::int32_t>(coordinate.y) + boundary->offset_y,
+                                    static_cast<std::int32_t>(coordinate.z) + boundary->offset_z);
+        if (neighbor.full_occluder) {
+            return;
+        }
+        cell.light = std::max(cell.light, neighbor.light);
+        for (std::size_t index = 0; index < triangle.positions.size(); ++index) {
+            ambient_occlusion[index] = authored_vertex_ambient_occlusion(
+                coordinate, *boundary, triangle.positions[index],
+                [&query](std::int32_t x, std::int32_t y, std::int32_t z) {
+                    return query(x, y, z).full_occluder;
+                });
+        }
+    }
+    const math::Vec3f origin{static_cast<float>(coordinate.x), static_cast<float>(coordinate.y),
+                             static_cast<float>(coordinate.z)};
+    std::array<math::Vec3f, 3> positions{};
+    for (std::size_t index = 0; index < positions.size(); ++index) {
+        positions[index] = origin + triangle.positions[index];
+    }
+    auto normal = math::cross(triangle.positions[1] - triangle.positions[0],
+                              triangle.positions[2] - triangle.positions[0]);
+    normal /= static_cast<float>(math::length(normal));
+    add_triangle(mesh, positions, normal, cell, material_index, render_phase, ambient_occlusion);
 }
 
 void add_fluid_quad(ChunkMesh& mesh, const std::array<math::Vec3f, 4>& positions,
@@ -281,8 +461,7 @@ struct FluidMeshCell {
     return normal_length > 0.00001F ? normal / normal_length : math::Vec3f{0.0F, 1.0F, 0.0F};
 }
 
-[[nodiscard]] std::array<math::Vec2f, 4>
-fluid_top_uvs(FluidFlowDirection flow) noexcept {
+[[nodiscard]] std::array<math::Vec2f, 4> fluid_top_uvs(FluidFlowDirection flow) noexcept {
     constexpr std::array<math::Vec2f, 4> positive_x{{
         {0.0F, 1.0F},
         {1.0F, 1.0F},
@@ -304,9 +483,9 @@ fluid_top_uvs(FluidFlowDirection flow) noexcept {
 }
 
 template <typename Query>
-[[nodiscard]] core::Result<float>
-fluid_corner_height(Query&& query, std::int32_t x, std::int32_t y, std::int32_t z,
-                    std::uint16_t fluid_type, int corner_x, int corner_z) {
+[[nodiscard]] core::Result<float> fluid_corner_height(Query&& query, std::int32_t x, std::int32_t y,
+                                                      std::int32_t z, std::uint16_t fluid_type,
+                                                      int corner_x, int corner_z) {
     const std::array<int, 2> x_offsets = corner_x == 0 ? std::array{-1, 0} : std::array{0, 1};
     const std::array<int, 2> z_offsets = corner_z == 0 ? std::array{-1, 0} : std::array{0, 1};
     float total = 0.0F;
@@ -330,9 +509,8 @@ fluid_corner_height(Query&& query, std::int32_t x, std::int32_t y, std::int32_t 
         }
     }
     if (samples == 0) {
-        return core::Result<float>::failure(
-            "chunk_mesh.missing_fluid_corner",
-            "fluid surface corner has no contributing fluid cell");
+        return core::Result<float>::failure("chunk_mesh.missing_fluid_corner",
+                                            "fluid surface corner has no contributing fluid cell");
     }
     return core::Result<float>::success(total / static_cast<float>(samples));
 }
@@ -355,15 +533,14 @@ template <typename Query>
             {{1, 0}},
             {{0, 0}},
         }};
-        auto height = fluid_corner_height(query, x, y, z, cell.type, corners[index][0],
-                                          corners[index][1]);
+        auto height =
+            fluid_corner_height(query, x, y, z, cell.type, corners[index][0], corners[index][1]);
         if (!height) {
             return core::Status::failure(height.error().code, height.error().message);
         }
         heights[index] = height.value();
     }
-    const math::Vec3f origin{static_cast<float>(coordinate.x),
-                             static_cast<float>(coordinate.y),
+    const math::Vec3f origin{static_cast<float>(coordinate.x), static_cast<float>(coordinate.y),
                              static_cast<float>(coordinate.z)};
     const std::array<math::Vec3f, 4> top{{
         origin + math::Vec3f{0.0F, heights[0], 1.0F},
@@ -397,26 +574,22 @@ template <typename Query>
              0,
              ChunkMeshFaceDirection::negative_x,
              {0, 3},
-             {origin + math::Vec3f{0.0F, 0.0F, 1.0F},
-              origin + math::Vec3f{0.0F, 0.0F, 0.0F}}},
+             {origin + math::Vec3f{0.0F, 0.0F, 1.0F}, origin + math::Vec3f{0.0F, 0.0F, 0.0F}}},
         Side{1,
              0,
              ChunkMeshFaceDirection::positive_x,
              {2, 1},
-             {origin + math::Vec3f{1.0F, 0.0F, 0.0F},
-              origin + math::Vec3f{1.0F, 0.0F, 1.0F}}},
+             {origin + math::Vec3f{1.0F, 0.0F, 0.0F}, origin + math::Vec3f{1.0F, 0.0F, 1.0F}}},
         Side{0,
              -1,
              ChunkMeshFaceDirection::negative_z,
              {3, 2},
-             {origin + math::Vec3f{0.0F, 0.0F, 0.0F},
-              origin + math::Vec3f{1.0F, 0.0F, 0.0F}}},
+             {origin + math::Vec3f{0.0F, 0.0F, 0.0F}, origin + math::Vec3f{1.0F, 0.0F, 0.0F}}},
         Side{0,
              1,
              ChunkMeshFaceDirection::positive_z,
              {1, 0},
-             {origin + math::Vec3f{1.0F, 0.0F, 1.0F},
-              origin + math::Vec3f{0.0F, 0.0F, 1.0F}}},
+             {origin + math::Vec3f{1.0F, 0.0F, 1.0F}, origin + math::Vec3f{0.0F, 0.0F, 1.0F}}},
     };
     for (const auto& side : sides) {
         const auto neighbor = query(x + side.dx, y, z + side.dz);
@@ -431,8 +604,8 @@ template <typename Query>
             top[side.top_indices[1]],
             side.bottom[1],
         }};
-        add_fluid_quad(mesh, positions, side_uvs, chunk_mesh_face_normal(side.direction),
-                       face_cell, material_index);
+        add_fluid_quad(mesh, positions, side_uvs, chunk_mesh_face_normal(side.direction), face_cell,
+                       material_index);
     }
     const auto below = query(x, y - 1, z);
     if (below.cell.type != cell.type && !below.full_occluder) {
@@ -474,7 +647,8 @@ void add_box(ChunkMesh& mesh, const ChunkMeshingContext& context, VoxelCoord coo
                              static_cast<float>(coord.z)};
     for (const auto& face : face_templates()) {
         auto face_cell = cell;
-        if (box_face_is_on_cell_boundary(box, face.direction)) {
+        const bool on_cell_boundary = box_face_is_on_cell_boundary(box, face.direction);
+        if (on_cell_boundary) {
             const auto neighbor =
                 query_cell(context, static_cast<std::int32_t>(coord.x) + face.offset_x,
                            static_cast<std::int32_t>(coord.y) + face.offset_y,
@@ -488,8 +662,15 @@ void add_box(ChunkMesh& mesh, const ChunkMeshingContext& context, VoxelCoord coo
         for (std::size_t index = 0; index < positions.size(); ++index) {
             positions[index] = box_corner(box, face.corners[index], origin);
         }
+        auto ambient_occlusion = std::array<std::uint8_t, 4>{255U, 255U, 255U, 255U};
+        if (on_cell_boundary) {
+            ambient_occlusion = face_ambient_occlusion(
+                coord, face, [&context](std::int32_t x, std::int32_t y, std::int32_t z) {
+                    return is_full_occluder(query_cell(context, x, y, z));
+                });
+        }
         add_quad(mesh, positions, chunk_mesh_face_normal(face.direction), face_cell, material_index,
-                 render_phase);
+                 render_phase, ambient_occlusion);
     }
 }
 
@@ -501,7 +682,8 @@ void add_box(ChunkMesh& mesh, const ChunkNeighborhoodSnapshot& neighborhood,
                              static_cast<float>(coord.z)};
     for (const auto& face : face_templates()) {
         auto face_cell = cell;
-        if (box_face_is_on_cell_boundary(box, face.direction)) {
+        const bool on_cell_boundary = box_face_is_on_cell_boundary(box, face.direction);
+        if (on_cell_boundary) {
             const auto neighbor = query_cell(neighborhood, render_table,
                                              static_cast<std::int32_t>(coord.x) + face.offset_x,
                                              static_cast<std::int32_t>(coord.y) + face.offset_y,
@@ -515,8 +697,16 @@ void add_box(ChunkMesh& mesh, const ChunkNeighborhoodSnapshot& neighborhood,
         for (std::size_t index = 0; index < positions.size(); ++index) {
             positions[index] = box_corner(box, face.corners[index], origin);
         }
+        auto ambient_occlusion = std::array<std::uint8_t, 4>{255U, 255U, 255U, 255U};
+        if (on_cell_boundary) {
+            ambient_occlusion = face_ambient_occlusion(
+                coord, face,
+                [&neighborhood, &render_table](std::int32_t x, std::int32_t y, std::int32_t z) {
+                    return is_full_occluder(query_cell(neighborhood, render_table, x, y, z));
+                });
+        }
         add_quad(mesh, positions, chunk_mesh_face_normal(face.direction), face_cell, material_index,
-                 render_phase);
+                 render_phase, ambient_occlusion);
     }
 }
 
@@ -669,11 +859,16 @@ core::Status ChunkMesh::validate() const {
         return core::Status::failure("chunk_mesh.incomplete_sections",
                                      "indexed chunk geometry and sections must exist together");
     }
-    if (vertices.size() != face_count * 4) {
+    if (triangle_face_count > face_count) {
+        return core::Status::failure("chunk_mesh.invalid_triangle_face_count",
+                                     "chunk mesh triangle-face count exceeds total face count");
+    }
+    const auto quad_face_count = face_count - triangle_face_count;
+    if (vertices.size() != quad_face_count * 4U + triangle_face_count * 3U) {
         return core::Status::failure("chunk_mesh.invalid_vertex_count",
                                      "chunk mesh vertex count does not match face count");
     }
-    if (indices.size() != face_count * 6) {
+    if (indices.size() != quad_face_count * 6U + triangle_face_count * 3U) {
         return core::Status::failure("chunk_mesh.invalid_index_count",
                                      "chunk mesh index count does not match face count");
     }
@@ -766,18 +961,16 @@ core::Result<ChunkMesh> ChunkMesher::build_surface_mesh(const ChunkMeshingContex
                 const auto material_index = cell.value().type;
                 const auto render_phase = mesh_render_phase(view);
                 if (render_phase == MeshingRenderPhase::fluid) {
-                    const auto fluid_query = [&context](std::int32_t query_x,
-                                                        std::int32_t query_y,
+                    const auto fluid_query = [&context](std::int32_t query_x, std::int32_t query_y,
                                                         std::int32_t query_z) {
-                        const auto queried =
-                            query_cell(context, query_x, query_y, query_z);
+                        const auto queried = query_cell(context, query_x, query_y, query_z);
                         return FluidMeshCell{queried.cell, is_full_occluder(queried)};
                     };
                     auto fluid_status =
                         add_fluid_cell(mesh, fluid_query, {x, y, z}, cell.value(), material_index);
                     if (!fluid_status) {
-                        return core::Result<ChunkMesh>::failure(
-                            fluid_status.error().code, fluid_status.error().message);
+                        return core::Result<ChunkMesh>::failure(fluid_status.error().code,
+                                                                fluid_status.error().message);
                     }
                 } else if (model.kind == BlockModelKind::mesh) {
                     add_rich_instance(mesh, {x, y, z}, cell.value(), model);
@@ -787,6 +980,16 @@ core::Result<ChunkMesh> ChunkMesher::build_surface_mesh(const ChunkMeshingContex
                     for (const auto& box : model.boxes) {
                         add_box(mesh, context, {x, y, z}, cell.value(), box, material_index,
                                 render_phase);
+                    }
+                    for (const auto& triangle : model.triangles) {
+                        add_authored_triangle(
+                            mesh, {x, y, z}, cell.value(), triangle, material_index, render_phase,
+                            [&context](std::int32_t query_x, std::int32_t query_y,
+                                       std::int32_t query_z) {
+                                const auto queried = query_cell(context, query_x, query_y, query_z);
+                                return AuthoredNeighbor{is_full_occluder(queried),
+                                                        queried.cell.light};
+                            });
                     }
                 }
             }
@@ -804,9 +1007,11 @@ core::Result<ChunkMesh> ChunkMesher::build_surface_mesh(const ChunkMeshingContex
     return core::Result<ChunkMesh>::success(std::move(mesh));
 }
 
-core::Result<ChunkMesh>
-ChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborhood,
-                                const BlockRenderTableSnapshot& render_table) {
+namespace {
+
+core::Result<ChunkMesh> build_snapshot_surface_mesh(const ChunkNeighborhoodSnapshot& neighborhood,
+                                                    const BlockRenderTableSnapshot& render_table,
+                                                    bool specialized_only) {
     auto status = neighborhood.validate();
     if (!status) {
         return core::Result<ChunkMesh>::failure(status.error().code, status.error().message);
@@ -833,21 +1038,24 @@ ChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborhood,
                         "chunk_mesh.unknown_voxel_type",
                         "snapshot contains a voxel type missing from its block render table");
                 }
+                if (specialized_only && block->geometry == MeshingGeometryKind::full_cube &&
+                    block->render_phase != MeshingRenderPhase::fluid) {
+                    continue;
+                }
                 if (block->render_phase == MeshingRenderPhase::fluid) {
-                    const auto fluid_query = [&neighborhood, &render_table](
-                                                 std::int32_t query_x,
-                                                 std::int32_t query_y,
-                                                 std::int32_t query_z) {
-                        const auto queried = query_cell(neighborhood, render_table, query_x,
-                                                       query_y, query_z);
+                    const auto fluid_query = [&neighborhood, &render_table](std::int32_t query_x,
+                                                                            std::int32_t query_y,
+                                                                            std::int32_t query_z) {
+                        const auto queried =
+                            query_cell(neighborhood, render_table, query_x, query_y, query_z);
                         return FluidMeshCell{queried.cell, is_full_occluder(queried)};
                     };
                     auto fluid_status = add_fluid_cell(
                         mesh, fluid_query, {x, y, z}, cell,
                         block->material_index == 0 ? cell.type : block->material_index);
                     if (!fluid_status) {
-                        return core::Result<ChunkMesh>::failure(
-                            fluid_status.error().code, fluid_status.error().message);
+                        return core::Result<ChunkMesh>::failure(fluid_status.error().code,
+                                                                fluid_status.error().message);
                     }
                 } else if (block->geometry == MeshingGeometryKind::rich_model) {
                     add_rich_instance(mesh, {x, y, z}, cell, *block);
@@ -860,6 +1068,19 @@ ChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborhood,
                         add_box(mesh, neighborhood, render_table, {x, y, z}, cell, box,
                                 block->material_index == 0 ? cell.type : block->material_index,
                                 block->render_phase);
+                    }
+                    for (const auto& triangle : block->triangles) {
+                        add_authored_triangle(
+                            mesh, {x, y, z}, cell, triangle,
+                            block->material_index == 0 ? cell.type : block->material_index,
+                            block->render_phase,
+                            [&neighborhood, &render_table](
+                                std::int32_t query_x, std::int32_t query_y, std::int32_t query_z) {
+                                const auto queried = query_cell(neighborhood, render_table, query_x,
+                                                                query_y, query_z);
+                                return AuthoredNeighbor{is_full_occluder(queried),
+                                                        queried.cell.light};
+                            });
                     }
                 }
             }
@@ -875,6 +1096,20 @@ ChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborhood,
         return core::Result<ChunkMesh>::failure(status.error().code, status.error().message);
     }
     return core::Result<ChunkMesh>::success(std::move(mesh));
+}
+
+} // namespace
+
+core::Result<ChunkMesh>
+ChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborhood,
+                                const BlockRenderTableSnapshot& render_table) {
+    return build_snapshot_surface_mesh(neighborhood, render_table, false);
+}
+
+core::Result<ChunkMesh>
+ChunkMesher::build_specialized_surface_mesh(const ChunkNeighborhoodSnapshot& neighborhood,
+                                            const BlockRenderTableSnapshot& render_table) {
+    return build_snapshot_surface_mesh(neighborhood, render_table, true);
 }
 
 math::Vec3f chunk_mesh_face_normal(ChunkMeshFaceDirection direction) noexcept {

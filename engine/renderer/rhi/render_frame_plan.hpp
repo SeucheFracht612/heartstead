@@ -41,6 +41,9 @@ enum class RenderResourceState {
     color_attachment_write,
     color_attachment_read_write,
     depth_attachment_write,
+    storage_read,
+    storage_write,
+    storage_read_write,
     transfer_source,
     transfer_destination,
     present,
@@ -51,6 +54,12 @@ struct RenderResourceDesc {
     RenderExtent extent{};
     RenderResourceLifetime lifetime = RenderResourceLifetime::transient;
     RenderImageFormat format = RenderImageFormat::rgba8_unorm;
+    std::uint32_t array_layers = 1;
+    std::uint32_t mip_levels = 1;
+    bool cubemap = false;
+    // Storage resources use GENERAL layout and descriptor access rather than being interpreted as
+    // raster attachments merely because a pass writes them.
+    bool storage = false;
 };
 
 // Feeds a frame graph resource into a named descriptor binding of the material a pass draws with.
@@ -61,6 +70,15 @@ struct RenderPassSampledResource {
     std::string binding_name{};
     // Graph resource to sample. Must also appear in the pass's reads.
     std::string resource_name{};
+    // Shadow maps require a comparison-enabled sampler. This is part of the graph binding because
+    // the image is resolved per frame rather than through an ordinary descriptor write.
+    bool comparison = false;
+};
+
+struct RenderPassStorageResource {
+    std::string binding_name{};
+    std::string resource_name{};
+    RenderResourceAccess access = RenderResourceAccess::read_write;
 };
 
 // Every member carries a default initializer so passes can be written with designated
@@ -74,6 +92,7 @@ struct RenderPassDesc {
     ClearColor clear_color{};
     bool presents = false;
     std::vector<RenderPassSampledResource> sampled_resources{};
+    std::vector<RenderPassStorageResource> storage_resources{};
 };
 
 struct RenderFrameResourceUse {
@@ -158,6 +177,10 @@ struct RenderDrawCommand {
     bool scissor_enabled = false;
     RenderScissorRect scissor{};
     std::uint32_t texture_variation_seed = 0;
+    // Shadow and probe passes use a pass-specific camera while retaining the ordinary draw
+    // geometry and large-coordinate origin.
+    bool view_projection_override_enabled = false;
+    math::Mat4f view_projection_override = math::Mat4f::identity();
 };
 
 // One compute dispatch recorded into a compute pass.

@@ -183,7 +183,9 @@ PipelineCache::build_pipeline(const GraphicsPipelineKey& key,
         pipeline.depth_target_format != key.depth_format || pipeline.cull_mode != key.cull_mode ||
         pipeline.front_face != key.front_face || pipeline.depth_test_enable != key.depth_test ||
         pipeline.depth_write_enable != key.depth_write ||
-        pipeline.depth_compare != key.depth_compare || pipeline.blend_mode != key.blend_mode) {
+        pipeline.depth_compare != key.depth_compare || pipeline.blend_mode != key.blend_mode ||
+        pipeline.color_write_enable != key.color_write ||
+        pipeline.additional_color_target_formats != key.additional_color_formats) {
         return core::Result<rhi::RenderResourceHandle>::failure(
             "pipeline_cache.state_key_mismatch",
             "pipeline render state does not match its cache key");
@@ -239,6 +241,8 @@ std::string_view render_phase_name(RenderPhase phase) noexcept {
         return "fluid_terrain";
     case RenderPhase::static_instances:
         return "static_instances";
+    case RenderPhase::shadow:
+        return "shadow";
     case RenderPhase::debug:
         return "debug";
     case RenderPhase::post_process:

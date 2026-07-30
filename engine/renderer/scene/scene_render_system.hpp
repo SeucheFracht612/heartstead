@@ -67,6 +67,7 @@ struct SceneRenderStats {
 struct SceneDrawCommands {
     std::vector<rhi::RenderDrawCommand> opaque_and_cutout;
     std::vector<rhi::RenderDrawCommand> transparent;
+    std::vector<RenderLightInstance> lights;
     SceneRenderStats stats;
 };
 

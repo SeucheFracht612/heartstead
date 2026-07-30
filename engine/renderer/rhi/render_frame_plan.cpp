@@ -86,6 +86,18 @@ struct ResourceAccessState {
 [[nodiscard]] RenderResourceState
 resource_state_for_access(RenderResourceAccess access,
                           const RenderResourceDesc& resource) noexcept {
+    if (resource.storage) {
+        switch (access) {
+        case RenderResourceAccess::read:
+            return RenderResourceState::storage_read;
+        case RenderResourceAccess::write:
+            return RenderResourceState::storage_write;
+        case RenderResourceAccess::read_write:
+            return RenderResourceState::storage_read_write;
+        case RenderResourceAccess::present:
+            return RenderResourceState::present;
+        }
+    }
     switch (access) {
     case RenderResourceAccess::read:
         return RenderResourceState::shader_read;
@@ -199,6 +211,25 @@ core::Status RenderFramePlan::validate() const {
         if (!status) {
             return status;
         }
+        if (resource.array_layers == 0 || resource.mip_levels == 0 ||
+            (resource.cubemap && (resource.array_layers < 6 || resource.array_layers % 6 != 0)) ||
+            (resource.storage && (resource.lifetime == RenderResourceLifetime::external ||
+                                  is_depth_format(resource.format)))) {
+            return core::Status::failure(
+                "renderer_plan.invalid_resource_shape",
+                "render image layers/mips/cubemap/storage properties are invalid: " +
+                    resource.name);
+        }
+        std::uint32_t maximum_mips = 1;
+        for (auto dimension = std::max(resource.extent.width, resource.extent.height);
+             dimension > 1; dimension /= 2) {
+            ++maximum_mips;
+        }
+        if (resource.mip_levels > maximum_mips) {
+            return core::Status::failure(
+                "renderer_plan.invalid_resource_mips",
+                "render image declares more mip levels than its extent permits: " + resource.name);
+        }
         if (!resource_names.insert(resource.name).second) {
             return core::Status::failure("renderer_plan.duplicate_resource",
                                          "render resource name is duplicated: " + resource.name);
@@ -249,19 +280,57 @@ core::Status RenderFramePlan::validate() const {
         // backend would sample an image nothing transitioned to a readable layout.
         for (const auto& sampled : pass.sampled_resources) {
             if (sampled.binding_name.empty()) {
-                return core::Status::failure(
-                    "renderer_plan.invalid_sampled_binding",
-                    "render pass '" + pass.name + "' samples a resource without a binding name");
+                return core::Status::failure("renderer_plan.invalid_sampled_binding",
+                                             "render pass '" + pass.name +
+                                                 "' samples a resource without a binding name");
             }
             status = validate_resource_ref(*this, sampled.resource_name, pass.name);
             if (!status) {
                 return status;
             }
             if (!contains_name(pass.reads, sampled.resource_name)) {
+                return core::Status::failure("renderer_plan.sampled_resource_not_read",
+                                             "render pass '" + pass.name + "' samples '" +
+                                                 sampled.resource_name +
+                                                 "' without declaring it as a read");
+            }
+            const auto* resource = find_resource(sampled.resource_name);
+            if (resource != nullptr && resource->storage) {
                 return core::Status::failure(
-                    "renderer_plan.sampled_resource_not_read",
-                    "render pass '" + pass.name + "' samples '" + sampled.resource_name +
-                        "' without declaring it as a read");
+                    "renderer_plan.storage_resource_sampled",
+                    "storage graph resource must use a storage descriptor binding: " +
+                        sampled.resource_name);
+            }
+        }
+        for (const auto& storage : pass.storage_resources) {
+            if (storage.binding_name.empty()) {
+                return core::Status::failure(
+                    "renderer_plan.invalid_storage_binding",
+                    "render pass '" + pass.name +
+                        "' uses a storage resource without a binding name");
+            }
+            status = validate_resource_ref(*this, storage.resource_name, pass.name);
+            if (!status) {
+                return status;
+            }
+            const auto* resource = find_resource(storage.resource_name);
+            if (resource == nullptr || !resource->storage) {
+                return core::Status::failure(
+                    "renderer_plan.non_storage_resource_bound",
+                    "render pass storage binding does not name a storage resource: " +
+                        storage.resource_name);
+            }
+            const auto reads = storage.access == RenderResourceAccess::read ||
+                               storage.access == RenderResourceAccess::read_write;
+            const auto writes = storage.access == RenderResourceAccess::write ||
+                                storage.access == RenderResourceAccess::read_write;
+            if ((reads && !contains_name(pass.reads, storage.resource_name)) ||
+                (writes && !contains_name(pass.writes, storage.resource_name)) ||
+                storage.access == RenderResourceAccess::present) {
+                return core::Status::failure(
+                    "renderer_plan.storage_access_mismatch",
+                    "storage descriptor access must match the pass read/write declarations: " +
+                        storage.resource_name);
             }
         }
         for (const auto& write : pass.writes) {
@@ -594,6 +663,11 @@ core::Status validate_render_frame_submission_shape(const RenderFrameSubmission&
                     "renderer.invalid_camera_relative_translation",
                     "render draw camera-relative origin must contain finite values");
             }
+            if (draw.view_projection_override_enabled &&
+                !draw.view_projection_override.is_finite()) {
+                return core::Status::failure("renderer.invalid_view_projection_override",
+                                             "render draw view-projection override must be finite");
+            }
             if (draw.scissor_enabled) {
                 const auto right = static_cast<std::uint64_t>(draw.scissor.x) +
                                    static_cast<std::uint64_t>(draw.scissor.width);
@@ -617,14 +691,18 @@ core::Status validate_render_environment(const RenderEnvironmentData& environmen
     };
     if (!environment.sun_direction.is_finite() || !environment.ambient_color.is_finite() ||
         !environment.fog_color.is_finite() || !std::isfinite(environment.sun_intensity) ||
-        !std::isfinite(environment.fog_start) || !std::isfinite(environment.fog_end)) {
+        !std::isfinite(environment.fog_start) || !std::isfinite(environment.fog_end) ||
+        !std::isfinite(environment.sky_diffuse_intensity) ||
+        !std::isfinite(environment.environment_specular_intensity) ||
+        !std::isfinite(environment.environment_rotation_radians)) {
         return core::Status::failure("renderer.invalid_environment_finite",
                                      "render environment values must be finite");
     }
     if (math::length_squared(environment.sun_direction) <= 0.0F ||
         environment.sun_intensity < 0.0F || !nonnegative(environment.ambient_color) ||
         !nonnegative(environment.fog_color) || environment.fog_start < 0.0F ||
-        environment.fog_end <= environment.fog_start) {
+        environment.fog_end <= environment.fog_start || environment.sky_diffuse_intensity < 0.0F ||
+        environment.environment_specular_intensity < 0.0F) {
         return core::Status::failure(
             "renderer.invalid_environment_range",
             "render environment lighting and fog values are outside their valid ranges");
@@ -690,6 +768,12 @@ std::string_view render_resource_state_name(RenderResourceState state) noexcept 
         return "color_attachment_read_write";
     case RenderResourceState::depth_attachment_write:
         return "depth_attachment_write";
+    case RenderResourceState::storage_read:
+        return "storage_read";
+    case RenderResourceState::storage_write:
+        return "storage_write";
+    case RenderResourceState::storage_read_write:
+        return "storage_read_write";
     case RenderResourceState::transfer_source:
         return "transfer_source";
     case RenderResourceState::transfer_destination:

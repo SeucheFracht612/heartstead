@@ -108,8 +108,12 @@ core::Status validate_render_light_proxy(const RenderLightProxy& light) {
     if (!light.id.is_valid() || !light.anchor.is_valid() || !light.direction.is_finite() ||
         !light.color.is_finite() || !std::isfinite(light.intensity) ||
         !std::isfinite(light.radius) || light.intensity < 0.0F || light.radius <= 0.0F ||
-        light.color.x < 0.0F || light.color.y < 0.0F || light.color.z < 0.0F ||
-        (light.kind == RenderLightKind::directional &&
+        !std::isfinite(light.inner_cone_cosine) || !std::isfinite(light.outer_cone_cosine) ||
+        !std::isfinite(light.gameplay_importance) || light.gameplay_importance < 0.0F ||
+        light.inner_cone_cosine < light.outer_cone_cosine || light.inner_cone_cosine > 1.0F ||
+        light.outer_cone_cosine < -1.0F || light.color.x < 0.0F || light.color.y < 0.0F ||
+        light.color.z < 0.0F ||
+        ((light.kind == RenderLightKind::directional || light.kind == RenderLightKind::spot) &&
          math::length_squared(light.direction) <= 0.0F)) {
         return core::Status::failure("render_scene.invalid_light",
                                      "render light proxy contains invalid retained render data");
@@ -498,7 +502,10 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
         }
         frame.lights.push_back({slot.proxy.id, slot.proxy.kind, position.value(),
                                 slot.proxy.direction, slot.proxy.color, slot.proxy.intensity,
-                                slot.proxy.radius});
+                                slot.proxy.radius, slot.proxy.inner_cone_cosine,
+                                slot.proxy.outer_cone_cosine, slot.proxy.gameplay_importance,
+                                slot.proxy.casts_shadow, slot.proxy.light_revision,
+                                slot.proxy.nearby_geometry_revision});
     }
     return core::Result<RenderSceneFrame>::success(std::move(frame));
 }

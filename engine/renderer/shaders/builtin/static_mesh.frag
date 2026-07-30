@@ -29,6 +29,39 @@ layout(std430, set = 0, binding = 3) readonly buffer SurfaceMaterials {
     GpuSurfaceMaterial materials[];
 } surface_materials;
 
+struct GpuLocalLight {
+    vec4 position_radius;
+    vec4 direction_kind;
+    vec4 color_intensity;
+    vec4 spot_shadow;
+};
+
+layout(std430, set = 0, binding = 7) readonly buffer LocalLights {
+    GpuLocalLight lights[];
+} local_lights;
+
+layout(std430, set = 0, binding = 8) readonly buffer LightGrid {
+    uint data[];
+} light_grid;
+
+layout(std430, set = 0, binding = 9) readonly buffer DirectionalShadowData {
+    mat4 light_view_projection[4];
+    vec4 split_distances;
+    vec4 shadow_parameters;
+    vec4 environment_parameters;
+    vec4 camera_position;
+    mat4 local_light_view_projection[2];
+    vec4 local_shadow_parameters[2];
+} shadows;
+
+layout(set = 0, binding = 10) uniform sampler2DShadow shadow_cascade_0;
+layout(set = 0, binding = 11) uniform sampler2DShadow shadow_cascade_1;
+layout(set = 0, binding = 12) uniform sampler2DShadow shadow_cascade_2;
+layout(set = 0, binding = 13) uniform sampler2DShadow shadow_cascade_3;
+layout(set = 0, binding = 14) uniform samplerCube environment_map;
+layout(set = 0, binding = 15) uniform sampler2DShadow local_shadow_0;
+layout(set = 0, binding = 16) uniform sampler2DShadow local_shadow_1;
+
 layout(push_constant) uniform FramePushConstants {
     mat4 view_projection;
     vec4 unused_origin;
@@ -44,6 +77,166 @@ const uint MATERIAL_ALPHA_TESTED = 1U;
 const uint MATERIAL_TWO_SIDED = 8U;
 const uint MATERIAL_UNLIT = 32U;
 const float PI = 3.14159265358979323846;
+
+vec3 evaluate_light(vec3 albedo, float metallic, float roughness, vec3 normal,
+                    vec3 view_direction, vec3 light_direction, vec3 radiance) {
+    vec3 halfway = normalize(view_direction + light_direction);
+    float normal_light = max(dot(normal, light_direction), 0.0);
+    float normal_view = max(dot(normal, view_direction), 0.0001);
+    float normal_half = max(dot(normal, halfway), 0.0);
+    float view_half = max(dot(view_direction, halfway), 0.0);
+    float alpha = roughness * roughness;
+    float alpha_squared = alpha * alpha;
+    float denominator = normal_half * normal_half * (alpha_squared - 1.0) + 1.0;
+    float distribution = alpha_squared / max(PI * denominator * denominator, 0.0001);
+    float geometry_k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
+    float geometry_view = normal_view / (normal_view * (1.0 - geometry_k) + geometry_k);
+    float geometry_light = normal_light / (normal_light * (1.0 - geometry_k) + geometry_k);
+    vec3 fresnel_base = mix(vec3(0.04), albedo, metallic);
+    vec3 fresnel = fresnel_base + (1.0 - fresnel_base) * pow(1.0 - view_half, 5.0);
+    vec3 specular = distribution * geometry_view * geometry_light * fresnel /
+                    max(4.0 * normal_view * normal_light, 0.0001);
+    vec3 diffuse = (1.0 - fresnel) * (1.0 - metallic) * albedo / PI;
+    return (diffuse + specular) * radiance * normal_light;
+}
+
+vec2 environment_brdf(float roughness, float normal_view) {
+    vec4 r = roughness * vec4(-1.0, -0.0275, -0.572, 0.022) +
+             vec4(1.0, 0.0425, 1.04, -0.04);
+    float a004 =
+        min(r.x * r.x, exp2(-9.28 * normal_view)) * r.x + r.y;
+    return vec2(-1.04, 1.04) * a004 + r.zw;
+}
+
+float local_shadow_visibility(GpuLocalLight light, vec3 normal,
+                              vec3 light_direction) {
+    if (light.spot_shadow.z < 0.5) {
+        return 1.0;
+    }
+    uint slot = min(uint(light.spot_shadow.z - 0.5), 1U);
+    vec4 clip =
+        shadows.local_light_view_projection[slot] *
+        vec4(fragment_world_position, 1.0);
+    if (clip.w <= 0.0) {
+        return 1.0;
+    }
+    vec3 coordinate = clip.xyz / clip.w;
+    coordinate.xy = coordinate.xy * 0.5 + 0.5;
+    float bias = shadows.local_shadow_parameters[slot].x +
+                 shadows.local_shadow_parameters[slot].y *
+                     (1.0 - max(dot(normal, light_direction), 0.0));
+    coordinate.z -= bias;
+    if (any(lessThan(coordinate, vec3(0.0))) ||
+        any(greaterThan(coordinate, vec3(1.0)))) {
+        return 1.0;
+    }
+    vec2 texel = 1.0 / vec2(textureSize(local_shadow_0, 0));
+    float visibility = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            vec3 sample_coordinate =
+                vec3(coordinate.xy + vec2(x, y) * texel, coordinate.z);
+            visibility += slot == 0U
+                              ? texture(local_shadow_0, sample_coordinate)
+                              : texture(local_shadow_1, sample_coordinate);
+        }
+    }
+    return visibility / 9.0;
+}
+
+vec3 evaluate_local_lights(vec3 albedo, float metallic, float roughness, vec3 normal,
+                           vec3 view_direction) {
+    uint tiles_x = light_grid.data[0];
+    uint tiles_y = light_grid.data[1];
+    uint tile_size = light_grid.data[2];
+    uint capacity = light_grid.data[3];
+    uvec2 tile = min(uvec2(gl_FragCoord.xy) / max(tile_size, 1U),
+                     uvec2(max(tiles_x, 1U) - 1U, max(tiles_y, 1U) - 1U));
+    uint base = 4U + (tile.y * tiles_x + tile.x) * (capacity + 1U);
+    uint count = min(light_grid.data[base], capacity);
+    vec3 total = vec3(0.0);
+    for (uint entry = 0U; entry < count; ++entry) {
+        GpuLocalLight light = local_lights.lights[light_grid.data[base + 1U + entry]];
+        vec3 to_light = light.position_radius.xyz - fragment_world_position;
+        float distance_squared = dot(to_light, to_light);
+        float distance = sqrt(max(distance_squared, 0.0001));
+        if (distance >= light.position_radius.w) {
+            continue;
+        }
+        vec3 direction = to_light / distance;
+        float range = clamp(1.0 - distance / light.position_radius.w, 0.0, 1.0);
+        float attenuation = range * range / max(distance_squared, 1.0);
+        if (uint(light.direction_kind.w + 0.5) == 2U) {
+            float cone = dot(-direction, normalize(light.direction_kind.xyz));
+            attenuation *= smoothstep(light.spot_shadow.y, light.spot_shadow.x, cone);
+        }
+        attenuation *= local_shadow_visibility(light, normal, direction);
+        total += evaluate_light(albedo, metallic, roughness, normal, view_direction,
+                                direction,
+                                light.color_intensity.rgb * light.color_intensity.w *
+                                    attenuation);
+    }
+    return total;
+}
+
+vec3 local_tile_debug_color() {
+    uint tiles_x = light_grid.data[0];
+    uint tiles_y = light_grid.data[1];
+    uint tile_size = max(light_grid.data[2], 1U);
+    uint capacity = max(light_grid.data[3], 1U);
+    uvec2 tile = min(uvec2(gl_FragCoord.xy) / tile_size,
+                     uvec2(max(tiles_x, 1U) - 1U, max(tiles_y, 1U) - 1U));
+    uint base = 4U + (tile.y * tiles_x + tile.x) * (capacity + 1U);
+    float occupancy = float(min(light_grid.data[base], capacity)) / float(capacity);
+    return mix(vec3(0.02, 0.08, 0.35), vec3(1.0, 0.1, 0.02), occupancy);
+}
+
+float sample_shadow_map(uint cascade, vec3 coordinate) {
+    vec2 texel = 1.0 / vec2(textureSize(shadow_cascade_0, 0));
+    float visibility = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            vec3 sample_coordinate =
+                vec3(coordinate.xy + vec2(x, y) * texel, coordinate.z);
+            if (cascade == 0U) {
+                visibility += texture(shadow_cascade_0, sample_coordinate);
+            } else if (cascade == 1U) {
+                visibility += texture(shadow_cascade_1, sample_coordinate);
+            } else if (cascade == 2U) {
+                visibility += texture(shadow_cascade_2, sample_coordinate);
+            } else {
+                visibility += texture(shadow_cascade_3, sample_coordinate);
+            }
+        }
+    }
+    return visibility / 9.0;
+}
+
+float directional_shadow(vec3 normal, vec3 light_direction, out uint cascade) {
+    float distance_to_camera =
+        length(fragment_world_position - shadows.camera_position.xyz);
+    cascade = distance_to_camera <= shadows.split_distances.x ? 0U :
+              distance_to_camera <= shadows.split_distances.y ? 1U :
+              distance_to_camera <= shadows.split_distances.z ? 2U : 3U;
+    vec4 light_clip =
+        shadows.light_view_projection[cascade] * vec4(fragment_world_position, 1.0);
+    vec3 coordinate = light_clip.xyz / light_clip.w;
+    coordinate.xy = coordinate.xy * 0.5 + 0.5;
+    float bias = shadows.shadow_parameters.x +
+                 shadows.shadow_parameters.y *
+                     (1.0 - max(dot(normal, light_direction), 0.0));
+    coordinate.z -= bias;
+    if (any(lessThan(coordinate, vec3(0.0))) ||
+        any(greaterThan(coordinate, vec3(1.0)))) {
+        return 1.0;
+    }
+    float visibility = sample_shadow_map(cascade, coordinate);
+    float fade_start = shadows.split_distances.w *
+                       (1.0 - shadows.shadow_parameters.z);
+    return mix(visibility, 1.0,
+               smoothstep(fade_start, shadows.split_distances.w,
+                          distance_to_camera));
+}
 
 vec2 binding_uv(GpuTextureBinding binding) {
     vec2 uv = binding.metadata.z == 0U ? fragment_uv0 : fragment_uv1;
@@ -178,42 +371,69 @@ void main() {
             sample_binding(surface_data_textures, material.textures[3]).r,
             material.roughness_normal_occlusion_alpha.z);
 
-        vec3 view_direction = normalize(-fragment_world_position);
+        vec3 view_direction =
+            normalize(shadows.camera_position.xyz - fragment_world_position);
         vec3 light_direction = normalize(frame.sun_direction_intensity.xyz);
-        vec3 halfway = normalize(view_direction + light_direction);
-        float normal_light = max(dot(normal, light_direction), 0.0);
+        uint shadow_cascade = 0U;
+        float shadow = directional_shadow(normal, light_direction, shadow_cascade);
         float normal_view = max(dot(normal, view_direction), 0.0001);
-        float normal_half = max(dot(normal, halfway), 0.0);
-        float view_half = max(dot(view_direction, halfway), 0.0);
-        float alpha = roughness * roughness;
-        float alpha_squared = alpha * alpha;
-        float denominator =
-            normal_half * normal_half * (alpha_squared - 1.0) + 1.0;
-        float distribution =
-            alpha_squared / max(PI * denominator * denominator, 0.0001);
-        float geometry_k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
-        float geometry_view =
-            normal_view / (normal_view * (1.0 - geometry_k) + geometry_k);
-        float geometry_light =
-            normal_light / (normal_light * (1.0 - geometry_k) + geometry_k);
         vec3 fresnel_base = mix(vec3(0.04), base_color.rgb, metallic);
-        vec3 fresnel =
-            fresnel_base + (1.0 - fresnel_base) * pow(1.0 - view_half, 5.0);
-        vec3 specular = distribution * geometry_view * geometry_light * fresnel /
-                        max(4.0 * normal_view * normal_light, 0.0001);
-        vec3 diffuse = (1.0 - fresnel) * (1.0 - metallic) *
-                       base_color.rgb / PI;
-        vec3 direct = (diffuse + specular) * normal_light *
-                      frame.sun_direction_intensity.w;
+        vec3 direct =
+            evaluate_light(base_color.rgb, metallic, roughness, normal, view_direction,
+                           light_direction,
+                           vec3(frame.sun_direction_intensity.w * shadow * PI));
+        vec2 integrated_brdf = environment_brdf(roughness, normal_view);
+        vec3 reflection = reflect(-view_direction, normal);
+        float rotation_sine = sin(shadows.environment_parameters.z);
+        float rotation_cosine = cos(shadows.environment_parameters.z);
+        reflection.xz = mat2(rotation_cosine, -rotation_sine,
+                             rotation_sine, rotation_cosine) * reflection.xz;
+        vec3 environment_specular =
+            textureLod(environment_map, reflection, roughness * 5.0).rgb;
+        vec3 environment_normal = normal;
+        environment_normal.xz =
+            mat2(rotation_cosine, -rotation_sine, rotation_sine, rotation_cosine) *
+            environment_normal.xz;
+        vec3 environment_diffuse =
+            textureLod(environment_map, environment_normal, 5.0).rgb;
         vec3 ambient =
             frame.ambient_color_fog_start.rgb *
-            (base_color.rgb * (1.0 - metallic) + fresnel_base * 0.25) *
-            occlusion;
-        color = ambient + direct + emissive;
+            (base_color.rgb * (1.0 - metallic) * environment_diffuse *
+                 shadows.environment_parameters.x +
+             environment_specular *
+                 (fresnel_base * integrated_brdf.x + integrated_brdf.y) *
+                 shadows.environment_parameters.y) *
+            occlusion * mix(0.08, 1.0, shadow);
+        color = ambient + direct +
+                evaluate_local_lights(base_color.rgb, metallic, roughness, normal,
+                                      view_direction) +
+                emissive;
+        uint debug_view = uint(shadows.shadow_parameters.w + 0.5);
+        if (debug_view == 1U) {
+            color = base_color.rgb;
+        } else if (debug_view == 2U) {
+            color = normal * 0.5 + 0.5;
+        } else if (debug_view == 3U) {
+            color = vec3(roughness);
+        } else if (debug_view == 4U) {
+            color = vec3(metallic);
+        } else if (debug_view == 5U) {
+            color = vec3(occlusion);
+        } else if (debug_view == 6U) {
+            color = emissive;
+        } else if (debug_view == 7U) {
+            const vec3 cascade_colors[4] =
+                vec3[4](vec3(1.0, 0.2, 0.2), vec3(0.2, 1.0, 0.2),
+                        vec3(0.2, 0.4, 1.0), vec3(1.0, 0.8, 0.2));
+            color = cascade_colors[shadow_cascade] * mix(0.35, 1.0, shadow);
+        } else if (debug_view == 8U) {
+            color = local_tile_debug_color();
+        }
     }
     float fog = smoothstep(frame.ambient_color_fog_start.w,
                            frame.fog_color_fog_end.w,
-                           length(fragment_world_position));
+                           length(fragment_world_position -
+                                  shadows.camera_position.xyz));
     color = mix(color, frame.fog_color_fog_end.rgb, fog);
     float alpha = fragment_layer == LAYER_TRANSPARENT ? base_color.a : 1.0;
     out_color = vec4(max(color, vec3(0.0)), alpha);

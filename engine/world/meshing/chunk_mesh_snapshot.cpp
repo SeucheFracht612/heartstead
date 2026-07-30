@@ -76,6 +76,9 @@ struct ResolvedCell {
     if (model.kind == BlockModelKind::mesh) {
         return MeshingGeometryKind::rich_model;
     }
+    if (!model.triangles.empty()) {
+        return MeshingGeometryKind::authored_faces;
+    }
     return MeshingGeometryKind::boxes;
 }
 
@@ -111,12 +114,12 @@ struct ResolvedCell {
         definition == nullptr || definition->occlusion == BlockOcclusionBehavior::full_cube;
     result.occlusion_mask = result.full_occluder ? 0x3FU : 0U;
     result.neighbor_dependency_radius = model.neighbor_dependency_radius;
-    if (definition != nullptr &&
-        definition->logical_occupancy == BlockLogicalOccupancy::fluid) {
+    if (definition != nullptr && definition->logical_occupancy == BlockLogicalOccupancy::fluid) {
         result.neighbor_dependency_radius =
             std::max<std::uint16_t>(result.neighbor_dependency_radius, 1);
     }
     result.boxes = model.boxes;
+    result.triangles = model.triangles;
     result.model_prototype_id = model.prototype_id;
     result.render_bounds = model.render_bounds;
     return result;
@@ -165,6 +168,10 @@ core::Status BlockRenderTableSnapshot::validate() const {
             block.boxes.empty()) {
             return core::Status::failure("chunk_mesh.missing_render_table_boxes",
                                          "box geometry requires at least one box");
+        }
+        if (block.geometry == MeshingGeometryKind::authored_faces && block.triangles.empty()) {
+            return core::Status::failure("chunk_mesh.missing_render_table_triangles",
+                                         "authored-face geometry requires at least one triangle");
         }
         if (block.geometry == MeshingGeometryKind::rich_model &&
             !block.model_prototype_id.is_valid()) {

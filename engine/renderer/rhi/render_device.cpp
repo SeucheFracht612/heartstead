@@ -237,8 +237,8 @@ class HeadlessRenderDevice final : public IRenderDevice {
                             "render draw graphics pipeline layout is no longer bound");
                     }
                     const auto descriptor_status = validate_required_descriptors(
-                        layout->second, frame.plan.passes[pass_commands.pass_index]
-                                            .sampled_resources);
+                        layout->second,
+                        frame.plan.passes[pass_commands.pass_index].sampled_resources);
                     if (!descriptor_status) {
                         return core::Result<RenderFrameStats>::failure(
                             descriptor_status.error().code, descriptor_status.error().message);
@@ -260,19 +260,29 @@ class HeadlessRenderDevice final : public IRenderDevice {
                         }
                     }
 
-                    const auto has_color_target = std::ranges::any_of(
-                        pass.writes, [&frame, &pipeline](const std::string& resource_name) {
-                            const auto* resource = frame.plan.find_resource(resource_name);
-                            return resource != nullptr && !is_depth_format(resource->format) &&
-                                   resource->format == pipeline->second.color_target_format;
-                        });
+                    std::vector<RenderImageFormat> pass_color_formats;
+                    for (const auto& resource_name : pass.writes) {
+                        const auto* resource = frame.plan.find_resource(resource_name);
+                        if (resource != nullptr && !is_depth_format(resource->format) &&
+                            !resource->storage) {
+                            pass_color_formats.push_back(resource->format);
+                        }
+                    }
+                    std::vector<RenderImageFormat> pipeline_color_formats;
+                    if (pipeline->second.color_write_enable) {
+                        pipeline_color_formats.push_back(pipeline->second.color_target_format);
+                        pipeline_color_formats.insert(
+                            pipeline_color_formats.end(),
+                            pipeline->second.additional_color_target_formats.begin(),
+                            pipeline->second.additional_color_target_formats.end());
+                    }
                     const auto has_depth_target = std::ranges::any_of(
                         pass.writes, [&frame, &pipeline](const std::string& resource_name) {
                             const auto* resource = frame.plan.find_resource(resource_name);
                             return resource != nullptr && is_depth_format(resource->format) &&
                                    is_depth_format(pipeline->second.depth_target_format);
                         });
-                    if (!has_color_target ||
+                    if (pass_color_formats != pipeline_color_formats ||
                         (pipeline->second.depth_test_enable && !has_depth_target)) {
                         return core::Result<RenderFrameStats>::failure(
                             "renderer.incompatible_draw_targets",
@@ -458,8 +468,12 @@ class HeadlessRenderDevice final : public IRenderDevice {
             std::ranges::count_if(desc.descriptors, [](const RenderDescriptorBinding& binding) {
                 return binding.kind == RenderDescriptorKind::storage_buffer;
             }));
-        stats.uniform_count =
-            desc.descriptors.size() - stats.sampled_texture_count - stats.storage_buffer_count;
+        const auto storage_image_count = static_cast<std::size_t>(
+            std::ranges::count_if(desc.descriptors, [](const RenderDescriptorBinding& binding) {
+                return binding.kind == RenderDescriptorKind::storage_image;
+            }));
+        stats.uniform_count = desc.descriptors.size() - stats.sampled_texture_count -
+                              stats.storage_buffer_count - storage_image_count;
         stats.push_constant_range_count = desc.push_constant_ranges.size();
         stats.gpu_backed = false;
 
@@ -597,7 +611,8 @@ class HeadlessRenderDevice final : public IRenderDevice {
                     "renderer.unknown_descriptor_binding",
                     "descriptor write binding does not exist in the material pipeline layout");
             }
-            if (binding->kind == RenderDescriptorKind::sampled_texture) {
+            if (binding->kind == RenderDescriptorKind::sampled_texture ||
+                binding->kind == RenderDescriptorKind::storage_image) {
                 const auto image = image_resources_.find(write.resource.value);
                 if (image == image_resources_.end()) {
                     if (resources_.contains(write.resource.value)) {
@@ -614,13 +629,21 @@ class HeadlessRenderDevice final : public IRenderDevice {
                         "renderer.invalid_sampled_texture_descriptor_range",
                         "sampled texture descriptor writes must not specify a byte range");
                 }
+                if (binding->kind == RenderDescriptorKind::storage_image &&
+                    write.sampler.is_valid()) {
+                    return core::Result<RenderDescriptorWriteStats>::failure(
+                        "renderer.storage_image_sampler_rejected",
+                        "storage image descriptors do not use samplers");
+                }
                 if (write.sampler.is_valid() && !sampler_resources_.contains(write.sampler.value)) {
                     return core::Result<RenderDescriptorWriteStats>::failure(
                         "renderer.unknown_descriptor_sampler",
                         "sampled texture descriptor references an unknown sampler");
                 }
                 materials.insert(write.material_id.value());
-                ++sampled_texture_write_count;
+                if (binding->kind == RenderDescriptorKind::sampled_texture) {
+                    ++sampled_texture_write_count;
+                }
                 continue;
             }
 
@@ -783,8 +806,7 @@ class HeadlessRenderDevice final : public IRenderDevice {
     }
 
   private:
-    [[nodiscard]] core::Status
-    validate_required_descriptors(
+    [[nodiscard]] core::Status validate_required_descriptors(
         const RenderPipelineLayoutDesc& layout,
         std::span<const RenderPassSampledResource> graph_supplied = {}) const {
         for (const auto& binding : layout.descriptors) {
@@ -1179,8 +1201,32 @@ core::Status validate_render_image_upload(const RenderImageDesc& desc,
             "renderer.invalid_image_extent",
             "render image dimensions, layers, and mip levels must be non-zero");
     }
+    if (desc.cubemap && (desc.array_layers < 6 || desc.array_layers % 6 != 0)) {
+        return core::Status::failure(
+            "renderer.invalid_cubemap_layers",
+            "cubemap images require a non-zero multiple of six array layers");
+    }
     const auto bytes_per_pixel = render_image_format_bytes_per_pixel(desc.format);
-    if (bytes_per_pixel == 0) {
+    const auto compressed_block_bytes = [&]() -> std::size_t {
+        switch (desc.format) {
+        case RenderImageFormat::bc1_rgb_unorm:
+        case RenderImageFormat::bc1_rgb_srgb:
+            return 8;
+        case RenderImageFormat::bc3_rgba_unorm:
+        case RenderImageFormat::bc3_rgba_srgb:
+        case RenderImageFormat::bc5_rg_unorm:
+        case RenderImageFormat::bc7_rgba_unorm:
+        case RenderImageFormat::bc7_rgba_srgb:
+            return 16;
+        default:
+            return 0;
+        }
+    }();
+    if (desc.storage && (compressed_block_bytes != 0 || is_depth_format(desc.format))) {
+        return core::Status::failure("renderer.invalid_storage_image_format",
+                                     "storage images require an uncompressed colour format");
+    }
+    if (bytes_per_pixel == 0 && compressed_block_bytes == 0) {
         return core::Status::failure("renderer.unknown_image_format",
                                      "unknown render image format");
     }
@@ -1196,8 +1242,13 @@ core::Status validate_render_image_upload(const RenderImageDesc& desc,
     auto mip_width = desc.width;
     auto mip_height = desc.height;
     for (std::uint32_t mip = 0; mip < desc.mip_levels; ++mip) {
-        const auto texel_count = static_cast<std::uint64_t>(mip_width) * mip_height;
-        const auto mip_bytes = texel_count * desc.array_layers * bytes_per_pixel;
+        const auto element_count = compressed_block_bytes == 0
+                                       ? static_cast<std::uint64_t>(mip_width) * mip_height
+                                       : static_cast<std::uint64_t>((mip_width + 3U) / 4U) *
+                                             static_cast<std::uint64_t>((mip_height + 3U) / 4U);
+        const auto element_bytes =
+            compressed_block_bytes == 0 ? bytes_per_pixel : compressed_block_bytes;
+        const auto mip_bytes = element_count * desc.array_layers * element_bytes;
         if (mip_bytes > std::numeric_limits<std::size_t>::max() - expected_size) {
             return core::Status::failure("renderer.image_upload_too_large",
                                          "render image upload byte size would overflow");
@@ -1278,6 +1329,7 @@ core::Status validate_render_pipeline_layout_shape(const RenderPipelineLayoutDes
         }
         switch (binding.kind) {
         case RenderDescriptorKind::sampled_texture:
+        case RenderDescriptorKind::storage_image:
         case RenderDescriptorKind::storage_buffer:
         case RenderDescriptorKind::uniform_scalar:
         case RenderDescriptorKind::uniform_color:
@@ -1473,9 +1525,16 @@ core::Status validate_render_graphics_pipeline_shape(const RenderGraphicsPipelin
     case RenderBlendMode::alpha:
         break;
     }
-    if (is_depth_format(desc.color_target_format)) {
+    if (desc.color_write_enable && is_depth_format(desc.color_target_format)) {
         return core::Status::failure("renderer.invalid_color_target_format",
                                      "graphics pipeline color target must use a color format");
+    }
+    if (std::ranges::any_of(desc.additional_color_target_formats,
+                            [](RenderImageFormat format) { return is_depth_format(format); }) ||
+        (!desc.color_write_enable && !desc.additional_color_target_formats.empty())) {
+        return core::Status::failure(
+            "renderer.invalid_additional_color_targets",
+            "additional graphics targets must be colour formats on a colour-writing pipeline");
     }
     if (!is_depth_format(desc.depth_target_format)) {
         return core::Status::failure("renderer.invalid_depth_target_format",
@@ -1678,12 +1737,30 @@ std::string_view render_buffer_memory_name(RenderBufferMemory memory) noexcept {
 
 std::string_view render_image_format_name(RenderImageFormat format) noexcept {
     switch (format) {
+    case RenderImageFormat::r8_unorm:
+        return "r8_unorm";
+    case RenderImageFormat::rg16_sfloat:
+        return "rg16_sfloat";
     case RenderImageFormat::rgba8_unorm:
         return "rgba8_unorm";
     case RenderImageFormat::rgba8_srgb:
         return "rgba8_srgb";
     case RenderImageFormat::rgba16_sfloat:
         return "rgba16_sfloat";
+    case RenderImageFormat::bc1_rgb_unorm:
+        return "bc1_rgb_unorm";
+    case RenderImageFormat::bc1_rgb_srgb:
+        return "bc1_rgb_srgb";
+    case RenderImageFormat::bc3_rgba_unorm:
+        return "bc3_rgba_unorm";
+    case RenderImageFormat::bc3_rgba_srgb:
+        return "bc3_rgba_srgb";
+    case RenderImageFormat::bc5_rg_unorm:
+        return "bc5_rg_unorm";
+    case RenderImageFormat::bc7_rgba_unorm:
+        return "bc7_rgba_unorm";
+    case RenderImageFormat::bc7_rgba_srgb:
+        return "bc7_rgba_srgb";
     case RenderImageFormat::d32_sfloat:
         return "d32_sfloat";
     case RenderImageFormat::d32_sfloat_s8_uint:
@@ -1696,11 +1773,23 @@ std::string_view render_image_format_name(RenderImageFormat format) noexcept {
 
 std::size_t render_image_format_bytes_per_pixel(RenderImageFormat format) noexcept {
     switch (format) {
+    case RenderImageFormat::r8_unorm:
+        return 1;
+    case RenderImageFormat::rg16_sfloat:
+        return 4;
     case RenderImageFormat::rgba8_unorm:
     case RenderImageFormat::rgba8_srgb:
         return 4;
     case RenderImageFormat::rgba16_sfloat:
         return 8;
+    case RenderImageFormat::bc1_rgb_unorm:
+    case RenderImageFormat::bc1_rgb_srgb:
+    case RenderImageFormat::bc3_rgba_unorm:
+    case RenderImageFormat::bc3_rgba_srgb:
+    case RenderImageFormat::bc5_rg_unorm:
+    case RenderImageFormat::bc7_rgba_unorm:
+    case RenderImageFormat::bc7_rgba_srgb:
+        return 0;
     case RenderImageFormat::d32_sfloat:
         return 4;
     case RenderImageFormat::d32_sfloat_s8_uint:
@@ -1715,6 +1804,8 @@ std::string_view render_descriptor_kind_name(RenderDescriptorKind kind) noexcept
     switch (kind) {
     case RenderDescriptorKind::sampled_texture:
         return "sampled_texture";
+    case RenderDescriptorKind::storage_image:
+        return "storage_image";
     case RenderDescriptorKind::storage_buffer:
         return "storage_buffer";
     case RenderDescriptorKind::uniform_scalar:
@@ -1756,10 +1847,11 @@ std::string_view render_sampler_address_mode_name(RenderSamplerAddressMode value
 }
 
 core::Status validate_render_sampler_desc(const RenderSamplerDesc& desc) {
-    if (!std::isfinite(desc.max_anisotropy) || desc.max_anisotropy != 1.0F) {
+    if (!std::isfinite(desc.max_anisotropy) || desc.max_anisotropy < 1.0F ||
+        desc.max_anisotropy > 16.0F) {
         return core::Status::failure(
-            "renderer.unsupported_sampler_anisotropy",
-            "sampler anisotropy is not enabled yet and must remain exactly one");
+            "renderer.invalid_sampler_anisotropy",
+            "sampler anisotropy must be finite and in the portable range 1..16");
     }
     if (!std::isfinite(desc.min_lod) || !std::isfinite(desc.max_lod) || desc.min_lod < 0.0F ||
         desc.max_lod < desc.min_lod) {
@@ -1853,9 +1945,18 @@ std::string_view render_blend_mode_name(RenderBlendMode value) noexcept {
 
 bool is_depth_format(RenderImageFormat format) noexcept {
     switch (format) {
+    case RenderImageFormat::r8_unorm:
+    case RenderImageFormat::rg16_sfloat:
     case RenderImageFormat::rgba8_unorm:
     case RenderImageFormat::rgba8_srgb:
     case RenderImageFormat::rgba16_sfloat:
+    case RenderImageFormat::bc1_rgb_unorm:
+    case RenderImageFormat::bc1_rgb_srgb:
+    case RenderImageFormat::bc3_rgba_unorm:
+    case RenderImageFormat::bc3_rgba_srgb:
+    case RenderImageFormat::bc5_rg_unorm:
+    case RenderImageFormat::bc7_rgba_unorm:
+    case RenderImageFormat::bc7_rgba_srgb:
         return false;
     case RenderImageFormat::d32_sfloat:
     case RenderImageFormat::d32_sfloat_s8_uint:
@@ -1867,10 +1968,19 @@ bool is_depth_format(RenderImageFormat format) noexcept {
 
 bool is_hdr_format(RenderImageFormat format) noexcept {
     switch (format) {
+    case RenderImageFormat::rg16_sfloat:
     case RenderImageFormat::rgba16_sfloat:
         return true;
+    case RenderImageFormat::r8_unorm:
     case RenderImageFormat::rgba8_unorm:
     case RenderImageFormat::rgba8_srgb:
+    case RenderImageFormat::bc1_rgb_unorm:
+    case RenderImageFormat::bc1_rgb_srgb:
+    case RenderImageFormat::bc3_rgba_unorm:
+    case RenderImageFormat::bc3_rgba_srgb:
+    case RenderImageFormat::bc5_rg_unorm:
+    case RenderImageFormat::bc7_rgba_unorm:
+    case RenderImageFormat::bc7_rgba_srgb:
     case RenderImageFormat::d32_sfloat:
     case RenderImageFormat::d32_sfloat_s8_uint:
     case RenderImageFormat::d24_unorm_s8_uint:
@@ -1906,6 +2016,18 @@ core::Status validate_render_exposure(const RenderExposureSettings& exposure) {
         return core::Status::failure("renderer.invalid_exposure_white_point",
                                      "exposure white point must be finite and positive");
     }
+    if (!std::isfinite(exposure.saturation) || exposure.saturation < 0.0F ||
+        !std::isfinite(exposure.contrast) || exposure.contrast <= 0.0F ||
+        !std::isfinite(exposure.bloom_intensity) || exposure.bloom_intensity < 0.0F ||
+        !std::isfinite(exposure.target_luminance) || exposure.target_luminance <= 0.0F ||
+        !std::isfinite(exposure.adaptation_speed) || exposure.adaptation_speed < 0.0F ||
+        !std::isfinite(exposure.minimum_auto_stops) ||
+        !std::isfinite(exposure.maximum_auto_stops) ||
+        exposure.minimum_auto_stops > exposure.maximum_auto_stops) {
+        return core::Status::failure(
+            "renderer.invalid_image_quality_settings",
+            "color grading, bloom, and exposure adaptation settings are outside bounds");
+    }
     switch (exposure.tone_mapping) {
     case RenderToneMapping::none:
     case RenderToneMapping::reinhard:
@@ -1919,12 +2041,14 @@ core::Status validate_render_exposure(const RenderExposureSettings& exposure) {
     return core::Status::ok();
 }
 
-ToneMapPushConstants
-make_tone_map_push_constants(const RenderExposureSettings& exposure) noexcept {
+ToneMapPushConstants make_tone_map_push_constants(const RenderExposureSettings& exposure) noexcept {
     ToneMapPushConstants constants;
     constants.exposure_scale = std::exp2(exposure.exposure_stops);
     constants.white_point = exposure.white_point;
     constants.tone_mapping = static_cast<std::uint32_t>(exposure.tone_mapping);
+    constants.saturation = exposure.saturation;
+    constants.contrast = exposure.contrast;
+    constants.bloom_intensity = exposure.bloom_intensity;
     return constants;
 }
 

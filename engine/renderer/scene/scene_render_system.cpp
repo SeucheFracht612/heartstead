@@ -165,6 +165,7 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
     }
     scratch.opaque_and_cutout.clear();
     scratch.transparent.clear();
+    scratch.lights = std::move(extracted.value().lights);
     instance_scratch_.clear();
     skin_matrix_scratch_.clear();
     morph_weight_scratch_.clear();

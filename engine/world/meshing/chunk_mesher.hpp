@@ -34,6 +34,7 @@ struct ChunkMeshVertex {
     std::uint16_t voxel_type = 0;
     std::uint8_t light = 0;
     std::uint16_t state_bits = 0;
+    std::uint8_t ambient_occlusion = 255;
 
     friend auto operator<=>(const ChunkMeshVertex&, const ChunkMeshVertex&) = default;
 };
@@ -64,6 +65,7 @@ struct ChunkMesh {
     std::vector<ChunkMeshSection> sections;
     std::vector<RichBlockMeshInstance> rich_instances;
     std::size_t face_count = 0;
+    std::size_t triangle_face_count = 0;
     std::uint16_t required_halo_radius = 0;
     std::uint16_t provided_halo_radius = 0;
 
@@ -87,6 +89,9 @@ class ChunkMesher {
     [[nodiscard]] static core::Result<ChunkMesh>
     build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborhood,
                        const BlockRenderTableSnapshot& render_table);
+    [[nodiscard]] static core::Result<ChunkMesh>
+    build_specialized_surface_mesh(const ChunkNeighborhoodSnapshot& neighborhood,
+                                   const BlockRenderTableSnapshot& render_table);
 };
 
 [[nodiscard]] math::Vec3f chunk_mesh_face_normal(ChunkMeshFaceDirection direction) noexcept;

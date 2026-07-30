@@ -74,10 +74,10 @@ void test_debug_primitives_lifetimes_and_unified_draws() {
     assert(debug.initialize(config));
     const auto origin = position({0.0, 0.0, 0.0});
     const auto end = position({1.0, 0.0, -5.0});
-    assert(debug.submit_line({origin, end, {1.0F, 1.0F, 0.0F, 1.0F}, 0.0F,
-                              renderer::DebugDepthMode::depth_tested}));
-    assert(debug.submit_line({origin, end, {1.0F, 0.0F, 1.0F, 1.0F}, 0.5F,
-                              renderer::DebugDepthMode::overlay}));
+    assert(debug.submit_line(
+        {origin, end, {1.0F, 1.0F, 0.0F, 1.0F}, 0.0F, renderer::DebugDepthMode::depth_tested}));
+    assert(debug.submit_line(
+        {origin, end, {1.0F, 0.0F, 1.0F, 1.0F}, 0.5F, renderer::DebugDepthMode::overlay}));
     assert(debug.submit_aabb(origin, {{-1.0F, -1.0F, -6.0F}, {1.0F, 1.0F, -4.0F}},
                              {0.2F, 0.8F, 1.0F, 1.0F}));
     assert(debug.submit_axes(origin, 2.0F));
@@ -101,7 +101,7 @@ void test_debug_primitives_lifetimes_and_unified_draws() {
     auto frame = frame_builder.build(camera, std::move(lists));
     assert(frame);
     assert(frame.value().pass_commands.size() == 1);
-    assert(frame.value().pass_commands.front().pass_index == 5);
+    assert(frame.value().pass_commands.front().pass_index == renderer::hdr_pass_index::debug);
     auto executed = fixture.device->execute_frame(frame.value());
     assert(executed);
     assert(executed.value().draw_count == 2);

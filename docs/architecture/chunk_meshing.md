@@ -12,6 +12,7 @@ Implemented foundation:
   - source voxel type
   - source voxel light
   - source voxel state bits
+  - per-corner voxel ambient occlusion
 
 - `ChunkMesh`
   - source chunk coordinate
@@ -28,6 +29,8 @@ Implemented foundation:
 - `ChunkMesher::build_surface_mesh`
   - emits faces for solid voxel sides exposed to air or chunk boundaries
   - hides internal faces between adjacent solid voxels
+  - emits validated authored triangles for slopes and non-box terrain; boundary triangles share
+    neighbor culling, lighting, and AO with box faces
   - returns an empty valid mesh for fully air chunks
   - has a worker-safe overload that consumes only `ChunkNeighborhoodSnapshot` and
     `BlockRenderTableSnapshot`
@@ -35,7 +38,7 @@ Implemented foundation:
 - `GreedyChunkMesher::build`
   - is the default mode for `ChunkMeshScheduler` and `ChunkRenderSystem`
   - merges compatible exposed terrain faces while retaining material/render phase, voxel type,
-    light, state bits, and block flags as merge boundaries
+    light, state bits, the four-corner AO pattern, and block flags as merge boundaries
   - does not split compatible geometry merely because neighboring cells select different authored
     texture variants; the terrain fragment path recovers the owning local cell within the merged
     quad and selects the stable per-face variant
@@ -60,6 +63,17 @@ Implemented foundation:
   - center edits, neighbor edits, unload/reload generation changes, and render-table changes reject
     old results before upload; the newest revision is requeued
   - dirty state is cleared only after a validated replacement is resident
+
+- Terrain mapping and material stability
+  - full, partial, authored-box, authored-triangle, greedy, cutout, transparent, and emissive
+    geometry carries the same voxel type/state contract into the production terrain shader
+  - the shader reconstructs periodic world coordinates before applying material-authored density,
+    avoiding stretched partial-block UVs and arbitrary-density chunk seams
+  - packed integer chunk coordinates provide deterministic variants, rotations, mirroring, macro
+    variation, and surface-layer noise without using camera-relative position as an absolute
+    coordinate
+  - classic voxel AO reads the immutable halo; its four-corner pattern prevents incompatible
+    greedy merges and remains correct across chunk boundaries
 
 This remains a CPU-side extraction contract. Workers must never retain or query mutable world or
 chunk objects. Further mesh compression, LOD, and rich-model batching can evolve without changing

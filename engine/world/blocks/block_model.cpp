@@ -97,7 +97,9 @@ namespace {
 parse_boxes(const modding::GenericPrototype& prototype, BlockModelKind kind) {
     const auto* boxes = field(prototype, "boxes");
     if (boxes == nullptr || boxes->empty()) {
-        if (kind == BlockModelKind::mesh || kind == BlockModelKind::cross_plane) {
+        const auto* triangles = field(prototype, "triangles");
+        if (kind == BlockModelKind::mesh || kind == BlockModelKind::cross_plane ||
+            (triangles != nullptr && !triangles->empty())) {
             return core::Result<std::vector<BlockModelBox>>::success({});
         }
         return core::Result<std::vector<BlockModelBox>>::success(
@@ -120,13 +122,64 @@ parse_boxes(const modding::GenericPrototype& prototype, BlockModelKind kind) {
     return core::Result<std::vector<BlockModelBox>>::success(std::move(result));
 }
 
-[[nodiscard]] math::Bounds3f bounds_for_boxes(const std::vector<BlockModelBox>& boxes) noexcept {
-    if (boxes.empty()) {
+[[nodiscard]] core::Result<std::vector<BlockModelTriangle>>
+parse_triangles(const modding::GenericPrototype& prototype) {
+    const auto* triangles = field(prototype, "triangles");
+    if (triangles == nullptr || triangles->empty()) {
+        return core::Result<std::vector<BlockModelTriangle>>::success({});
+    }
+    std::vector<BlockModelTriangle> result;
+    for (const auto encoded_triangle : split(*triangles, ';')) {
+        const auto components = split(encoded_triangle, ',');
+        if (components.size() != 9U) {
+            return core::Result<std::vector<BlockModelTriangle>>::failure(
+                "block_model.invalid_triangles",
+                "each authored block triangle must contain nine numbers");
+        }
+        BlockModelTriangle triangle;
+        for (std::size_t position = 0; position < triangle.positions.size(); ++position) {
+            auto x = parse_float(components[position * 3U], "triangles");
+            auto y = parse_float(components[position * 3U + 1U], "triangles");
+            auto z = parse_float(components[position * 3U + 2U], "triangles");
+            if (!x || !y || !z) {
+                const auto* error = !x ? &x.error() : !y ? &y.error() : &z.error();
+                return core::Result<std::vector<BlockModelTriangle>>::failure(error->code,
+                                                                              error->message);
+            }
+            triangle.positions[position] = {x.value(), y.value(), z.value()};
+        }
+        auto status = triangle.validate();
+        if (!status) {
+            return core::Result<std::vector<BlockModelTriangle>>::failure(status.error().code,
+                                                                          status.error().message);
+        }
+        result.push_back(triangle);
+    }
+    return core::Result<std::vector<BlockModelTriangle>>::success(std::move(result));
+}
+
+[[nodiscard]] math::Bounds3f
+bounds_for_geometry(const std::vector<BlockModelBox>& boxes,
+                    const std::vector<BlockModelTriangle>& triangles) noexcept {
+    if (boxes.empty() && triangles.empty()) {
         return {{0.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 1.0F}};
     }
-    auto bounds = boxes.front().bounds;
-    for (std::size_t index = 1; index < boxes.size(); ++index) {
-        bounds = bounds.merged_with(boxes[index].bounds);
+    math::Bounds3f bounds{};
+    bool initialized = false;
+    for (const auto& box : boxes) {
+        bounds = initialized ? bounds.merged_with(box.bounds) : box.bounds;
+        initialized = true;
+    }
+    for (const auto& triangle : triangles) {
+        for (const auto position : triangle.positions) {
+            if (!initialized) {
+                bounds = {position, position};
+                initialized = true;
+            } else {
+                bounds.min = math::component_min(bounds.min, position);
+                bounds.max = math::component_max(bounds.max, position);
+            }
+        }
     }
     return bounds;
 }
@@ -157,6 +210,19 @@ core::Status BlockModelBox::validate() const {
         same_float(bounds.min.z, bounds.max.z)) {
         return core::Status::failure("block_model.empty_box",
                                      "block model box must have positive volume");
+    }
+    return core::Status::ok();
+}
+
+core::Status BlockModelTriangle::validate() const {
+    if (!positions[0].is_finite() || !positions[1].is_finite() || !positions[2].is_finite()) {
+        return core::Status::failure("block_model.invalid_triangle",
+                                     "authored block triangle contains a non-finite position");
+    }
+    const auto normal = math::cross(positions[1] - positions[0], positions[2] - positions[0]);
+    if (math::length_squared(normal) <= 0.00000001F) {
+        return core::Status::failure("block_model.degenerate_triangle",
+                                     "authored block triangle must have nonzero area");
     }
     return core::Status::ok();
 }
@@ -193,9 +259,16 @@ core::Status BlockModelDefinition::validate() const {
         return core::Status::failure("block_model.missing_mesh_asset",
                                      "mesh block models require a mesh_asset");
     }
-    if (uses_chunk_geometry() && kind != BlockModelKind::cross_plane && boxes.empty()) {
+    if (uses_chunk_geometry() && kind != BlockModelKind::cross_plane && boxes.empty() &&
+        triangles.empty()) {
         return core::Status::failure("block_model.missing_geometry",
                                      "chunk block model has no geometry");
+    }
+    if (!triangles.empty() &&
+        (kind == BlockModelKind::mesh || kind == BlockModelKind::cross_plane)) {
+        return core::Status::failure(
+            "block_model.unsupported_authored_triangles",
+            "authored triangles are only valid for chunk-geometry block models");
     }
     for (const auto& box : boxes) {
         auto status = box.validate();
@@ -208,6 +281,20 @@ core::Status BlockModelDefinition::validate() const {
                                          "mesh invalidation radius must cover every model box");
         }
     }
+    for (const auto& triangle : triangles) {
+        auto status = triangle.validate();
+        if (!status) {
+            return status;
+        }
+        for (const auto position : triangle.positions) {
+            if (!bounds_within_engine_limit({position, position}) ||
+                !render_bounds.contains(position)) {
+                return core::Status::failure(
+                    "block_model.invalid_triangle_bounds",
+                    "authored block triangle lies outside the model render bounds or halo limit");
+            }
+        }
+    }
     return core::Status::ok();
 }
 
@@ -216,7 +303,7 @@ bool BlockModelDefinition::uses_chunk_geometry() const noexcept {
 }
 
 bool BlockModelDefinition::is_unit_cube() const noexcept {
-    if (kind != BlockModelKind::cube || boxes.size() != 1) {
+    if (kind != BlockModelKind::cube || boxes.size() != 1 || !triangles.empty()) {
         return false;
     }
     const auto& bounds = boxes.front().bounds;
@@ -334,11 +421,13 @@ block_model_definition_from_prototype(const modding::GenericPrototype& prototype
             "block_model.invalid_model_type", prototype.id.value() + ": unknown model_type");
     }
     auto boxes = parse_boxes(prototype, *kind);
+    auto triangles = parse_triangles(prototype);
     auto dependency = parse_radius(prototype, "neighbor_dependency_radius", 1);
     auto invalidation =
         parse_radius(prototype, "mesh_invalidation_radius", dependency ? dependency.value() : 1);
-    if (!boxes || !dependency || !invalidation) {
+    if (!boxes || !triangles || !dependency || !invalidation) {
         const auto* error = !boxes        ? &boxes.error()
+                            : !triangles  ? &triangles.error()
                             : !dependency ? &dependency.error()
                                           : &invalidation.error();
         return core::Result<BlockModelDefinition>::failure(error->code, prototype.id.value() +
@@ -349,7 +438,8 @@ block_model_definition_from_prototype(const modding::GenericPrototype& prototype
     definition.prototype_id = prototype.id;
     definition.kind = *kind;
     definition.boxes = std::move(boxes).value();
-    definition.render_bounds = bounds_for_boxes(definition.boxes);
+    definition.triangles = std::move(triangles).value();
+    definition.render_bounds = bounds_for_geometry(definition.boxes, definition.triangles);
     if (const auto* encoded_bounds = field(prototype, "render_bounds")) {
         auto parsed = parse_bounds(*encoded_bounds, "render_bounds");
         if (!parsed) {

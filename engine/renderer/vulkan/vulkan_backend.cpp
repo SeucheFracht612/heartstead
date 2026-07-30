@@ -315,6 +315,7 @@ create_native_surface(VkInstance instance, const platform::NativeWindowHandle& h
 struct SelectedPhysicalDevice {
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties properties{};
+    bool sampler_anisotropy = false;
     std::uint32_t graphics_queue_family = 0;
     std::uint32_t timestamp_valid_bits = 0;
     VkFormat depth_format = VK_FORMAT_UNDEFINED;
@@ -544,6 +545,9 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
         SelectedPhysicalDevice selected;
         selected.physical_device = physical_device;
         vkGetPhysicalDeviceProperties(physical_device, &selected.properties);
+        VkPhysicalDeviceFeatures device_features{};
+        vkGetPhysicalDeviceFeatures(physical_device, &device_features);
+        selected.sampler_anisotropy = device_features.samplerAnisotropy == VK_TRUE;
         selected.depth_format = choose_supported_depth_format(physical_device);
         if (selected.depth_format == VK_FORMAT_UNDEFINED) {
             continue;
@@ -580,6 +584,9 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
     VkPhysicalDeviceFeatures2 features{};
     features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     features.pNext = &features_13;
+    VkPhysicalDeviceFeatures supported_features{};
+    vkGetPhysicalDeviceFeatures(physical_device, &supported_features);
+    features.features.samplerAnisotropy = supported_features.samplerAnisotropy;
 
     VkDeviceCreateInfo device_info{};
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -797,14 +804,12 @@ vulkan_primitive_topology(rhi::RenderPrimitiveTopology topology) noexcept {
     return VK_COMPARE_OP_LESS;
 }
 
-[[nodiscard]] bool vulkan_format_has_stencil(VkFormat format) noexcept {
-    return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
-}
-
 [[nodiscard]] VkDescriptorType vulkan_descriptor_type(rhi::RenderDescriptorKind kind) noexcept {
     switch (kind) {
     case rhi::RenderDescriptorKind::sampled_texture:
         return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    case rhi::RenderDescriptorKind::storage_image:
+        return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     case rhi::RenderDescriptorKind::storage_buffer:
         return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     case rhi::RenderDescriptorKind::uniform_scalar:
@@ -817,12 +822,16 @@ vulkan_primitive_topology(rhi::RenderPrimitiveTopology topology) noexcept {
 [[nodiscard]] std::vector<VkDescriptorPoolSize>
 make_descriptor_pool_sizes(const rhi::RenderPipelineLayoutDesc& desc) {
     std::uint32_t sampled_textures = 0;
+    std::uint32_t storage_images = 0;
     std::uint32_t uniform_buffers = 0;
     std::uint32_t storage_buffers = 0;
     for (const auto& binding : desc.descriptors) {
         switch (binding.kind) {
         case rhi::RenderDescriptorKind::sampled_texture:
             ++sampled_textures;
+            break;
+        case rhi::RenderDescriptorKind::storage_image:
+            ++storage_images;
             break;
         case rhi::RenderDescriptorKind::storage_buffer:
             ++storage_buffers;
@@ -835,7 +844,7 @@ make_descriptor_pool_sizes(const rhi::RenderPipelineLayoutDesc& desc) {
     }
 
     std::vector<VkDescriptorPoolSize> sizes;
-    sizes.reserve(3);
+    sizes.reserve(4);
     if (sampled_textures > 0) {
         sizes.push_back(VkDescriptorPoolSize{
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -852,6 +861,12 @@ make_descriptor_pool_sizes(const rhi::RenderPipelineLayoutDesc& desc) {
         sizes.push_back(VkDescriptorPoolSize{
             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             storage_buffers,
+        });
+    }
+    if (storage_images > 0) {
+        sizes.push_back(VkDescriptorPoolSize{
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            storage_images,
         });
     }
     return sizes;
@@ -917,30 +932,19 @@ validate_vulkan_frame_plan_is_executable(const rhi::RenderFrameSubmission& frame
             "renderer.vulkan_unsupported_frame_plan",
             "Vulkan execute_frame needs the graph to declare a depth resource");
     }
-    for (const auto& resource : plan.resources) {
-        if (!same_extent(resource.extent, plan.extent)) {
-            return core::Status::failure("renderer.vulkan_unsupported_frame_plan",
-                                         "frame graph resource '" + resource.name +
-                                             "' does not match the frame extent");
-        }
-    }
     for (const auto& pass : plan.passes) {
         if (pass.kind == rhi::RenderPassKind::present) {
             continue;
         }
         // One colour attachment per pass: multiple render targets are not wired through the
         // recorder yet, and silently dropping the extras would be worse than refusing.
-        const auto colour_writes = std::ranges::count_if(
-            pass.writes, [](const std::string& written) {
-                return written != rhi::depth_resource_name;
+        const auto colour_writes =
+            std::ranges::count_if(pass.writes, [&plan](const std::string& written) {
+                const auto* resource = plan.find_resource(written);
+                return resource != nullptr && !rhi::is_depth_format(resource->format) &&
+                       !resource->storage;
             });
-        if (colour_writes > 1) {
-            return core::Status::failure(
-                "renderer.vulkan_unsupported_frame_plan",
-                "frame graph pass '" + pass.name +
-                    "' writes more than one colour attachment, which the Vulkan recorder does not "
-                    "support yet");
-        }
+        (void)colour_writes;
     }
     const auto pass_count = plan.passes.size();
     const auto command_passes_supported = std::ranges::all_of(
@@ -1014,6 +1018,24 @@ vulkan_sync_for_resource_state(rhi::RenderResourceState state) noexcept {
             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        };
+    case rhi::RenderResourceState::storage_read:
+        return VulkanResourceStateSync{
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_ACCESS_SHADER_READ_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        };
+    case rhi::RenderResourceState::storage_write:
+        return VulkanResourceStateSync{
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        };
+    case rhi::RenderResourceState::storage_read_write:
+        return VulkanResourceStateSync{
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         };
     case rhi::RenderResourceState::transfer_source:
         return VulkanResourceStateSync{
@@ -1215,7 +1237,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         VkPipeline pipeline = VK_NULL_HANDLE;
         // Attachment formats the pipeline was created against. Kept so a frame can assert that the
         // images it binds match what the pipeline expects.
-        VkFormat color_format = VK_FORMAT_UNDEFINED;
+        std::vector<VkFormat> color_formats;
         VkFormat depth_format = VK_FORMAT_UNDEFINED;
         bool uses_depth = false;
     };
@@ -1305,6 +1327,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
           validation_enabled_(instance.validation_enabled),
           debug_utils_enabled_(instance.debug_utils_enabled),
           physical_device_(selected.physical_device), properties_(selected.properties),
+          sampler_anisotropy_(selected.sampler_anisotropy),
           graphics_queue_family_(selected.graphics_queue_family),
           depth_format_(selected.depth_format), device_(device), queue_(queue),
           timestamp_valid_bits_(selected.timestamp_valid_bits), surface_(surface),
@@ -1326,6 +1349,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             if (default_sampler_ != VK_NULL_HANDLE) {
                 vkDestroySampler(device_, default_sampler_, nullptr);
                 default_sampler_ = VK_NULL_HANDLE;
+            }
+            if (default_comparison_sampler_ != VK_NULL_HANDLE) {
+                vkDestroySampler(device_, default_comparison_sampler_, nullptr);
+                default_comparison_sampler_ = VK_NULL_HANDLE;
             }
             destroy_graphics_pipeline_resources();
             destroy_compute_pipeline_resources();
@@ -1483,8 +1510,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                                    "the last frame context holds no colour image");
         }
         const auto extent = target.extent;
-        const auto byte_size =
-            static_cast<VkDeviceSize>(extent.width) * extent.height * 4U;
+        const auto byte_size = static_cast<VkDeviceSize>(extent.width) * extent.height * 4U;
 
         VulkanBufferResource staging;
         staging.byte_size = static_cast<std::size_t>(byte_size);
@@ -1501,10 +1527,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         }
         VkMemoryRequirements requirements{};
         vkGetBufferMemoryRequirements(device_, staging.buffer, &requirements);
-        auto memory_type = find_required_memory_type(
-            physical_device_, requirements.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            "image readback");
+        auto memory_type = find_required_memory_type(physical_device_, requirements.memoryTypeBits,
+                                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                     "image readback");
         if (!memory_type) {
             destroy_buffer_resource(staging);
             return Result::failure(memory_type.error().code, memory_type.error().message);
@@ -1647,10 +1673,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         }
         VkMemoryRequirements requirements{};
         vkGetBufferMemoryRequirements(device_, staging.buffer, &requirements);
-        auto memory_type = find_required_memory_type(
-            physical_device_, requirements.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            "buffer readback");
+        auto memory_type = find_required_memory_type(physical_device_, requirements.memoryTypeBits,
+                                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                     "buffer readback");
         if (!memory_type) {
             destroy_buffer_resource(staging);
             return Result::failure(memory_type.error().code, memory_type.error().message);
@@ -2325,9 +2351,11 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         image_info.extent = VkExtent3D{desc.width, desc.height, 1};
         image_info.mipLevels = desc.mip_levels;
         image_info.arrayLayers = desc.array_layers;
+        image_info.flags = desc.cubemap ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
         image_info.samples = VK_SAMPLE_COUNT_1_BIT;
         image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-        image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                           (desc.storage ? VK_IMAGE_USAGE_STORAGE_BIT : 0);
         image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -2380,7 +2408,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         view_info.image = resource.image;
         view_info.viewType =
-            desc.array_layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+            desc.cubemap
+                ? (desc.array_layers == 6 ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_CUBE_ARRAY)
+                : (desc.array_layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D);
         view_info.format = format;
         view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         view_info.subresourceRange.baseMipLevel = 0;
@@ -2449,9 +2479,16 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         sampler_info.addressModeU = vulkan_sampler_address_mode(desc.address_u);
         sampler_info.addressModeV = vulkan_sampler_address_mode(desc.address_v);
         sampler_info.addressModeW = vulkan_sampler_address_mode(desc.address_w);
-        sampler_info.maxAnisotropy = desc.max_anisotropy;
+        sampler_info.anisotropyEnable =
+            sampler_anisotropy_ && desc.max_anisotropy > 1.0F ? VK_TRUE : VK_FALSE;
+        sampler_info.maxAnisotropy =
+            sampler_info.anisotropyEnable == VK_TRUE
+                ? std::min(desc.max_anisotropy, properties_.limits.maxSamplerAnisotropy)
+                : 1.0F;
         sampler_info.minLod = desc.min_lod;
         sampler_info.maxLod = desc.max_lod;
+        sampler_info.compareEnable = desc.comparison_enable ? VK_TRUE : VK_FALSE;
+        sampler_info.compareOp = vulkan_compare_operation(desc.comparison);
 
         VulkanSamplerResource resource;
         resource.desc = std::move(desc);
@@ -2527,8 +2564,12 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             desc.descriptors, [](const rhi::RenderDescriptorBinding& binding) {
                 return binding.kind == rhi::RenderDescriptorKind::storage_buffer;
             }));
-        stats.uniform_count =
-            desc.descriptors.size() - stats.sampled_texture_count - stats.storage_buffer_count;
+        const auto storage_image_count = static_cast<std::size_t>(std::ranges::count_if(
+            desc.descriptors, [](const rhi::RenderDescriptorBinding& binding) {
+                return binding.kind == rhi::RenderDescriptorKind::storage_image;
+            }));
+        stats.uniform_count = desc.descriptors.size() - stats.sampled_texture_count -
+                              stats.storage_buffer_count - storage_image_count;
         stats.push_constant_range_count = desc.push_constant_ranges.size();
         stats.gpu_backed = true;
 
@@ -2672,13 +2713,20 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         // and the frame graph supplies the actual images at vkCmdBeginRendering time. Pipelines are
         // therefore no longer tied to one render pass object, which is what lets scene passes
         // target an HDR image while the tone mapping pass targets the swapchain.
-        resource.color_format = vulkan_image_format(desc.color_target_format);
+        if (desc.color_write_enable) {
+            resource.color_formats.push_back(vulkan_image_format(desc.color_target_format));
+            for (const auto format : desc.additional_color_target_formats) {
+                resource.color_formats.push_back(vulkan_image_format(format));
+            }
+        }
         resource.depth_format = resource.uses_depth ? depth_format_ : VK_FORMAT_UNDEFINED;
 
         VkPipelineRenderingCreateInfo rendering_info{};
         rendering_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-        rendering_info.colorAttachmentCount = 1;
-        rendering_info.pColorAttachmentFormats = &resource.color_format;
+        rendering_info.colorAttachmentCount =
+            static_cast<std::uint32_t>(resource.color_formats.size());
+        rendering_info.pColorAttachmentFormats =
+            resource.color_formats.empty() ? nullptr : resource.color_formats.data();
         rendering_info.depthAttachmentFormat = resource.depth_format;
 
         const std::array<VkPipelineShaderStageCreateInfo, 2> shader_stages{
@@ -2805,10 +2853,13 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             color_blend_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
         }
 
+        std::vector<VkPipelineColorBlendAttachmentState> color_blend_attachments(
+            resource.color_formats.size(), color_blend_attachment);
         VkPipelineColorBlendStateCreateInfo color_blend{};
         color_blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        color_blend.attachmentCount = 1;
-        color_blend.pAttachments = &color_blend_attachment;
+        color_blend.attachmentCount = static_cast<std::uint32_t>(color_blend_attachments.size());
+        color_blend.pAttachments =
+            color_blend_attachments.empty() ? nullptr : color_blend_attachments.data();
 
         const std::array<VkDynamicState, 2> dynamic_states{
             VK_DYNAMIC_STATE_VIEWPORT,
@@ -2878,7 +2929,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         std::vector<VkWriteDescriptorSet> descriptor_writes;
         buffer_infos.reserve(writes.size());
         image_infos.reserve(writes.size());
-        descriptor_writes.reserve(writes.size());
+        descriptor_writes.reserve(writes.size() * (frame_contexts_.size() + 1U));
 
         for (const auto& write : writes) {
             const auto layout = pipeline_layouts_.find(write.material_id.value());
@@ -2898,7 +2949,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                     "renderer.unknown_descriptor_binding",
                     "descriptor write binding does not exist in the material pipeline layout");
             }
-            if (binding->kind == rhi::RenderDescriptorKind::sampled_texture) {
+            if (binding->kind == rhi::RenderDescriptorKind::sampled_texture ||
+                binding->kind == rhi::RenderDescriptorKind::storage_image) {
                 const auto image = image_resources_.find(write.resource.value);
                 if (image == image_resources_.end()) {
                     if (buffer_resources_.contains(write.resource.value)) {
@@ -2916,7 +2968,15 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                         "sampled texture descriptor writes must not specify a byte range");
                 }
 
-                auto sampler = image->second.sampler;
+                auto sampler = binding->kind == rhi::RenderDescriptorKind::storage_image
+                                   ? VK_NULL_HANDLE
+                                   : image->second.sampler;
+                if (binding->kind == rhi::RenderDescriptorKind::storage_image &&
+                    write.sampler.is_valid()) {
+                    return core::Result<rhi::RenderDescriptorWriteStats>::failure(
+                        "renderer.storage_image_sampler_rejected",
+                        "storage image descriptors do not use samplers");
+                }
                 if (write.sampler.is_valid()) {
                     const auto sampler_resource = sampler_resources_.find(write.sampler.value);
                     if (sampler_resource == sampler_resources_.end()) {
@@ -2929,7 +2989,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 image_infos.push_back(VkDescriptorImageInfo{
                     sampler,
                     image->second.image_view,
-                    image->second.layout,
+                    binding->kind == rhi::RenderDescriptorKind::storage_image
+                        ? VK_IMAGE_LAYOUT_GENERAL
+                        : image->second.layout,
                 });
                 VkWriteDescriptorSet descriptor_write{};
                 descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2937,12 +2999,18 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 descriptor_write.dstBinding = binding->slot;
                 descriptor_write.dstArrayElement = 0;
                 descriptor_write.descriptorCount = 1;
-                descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                descriptor_write.descriptorType = vulkan_descriptor_type(binding->kind);
                 descriptor_write.pImageInfo = &image_infos.back();
                 descriptor_writes.push_back(descriptor_write);
+                for (const auto per_frame_set : layout->second.per_frame_descriptor_sets) {
+                    descriptor_write.dstSet = per_frame_set;
+                    descriptor_writes.push_back(descriptor_write);
+                }
 
                 materials.insert(write.material_id.value());
-                ++sampled_texture_write_count;
+                if (binding->kind == rhi::RenderDescriptorKind::sampled_texture) {
+                    ++sampled_texture_write_count;
+                }
                 continue;
             }
 
@@ -2991,6 +3059,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             descriptor_write.descriptorType = vulkan_descriptor_type(binding->kind);
             descriptor_write.pBufferInfo = &buffer_infos.back();
             descriptor_writes.push_back(descriptor_write);
+            for (const auto per_frame_set : layout->second.per_frame_descriptor_sets) {
+                descriptor_write.dstSet = per_frame_set;
+                descriptor_writes.push_back(descriptor_write);
+            }
 
             materials.insert(write.material_id.value());
             if (binding->kind == rhi::RenderDescriptorKind::storage_buffer) {
@@ -3169,8 +3241,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
     }
 
   private:
-    [[nodiscard]] core::Status
-    validate_required_descriptors(
+    [[nodiscard]] core::Status validate_required_descriptors(
         const VulkanPipelineLayoutResource& layout,
         std::span<const rhi::RenderPassSampledResource> graph_supplied = {}) const {
         for (const auto& binding : layout.desc.descriptors) {
@@ -3789,6 +3860,33 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         return core::Status::ok();
     }
 
+    [[nodiscard]] core::Status ensure_default_comparison_sampler() {
+        if (default_comparison_sampler_ != VK_NULL_HANDLE) {
+            return core::Status::ok();
+        }
+        VkSamplerCreateInfo sampler_info{};
+        sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sampler_info.magFilter = VK_FILTER_LINEAR;
+        sampler_info.minFilter = VK_FILTER_LINEAR;
+        sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.compareEnable = VK_TRUE;
+        sampler_info.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        sampler_info.maxAnisotropy = 1.0F;
+        sampler_info.maxLod = VK_LOD_CLAMP_NONE;
+        const auto result =
+            vkCreateSampler(device_, &sampler_info, nullptr, &default_comparison_sampler_);
+        if (result != VK_SUCCESS) {
+            default_comparison_sampler_ = VK_NULL_HANDLE;
+            return core::Status::failure("renderer.vulkan_comparison_sampler_failed",
+                                         "failed to create Vulkan depth comparison sampler: " +
+                                             std::string(vk_result_name(result)));
+        }
+        return core::Status::ok();
+    }
+
     void destroy_image_resource(VulkanImageResource& resource) noexcept {
         if (resource.owns_sampler && resource.sampler != VK_NULL_HANDLE) {
             vkDestroySampler(device_, resource.sampler, nullptr);
@@ -4133,10 +4231,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         auto pool_sizes = make_descriptor_pool_sizes(resource.desc);
         // A layout that samples frame graph resources needs one set per frame in flight, so the
         // pool has to be sized for all of them.
-        const auto set_count =
-            resource.desc.per_frame_descriptors && !frame_contexts_.empty()
-                ? static_cast<std::uint32_t>(frame_contexts_.size())
-                : 1U;
+        const auto set_count = resource.desc.per_frame_descriptors && !frame_contexts_.empty()
+                                   ? static_cast<std::uint32_t>(frame_contexts_.size())
+                                   : 1U;
         if (!pool_sizes.empty()) {
             for (auto& pool_size : pool_sizes) {
                 pool_size.descriptorCount *= set_count;
@@ -4263,6 +4360,21 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         auto mip_width = resource.desc.width;
         auto mip_height = resource.desc.height;
         const auto bytes_per_pixel = rhi::render_image_format_bytes_per_pixel(resource.desc.format);
+        const auto compressed_block_bytes = [&]() -> std::uint32_t {
+            switch (resource.desc.format) {
+            case rhi::RenderImageFormat::bc1_rgb_unorm:
+            case rhi::RenderImageFormat::bc1_rgb_srgb:
+                return 8;
+            case rhi::RenderImageFormat::bc3_rgba_unorm:
+            case rhi::RenderImageFormat::bc3_rgba_srgb:
+            case rhi::RenderImageFormat::bc5_rg_unorm:
+            case rhi::RenderImageFormat::bc7_rgba_unorm:
+            case rhi::RenderImageFormat::bc7_rgba_srgb:
+                return 16;
+            default:
+                return 0;
+            }
+        }();
         for (std::uint32_t mip = 0; mip < resource.desc.mip_levels; ++mip) {
             VkBufferImageCopy copy_region{};
             copy_region.bufferOffset = buffer_offset;
@@ -4272,8 +4384,13 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             copy_region.imageSubresource.layerCount = resource.desc.array_layers;
             copy_region.imageExtent = VkExtent3D{mip_width, mip_height, 1};
             copy_regions.push_back(copy_region);
-            buffer_offset += static_cast<VkDeviceSize>(mip_width) * mip_height *
-                             resource.desc.array_layers * bytes_per_pixel;
+            const auto element_count =
+                compressed_block_bytes == 0
+                    ? static_cast<VkDeviceSize>(mip_width) * mip_height
+                    : static_cast<VkDeviceSize>((mip_width + 3U) / 4U) * ((mip_height + 3U) / 4U);
+            buffer_offset +=
+                element_count * resource.desc.array_layers *
+                (compressed_block_bytes == 0 ? bytes_per_pixel : compressed_block_bytes);
             mip_width = std::max(1U, mip_width / 2U);
             mip_height = std::max(1U, mip_height / 2U);
         }
@@ -4659,6 +4776,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                     reference_pipeline = &pipeline->second;
                 } else if (pipeline->second.desc.color_target_format !=
                                reference_pipeline->desc.color_target_format ||
+                           pipeline->second.desc.color_write_enable !=
+                               reference_pipeline->desc.color_write_enable ||
+                           pipeline->second.desc.additional_color_target_formats !=
+                               reference_pipeline->desc.additional_color_target_formats ||
                            pipeline->second.uses_depth != reference_pipeline->uses_depth) {
                     return core::Status::failure(
                         "renderer.incompatible_graphics_pipelines",
@@ -4740,18 +4861,29 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             if (reference_pipeline == nullptr) {
                 continue;
             }
-            const auto has_color_target = std::ranges::any_of(
-                pass.writes, [&frame, reference_pipeline](const std::string& resource_name) {
-                    const auto* resource = frame.plan.find_resource(resource_name);
-                    return resource != nullptr && !rhi::is_depth_format(resource->format) &&
-                           resource->format == reference_pipeline->desc.color_target_format;
-                });
+            std::vector<rhi::RenderImageFormat> pass_color_formats;
+            for (const auto& resource_name : pass.writes) {
+                const auto* resource = frame.plan.find_resource(resource_name);
+                if (resource != nullptr && !rhi::is_depth_format(resource->format) &&
+                    !resource->storage) {
+                    pass_color_formats.push_back(resource->format);
+                }
+            }
+            std::vector<rhi::RenderImageFormat> pipeline_color_formats;
+            if (reference_pipeline->desc.color_write_enable) {
+                pipeline_color_formats.push_back(reference_pipeline->desc.color_target_format);
+                pipeline_color_formats.insert(
+                    pipeline_color_formats.end(),
+                    reference_pipeline->desc.additional_color_target_formats.begin(),
+                    reference_pipeline->desc.additional_color_target_formats.end());
+            }
             const auto has_depth_target =
                 std::ranges::any_of(pass.writes, [&frame](const std::string& resource_name) {
                     const auto* resource = frame.plan.find_resource(resource_name);
                     return resource != nullptr && rhi::is_depth_format(resource->format);
                 });
-            if (!has_color_target || (reference_pipeline->uses_depth && !has_depth_target)) {
+            if (pass_color_formats != pipeline_color_formats ||
+                (reference_pipeline->uses_depth && !has_depth_target)) {
                 return core::Status::failure(
                     "renderer.incompatible_draw_targets",
                     "Vulkan render draw pass targets do not match its graphics pipeline");
@@ -4772,6 +4904,13 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         if (!sampler_status) {
             return sampler_status;
         }
+        if (std::ranges::any_of(pass.sampled_resources,
+                                [](const auto& sampled) { return sampled.comparison; })) {
+            sampler_status = ensure_default_comparison_sampler();
+            if (!sampler_status) {
+                return sampler_status;
+            }
+        }
 
         std::vector<VkDescriptorImageInfo> image_infos;
         image_infos.reserve(pass.sampled_resources.size());
@@ -4789,7 +4928,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 VkImageMemoryBarrier to_read{};
                 to_read.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
                 to_read.srcAccessMask =
-                    undefined ? 0 : static_cast<VkAccessFlags>(VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+                    undefined ? 0
+                              : static_cast<VkAccessFlags>(
+                                    image->is_depth ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                                                    : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
                 to_read.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
                 to_read.oldLayout = image->layout;
                 to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -4798,72 +4940,193 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 to_read.image = image->image;
                 to_read.subresourceRange.aspectMask = static_cast<VkImageAspectFlags>(
                     image->is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT);
-                to_read.subresourceRange.levelCount = 1;
-                to_read.subresourceRange.layerCount = 1;
-                vkCmdPipelineBarrier(commands,
-                                     undefined ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-                                               : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
-                                     nullptr, 1, &to_read);
+                to_read.subresourceRange.levelCount = image->mip_levels;
+                to_read.subresourceRange.layerCount = image->array_layers;
+                vkCmdPipelineBarrier(
+                    commands,
+                    undefined ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                              : (image->is_depth ? VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT
+                                                 : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT),
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &to_read);
                 image->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 ++submitted_barrier_count;
             }
-            image_infos.push_back(VkDescriptorImageInfo{default_sampler_, image->view,
-                                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+            image_infos.push_back(VkDescriptorImageInfo{
+                sampled.comparison ? default_comparison_sampler_ : default_sampler_, image->view,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
         }
 
-        // Which material's set to update follows from the draws recorded into this pass.
+        // Update every material used by the pass. Transparent world passes may contain both
+        // terrain and imported meshes, while compute passes carry dispatches instead of draws.
         const auto pass_commands = std::ranges::find_if(
             frame.pass_commands, [pass_index](const rhi::RenderPassCommands& candidate) {
                 return candidate.pass_index == pass_index;
             });
-        if (pass_commands == frame.pass_commands.end() || pass_commands->draws.empty()) {
+        if (pass_commands == frame.pass_commands.end()) {
             // Nothing draws here, so there is no set to point anywhere. The transitions above still
             // matter for whichever later pass samples the resource.
             return core::Status::ok();
         }
-        const auto pipeline =
-            graphics_pipelines_.find(pass_commands->draws.front().pipeline.value);
-        if (pipeline == graphics_pipelines_.end()) {
-            return core::Status::failure("renderer.unknown_graphics_pipeline",
-                                         "sampling pass draw references an unknown pipeline");
+        std::unordered_set<std::string> material_ids;
+        for (const auto& draw : pass_commands->draws) {
+            const auto pipeline = graphics_pipelines_.find(draw.pipeline.value);
+            if (pipeline == graphics_pipelines_.end()) {
+                return core::Status::failure("renderer.unknown_graphics_pipeline",
+                                             "sampling pass draw references an unknown pipeline");
+            }
+            material_ids.insert(pipeline->second.desc.material_id.value());
         }
-        const auto layout = pipeline_layouts_.find(pipeline->second.desc.material_id.value());
-        if (layout == pipeline_layouts_.end()) {
-            return core::Status::failure("renderer.unknown_pipeline_layout",
-                                         "sampling pass draw references an unknown layout");
+        for (const auto& dispatch : pass_commands->dispatches) {
+            const auto pipeline = compute_pipelines_.find(dispatch.pipeline.value);
+            if (pipeline == compute_pipelines_.end()) {
+                return core::Status::failure(
+                    "renderer.unknown_compute_pipeline",
+                    "sampling pass dispatch references an unknown pipeline");
+            }
+            material_ids.insert(pipeline->second.desc.material_id.value());
         }
-        if (layout->second.per_frame_descriptor_sets.size() <= frame_context_index) {
-            return core::Status::failure(
-                "renderer.material_missing_per_frame_descriptors",
-                "material '" + pipeline->second.desc.material_id.value() +
-                    "' samples frame graph resources but its pipeline layout did not request "
-                    "per-frame descriptors");
+        for (const auto& material_id : material_ids) {
+            const auto layout = pipeline_layouts_.find(material_id);
+            if (layout == pipeline_layouts_.end()) {
+                return core::Status::failure("renderer.unknown_pipeline_layout",
+                                             "sampling pass references an unknown layout");
+            }
+            if (layout->second.per_frame_descriptor_sets.size() <= frame_context_index) {
+                return core::Status::failure(
+                    "renderer.material_missing_per_frame_descriptors",
+                    "material '" + material_id +
+                        "' samples frame graph resources but its layout is not per-frame");
+            }
+            std::vector<VkWriteDescriptorSet> writes;
+            writes.reserve(pass.sampled_resources.size());
+            for (std::size_t index = 0; index < pass.sampled_resources.size(); ++index) {
+                const auto* binding = find_descriptor_binding(
+                    layout->second.desc, pass.sampled_resources[index].binding_name);
+                if (binding == nullptr) {
+                    return core::Status::failure(
+                        "renderer.unknown_descriptor_binding",
+                        "material '" + material_id + "' has no descriptor binding named '" +
+                            pass.sampled_resources[index].binding_name + "'");
+                }
+                VkWriteDescriptorSet write{};
+                write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                write.dstSet = layout->second.per_frame_descriptor_sets[frame_context_index];
+                write.dstBinding = binding->slot;
+                write.descriptorCount = 1;
+                write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                write.pImageInfo = &image_infos[index];
+                writes.push_back(write);
+            }
+            vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()),
+                                   writes.data(), 0, nullptr);
+        }
+        return core::Status::ok();
+    }
+
+    [[nodiscard]] core::Status
+    prepare_storage_resources(const rhi::RenderFrameSubmission& frame,
+                              const rhi::RenderPassDesc& pass, std::size_t pass_index,
+                              VulkanFrameContext& frame_context, std::size_t frame_context_index,
+                              VkCommandBuffer commands, std::size_t& submitted_barrier_count) {
+        std::vector<VkDescriptorImageInfo> image_infos;
+        image_infos.reserve(pass.storage_resources.size());
+        for (const auto& storage : pass.storage_resources) {
+            auto* image = frame_context.resources.find(storage.resource_name);
+            if (image == nullptr || image->view == VK_NULL_HANDLE || !image->storage) {
+                return core::Status::failure(
+                    "renderer.vulkan_unbacked_storage_resource",
+                    "frame graph storage image '" + storage.resource_name +
+                        "' is missing or was not created with storage usage");
+            }
+            if (image->layout != VK_IMAGE_LAYOUT_GENERAL) {
+                VkImageMemoryBarrier to_general{};
+                to_general.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                to_general.srcAccessMask = image->layout == VK_IMAGE_LAYOUT_UNDEFINED
+                                               ? 0
+                                               : VK_ACCESS_SHADER_READ_BIT |
+                                                     VK_ACCESS_SHADER_WRITE_BIT |
+                                                     VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                to_general.dstAccessMask =
+                    storage.access == rhi::RenderResourceAccess::read ? VK_ACCESS_SHADER_READ_BIT
+                    : storage.access == rhi::RenderResourceAccess::write
+                        ? VK_ACCESS_SHADER_WRITE_BIT
+                        : VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                to_general.oldLayout = image->layout;
+                to_general.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+                to_general.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                to_general.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                to_general.image = image->image;
+                to_general.subresourceRange = {
+                    static_cast<VkImageAspectFlags>(image->is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                                                    : VK_IMAGE_ASPECT_COLOR_BIT),
+                    0, image->mip_levels, 0, image->array_layers};
+                vkCmdPipelineBarrier(
+                    commands,
+                    image->layout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                                                               : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                    0, nullptr, 0, nullptr, 1, &to_general);
+                image->layout = VK_IMAGE_LAYOUT_GENERAL;
+                ++submitted_barrier_count;
+            }
+            image_infos.push_back({VK_NULL_HANDLE, image->view, VK_IMAGE_LAYOUT_GENERAL});
         }
 
-        std::vector<VkWriteDescriptorSet> writes;
-        writes.reserve(pass.sampled_resources.size());
-        for (std::size_t index = 0; index < pass.sampled_resources.size(); ++index) {
-            const auto* binding = find_descriptor_binding(
-                layout->second.desc, pass.sampled_resources[index].binding_name);
-            if (binding == nullptr) {
-                return core::Status::failure(
-                    "renderer.unknown_descriptor_binding",
-                    "material '" + pipeline->second.desc.material_id.value() +
-                        "' has no descriptor binding named '" +
-                        pass.sampled_resources[index].binding_name + "'");
-            }
-            VkWriteDescriptorSet write{};
-            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = layout->second.per_frame_descriptor_sets[frame_context_index];
-            write.dstBinding = binding->slot;
-            write.descriptorCount = 1;
-            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            write.pImageInfo = &image_infos[index];
-            writes.push_back(write);
+        const auto pass_commands = std::ranges::find_if(
+            frame.pass_commands, [pass_index](const rhi::RenderPassCommands& candidate) {
+                return candidate.pass_index == pass_index;
+            });
+        if (pass_commands == frame.pass_commands.end()) {
+            return core::Status::ok();
         }
-        vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0,
-                               nullptr);
+        std::unordered_set<std::string> material_ids;
+        for (const auto& draw : pass_commands->draws) {
+            const auto pipeline = graphics_pipelines_.find(draw.pipeline.value);
+            if (pipeline == graphics_pipelines_.end()) {
+                return core::Status::failure("renderer.unknown_graphics_pipeline",
+                                             "storage pass references an unknown pipeline");
+            }
+            material_ids.insert(pipeline->second.desc.material_id.value());
+        }
+        for (const auto& dispatch : pass_commands->dispatches) {
+            const auto pipeline = compute_pipelines_.find(dispatch.pipeline.value);
+            if (pipeline == compute_pipelines_.end()) {
+                return core::Status::failure("renderer.unknown_compute_pipeline",
+                                             "storage pass references an unknown compute pipeline");
+            }
+            material_ids.insert(pipeline->second.desc.material_id.value());
+        }
+        for (const auto& material_id : material_ids) {
+            const auto layout = pipeline_layouts_.find(material_id);
+            if (layout == pipeline_layouts_.end() ||
+                layout->second.per_frame_descriptor_sets.size() <= frame_context_index) {
+                return core::Status::failure(
+                    "renderer.material_missing_per_frame_descriptors",
+                    "graph storage images require a per-frame material layout");
+            }
+            std::vector<VkWriteDescriptorSet> writes;
+            writes.reserve(pass.storage_resources.size());
+            for (std::size_t index = 0; index < pass.storage_resources.size(); ++index) {
+                const auto* binding = find_descriptor_binding(
+                    layout->second.desc, pass.storage_resources[index].binding_name);
+                if (binding == nullptr ||
+                    binding->kind != rhi::RenderDescriptorKind::storage_image) {
+                    return core::Status::failure("renderer.invalid_storage_image_binding",
+                                                 "material '" + material_id +
+                                                     "' has no matching storage-image binding");
+                }
+                VkWriteDescriptorSet write{};
+                write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                write.dstSet = layout->second.per_frame_descriptor_sets[frame_context_index];
+                write.dstBinding = binding->slot;
+                write.descriptorCount = 1;
+                write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                write.pImageInfo = &image_infos[index];
+                writes.push_back(write);
+            }
+            vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()),
+                                   writes.data(), 0, nullptr);
+        }
         return core::Status::ok();
     }
 
@@ -4875,11 +5138,19 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                         std::size_t frame_context_index, VkCommandBuffer commands,
                         std::size_t& submitted_barrier_count) {
         if (!pass.sampled_resources.empty()) {
-            auto sampled_status = prepare_sampled_resources(frame, pass, pass_index, frame_context,
-                                                            frame_context_index, commands,
-                                                            submitted_barrier_count);
+            auto sampled_status =
+                prepare_sampled_resources(frame, pass, pass_index, frame_context,
+                                          frame_context_index, commands, submitted_barrier_count);
             if (!sampled_status) {
                 return sampled_status;
+            }
+        }
+        if (!pass.storage_resources.empty()) {
+            auto storage_status =
+                prepare_storage_resources(frame, pass, pass_index, frame_context,
+                                          frame_context_index, commands, submitted_barrier_count);
+            if (!storage_status) {
+                return storage_status;
             }
         }
 
@@ -5088,9 +5359,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         frame_context.resources.initialize(device_, physical_device_);
         std::vector<rhi::RenderResourceDesc> graph_resources(frame.plan.resources.begin(),
                                                              frame.plan.resources.end());
-        for (auto& resource : graph_resources) {
-            resource.extent = target_extent;
-        }
         status = frame_context.resources.ensure_transients(graph_resources);
         if (!status) {
             return core::Result<rhi::RenderFrameStats>::failure(status.error().code,
@@ -5114,9 +5382,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         // A frame may carry compute work and no drawing at all, and a command entry for a compute
         // pass holds dispatches rather than draws, so the first drawing pass has to be searched for
         // rather than assumed to be the first command entry.
-        const auto first_draw_commands = std::ranges::find_if(
-            frame.pass_commands,
-            [](const rhi::RenderPassCommands& commands) { return !commands.draws.empty(); });
+        const auto first_draw_commands =
+            std::ranges::find_if(frame.pass_commands, [](const rhi::RenderPassCommands& commands) {
+                return !commands.draws.empty();
+            });
         const auto has_draws = first_draw_commands != frame.pass_commands.end();
         std::size_t frame_pipeline_bind_count = 0;
         VulkanGraphicsPipelineResource* first_pipeline = nullptr;
@@ -5138,9 +5407,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         // The colour attachment view now comes from the graph resource pool; the image and its
         // layout are still needed here for the barriers and the final blit.
         auto& frame_color_layout = frame_context.target.color_layout;
-        auto& frame_depth_image = graph_depth->image;
-        auto& frame_depth_view = graph_depth->view;
-        auto& frame_depth_layout = graph_depth->layout;
 
         // Dynamic rendering binds image views directly, so there is no framebuffer object to
         // create, cache, or retire alongside the frame's submission serial.
@@ -5162,24 +5428,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         const VkImageSubresourceRange color_range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         std::size_t submitted_barrier_count = 1;
         const auto clear_color = frame.plan.first_clear_color();
-
-        // Compute passes record before any rasterization, and independently of whether the frame
-        // draws at all. Culling and similar work produces the data the graphics passes consume, so
-        // this ordering is what those passes want. A compute pass that needs to run *between* two
-        // graphics passes is not expressible yet and would need this merged into the pass loop.
-        for (std::size_t pass_index = 0; pass_index < frame.plan.passes.size(); ++pass_index) {
-            const auto& compute_pass = frame.plan.passes[pass_index];
-            if (compute_pass.kind != rhi::RenderPassKind::compute) {
-                continue;
-            }
-            auto compute_status =
-                record_compute_pass(frame, compute_pass, pass_index, frame_context,
-                                    frame_context_index, frame_commands, submitted_barrier_count);
-            if (!compute_status) {
-                return core::Result<rhi::RenderFrameStats>::failure(compute_status.error().code,
-                                                                    compute_status.error().message);
-            }
-        }
 
         if (has_draws) {
             VkImageMemoryBarrier color_to_attachment{};
@@ -5208,37 +5456,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 output_image->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             }
 
-            if (first_pipeline->uses_depth) {
-                VkImageSubresourceRange depth_range{};
-                depth_range.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-                if (vulkan_format_has_stencil(depth_format_)) {
-                    depth_range.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
-                }
-                depth_range.levelCount = 1;
-                depth_range.layerCount = 1;
-                VkImageMemoryBarrier depth_to_attachment{};
-                depth_to_attachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                depth_to_attachment.srcAccessMask =
-                    frame_depth_layout == VK_IMAGE_LAYOUT_UNDEFINED
-                        ? 0
-                        : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                depth_to_attachment.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                                                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                depth_to_attachment.oldLayout = frame_depth_layout;
-                depth_to_attachment.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                depth_to_attachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                depth_to_attachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                depth_to_attachment.image = frame_depth_image;
-                depth_to_attachment.subresourceRange = depth_range;
-                vkCmdPipelineBarrier(frame_commands,
-                                     frame_depth_layout == VK_IMAGE_LAYOUT_UNDEFINED
-                                         ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-                                         : VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                                     VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, nullptr, 0,
-                                     nullptr, 1, &depth_to_attachment);
-                ++submitted_barrier_count;
-            }
-
             // Dynamic state is command-buffer scoped, so setting it once here applies to every
             // rendering block below.
             VkViewport viewport{};
@@ -5253,6 +5470,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
 
             VkPipeline bound_pipeline = VK_NULL_HANDLE;
             std::size_t pipeline_bind_count = 0;
+            rhi::RenderExtent raster_extent = target_extent;
             const auto find_commands =
                 [&frame](std::string_view pass_name) -> const rhi::RenderPassCommands* {
                 const auto found = std::ranges::find_if(
@@ -5306,19 +5524,20 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                                                static_cast<std::int32_t>(draw.scissor.y)};
                         draw_scissor.extent = {draw.scissor.width, draw.scissor.height};
                     } else {
-                        draw_scissor.extent = {target_extent.width, target_extent.height};
+                        draw_scissor.extent = {raster_extent.width, raster_extent.height};
                     }
                     vkCmdSetScissor(frame_commands, 0, 1, &draw_scissor);
                     // A post-process pass resolves an image rather than shading the world, so it
                     // takes exposure and tone curve constants instead of the chunk block.
-                    if (recorded_pass.kind == rhi::RenderPassKind::post_process) {
+                    if (recorded_pass.name == "tone_map") {
                         const auto constants = rhi::make_tone_map_push_constants(frame.exposure);
                         vkCmdPushConstants(frame_commands, layout.pipeline_layout,
                                            VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants),
                                            &constants);
-                    } else {
+                    } else if (recorded_pass.kind != rhi::RenderPassKind::post_process) {
                         const rhi::ChunkPushConstants constants{
-                            frame.camera.view_projection,
+                            draw.view_projection_override_enabled ? draw.view_projection_override
+                                                                  : frame.camera.view_projection,
                             {draw.camera_relative_origin.x, draw.camera_relative_origin.y,
                              draw.camera_relative_origin.z,
                              std::bit_cast<float>(draw.texture_variation_seed)},
@@ -5347,19 +5566,15 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             // Each pass records into its own rendering block, bound to the attachments the pass
             // declares it writes. A single frame-wide block could only ever target one image set,
             // which is why a post-process pass reading what the world wrote was not expressible.
-            const auto colour_write_of =
-                [](const rhi::RenderPassDesc& pass) -> const std::string* {
+            const auto depth_write_of =
+                [&frame](const rhi::RenderPassDesc& pass) -> const std::string* {
                 for (const auto& written : pass.writes) {
-                    if (written != rhi::depth_resource_name) {
+                    const auto* resource = frame.plan.find_resource(written);
+                    if (resource != nullptr && rhi::is_depth_format(resource->format)) {
                         return &written;
                     }
                 }
                 return nullptr;
-            };
-            const auto writes_depth = [](const rhi::RenderPassDesc& pass) {
-                return std::ranges::any_of(pass.writes, [](const std::string& written) {
-                    return written == rhi::depth_resource_name;
-                });
             };
 
             // Whether a pass binds depth follows from the pipelines recorded into that pass, not
@@ -5370,7 +5585,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             // depth for whatever comes after it.
             const auto pass_binds_depth = [&](std::size_t index) {
                 const auto& candidate = frame.plan.passes[index];
-                if (candidate.kind == rhi::RenderPassKind::present || !writes_depth(candidate)) {
+                if (candidate.kind == rhi::RenderPassKind::present ||
+                    depth_write_of(candidate) == nullptr) {
                     return false;
                 }
                 const auto pass_commands = std::ranges::find_if(
@@ -5389,12 +5605,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             // Depth has to survive between blocks now that every pass opens its own, so only the
             // final pass that actually binds depth may discard it.
             std::vector<bool> binds_depth(frame.plan.passes.size(), false);
-            std::size_t last_depth_pass = 0;
             for (std::size_t index = 0; index < frame.plan.passes.size(); ++index) {
                 binds_depth[index] = pass_binds_depth(index);
-                if (binds_depth[index]) {
-                    last_depth_pass = index;
-                }
             }
 
             struct PassPresentation {
@@ -5411,9 +5623,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                     return {"Sky gradient pass", 0.20F, 0.42F, 0.86F, false, {}, {}};
                 }
                 if (name == "opaque_terrain") {
-                    return {"Opaque terrain pass", 0.20F,           0.72F,
-                            0.28F,                 true,            opaque_start_timestamp,
-                            opaque_end_timestamp};
+                    return {
+                        "Opaque terrain pass", 0.20F, 0.72F, 0.28F, true, opaque_start_timestamp,
+                        opaque_end_timestamp};
                 }
                 if (name == "alpha_tested_terrain") {
                     return {"Alpha-tested terrain pass",
@@ -5449,31 +5661,52 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             };
 
             std::unordered_set<std::string> cleared_colour;
-            bool depth_cleared = false;
+            std::unordered_set<std::string> cleared_depth;
             for (std::size_t pass_index = 0; pass_index < frame.plan.passes.size(); ++pass_index) {
                 const auto& pass = frame.plan.passes[pass_index];
                 if (pass.kind == rhi::RenderPassKind::present) {
                     continue;
                 }
-                // Compute passes were already recorded ahead of all rasterization.
                 if (pass.kind == rhi::RenderPassKind::compute) {
+                    auto compute_status = record_compute_pass(
+                        frame, pass, pass_index, frame_context, frame_context_index, frame_commands,
+                        submitted_barrier_count);
+                    if (!compute_status) {
+                        return core::Result<rhi::RenderFrameStats>::failure(
+                            compute_status.error().code, compute_status.error().message);
+                    }
                     continue;
                 }
-                const auto* colour_name = colour_write_of(pass);
-                if (colour_name == nullptr) {
+                if (!pass.storage_resources.empty()) {
+                    auto storage_status = prepare_storage_resources(
+                        frame, pass, pass_index, frame_context, frame_context_index, frame_commands,
+                        submitted_barrier_count);
+                    if (!storage_status) {
+                        return core::Result<rhi::RenderFrameStats>::failure(
+                            storage_status.error().code, storage_status.error().message);
+                    }
+                }
+                std::vector<const std::string*> colour_names;
+                for (const auto& written : pass.writes) {
+                    const auto* resource = frame.plan.find_resource(written);
+                    if (resource != nullptr && !rhi::is_depth_format(resource->format) &&
+                        !resource->storage) {
+                        colour_names.push_back(&written);
+                    }
+                }
+                const auto* depth_name = depth_write_of(pass);
+                if (colour_names.empty() && depth_name == nullptr) {
                     continue;
                 }
-                auto* colour = frame_context.resources.find(*colour_name);
-                if (colour == nullptr || colour->view == VK_NULL_HANDLE) {
+                auto* depth =
+                    depth_name == nullptr ? nullptr : frame_context.resources.find(*depth_name);
+                if (depth_name != nullptr && (depth == nullptr || depth->view == VK_NULL_HANDLE)) {
                     return core::Result<rhi::RenderFrameStats>::failure(
                         "renderer.vulkan_unbacked_frame_resource",
-                        "frame graph pass '" + pass.name + "' writes resource '" + *colour_name +
+                        "frame graph pass '" + pass.name + "' writes resource '" + *depth_name +
                             "' which has no backing image");
                 }
 
-                // Resources this pass samples were written as colour attachments by an earlier
-                // pass, so they need moving to a shader-readable layout and this frame's
-                // descriptor set needs pointing at them before anything is recorded.
                 if (!pass.sampled_resources.empty()) {
                     auto sampled_status = prepare_sampled_resources(
                         frame, pass, pass_index, frame_context, frame_context_index, frame_commands,
@@ -5484,62 +5717,118 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                     }
                 }
 
-                // A transient graph target starts each frame undefined, and a target an earlier
-                // pass sampled is left in shader-read layout, so move it back before writing.
-                if (colour->layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
-                    const auto undefined = colour->layout == VK_IMAGE_LAYOUT_UNDEFINED;
-                    VkImageMemoryBarrier to_attachment{};
-                    to_attachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                    to_attachment.srcAccessMask =
-                        undefined ? 0 : static_cast<VkAccessFlags>(VK_ACCESS_SHADER_READ_BIT);
-                    to_attachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-                    to_attachment.oldLayout = colour->layout;
-                    to_attachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                    to_attachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    to_attachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    to_attachment.image = colour->image;
-                    to_attachment.subresourceRange = color_range;
-                    vkCmdPipelineBarrier(frame_commands,
-                                         undefined ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-                                                   : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0,
-                                         nullptr, 0, nullptr, 1, &to_attachment);
-                    colour->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                    ++submitted_barrier_count;
+                std::vector<VkRenderingAttachmentInfo> colour_attachments;
+                colour_attachments.reserve(colour_names.size());
+                for (const auto* colour_name : colour_names) {
+                    auto* colour = frame_context.resources.find(*colour_name);
+                    if (colour == nullptr || colour->view == VK_NULL_HANDLE) {
+                        return core::Result<rhi::RenderFrameStats>::failure(
+                            "renderer.vulkan_unbacked_frame_resource",
+                            "frame graph pass '" + pass.name + "' writes resource '" +
+                                *colour_name + "' which has no backing image");
+                    }
+                    if (colour->layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+                        const auto undefined = colour->layout == VK_IMAGE_LAYOUT_UNDEFINED;
+                        VkImageMemoryBarrier to_attachment{};
+                        to_attachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                        to_attachment.srcAccessMask =
+                            undefined ? 0
+                                      : static_cast<VkAccessFlags>(VK_ACCESS_SHADER_READ_BIT |
+                                                                   VK_ACCESS_SHADER_WRITE_BIT);
+                        to_attachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                        to_attachment.oldLayout = colour->layout;
+                        to_attachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                        to_attachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                        to_attachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                        to_attachment.image = colour->image;
+                        to_attachment.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                                          colour->mip_levels, 0,
+                                                          colour->array_layers};
+                        vkCmdPipelineBarrier(frame_commands,
+                                             undefined ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                                                       : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0,
+                                             nullptr, 0, nullptr, 1, &to_attachment);
+                        colour->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                        ++submitted_barrier_count;
+                    }
+                    VkRenderingAttachmentInfo attachment{};
+                    attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                    attachment.imageView = colour->view;
+                    attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                    attachment.loadOp = cleared_colour.contains(*colour_name)
+                                            ? VK_ATTACHMENT_LOAD_OP_LOAD
+                                            : VK_ATTACHMENT_LOAD_OP_CLEAR;
+                    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                    attachment.clearValue.color = VkClearColorValue{
+                        {clear_color.red, clear_color.green, clear_color.blue, clear_color.alpha}};
+                    colour_attachments.push_back(attachment);
                 }
 
-                VkRenderingAttachmentInfo colour_attachment{};
-                colour_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                colour_attachment.imageView = colour->view;
-                colour_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                colour_attachment.loadOp = cleared_colour.contains(*colour_name)
-                                               ? VK_ATTACHMENT_LOAD_OP_LOAD
-                                               : VK_ATTACHMENT_LOAD_OP_CLEAR;
-                colour_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                colour_attachment.clearValue.color = VkClearColorValue{
-                    {clear_color.red, clear_color.green, clear_color.blue, clear_color.alpha}};
-
-                // Pipelines declare their depth format at creation, so a pass may only bind depth
-                // when the pipelines recorded into it were built expecting one.
                 const auto bind_depth = binds_depth[pass_index];
+                if (bind_depth && depth != nullptr &&
+                    depth->layout != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+                    const auto undefined = depth->layout == VK_IMAGE_LAYOUT_UNDEFINED;
+                    VkImageMemoryBarrier to_depth{};
+                    to_depth.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    to_depth.srcAccessMask =
+                        undefined ? 0
+                                  : static_cast<VkAccessFlags>(
+                                        VK_ACCESS_SHADER_READ_BIT |
+                                        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+                    to_depth.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                    to_depth.oldLayout = depth->layout;
+                    to_depth.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                    to_depth.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    to_depth.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    to_depth.image = depth->image;
+                    to_depth.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, depth->mip_levels, 0,
+                                                 depth->array_layers};
+                    vkCmdPipelineBarrier(frame_commands,
+                                         undefined ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                                                   : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                                         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                                         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, nullptr,
+                                         0, nullptr, 1, &to_depth);
+                    depth->layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                    ++submitted_barrier_count;
+                }
                 VkRenderingAttachmentInfo depth_attachment{};
                 depth_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                depth_attachment.imageView = frame_depth_view;
+                depth_attachment.imageView = depth == nullptr ? VK_NULL_HANDLE : depth->view;
                 depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                depth_attachment.loadOp = depth_cleared ? VK_ATTACHMENT_LOAD_OP_LOAD
-                                                        : VK_ATTACHMENT_LOAD_OP_CLEAR;
-                depth_attachment.storeOp = pass_index == last_depth_pass
-                                               ? VK_ATTACHMENT_STORE_OP_DONT_CARE
-                                               : VK_ATTACHMENT_STORE_OP_STORE;
+                depth_attachment.loadOp =
+                    depth_name != nullptr && cleared_depth.contains(*depth_name)
+                        ? VK_ATTACHMENT_LOAD_OP_LOAD
+                        : VK_ATTACHMENT_LOAD_OP_CLEAR;
+                depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
                 depth_attachment.clearValue.depthStencil = VkClearDepthStencilValue{1.0F, 0};
+
+                const auto* raster_resource = !colour_names.empty()
+                                                  ? frame.plan.find_resource(*colour_names.front())
+                                                  : frame.plan.find_resource(*depth_name);
+                raster_extent =
+                    raster_resource == nullptr ? target_extent : raster_resource->extent;
+                VkViewport pass_viewport{};
+                pass_viewport.width = static_cast<float>(raster_extent.width);
+                pass_viewport.height = static_cast<float>(raster_extent.height);
+                pass_viewport.minDepth = 0.0F;
+                pass_viewport.maxDepth = 1.0F;
+                vkCmdSetViewport(frame_commands, 0, 1, &pass_viewport);
+                VkRect2D pass_scissor{};
+                pass_scissor.extent = {raster_extent.width, raster_extent.height};
+                vkCmdSetScissor(frame_commands, 0, 1, &pass_scissor);
 
                 VkRenderingInfo rendering_info{};
                 rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-                rendering_info.renderArea.extent =
-                    VkExtent2D{target_extent.width, target_extent.height};
+                rendering_info.renderArea.extent = {raster_extent.width, raster_extent.height};
                 rendering_info.layerCount = 1;
-                rendering_info.colorAttachmentCount = 1;
-                rendering_info.pColorAttachments = &colour_attachment;
+                rendering_info.colorAttachmentCount =
+                    static_cast<std::uint32_t>(colour_attachments.size());
+                rendering_info.pColorAttachments =
+                    colour_attachments.empty() ? nullptr : colour_attachments.data();
                 rendering_info.pDepthAttachment = bind_depth ? &depth_attachment : nullptr;
 
                 const auto presentation = presentation_for(pass.name);
@@ -5558,13 +5847,28 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 }
                 end_debug_label(frame_commands);
 
-                cleared_colour.insert(*colour_name);
-                if (bind_depth) {
-                    depth_cleared = true;
+                for (const auto* colour_name : colour_names) {
+                    cleared_colour.insert(*colour_name);
+                }
+                if (bind_depth && depth_name != nullptr) {
+                    cleared_depth.insert(*depth_name);
                 }
             }
             frame_pipeline_bind_count = pipeline_bind_count;
         } else {
+            for (std::size_t pass_index = 0; pass_index < frame.plan.passes.size(); ++pass_index) {
+                const auto& pass = frame.plan.passes[pass_index];
+                if (pass.kind != rhi::RenderPassKind::compute) {
+                    continue;
+                }
+                auto compute_status =
+                    record_compute_pass(frame, pass, pass_index, frame_context, frame_context_index,
+                                        frame_commands, submitted_barrier_count);
+                if (!compute_status) {
+                    return core::Result<rhi::RenderFrameStats>::failure(
+                        compute_status.error().code, compute_status.error().message);
+                }
+            }
             VkImageMemoryBarrier color_to_clear{};
             color_to_clear.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
             color_to_clear.srcAccessMask =
@@ -5751,9 +6055,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         }
 
         frame_color_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        if (has_draws && first_pipeline->uses_depth) {
-            frame_depth_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        }
         bool presented = present;
         if (present && present_result != VK_SUCCESS && present_result != VK_SUBOPTIMAL_KHR &&
             present_result != VK_ERROR_OUT_OF_DATE_KHR) {
@@ -6241,6 +6542,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
     bool debug_utils_enabled_ = false;
     VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties properties_{};
+    bool sampler_anisotropy_ = false;
     std::uint32_t graphics_queue_family_ = 0;
     VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
     VkDevice device_ = VK_NULL_HANDLE;
@@ -6274,6 +6576,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
     StagingRingAllocator staging_ring_{32U * 1024U * 1024U};
     std::unordered_map<std::uint64_t, VulkanImageResource> image_resources_;
     VkSampler default_sampler_ = VK_NULL_HANDLE;
+    VkSampler default_comparison_sampler_ = VK_NULL_HANDLE;
     std::unordered_map<std::uint64_t, VulkanSamplerResource> sampler_resources_;
     std::unordered_map<std::uint64_t, VulkanShaderModuleResource> shader_modules_;
     std::unordered_map<std::uint64_t, VulkanComputePipelineResource> compute_pipelines_;

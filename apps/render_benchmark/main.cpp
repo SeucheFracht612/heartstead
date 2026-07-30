@@ -157,7 +157,7 @@ void print_usage(std::ostream& output) {
     output << "Usage: heartstead_render_benchmark [options]\n"
               "  --scene NAME       flat, mountains, caves, checkerboard, forest, rapid-edits,\n"
               "                     flythrough, churn, large-coordinates, resize-minimize,\n"
-              "                     active-water, particles\n"
+              "                     active-water, particles, light-heavy, terrain-materials\n"
               "  --vulkan           Use a native Vulkan window (headless is the default)\n"
               "  --headless         Use the deterministic validation backend\n"
               "  --frames N         Measured frames (default 300)\n"
@@ -178,10 +178,20 @@ void print_usage(std::ostream& output) {
 void print_scenes() {
     using Kind = renderer::benchmark::BenchmarkSceneKind;
     constexpr Kind kinds[]{
-        Kind::flat_terrain,           Kind::mountainous_terrain,     Kind::dense_caves,
-        Kind::checkerboard_geometry,  Kind::forest_cross_planes,     Kind::rapid_voxel_edits,
-        Kind::high_speed_flythrough,  Kind::chunk_load_unload_churn, Kind::large_coordinates,
-        Kind::resize_minimize_stress, Kind::active_water, Kind::particle_stress,
+        Kind::flat_terrain,
+        Kind::mountainous_terrain,
+        Kind::dense_caves,
+        Kind::checkerboard_geometry,
+        Kind::forest_cross_planes,
+        Kind::rapid_voxel_edits,
+        Kind::high_speed_flythrough,
+        Kind::chunk_load_unload_churn,
+        Kind::large_coordinates,
+        Kind::resize_minimize_stress,
+        Kind::active_water,
+        Kind::particle_stress,
+        Kind::light_heavy_settlement,
+        Kind::terrain_material_preview,
     };
     for (const auto kind : kinds) {
         std::cout << renderer::benchmark::benchmark_scene_name(kind) << '\n';
@@ -466,12 +476,18 @@ int main(int argc, char** argv) {
         std::vector<std::uint32_t> fragment_spirv;
         std::vector<std::uint32_t> static_vertex_spirv;
         std::vector<std::uint32_t> static_fragment_spirv;
+        std::vector<std::uint32_t> shadow_terrain_fragment_spirv;
+        std::vector<std::uint32_t> shadow_static_fragment_spirv;
         std::vector<std::uint32_t> debug_vertex_spirv;
         std::vector<std::uint32_t> debug_fragment_spirv;
         std::vector<std::uint32_t> ui_vertex_spirv;
         std::vector<std::uint32_t> ui_fragment_spirv;
         std::vector<std::uint32_t> tone_map_vertex_spirv;
         std::vector<std::uint32_t> tone_map_fragment_spirv;
+        std::vector<std::uint32_t> ssao_fragment_spirv;
+        std::vector<std::uint32_t> ao_composite_fragment_spirv;
+        std::vector<std::uint32_t> fxaa_fragment_spirv;
+        std::vector<std::uint32_t> bloom_fragment_spirv;
         if (options.backend == renderer::rhi::RenderBackend::vulkan) {
             const auto shader_root =
                 std::filesystem::path{HEARTSTEAD_RENDER_BENCHMARK_ASSET_DIR} / "shaders";
@@ -483,6 +499,10 @@ int main(int argc, char** argv) {
                 renderer::shaders::load_spirv_file(shader_root / "static_mesh.vert.spv");
             auto static_fragment =
                 renderer::shaders::load_spirv_file(shader_root / "static_mesh.frag.spv");
+            auto shadow_terrain_fragment =
+                renderer::shaders::load_spirv_file(shader_root / "shadow_terrain.frag.spv");
+            auto shadow_static_fragment =
+                renderer::shaders::load_spirv_file(shader_root / "shadow_static.frag.spv");
             auto debug_vertex =
                 renderer::shaders::load_spirv_file(shader_root / "debug_line.vert.spv");
             auto debug_fragment =
@@ -493,21 +513,35 @@ int main(int argc, char** argv) {
                 renderer::shaders::load_spirv_file(shader_root / "tone_map.vert.spv");
             auto tone_map_fragment =
                 renderer::shaders::load_spirv_file(shader_root / "tone_map.frag.spv");
+            auto ssao_fragment = renderer::shaders::load_spirv_file(shader_root / "ssao.frag.spv");
+            auto ao_composite_fragment =
+                renderer::shaders::load_spirv_file(shader_root / "ao_composite.frag.spv");
+            auto fxaa_fragment = renderer::shaders::load_spirv_file(shader_root / "fxaa.frag.spv");
+            auto bloom_fragment =
+                renderer::shaders::load_spirv_file(shader_root / "bloom.frag.spv");
             if (!sky_vertex || !sky_fragment || !vertex || !fragment || !static_vertex ||
-                !static_fragment || !debug_vertex || !debug_fragment || !ui_vertex ||
-                !ui_fragment || !tone_map_vertex || !tone_map_fragment) {
-                const auto& error = !sky_vertex        ? sky_vertex.error()
-                                    : !sky_fragment    ? sky_fragment.error()
-                                    : !vertex          ? vertex.error()
-                                    : !fragment        ? fragment.error()
-                                    : !static_vertex   ? static_vertex.error()
-                                    : !static_fragment ? static_fragment.error()
-                                    : !debug_vertex    ? debug_vertex.error()
-                                    : !debug_fragment  ? debug_fragment.error()
-                                    : !ui_vertex       ? ui_vertex.error()
-                                    : !ui_fragment     ? ui_fragment.error()
-                                    : !tone_map_vertex ? tone_map_vertex.error()
-                                                       : tone_map_fragment.error();
+                !static_fragment || !shadow_terrain_fragment || !shadow_static_fragment ||
+                !debug_vertex || !debug_fragment || !ui_vertex || !ui_fragment ||
+                !tone_map_vertex || !tone_map_fragment || !ssao_fragment ||
+                !ao_composite_fragment || !fxaa_fragment || !bloom_fragment) {
+                const auto& error = !sky_vertex                ? sky_vertex.error()
+                                    : !sky_fragment            ? sky_fragment.error()
+                                    : !vertex                  ? vertex.error()
+                                    : !fragment                ? fragment.error()
+                                    : !static_vertex           ? static_vertex.error()
+                                    : !static_fragment         ? static_fragment.error()
+                                    : !shadow_terrain_fragment ? shadow_terrain_fragment.error()
+                                    : !shadow_static_fragment  ? shadow_static_fragment.error()
+                                    : !debug_vertex            ? debug_vertex.error()
+                                    : !debug_fragment          ? debug_fragment.error()
+                                    : !ui_vertex               ? ui_vertex.error()
+                                    : !ui_fragment             ? ui_fragment.error()
+                                    : !tone_map_vertex         ? tone_map_vertex.error()
+                                    : !tone_map_fragment       ? tone_map_fragment.error()
+                                    : !ssao_fragment           ? ssao_fragment.error()
+                                    : !ao_composite_fragment   ? ao_composite_fragment.error()
+                                    : !fxaa_fragment           ? fxaa_fragment.error()
+                                                               : bloom_fragment.error();
                 return fail(error.message);
             }
             sky_vertex_spirv = std::move(sky_vertex).value();
@@ -516,12 +550,18 @@ int main(int argc, char** argv) {
             fragment_spirv = std::move(fragment).value();
             static_vertex_spirv = std::move(static_vertex).value();
             static_fragment_spirv = std::move(static_fragment).value();
+            shadow_terrain_fragment_spirv = std::move(shadow_terrain_fragment).value();
+            shadow_static_fragment_spirv = std::move(shadow_static_fragment).value();
             debug_vertex_spirv = std::move(debug_vertex).value();
             debug_fragment_spirv = std::move(debug_fragment).value();
             ui_vertex_spirv = std::move(ui_vertex).value();
             ui_fragment_spirv = std::move(ui_fragment).value();
             tone_map_vertex_spirv = std::move(tone_map_vertex).value();
             tone_map_fragment_spirv = std::move(tone_map_fragment).value();
+            ssao_fragment_spirv = std::move(ssao_fragment).value();
+            ao_composite_fragment_spirv = std::move(ao_composite_fragment).value();
+            fxaa_fragment_spirv = std::move(fxaa_fragment).value();
+            bloom_fragment_spirv = std::move(bloom_fragment).value();
         } else {
             vertex_spirv = {0x07230203, 0x00010000, 0, 1, 0};
             fragment_spirv = vertex_spirv;
@@ -529,12 +569,18 @@ int main(int argc, char** argv) {
             sky_fragment_spirv = vertex_spirv;
             static_vertex_spirv = vertex_spirv;
             static_fragment_spirv = vertex_spirv;
+            shadow_terrain_fragment_spirv = vertex_spirv;
+            shadow_static_fragment_spirv = vertex_spirv;
             debug_vertex_spirv = vertex_spirv;
             debug_fragment_spirv = vertex_spirv;
             ui_vertex_spirv = vertex_spirv;
             ui_fragment_spirv = vertex_spirv;
             tone_map_vertex_spirv = vertex_spirv;
             tone_map_fragment_spirv = vertex_spirv;
+            ssao_fragment_spirv = vertex_spirv;
+            ao_composite_fragment_spirv = vertex_spirv;
+            fxaa_fragment_spirv = vertex_spirv;
+            bloom_fragment_spirv = vertex_spirv;
         }
 
         renderer::RendererInitDesc renderer_init;
@@ -545,12 +591,18 @@ int main(int argc, char** argv) {
         renderer_init.terrain_fragment_spirv = std::move(fragment_spirv);
         renderer_init.static_mesh_vertex_spirv = std::move(static_vertex_spirv);
         renderer_init.static_mesh_fragment_spirv = std::move(static_fragment_spirv);
+        renderer_init.shadow_terrain_fragment_spirv = std::move(shadow_terrain_fragment_spirv);
+        renderer_init.shadow_static_fragment_spirv = std::move(shadow_static_fragment_spirv);
         renderer_init.debug_vertex_spirv = std::move(debug_vertex_spirv);
         renderer_init.debug_fragment_spirv = std::move(debug_fragment_spirv);
         renderer_init.ui_vertex_spirv = std::move(ui_vertex_spirv);
         renderer_init.ui_fragment_spirv = std::move(ui_fragment_spirv);
         renderer_init.tone_map_vertex_spirv = std::move(tone_map_vertex_spirv);
         renderer_init.tone_map_fragment_spirv = std::move(tone_map_fragment_spirv);
+        renderer_init.ssao_fragment_spirv = std::move(ssao_fragment_spirv);
+        renderer_init.ao_composite_fragment_spirv = std::move(ao_composite_fragment_spirv);
+        renderer_init.fxaa_fragment_spirv = std::move(fxaa_fragment_spirv);
+        renderer_init.bloom_fragment_spirv = std::move(bloom_fragment_spirv);
         renderer_init.voxel_palette = &scene.value()->palette();
         renderer_init.chunk_config.max_chunks_meshed_per_frame = 64;
         renderer_init.chunk_config.max_bytes_uploaded_per_frame = 512U * 1024U * 1024U;
@@ -563,6 +615,33 @@ int main(int argc, char** argv) {
         auto status = active_renderer.initialize(std::move(renderer_init));
         if (!status) {
             return fail(status.error().message);
+        }
+        if (options.scene == renderer::benchmark::BenchmarkSceneKind::light_heavy_settlement) {
+            for (std::uint32_t index = 0; index < 128U; ++index) {
+                const auto x = static_cast<double>(static_cast<int>(index % 16U) - 8) * 5.0;
+                const auto z = static_cast<double>(static_cast<int>(index / 16U) - 4) * 5.0;
+                auto anchor = world::WorldPosition::from_anchor(
+                    scene.value()->camera().floating_origin.block, {x, 3.0, z});
+                if (!anchor) {
+                    return fail(anchor.error().message);
+                }
+                renderer::RenderLightProxy light;
+                light.id = active_renderer.reserve_light_id();
+                light.kind = index % 5U == 0U ? renderer::RenderLightKind::spot
+                                              : renderer::RenderLightKind::point;
+                light.anchor = anchor.value();
+                light.direction = {0.0F, -1.0F, 0.0F};
+                light.color = index % 3U == 0U ? math::Vec3f{1.0F, 0.38F, 0.12F}
+                                               : math::Vec3f{0.28F, 0.55F, 1.0F};
+                light.intensity = 42.0F;
+                light.radius = 13.0F;
+                light.casts_shadow = index < 16U;
+                light.gameplay_importance = index < 8U ? 2.0F : 1.0F;
+                auto created = active_renderer.create_light(std::move(light));
+                if (!created) {
+                    return fail(created.error().message);
+                }
+            }
         }
         auto chunk_lighting = world::ChunkLightSystem::create(scene.value()->palette());
         if (!chunk_lighting) {
@@ -596,17 +675,19 @@ int main(int argc, char** argv) {
             auto particle_origin = world::WorldPosition::from_anchor(
                 scene.value()->camera().floating_origin.block,
                 math::Vec3d{0.0, 24.0, 0.0} +
-                    math::Vec3d{
-                        static_cast<double>(scene.value()->camera().forward().x),
-                        static_cast<double>(scene.value()->camera().forward().y),
-                        static_cast<double>(scene.value()->camera().forward().z)} *
+                    math::Vec3d{static_cast<double>(scene.value()->camera().forward().x),
+                                static_cast<double>(scene.value()->camera().forward().y),
+                                static_cast<double>(scene.value()->camera().forward().z)} *
                         24.0);
             if (!particle_origin) {
                 return fail(particle_origin.error().message);
             }
-            status = particle_system->queue_event(
-                {prototypes.front().id, particle_origin.value(), {0.0F, 1.0F, 0.0F}, {},
-                 50'000, options.seed == 0 ? 1 : options.seed});
+            status = particle_system->queue_event({prototypes.front().id,
+                                                   particle_origin.value(),
+                                                   {0.0F, 1.0F, 0.0F},
+                                                   {},
+                                                   50'000,
+                                                   options.seed == 0 ? 1 : options.seed});
             if (!status) {
                 return fail(status.error().message);
             }
@@ -618,8 +699,8 @@ int main(int argc, char** argv) {
             if (!status) {
                 return fail(status.error().message);
             }
-            auto presented = particle_presentation.synchronize(
-                active_renderer, *particle_system, scene.value()->camera());
+            auto presented = particle_presentation.synchronize(active_renderer, *particle_system,
+                                                               scene.value()->camera());
             if (!presented) {
                 return fail(presented.error().message);
             }
@@ -722,9 +803,9 @@ int main(int argc, char** argv) {
                 return fail(step.error().message);
             }
             scene.value()->activate_fluid_work(*chunk_fluids.value());
-            status = chunk_fluids.value()->update(
-                scene.value()->world().chunks(), scene.value()->world().dirty_regions(),
-                scene.value()->palette(), simulation_frame);
+            status = chunk_fluids.value()->update(scene.value()->world().chunks(),
+                                                  scene.value()->world().dirty_regions(),
+                                                  scene.value()->palette(), simulation_frame);
             if (!status) {
                 return fail(status.error().message);
             }

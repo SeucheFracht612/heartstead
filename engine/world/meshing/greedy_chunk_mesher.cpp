@@ -19,6 +19,7 @@ struct GreedyFaceKey {
     std::uint16_t state_bits = 0;
     std::uint16_t block_flags = 0;
     std::uint8_t light = 0;
+    std::array<std::uint8_t, 4> ambient_occlusion{255U, 255U, 255U, 255U};
     MeshingRenderPhase render_phase = MeshingRenderPhase::opaque;
 
     friend bool operator==(const GreedyFaceKey&, const GreedyFaceKey&) = default;
@@ -54,6 +55,14 @@ struct MaskCell {
     return render_table.find(type);
 }
 
+[[nodiscard]] bool is_greedy_cube(VoxelCell cell,
+                                  const BlockRenderTableSnapshot& render_table) noexcept {
+    const auto* block = find_block(render_table, cell.type);
+    return !cell.is_air() && block != nullptr &&
+           block->geometry == MeshingGeometryKind::full_cube &&
+           block->render_phase != MeshingRenderPhase::fluid;
+}
+
 [[nodiscard]] constexpr std::uint8_t face_bit(ChunkMeshFaceDirection direction) noexcept {
     return static_cast<std::uint8_t>(1U << static_cast<std::uint8_t>(direction));
 }
@@ -63,6 +72,43 @@ struct CellAddress {
     std::int32_t y = 0;
     std::int32_t z = 0;
 };
+
+[[nodiscard]] constexpr CellAddress face_offset(ChunkMeshFaceDirection direction) noexcept {
+    switch (direction) {
+    case ChunkMeshFaceDirection::negative_x:
+        return {-1, 0, 0};
+    case ChunkMeshFaceDirection::positive_x:
+        return {1, 0, 0};
+    case ChunkMeshFaceDirection::negative_y:
+        return {0, -1, 0};
+    case ChunkMeshFaceDirection::positive_y:
+        return {0, 1, 0};
+    case ChunkMeshFaceDirection::negative_z:
+        return {0, 0, -1};
+    case ChunkMeshFaceDirection::positive_z:
+        return {0, 0, 1};
+    }
+    return {};
+}
+
+[[nodiscard]] constexpr std::array<math::Vec3f, 4>
+face_corners(ChunkMeshFaceDirection direction) noexcept {
+    switch (direction) {
+    case ChunkMeshFaceDirection::negative_x:
+        return {{{0.0F, 0.0F, 1.0F}, {0.0F, 1.0F, 1.0F}, {0.0F, 1.0F, 0.0F}, {0.0F, 0.0F, 0.0F}}};
+    case ChunkMeshFaceDirection::positive_x:
+        return {{{1.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 0.0F}, {1.0F, 1.0F, 1.0F}, {1.0F, 0.0F, 1.0F}}};
+    case ChunkMeshFaceDirection::negative_y:
+        return {{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 1.0F}, {0.0F, 0.0F, 1.0F}}};
+    case ChunkMeshFaceDirection::positive_y:
+        return {{{0.0F, 1.0F, 1.0F}, {1.0F, 1.0F, 1.0F}, {1.0F, 1.0F, 0.0F}, {0.0F, 1.0F, 0.0F}}};
+    case ChunkMeshFaceDirection::negative_z:
+        return {{{0.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}, {1.0F, 1.0F, 0.0F}, {1.0F, 0.0F, 0.0F}}};
+    case ChunkMeshFaceDirection::positive_z:
+        return {{{1.0F, 0.0F, 1.0F}, {1.0F, 1.0F, 1.0F}, {0.0F, 1.0F, 1.0F}, {0.0F, 0.0F, 1.0F}}};
+    }
+    return {};
+}
 
 [[nodiscard]] constexpr CellAddress address(ChunkMeshFaceDirection direction, std::int32_t slice,
                                             std::uint16_t u, std::uint16_t v) noexcept {
@@ -87,6 +133,66 @@ void include_point(ChunkMesh& mesh, math::Vec3f point) noexcept {
     }
     mesh.local_bounds.min = math::component_min(mesh.local_bounds.min, point);
     mesh.local_bounds.max = math::component_max(mesh.local_bounds.max, point);
+}
+
+[[nodiscard]] bool full_occluder(const ChunkNeighborhoodSnapshot& neighborhood,
+                                 const BlockRenderTableSnapshot& render_table,
+                                 CellAddress address) noexcept {
+    const auto cell = snapshot_cell(neighborhood, address.x, address.y, address.z);
+    const auto* block = find_block(render_table, cell.type);
+    return !cell.is_air() && block != nullptr && block->full_occluder;
+}
+
+[[nodiscard]] std::array<std::uint8_t, 4>
+face_ambient_occlusion(const ChunkNeighborhoodSnapshot& neighborhood,
+                       const BlockRenderTableSnapshot& render_table, CellAddress source,
+                       ChunkMeshFaceDirection direction) noexcept {
+    std::array<std::uint8_t, 4> result{};
+    const auto normal = face_offset(direction);
+    const std::array normal_components{normal.x, normal.y, normal.z};
+    std::array<std::size_t, 2> tangent_axes{};
+    std::size_t tangent_count = 0;
+    for (std::size_t axis = 0; axis < normal_components.size(); ++axis) {
+        if (normal_components[axis] == 0) {
+            tangent_axes[tangent_count++] = axis;
+        }
+    }
+    if (tangent_count != 2U) {
+        result.fill(255U);
+        return result;
+    }
+    const auto corners = face_corners(direction);
+    constexpr std::array<std::uint8_t, 4> brightness{112U, 156U, 204U, 255U};
+    const std::array origin{source.x, source.y, source.z};
+    for (std::size_t index = 0; index < corners.size(); ++index) {
+        const std::array components{corners[index].x, corners[index].y, corners[index].z};
+        std::array first = normal_components;
+        std::array second = normal_components;
+        std::array diagonal = normal_components;
+        const auto first_axis = tangent_axes[0];
+        const auto second_axis = tangent_axes[1];
+        const auto first_sign = components[first_axis] < 0.5F ? -1 : 1;
+        const auto second_sign = components[second_axis] < 0.5F ? -1 : 1;
+        first[first_axis] += first_sign;
+        second[second_axis] += second_sign;
+        diagonal[first_axis] += first_sign;
+        diagonal[second_axis] += second_sign;
+        const bool side_a =
+            full_occluder(neighborhood, render_table,
+                          {origin[0] + first[0], origin[1] + first[1], origin[2] + first[2]});
+        const bool side_b =
+            full_occluder(neighborhood, render_table,
+                          {origin[0] + second[0], origin[1] + second[1], origin[2] + second[2]});
+        const bool corner = full_occluder(
+            neighborhood, render_table,
+            {origin[0] + diagonal[0], origin[1] + diagonal[1], origin[2] + diagonal[2]});
+        const auto open_level = side_a && side_b ? 0U
+                                                 : 3U - static_cast<std::uint32_t>(side_a) -
+                                                       static_cast<std::uint32_t>(side_b) -
+                                                       static_cast<std::uint32_t>(corner);
+        result[index] = brightness[open_level];
+    }
+    return result;
 }
 
 void emit_quad(ChunkMesh& mesh, ChunkMeshFaceDirection direction, std::uint16_t slice,
@@ -136,7 +242,8 @@ void emit_quad(ChunkMesh& mesh, ChunkMeshFaceDirection direction, std::uint16_t 
     for (std::size_t index = 0; index < positions.size(); ++index) {
         include_point(mesh, positions[index]);
         mesh.vertices.push_back({positions[index], normal, uvs[index].first, uvs[index].second,
-                                 key.voxel_type, key.light, key.state_bits});
+                                 key.voxel_type, key.light, key.state_bits,
+                                 key.ambient_occlusion[index]});
     }
     mesh.indices.insert(mesh.indices.end(), {base_index, base_index + 1U, base_index + 2U,
                                              base_index, base_index + 2U, base_index + 3U});
@@ -160,7 +267,9 @@ void emit_quad(ChunkMesh& mesh, ChunkMeshFaceDirection direction, std::uint16_t 
 }
 
 void write_mask_cell(MaskCell& item, VoxelCell cell, std::uint8_t face_light,
-                     const BlockRenderTableSnapshot& render_table) noexcept {
+                     const BlockRenderTableSnapshot& render_table,
+                     const ChunkNeighborhoodSnapshot& neighborhood, CellAddress source,
+                     ChunkMeshFaceDirection direction) noexcept {
     const auto* block = find_block(render_table, cell.type);
     item.present = block != nullptr;
     if (!item.present) {
@@ -171,6 +280,7 @@ void write_mask_cell(MaskCell& item, VoxelCell cell, std::uint8_t face_light,
                 cell.state_bits,
                 block->flags,
                 std::max(cell.light, face_light),
+                face_ambient_occlusion(neighborhood, render_table, source, direction),
                 block->render_phase};
 }
 
@@ -236,22 +346,19 @@ validate_and_count_cube_cells(const ChunkNeighborhoodSnapshot& neighborhood,
                 if (cell.is_air()) {
                     continue;
                 }
-                ++result.count;
-                result.minimum = {std::min(result.minimum.x, x), std::min(result.minimum.y, y),
-                                  std::min(result.minimum.z, z)};
-                result.maximum = {std::max(result.maximum.x, x), std::max(result.maximum.y, y),
-                                  std::max(result.maximum.z, z)};
                 const auto* block = find_block(render_table, cell.type);
                 if (block == nullptr) {
                     return core::Result<CubeCellSummary>::failure(
                         "chunk_mesh.unknown_voxel_type",
                         "snapshot contains a voxel type missing from its block render table");
                 }
-                if (block->geometry != MeshingGeometryKind::full_cube) {
-                    return core::Result<CubeCellSummary>::success({});
-                }
-                if (block->render_phase == MeshingRenderPhase::fluid) {
-                    return core::Result<CubeCellSummary>::success({});
+                if (block->geometry == MeshingGeometryKind::full_cube &&
+                    block->render_phase != MeshingRenderPhase::fluid) {
+                    ++result.count;
+                    result.minimum = {std::min(result.minimum.x, x), std::min(result.minimum.y, y),
+                                      std::min(result.minimum.z, z)};
+                    result.maximum = {std::max(result.maximum.x, x), std::max(result.maximum.y, y),
+                                      std::max(result.maximum.z, z)};
                 }
             }
         }
@@ -297,6 +404,7 @@ GreedyChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborh
     mesh.rich_instances.clear();
     mesh.local_bounds = {};
     mesh.face_count = 0;
+    mesh.triangle_face_count = 0;
     mesh.chunk_coord = neighborhood.center_identity.coordinate;
     mesh.provided_halo_radius = neighborhood.halo_radius;
     mesh.required_halo_radius = neighborhood.halo_radius;
@@ -343,15 +451,17 @@ GreedyChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborh
                     const auto positive_cell = snapshot_cell(neighborhood, positive_source.x,
                                                              positive_source.y, positive_source.z);
                     const auto mask_index = static_cast<std::size_t>(v) * edge + u;
-                    if (boundary < edge && !negative_cell.is_air() &&
+                    if (boundary < edge && is_greedy_cube(negative_cell, render_table) &&
                         !cell_occludes(positive_cell, directions.positive, render_table)) {
                         write_mask_cell(negative_mask[mask_index], negative_cell,
-                                        positive_cell.light, render_table);
+                                        positive_cell.light, render_table, neighborhood,
+                                        negative_source, directions.negative);
                     }
-                    if (boundary > 0 && !positive_cell.is_air() &&
+                    if (boundary > 0 && is_greedy_cube(positive_cell, render_table) &&
                         !cell_occludes(negative_cell, directions.negative, render_table)) {
                         write_mask_cell(positive_mask[mask_index], positive_cell,
-                                        negative_cell.light, render_table);
+                                        negative_cell.light, render_table, neighborhood,
+                                        positive_source, directions.positive);
                     }
                 }
             }
@@ -365,6 +475,35 @@ GreedyChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborh
                              directions.u_max, directions.v_min, directions.v_max);
             }
         }
+    }
+
+    auto specialized = ChunkMesher::build_specialized_surface_mesh(neighborhood, render_table);
+    if (!specialized) {
+        return core::Result<ChunkMesh>::failure(specialized.error().code,
+                                                specialized.error().message);
+    }
+    if (!specialized.value().empty()) {
+        const auto had_geometry = !mesh.empty();
+        const auto vertex_offset = static_cast<std::uint32_t>(mesh.vertices.size());
+        const auto index_offset = static_cast<std::uint32_t>(mesh.indices.size());
+        mesh.vertices.insert(mesh.vertices.end(), specialized.value().vertices.begin(),
+                             specialized.value().vertices.end());
+        mesh.indices.reserve(mesh.indices.size() + specialized.value().indices.size());
+        for (const auto index : specialized.value().indices) {
+            mesh.indices.push_back(vertex_offset + index);
+        }
+        for (const auto& section : specialized.value().sections) {
+            mesh.sections.push_back({section.material_index, section.render_phase,
+                                     index_offset + section.first_index, section.index_count});
+        }
+        mesh.rich_instances.insert(mesh.rich_instances.end(),
+                                   specialized.value().rich_instances.begin(),
+                                   specialized.value().rich_instances.end());
+        mesh.face_count += specialized.value().face_count;
+        mesh.triangle_face_count += specialized.value().triangle_face_count;
+        mesh.local_bounds = had_geometry
+                                ? mesh.local_bounds.merged_with(specialized.value().local_bounds)
+                                : specialized.value().local_bounds;
     }
 
     status = mesh.finalize_sections();

@@ -86,6 +86,7 @@
 #include "engine/world/voxel_change.hpp"
 #include "engine/world/voxels/voxel_chunk.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
+#include "engine/world/voxels/voxel_surface_state.hpp"
 #include "engine/world/world_commands.hpp"
 #include "engine/world/world_snapshot.hpp"
 #include "engine/world/world_state.hpp"
@@ -2016,8 +2017,22 @@ void test_terrain_material_asset_loading() {
     material.textures.push_back(
         {"south", assets::VirtualPath::parse("base:textures/voxels/grass_south.png").value(),
          true});
+    material.textures.push_back(
+        {"normal.top", assets::VirtualPath::parse("base:textures/voxels/grass_top.png").value(),
+         true});
+    material.textures.push_back(
+        {"surface.top",
+         assets::VirtualPath::parse("base:textures/voxels/grass_top_alt.png").value(), true});
+    material.textures.push_back(
+        {"overlay.moss", assets::VirtualPath::parse("base:textures/voxels/grass_side.png").value(),
+         true});
     material.scalars.push_back({"roughness", 0.9F});
+    material.scalars.push_back({"texel_density", 2.0F});
+    material.scalars.push_back({"stable_mirroring", 1.0F});
+    material.scalars.push_back({"surface.moss.strength", 0.65F});
     material.colors.push_back({"tint", renderer::materials::MaterialColor{0.8F, 1.0F, 0.8F, 1.0F}});
+    material.colors.push_back(
+        {"biome_tint", renderer::materials::MaterialColor{0.7F, 0.9F, 0.6F, 1.0F}});
     renderer::materials::MaterialRegistry materials;
     assert(materials.add(std::move(material)));
     renderer::materials::MaterialDefinition fallback_material;
@@ -2072,6 +2087,14 @@ void test_terrain_material_asset_loading() {
     assert((face_texture_ids(*assignment, renderer::VoxelMaterialFace::south) ==
             std::vector<std::string>{"base:textures/voxels/grass_south.png"}));
     assert(assignment->roughness == 0.9F);
+    assert(assignment->texel_density == 2.0F);
+    assert(assignment->stable_mirroring);
+    assert(assignment->normal_textures_for(renderer::VoxelMaterialFace::top).size() == 1);
+    assert(assignment->surface_textures_for(renderer::VoxelMaterialFace::top).size() == 1);
+    const auto moss_index = static_cast<std::size_t>(world::VoxelSurfaceState::moss);
+    assert(assignment->surface_layers[moss_index].strength == 0.65F);
+    assert(assignment->surface_layers[moss_index].texture !=
+           renderer::materials::no_terrain_texture_asset);
     assert((assignment->base_color == std::array<float, 4>{0.8F, 1.0F, 0.8F, 1.0F}));
     const auto* fallback_assignment = terrain_assets.value().find(8);
     assert(fallback_assignment != nullptr);
@@ -2110,6 +2133,29 @@ void test_terrain_material_asset_loading() {
     assert(invalid_assets.error().code == "terrain_material_assets.variant_without_primary");
 
     std::filesystem::remove_all(root);
+}
+
+void test_voxel_surface_state_encoding() {
+    using namespace heartstead::world;
+    std::uint16_t all_layers = 0;
+    for (const auto layer : voxel_surface_states()) {
+        all_layers =
+            static_cast<std::uint16_t>(all_layers | (1U << static_cast<std::uint8_t>(layer)));
+        const auto encoded = encode_voxel_surface_states(
+            {static_cast<std::uint16_t>(1U << static_cast<std::uint8_t>(layer)), 5});
+        const auto decoded = decode_voxel_surface_states(encoded);
+        assert(decoded);
+        assert(decoded.value().contains(layer));
+        assert(decoded.value().coverage == 5);
+    }
+    const auto encoded = encode_voxel_surface_states({all_layers, 99});
+    const auto decoded = decode_voxel_surface_states(encoded);
+    assert(decoded);
+    assert(decoded.value().layers == voxel_surface_state_mask);
+    assert(decoded.value().coverage == 7);
+    assert(encode_voxel_surface_states(decoded.value()) == encoded);
+    assert(!decode_voxel_surface_states(
+        static_cast<std::uint16_t>(encoded | voxel_surface_reserved_mask)));
 }
 
 void test_headless_platform() {
@@ -15151,6 +15197,7 @@ int main() {
     test_resource_pack_discovery_and_asset_catalog();
     test_filtered_model_dependency_cooking();
     test_terrain_material_asset_loading();
+    test_voxel_surface_state_encoding();
     test_headless_platform();
     test_renderer_rhi();
     test_physics_world();

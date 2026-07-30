@@ -5,12 +5,17 @@
 // shaders write linear radiance and must not encode sRGB themselves.
 
 layout(set = 0, binding = 0) uniform sampler2D scene_hdr;
+layout(set = 0, binding = 1) uniform sampler2D bloom_hdr;
 
 layout(push_constant) uniform ToneMapPushConstants {
     float exposure_scale;
     float white_point;
     uint tone_mapping;
     uint padding;
+    float saturation;
+    float contrast;
+    float bloom_intensity;
+    float grading_padding;
 } tone_map;
 
 layout(location = 0) in vec2 in_uv;
@@ -80,9 +85,14 @@ vec3 linear_to_srgb(vec3 value) {
 }
 
 void main() {
-    vec3 radiance = texture(scene_hdr, in_uv).rgb;
+    vec3 radiance = texture(scene_hdr, in_uv).rgb +
+                    texture(bloom_hdr, in_uv).rgb * tone_map.bloom_intensity;
     radiance = max(radiance, vec3(0.0)) * tone_map.exposure_scale;
     radiance /= max(tone_map.white_point, 1.0e-4);
     vec3 display = clamp(apply_tone_mapping(radiance), 0.0, 1.0);
+    float luminance = dot(display, vec3(0.2126, 0.7152, 0.0722));
+    display = mix(vec3(luminance), display, tone_map.saturation);
+    display = (display - 0.5) * tone_map.contrast + 0.5;
+    display = clamp(display, 0.0, 1.0);
     out_color = vec4(linear_to_srgb(display), 1.0);
 }

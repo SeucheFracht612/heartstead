@@ -53,12 +53,30 @@ std::string_view vk_result_name(VkResult result) noexcept {
 
 VkFormat vulkan_image_format(rhi::RenderImageFormat format) noexcept {
     switch (format) {
+    case rhi::RenderImageFormat::r8_unorm:
+        return VK_FORMAT_R8_UNORM;
+    case rhi::RenderImageFormat::rg16_sfloat:
+        return VK_FORMAT_R16G16_SFLOAT;
     case rhi::RenderImageFormat::rgba8_unorm:
         return VK_FORMAT_R8G8B8A8_UNORM;
     case rhi::RenderImageFormat::rgba8_srgb:
         return VK_FORMAT_R8G8B8A8_SRGB;
     case rhi::RenderImageFormat::rgba16_sfloat:
         return VK_FORMAT_R16G16B16A16_SFLOAT;
+    case rhi::RenderImageFormat::bc1_rgb_unorm:
+        return VK_FORMAT_BC1_RGB_UNORM_BLOCK;
+    case rhi::RenderImageFormat::bc1_rgb_srgb:
+        return VK_FORMAT_BC1_RGB_SRGB_BLOCK;
+    case rhi::RenderImageFormat::bc3_rgba_unorm:
+        return VK_FORMAT_BC3_UNORM_BLOCK;
+    case rhi::RenderImageFormat::bc3_rgba_srgb:
+        return VK_FORMAT_BC3_SRGB_BLOCK;
+    case rhi::RenderImageFormat::bc5_rg_unorm:
+        return VK_FORMAT_BC5_UNORM_BLOCK;
+    case rhi::RenderImageFormat::bc7_rgba_unorm:
+        return VK_FORMAT_BC7_UNORM_BLOCK;
+    case rhi::RenderImageFormat::bc7_rgba_srgb:
+        return VK_FORMAT_BC7_SRGB_BLOCK;
     case rhi::RenderImageFormat::d32_sfloat:
         return VK_FORMAT_D32_SFLOAT;
     case rhi::RenderImageFormat::d32_sfloat_s8_uint:

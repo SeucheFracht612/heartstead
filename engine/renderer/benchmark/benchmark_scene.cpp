@@ -5,6 +5,7 @@
 #include "engine/world/coords/world_coords.hpp"
 #include "engine/world/fluids/chunk_fluid_system.hpp"
 #include "engine/world/fluids/fluid_state.hpp"
+#include "engine/world/voxels/voxel_surface_state.hpp"
 
 #include <algorithm>
 #include <array>
@@ -22,6 +23,7 @@ constexpr std::uint16_t surface_type = 2;
 constexpr std::uint16_t soil_type = 3;
 constexpr std::uint16_t foliage_type = 4;
 constexpr std::uint16_t water_type = 5;
+constexpr std::uint16_t slope_type = 6;
 
 [[nodiscard]] std::uint64_t mix_hash(std::uint64_t value) noexcept {
     value ^= value >> 30U;
@@ -60,6 +62,7 @@ constexpr std::uint16_t water_type = 5;
     case BenchmarkSceneKind::dense_caves:
     case BenchmarkSceneKind::checkerboard_geometry:
     case BenchmarkSceneKind::forest_cross_planes:
+    case BenchmarkSceneKind::terrain_material_preview:
         return kind;
     case BenchmarkSceneKind::flat_terrain:
     case BenchmarkSceneKind::rapid_voxel_edits:
@@ -69,6 +72,7 @@ constexpr std::uint16_t water_type = 5;
     case BenchmarkSceneKind::resize_minimize_stress:
     case BenchmarkSceneKind::active_water:
     case BenchmarkSceneKind::particle_stress:
+    case BenchmarkSceneKind::light_heavy_settlement:
         return BenchmarkSceneKind::flat_terrain;
     }
     return BenchmarkSceneKind::flat_terrain;
@@ -102,18 +106,30 @@ std::string_view benchmark_scene_name(BenchmarkSceneKind kind) noexcept {
         return "active-water";
     case BenchmarkSceneKind::particle_stress:
         return "particles";
+    case BenchmarkSceneKind::light_heavy_settlement:
+        return "light-heavy";
+    case BenchmarkSceneKind::terrain_material_preview:
+        return "terrain-materials";
     }
     return "unknown";
 }
 
 std::optional<BenchmarkSceneKind> parse_benchmark_scene(std::string_view name) noexcept {
     constexpr std::array kinds{
-        BenchmarkSceneKind::flat_terrain,          BenchmarkSceneKind::mountainous_terrain,
-        BenchmarkSceneKind::dense_caves,           BenchmarkSceneKind::checkerboard_geometry,
-        BenchmarkSceneKind::forest_cross_planes,   BenchmarkSceneKind::rapid_voxel_edits,
-        BenchmarkSceneKind::high_speed_flythrough, BenchmarkSceneKind::chunk_load_unload_churn,
-        BenchmarkSceneKind::large_coordinates,     BenchmarkSceneKind::resize_minimize_stress,
-        BenchmarkSceneKind::active_water,          BenchmarkSceneKind::particle_stress,
+        BenchmarkSceneKind::flat_terrain,
+        BenchmarkSceneKind::mountainous_terrain,
+        BenchmarkSceneKind::dense_caves,
+        BenchmarkSceneKind::checkerboard_geometry,
+        BenchmarkSceneKind::forest_cross_planes,
+        BenchmarkSceneKind::rapid_voxel_edits,
+        BenchmarkSceneKind::high_speed_flythrough,
+        BenchmarkSceneKind::chunk_load_unload_churn,
+        BenchmarkSceneKind::large_coordinates,
+        BenchmarkSceneKind::resize_minimize_stress,
+        BenchmarkSceneKind::active_water,
+        BenchmarkSceneKind::particle_stress,
+        BenchmarkSceneKind::light_heavy_settlement,
+        BenchmarkSceneKind::terrain_material_preview,
     };
     const auto found = std::ranges::find_if(
         kinds, [name](BenchmarkSceneKind kind) { return benchmark_scene_name(kind) == name; });
@@ -202,10 +218,16 @@ core::Status BenchmarkScene::initialize() {
     camera_.floating_origin.block = {
         origin.value().x,
         origin.value().y,
-        origin.value().z + (static_cast<std::int64_t>(config_.chunk_radius) + 3) * edge,
+        origin.value().z + (config_.kind == BenchmarkSceneKind::terrain_material_preview
+                                ? static_cast<std::int64_t>(config_.chunk_radius) + 1
+                                : static_cast<std::int64_t>(config_.chunk_radius) + 3) *
+                               edge,
     };
-    camera_.local_position = {0.0F, 24.0F, 0.0F};
-    camera_.pitch_radians = -0.30F;
+    camera_.local_position = config_.kind == BenchmarkSceneKind::terrain_material_preview
+                                 ? math::Vec3f{0.0F, 22.0F, 0.0F}
+                                 : math::Vec3f{0.0F, 24.0F, 0.0F};
+    camera_.pitch_radians =
+        config_.kind == BenchmarkSceneKind::terrain_material_preview ? -0.36F : -0.30F;
     return camera_.set_aspect_ratio(static_cast<float>(config_.initial_extent.width) /
                                     static_cast<float>(config_.initial_extent.height));
 }
@@ -225,6 +247,28 @@ core::Status BenchmarkScene::initialize_palette() {
     if (!status) {
         return status;
     }
+    auto slope_model_id = prototype("benchmark:block_models/slope");
+    if (!slope_model_id) {
+        return core::Status::failure(slope_model_id.error().code, slope_model_id.error().message);
+    }
+    world::BlockModelDefinition slope_model;
+    slope_model.prototype_id = slope_model_id.value();
+    slope_model.kind = world::BlockModelKind::custom_voxel;
+    slope_model.render_bounds = {{0.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 1.0F}};
+    slope_model.triangles = {
+        {.positions = {{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 1.0F}}}},
+        {.positions = {{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 1.0F}, {0.0F, 0.0F, 1.0F}}}},
+        {.positions = {{{0.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}, {1.0F, 1.0F, 0.0F}}}},
+        {.positions = {{{0.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 0.0F}, {1.0F, 0.0F, 0.0F}}}},
+        {.positions = {{{0.0F, 0.0F, 0.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 1.0F, 0.0F}}}},
+        {.positions = {{{1.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 0.0F}, {1.0F, 0.0F, 1.0F}}}},
+        {.positions = {{{0.0F, 1.0F, 0.0F}, {0.0F, 0.0F, 1.0F}, {1.0F, 0.0F, 1.0F}}}},
+        {.positions = {{{0.0F, 1.0F, 0.0F}, {1.0F, 0.0F, 1.0F}, {1.0F, 1.0F, 0.0F}}}},
+    };
+    status = palette_.add_block_model(std::move(slope_model));
+    if (!status) {
+        return status;
+    }
 
     struct DefinitionSpec {
         std::uint16_t type;
@@ -238,6 +282,7 @@ core::Status BenchmarkScene::initialize_palette() {
         DefinitionSpec{soil_type, "benchmark:soil", "Soil", "soil"},
         DefinitionSpec{foliage_type, "benchmark:foliage", "Foliage", "foliage"},
         DefinitionSpec{water_type, "benchmark:water", "Water", "water"},
+        DefinitionSpec{slope_type, "benchmark:slope", "Authored slope", "stone"},
     };
     for (const auto& spec : definitions) {
         auto id = prototype(spec.id);
@@ -262,6 +307,10 @@ core::Status BenchmarkScene::initialize_palette() {
             definition.collision_bounds.clear();
             definition.occlusion_bounds.clear();
             definition.light_absorption = 8;
+        } else if (spec.type == slope_type) {
+            definition.block_model_id = slope_model_id.value();
+            definition.logical_occupancy = world::BlockLogicalOccupancy::partial;
+            definition.occlusion = world::BlockOcclusionBehavior::model;
         }
         status = palette_.add(std::move(definition));
         if (!status) {
@@ -309,11 +358,12 @@ std::vector<world::VoxelCell> BenchmarkScene::generate_cells(world::ChunkCoord c
                 const auto noise = coordinate_hash(global_x, global_y, global_z, config_.seed);
                 if (config_.kind == BenchmarkSceneKind::active_water &&
                     coordinate == center_chunk_) {
-                    cells[cell_index(x, y, z)] = {
-                        water_type, 255, world::full_fluid_source_state_bits(), 0};
+                    cells[cell_index(x, y, z)] = {water_type, 255,
+                                                  world::full_fluid_source_state_bits(), 0};
                     continue;
                 }
                 std::uint16_t type = 0;
+                std::uint16_t state_bits = 0;
                 switch (shape) {
                 case BenchmarkSceneKind::flat_terrain:
                     if (y <= 8) {
@@ -351,6 +401,35 @@ std::vector<world::VoxelCell> BenchmarkScene::generate_cells(world::ChunkCoord c
                         type = foliage_type;
                     }
                     break;
+                case BenchmarkSceneKind::terrain_material_preview: {
+                    if (y <= 4) {
+                        const auto band = static_cast<std::uint32_t>((global_x & 31) / 8);
+                        constexpr std::array<std::uint16_t, 4> materials{stone_type, soil_type,
+                                                                         surface_type, stone_type};
+                        type = y == 4 ? materials[band] : stone_type;
+                    }
+                    const auto preview_chunk = world::ChunkCoord{
+                        center_chunk_.x, center_chunk_.y,
+                        center_chunk_.z + static_cast<std::int64_t>(config_.chunk_radius)};
+                    if (coordinate == preview_chunk && y == 5 && x >= 5 && x <= 25 && z >= 5 &&
+                        z <= 25) {
+                        const auto column = static_cast<std::uint8_t>((x - 5U) / 7U);
+                        const auto row = static_cast<std::uint8_t>((z - 5U) / 7U);
+                        const auto pad_x = static_cast<std::uint8_t>((x - 5U) % 7U);
+                        const auto pad_z = static_cast<std::uint8_t>((z - 5U) % 7U);
+                        if (column < 3U && row < 3U && pad_x < 5U && pad_z < 5U) {
+                            const auto state_index = static_cast<std::uint8_t>(row * 3U + column);
+                            type = 1U + static_cast<std::uint16_t>(state_index % 3U);
+                            state_bits = world::encode_voxel_surface_states(
+                                {static_cast<std::uint16_t>(1U << state_index), 7U});
+                        }
+                    }
+                    if (coordinate == preview_chunk && y == 5 && z == 27 && x >= 5 && x <= 25 &&
+                        (x - 5U) % 3U == 0U) {
+                        type = slope_type;
+                    }
+                    break;
+                }
                 case BenchmarkSceneKind::rapid_voxel_edits:
                 case BenchmarkSceneKind::high_speed_flythrough:
                 case BenchmarkSceneKind::chunk_load_unload_churn:
@@ -358,10 +437,11 @@ std::vector<world::VoxelCell> BenchmarkScene::generate_cells(world::ChunkCoord c
                 case BenchmarkSceneKind::resize_minimize_stress:
                 case BenchmarkSceneKind::active_water:
                 case BenchmarkSceneKind::particle_stress:
+                case BenchmarkSceneKind::light_heavy_settlement:
                     break;
                 }
                 if (type != 0) {
-                    cells[cell_index(x, y, z)] = world::VoxelCell{type, 255, 0, 0};
+                    cells[cell_index(x, y, z)] = world::VoxelCell{type, 255, state_bits, 0};
                 }
             }
         }
@@ -404,6 +484,8 @@ core::Result<BenchmarkSceneStep> BenchmarkScene::advance(std::uint64_t frame_ind
     case BenchmarkSceneKind::forest_cross_planes:
     case BenchmarkSceneKind::active_water:
     case BenchmarkSceneKind::particle_stress:
+    case BenchmarkSceneKind::light_heavy_settlement:
+    case BenchmarkSceneKind::terrain_material_preview:
         break;
     }
     if (!status) {

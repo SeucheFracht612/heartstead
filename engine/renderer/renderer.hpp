@@ -9,8 +9,11 @@
 #include "engine/renderer/assets/texture_manager.hpp"
 #include "engine/renderer/chunks/chunk_render_system.hpp"
 #include "engine/renderer/debug/debug_renderer.hpp"
+#include "engine/renderer/environment/environment_lighting.hpp"
 #include "engine/renderer/environment/sky_renderer.hpp"
 #include "engine/renderer/frame/frame_builder.hpp"
+#include "engine/renderer/lighting/cascaded_shadows.hpp"
+#include "engine/renderer/lighting/clustered_lighting.hpp"
 #include "engine/renderer/materials/material_runtime_cache.hpp"
 #include "engine/renderer/materials/pipeline_cache.hpp"
 #include "engine/renderer/materials/terrain_material_assets.hpp"
@@ -68,6 +71,8 @@ struct RendererInitDesc {
     std::vector<std::uint32_t> terrain_fragment_spirv;
     std::vector<std::uint32_t> static_mesh_vertex_spirv;
     std::vector<std::uint32_t> static_mesh_fragment_spirv;
+    std::vector<std::uint32_t> shadow_terrain_fragment_spirv;
+    std::vector<std::uint32_t> shadow_static_fragment_spirv;
     std::vector<std::uint32_t> debug_vertex_spirv;
     std::vector<std::uint32_t> debug_fragment_spirv;
     std::vector<std::uint32_t> ui_vertex_spirv;
@@ -77,12 +82,18 @@ struct RendererInitDesc {
     // selected without them.
     std::vector<std::uint32_t> tone_map_vertex_spirv;
     std::vector<std::uint32_t> tone_map_fragment_spirv;
+    std::vector<std::uint32_t> ssao_fragment_spirv;
+    std::vector<std::uint32_t> ao_composite_fragment_spirv;
+    std::vector<std::uint32_t> fxaa_fragment_spirv;
+    std::vector<std::uint32_t> bloom_fragment_spirv;
     const world::VoxelPalette* voxel_palette = nullptr;
     materials::TerrainMaterialAssetSet terrain_material_assets;
     ChunkRenderConfig chunk_config{};
     ChunkGpuCacheConfig chunk_gpu_cache_config{};
     MeshManagerConfig mesh_manager_config{};
     SceneRenderConfig scene_render_config{};
+    ClusteredLightingConfig clustered_lighting_config{};
+    DirectionalShadowConfig directional_shadow_config{};
     DebugRendererConfig debug_renderer_config{};
     UiRendererConfig ui_renderer_config{};
     rhi::ClearColor clear_color{0.055F, 0.09F, 0.14F, 1.0F};
@@ -142,6 +153,7 @@ class Renderer {
     // Exposure and tone curve for the resolve pass. Validated at the boundary, so an out-of-range
     // or non-finite value is rejected here rather than becoming a NaN frame.
     [[nodiscard]] core::Status set_exposure(rhi::RenderExposureSettings exposure);
+    [[nodiscard]] core::Status set_lighting_debug_view(LightingDebugView view);
     [[nodiscard]] rhi::RenderExposureSettings exposure() const noexcept;
     void set_voxel_fluid_stats(const world::ChunkFluidSystemStats& fluids) noexcept;
     void set_voxel_lighting_stats(const world::ChunkLightSystemStats& lighting) noexcept;
@@ -187,6 +199,7 @@ class Renderer {
     [[nodiscard]] const ChunkRenderStats& chunk_stats() const noexcept;
     [[nodiscard]] const RendererStats& stats() const noexcept;
     [[nodiscard]] const SceneRenderStats& scene_stats() const noexcept;
+    [[nodiscard]] const ClusteredLightingStats& lighting_stats() const noexcept;
     [[nodiscard]] RendererFallbackResources fallback_resources() const noexcept;
     [[nodiscard]] RenderMeshHandle fallback_mesh() const noexcept;
     [[nodiscard]] MaterialRuntimeHandle fallback_material() const noexcept;
@@ -218,6 +231,12 @@ class Renderer {
     [[nodiscard]] core::Status
     create_scene_pipelines(std::span<const std::uint32_t> vertex_spirv,
                            std::span<const std::uint32_t> fragment_spirv);
+    [[nodiscard]] core::Status
+    create_shadow_pipelines(std::span<const std::uint32_t> terrain_vertex_spirv,
+                            std::span<const std::uint32_t> terrain_fragment_spirv,
+                            std::span<const std::uint32_t> static_vertex_spirv,
+                            std::span<const std::uint32_t> static_fragment_spirv);
+    [[nodiscard]] core::Status bind_shadow_resources();
     [[nodiscard]] core::Status bind_scene_surface_resources();
     [[nodiscard]] core::Status
     create_debug_pipelines(std::span<const std::uint32_t> vertex_spirv,
@@ -229,6 +248,12 @@ class Renderer {
     [[nodiscard]] core::Status
     create_tone_map_pipeline(std::span<const std::uint32_t> vertex_spirv,
                              std::span<const std::uint32_t> fragment_spirv);
+    [[nodiscard]] core::Status
+    create_image_quality_pipelines(std::span<const std::uint32_t> vertex_spirv,
+                                   std::span<const std::uint32_t> ssao_fragment_spirv,
+                                   std::span<const std::uint32_t> ao_fragment_spirv,
+                                   std::span<const std::uint32_t> fxaa_fragment_spirv,
+                                   std::span<const std::uint32_t> bloom_fragment_spirv);
     void update_frontend_stats(std::size_t loaded_chunk_count) noexcept;
     void update_backend_stats(const rhi::RenderFrameStats& frame) noexcept;
 
@@ -239,6 +264,8 @@ class Renderer {
     std::array<GraphicsPipelineKey, 4> terrain_pipeline_keys_{};
     ScenePipelineSet scene_pipelines_{};
     std::array<GraphicsPipelineKey, 6> scene_pipeline_keys_{};
+    std::array<rhi::RenderResourceHandle, 4> shadow_pipelines_{};
+    std::array<GraphicsPipelineKey, 4> shadow_pipeline_keys_{};
     DebugPipelineSet debug_pipelines_{};
     std::array<GraphicsPipelineKey, 2> debug_pipeline_keys_{};
     rhi::RenderResourceHandle ui_pipeline_{};
@@ -246,19 +273,27 @@ class Renderer {
     // Invalid when no tone map SPIR-V was supplied, which is also what makes the linear HDR graph
     // unavailable.
     rhi::RenderResourceHandle tone_map_pipeline_{};
+    std::array<rhi::RenderResourceHandle, 4> image_quality_pipelines_{};
+    std::array<GraphicsPipelineKey, 4> image_quality_pipeline_keys_{};
     GraphicsPipelineKey tone_map_pipeline_key_{};
     ShaderProgramHandle terrain_shader_program_;
     ShaderProgramHandle sky_shader_program_;
     ShaderProgramHandle scene_shader_program_;
+    ShaderProgramHandle terrain_shadow_shader_program_;
+    ShaderProgramHandle static_shadow_shader_program_;
     ShaderProgramHandle debug_shader_program_;
     ShaderProgramHandle ui_shader_program_;
     ShaderProgramHandle tone_map_shader_program_;
+    std::array<ShaderProgramHandle, 4> image_quality_shader_programs_{};
     TextureHandle terrain_texture_array_;
+    TextureHandle terrain_normal_texture_array_;
+    TextureHandle terrain_surface_texture_array_;
     std::unique_ptr<SurfaceTextureArray> surface_texture_array_;
     std::unique_ptr<SurfaceTextureArray> surface_data_texture_array_;
     TextureHandle ui_texture_atlas_;
     MaterialRuntimeHandle fallback_material_;
     rhi::RenderResourceHandle terrain_sampler_;
+    rhi::RenderResourceHandle ui_sampler_;
     rhi::RenderResourceHandle surface_sampler_;
     std::unique_ptr<ShaderManager> shader_manager_;
     std::unique_ptr<SamplerCache> sampler_cache_;
@@ -270,6 +305,9 @@ class Renderer {
     std::unique_ptr<ChunkRenderSystem> chunk_system_;
     std::unique_ptr<SkyRenderer> sky_renderer_;
     std::unique_ptr<SceneRenderSystem> scene_render_system_;
+    std::unique_ptr<ClusteredLightingSystem> clustered_lighting_;
+    std::unique_ptr<CascadedShadowSystem> cascaded_shadows_;
+    std::unique_ptr<EnvironmentLighting> environment_lighting_;
     std::unique_ptr<DebugRenderer> debug_renderer_;
     std::unique_ptr<UiRenderer> ui_renderer_;
     std::unique_ptr<FrameBuilder> frame_builder_;

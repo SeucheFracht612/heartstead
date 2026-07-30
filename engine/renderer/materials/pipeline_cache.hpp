@@ -19,6 +19,7 @@ enum class RenderPhase : std::uint8_t {
     transparent_terrain,
     fluid_terrain,
     static_instances,
+    shadow,
     debug,
     // Resolves an offscreen graph resource to another target. Draws a fullscreen triangle with no
     // vertex input and no depth, so it shares none of the world phases' pipeline state.
@@ -38,6 +39,8 @@ struct GraphicsPipelineKey {
     bool depth_write = true;
     rhi::RenderCompareOperation depth_compare = rhi::RenderCompareOperation::less;
     rhi::RenderBlendMode blend_mode = rhi::RenderBlendMode::disabled;
+    bool color_write = true;
+    std::vector<rhi::RenderImageFormat> additional_color_formats{};
     std::uint8_t sample_count = 1;
     std::uint64_t feature_flags = 0;
 

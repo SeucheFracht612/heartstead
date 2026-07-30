@@ -420,9 +420,36 @@ core::Status validate_material_runtime_desc(const MaterialRuntimeDesc& desc) {
     }
     if (!std::isfinite(desc.emissive_strength) || desc.emissive_strength < 0.0F ||
         !std::isfinite(desc.roughness) || desc.roughness < 0.0F || desc.roughness > 1.0F ||
-        !std::isfinite(desc.animation_frame_time) || desc.animation_frame_time < 0.0F) {
+        !std::isfinite(desc.animation_frame_time) || desc.animation_frame_time < 0.0F ||
+        !std::isfinite(desc.texel_density) || desc.texel_density <= 0.0F ||
+        !std::isfinite(desc.biome_tint_strength) || desc.biome_tint_strength < 0.0F ||
+        desc.biome_tint_strength > 1.0F || !std::isfinite(desc.macro_color_strength) ||
+        desc.macro_color_strength < 0.0F || desc.macro_color_strength > 1.0F ||
+        !std::isfinite(desc.macro_roughness_strength) || desc.macro_roughness_strength < 0.0F ||
+        desc.macro_roughness_strength > 1.0F || !std::isfinite(desc.transition_width) ||
+        desc.transition_width < 0.0F || desc.transition_width > 0.5F ||
+        !std::isfinite(desc.transition_contrast) || desc.transition_contrast <= 0.0F ||
+        !std::isfinite(desc.transition_noise_scale) || desc.transition_noise_scale <= 0.0F ||
+        !std::ranges::all_of(desc.biome_tint, [](float value) {
+            return std::isfinite(value) && value >= 0.0F && value <= 1.0F;
+        })) {
         return core::Status::failure("material_runtime.invalid_parameters",
                                      "material scalar parameters are outside valid ranges");
+    }
+    for (const auto& layer : desc.terrain_surface_layers) {
+        if (!std::ranges::all_of(layer.tint,
+                                 [](float value) {
+                                     return std::isfinite(value) && value >= 0.0F && value <= 1.0F;
+                                 }) ||
+            !std::isfinite(layer.strength) || layer.strength < 0.0F || layer.strength > 1.0F ||
+            !std::isfinite(layer.roughness) || layer.roughness < 0.0F || layer.roughness > 1.0F ||
+            !std::isfinite(layer.metallic) || layer.metallic < 0.0F || layer.metallic > 1.0F ||
+            !std::isfinite(layer.emissive_strength) || layer.emissive_strength < 0.0F ||
+            layer.emissive_strength > 4.0F) {
+            return core::Status::failure(
+                "material_runtime.invalid_terrain_surface_layer",
+                "terrain surface-layer parameters must be finite and within their packed range");
+        }
     }
     return core::Status::ok();
 }
@@ -435,7 +462,37 @@ GpuVoxelMaterial gpu_voxel_material(const MaterialRuntimeDesc& desc) noexcept {
     std::ranges::copy(desc.base_color, result.base_color);
     result.emissive_strength = desc.emissive_strength;
     result.roughness = desc.roughness;
-    result.animation_frame_time = desc.animation_frame_time;
+    result.ambient_occlusion = desc.occlusion_strength;
+    result.metallic = desc.metallic;
+    result.mapping_parameters[0] = desc.texel_density;
+    result.mapping_parameters[1] = desc.normal_scale;
+    result.mapping_parameters[2] = desc.macro_color_strength;
+    result.mapping_parameters[3] = desc.macro_roughness_strength;
+    result.biome_transition[0] = desc.biome_tint_strength;
+    result.biome_transition[1] = desc.transition_width;
+    result.biome_transition[2] = desc.transition_contrast;
+    result.biome_transition[3] = desc.transition_noise_scale;
+    std::ranges::copy(desc.biome_tint, result.biome_tint);
+    const auto pack_unorm8 = [](float value) {
+        return static_cast<std::uint32_t>(std::lround(std::clamp(value, 0.0F, 1.0F) * 255.0F));
+    };
+    const auto pack_rgba = [&pack_unorm8](const std::array<float, 4>& values) {
+        return pack_unorm8(values[0]) | (pack_unorm8(values[1]) << 8U) |
+               (pack_unorm8(values[2]) << 16U) | (pack_unorm8(values[3]) << 24U);
+    };
+    for (std::size_t index = 0; index < desc.terrain_surface_layers.size(); ++index) {
+        const auto& source = desc.terrain_surface_layers[index];
+        auto& target = result.surface_layers[index];
+        target.tint_rgba8 = pack_rgba(source.tint);
+        const std::array parameters{
+            source.strength,
+            source.roughness,
+            source.metallic,
+            source.emissive_strength * 0.25F,
+        };
+        target.parameters_unorm8 = pack_rgba(parameters);
+        target.texture_layer = source.texture_layer;
+    }
     return result;
 }
 

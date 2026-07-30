@@ -3,6 +3,7 @@
 #include "engine/world/meshing/chunk_mesher.hpp"
 #include "engine/world/meshing/greedy_chunk_mesher.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cmath>
@@ -152,6 +153,36 @@ void test_checkerboard_and_cross_chunk_occlusion_match_reference() {
            directional_surface_area(boundary.greedy));
 }
 
+void test_voxel_ao_matches_reference_across_chunk_boundary() {
+    world::ChunkDatabase chunks;
+    auto& center = chunks.get_or_create({12, 0, -4});
+    auto& east = chunks.get_or_create({13, 0, -4});
+    assert(center.set({31, 1, 1}, {7, 255}));
+    // Three full occluders surround one top-face corner, including two samples from the east
+    // chunk halo. This is the strongest classic voxel-AO configuration.
+    assert(east.set({0, 2, 1}, {9, 255}));
+    assert(center.set({31, 2, 0}, {9, 255}));
+    assert(east.set({0, 2, 0}, {9, 255}));
+    const auto meshes = build_pair(chunks, center.identity());
+    const auto top_ao = [](const world::ChunkMesh& mesh) {
+        std::vector<std::uint8_t> values;
+        for (const auto& vertex : mesh.vertices) {
+            if (vertex.voxel_type == 7 && vertex.normal.y > 0.5F &&
+                std::abs(vertex.position.y - 2.0F) < 0.0001F) {
+                values.push_back(vertex.ambient_occlusion);
+            }
+        }
+        std::ranges::sort(values);
+        return values;
+    };
+    const auto reference = top_ao(meshes.reference);
+    const auto greedy = top_ao(meshes.greedy);
+    assert(reference.size() == 4);
+    assert(greedy == reference);
+    assert(reference.front() == 112);
+    assert(reference.back() == 255);
+}
+
 } // namespace
 
 int main() {
@@ -159,5 +190,6 @@ int main() {
     test_merge_compatibility_respects_light_material_and_state();
     test_material_sections_are_grouped_and_cover_indices();
     test_checkerboard_and_cross_chunk_occlusion_match_reference();
+    test_voxel_ao_matches_reference_across_chunk_boundary();
     return 0;
 }

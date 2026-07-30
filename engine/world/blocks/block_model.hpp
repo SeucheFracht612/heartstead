@@ -5,6 +5,7 @@
 #include "engine/math/vector.hpp"
 #include "engine/modding/prototype_registry.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -33,12 +34,19 @@ struct BlockModelBox {
     [[nodiscard]] core::Status validate() const;
 };
 
+struct BlockModelTriangle {
+    std::array<math::Vec3f, 3> positions{};
+
+    [[nodiscard]] core::Status validate() const;
+};
+
 struct BlockModelDefinition {
     static constexpr std::uint16_t max_dependency_radius = 8;
 
     core::PrototypeId prototype_id;
     BlockModelKind kind = BlockModelKind::cube;
     std::vector<BlockModelBox> boxes;
+    std::vector<BlockModelTriangle> triangles;
     math::Bounds3f render_bounds{{0.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 1.0F}};
     std::string material_asset;
     std::string mesh_asset;

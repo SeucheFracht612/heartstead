@@ -84,8 +84,18 @@ void test_hdr_plan_declares_a_linear_scene_target() {
     assert(!rhi::is_hdr_format(output->format));
 
     for (const auto& resource : plan.resources) {
-        assert(resource.extent.width == plan.extent.width);
-        assert(resource.extent.height == plan.extent.height);
+        if (resource.name.starts_with("shadow_cascade_")) {
+            assert(resource.extent.width == 2048);
+            assert(resource.extent.height == 2048);
+            assert(rhi::is_depth_format(resource.format));
+        } else if (resource.name.starts_with("local_shadow_")) {
+            assert(resource.extent.width == 1024);
+            assert(resource.extent.height == 1024);
+            assert(rhi::is_depth_format(resource.format));
+        } else {
+            assert(resource.extent.width == plan.extent.width);
+            assert(resource.extent.height == plan.extent.height);
+        }
     }
 }
 
@@ -105,6 +115,8 @@ void test_only_tone_map_and_ui_write_the_presentable_image() {
             assert(!writes_output);
             break;
         case rhi::RenderPassKind::post_process:
+            assert(writes_output == (pass.name == "tone_map"));
+            break;
         case rhi::RenderPassKind::ui:
             assert(writes_output);
             break;
@@ -119,6 +131,12 @@ void test_hdr_pass_order_matches_the_published_indices() {
     const auto plan = build_hdr_plan();
     assert(plan.passes.size() == hdr_pass_index::count);
 
+    assert(pass_index_of(plan, "shadow_cascade_0") == hdr_pass_index::shadow_0);
+    assert(pass_index_of(plan, "shadow_cascade_1") == hdr_pass_index::shadow_1);
+    assert(pass_index_of(plan, "shadow_cascade_2") == hdr_pass_index::shadow_2);
+    assert(pass_index_of(plan, "shadow_cascade_3") == hdr_pass_index::shadow_3);
+    assert(pass_index_of(plan, "local_shadow_0") == hdr_pass_index::local_shadow_0);
+    assert(pass_index_of(plan, "local_shadow_1") == hdr_pass_index::local_shadow_1);
     assert(pass_index_of(plan, "sky") == hdr_pass_index::sky);
     assert(pass_index_of(plan, "opaque_terrain") == hdr_pass_index::opaque_terrain);
     assert(pass_index_of(plan, "alpha_tested_terrain") == hdr_pass_index::alpha_tested_terrain);
@@ -136,8 +154,19 @@ void test_hdr_pass_order_matches_the_published_indices() {
     assert(plan.passes[hdr_pass_index::tone_map].kind == rhi::RenderPassKind::post_process);
     assert(plan.passes.back().kind == rhi::RenderPassKind::present);
     assert(plan.has_present_pass());
-    assert(plan.pass_count(rhi::RenderPassKind::post_process) == 1);
+    assert(plan.pass_count(rhi::RenderPassKind::post_process) == 5);
     assert(plan.pass_count(rhi::RenderPassKind::present) == 1);
+
+    for (std::size_t shadow_pass = 0; shadow_pass < 6; ++shadow_pass) {
+        const auto& pass = plan.passes[shadow_pass];
+        assert(pass.writes.size() == 1);
+        assert(pass.writes.front().starts_with("shadow_cascade_") ||
+               pass.writes.front().starts_with("local_shadow_"));
+        assert(std::ranges::none_of(pass.writes, [&](const std::string& name) {
+            const auto* resource = plan.find_resource(name);
+            return resource != nullptr && !rhi::is_depth_format(resource->format);
+        }));
+    }
 }
 
 // Lifetime tracking: the graph must move the scene target out of colour attachment state before
@@ -151,14 +180,14 @@ void test_graph_derives_scene_target_barriers() {
     assert(execution.ordered_passes.size() == hdr_pass_index::count);
     assert(execution.present_pass_count == 1);
 
-    const auto scene_write = find_use(execution, rhi::scene_color_resource_name,
-                                      hdr_pass_index::sky);
+    const auto scene_write =
+        find_use(execution, rhi::scene_color_resource_name, hdr_pass_index::sky);
     assert(scene_write.has_value());
     assert(scene_write->required_state == rhi::RenderResourceState::color_attachment_write);
     assert(scene_write->resource_lifetime == rhi::RenderResourceLifetime::transient);
 
-    const auto scene_read = find_use(execution, rhi::scene_color_resource_name,
-                                     hdr_pass_index::tone_map);
+    const auto scene_read =
+        find_use(execution, rhi::scene_color_resource_name, hdr_pass_index::ao_composite);
     assert(scene_read.has_value());
     assert(scene_read->access == rhi::RenderResourceAccess::read);
     assert(scene_read->required_state == rhi::RenderResourceState::shader_read);
@@ -167,19 +196,21 @@ void test_graph_derives_scene_target_barriers() {
     assert(has_transition(execution, rhi::scene_color_resource_name,
                           rhi::RenderResourceState::color_attachment_read_write,
                           rhi::RenderResourceState::shader_read));
+    const auto antialiased_read = find_use(execution, "scene_aa", hdr_pass_index::tone_map);
+    assert(antialiased_read.has_value());
+    assert(antialiased_read->required_state == rhi::RenderResourceState::shader_read);
 
-    const auto output_write = find_use(execution, rhi::output_resource_name,
-                                       hdr_pass_index::tone_map);
+    const auto output_write =
+        find_use(execution, rhi::output_resource_name, hdr_pass_index::tone_map);
     assert(output_write.has_value());
     assert(output_write->required_state == rhi::RenderResourceState::color_attachment_write);
 
-    const auto present_use = find_use(execution, rhi::output_resource_name,
-                                      hdr_pass_index::present);
+    const auto present_use =
+        find_use(execution, rhi::output_resource_name, hdr_pass_index::present);
     assert(present_use.has_value());
     assert(present_use->access == rhi::RenderResourceAccess::present);
     assert(present_use->required_state == rhi::RenderResourceState::present);
-    assert(has_transition(execution, rhi::output_resource_name,
-                          rhi::RenderResourceState::external,
+    assert(has_transition(execution, rhi::output_resource_name, rhi::RenderResourceState::external,
                           rhi::RenderResourceState::color_attachment_write));
 
     // Every dependency has to point forwards. A backwards edge means the ordering is wrong.
@@ -232,8 +263,7 @@ void test_tone_map_push_constants_match_the_shader_layout() {
     assert(std::abs(minus_two.exposure_scale - 0.25F) < 1.0e-6F);
 
     assert(rhi::render_tone_mapping_name(rhi::RenderToneMapping::aces_approx) == "aces_approx");
-    assert(rhi::render_image_format_name(rhi::RenderImageFormat::rgba16_sfloat) ==
-           "rgba16_sfloat");
+    assert(rhi::render_image_format_name(rhi::RenderImageFormat::rgba16_sfloat) == "rgba16_sfloat");
     assert(rhi::render_image_format_bytes_per_pixel(rhi::RenderImageFormat::rgba16_sfloat) == 8);
 }
 
@@ -242,8 +272,16 @@ void test_hdr_plan_resizes_every_resource() {
     assert(plan.extent.width == 640);
     assert(plan.extent.height == 360);
     for (const auto& resource : plan.resources) {
-        assert(resource.extent.width == 640);
-        assert(resource.extent.height == 360);
+        if (resource.name.starts_with("shadow_cascade_")) {
+            assert(resource.extent.width == 2048);
+            assert(resource.extent.height == 2048);
+        } else if (resource.name.starts_with("local_shadow_")) {
+            assert(resource.extent.width == 1024);
+            assert(resource.extent.height == 1024);
+        } else {
+            assert(resource.extent.width == 640);
+            assert(resource.extent.height == 360);
+        }
     }
     assert(plan.validate());
     assert(plan.build_execution_plan());

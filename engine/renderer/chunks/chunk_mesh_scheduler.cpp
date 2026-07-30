@@ -60,6 +60,8 @@ struct ChunkMeshScheduler::SharedState {
         mesh.indices.clear();
         mesh.sections.clear();
         mesh.rich_instances.clear();
+        mesh.face_count = 0;
+        mesh.triangle_face_count = 0;
         std::lock_guard lock(pool_mutex);
         if (mesh_pool.size() < max_cached_mesh_buffers) {
             mesh_pool.push_back(std::move(mesh));

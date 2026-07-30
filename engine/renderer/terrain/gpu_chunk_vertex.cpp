@@ -39,7 +39,7 @@ GpuTerrainVertex to_gpu_chunk_vertex(const world::ChunkMeshVertex& vertex,
         vertex.state_bits,
         {encode_normal(vertex.normal.x), encode_normal(vertex.normal.y),
          encode_normal(vertex.normal.z), 0},
-        {vertex.light, 255, corner, 0},
+        {vertex.light, vertex.ambient_occlusion, corner, 0},
     };
 }
 

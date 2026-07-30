@@ -14,12 +14,13 @@ namespace {
 // Colour targets are sampled by later passes (tone mapping reads the scene target) and may be
 // blitted or read back, so every transient carries the usage a graph pass can ask of it. Depth is
 // sampled too, which shadow and depth-aware passes will need.
-[[nodiscard]] VkImageUsageFlags transient_usage(bool is_depth) noexcept {
+[[nodiscard]] VkImageUsageFlags transient_usage(bool is_depth, bool storage) noexcept {
     if (is_depth) {
         return VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     }
     return VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-           VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+           VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+           (storage ? VK_IMAGE_USAGE_STORAGE_BIT : 0);
 }
 
 [[nodiscard]] VkImageAspectFlags aspect_for(bool is_depth) noexcept {
@@ -29,7 +30,9 @@ namespace {
 [[nodiscard]] bool matches(const VulkanFrameResourcePool::Image& image,
                            const rhi::RenderResourceDesc& desc, VkFormat format) noexcept {
     return image.name == desc.name && image.format == format &&
-           image.extent.width == desc.extent.width && image.extent.height == desc.extent.height;
+           image.extent.width == desc.extent.width && image.extent.height == desc.extent.height &&
+           image.array_layers == desc.array_layers && image.mip_levels == desc.mip_levels &&
+           image.cubemap == desc.cubemap && image.storage == desc.storage;
 }
 
 } // namespace
@@ -76,13 +79,17 @@ VulkanFrameResourcePool::create_transient(const rhi::RenderResourceDesc& desc) {
     created.name = desc.name;
     created.format = detail::vulkan_image_format(desc.format);
     created.extent = desc.extent;
+    created.array_layers = desc.array_layers;
+    created.mip_levels = desc.mip_levels;
+    created.cubemap = desc.cubemap;
+    created.storage = desc.storage;
     created.is_depth = rhi::is_depth_format(desc.format);
     created.owned = true;
 
     if (created.format == VK_FORMAT_UNDEFINED) {
-        return core::Result<Image>::failure(
-            "renderer.vulkan_frame_resource_format_unsupported",
-            "frame graph resource '" + desc.name + "' uses a format the Vulkan backend cannot map");
+        return core::Result<Image>::failure("renderer.vulkan_frame_resource_format_unsupported",
+                                            "frame graph resource '" + desc.name +
+                                                "' uses a format the Vulkan backend cannot map");
     }
 
     VkImageCreateInfo image_info{};
@@ -90,11 +97,12 @@ VulkanFrameResourcePool::create_transient(const rhi::RenderResourceDesc& desc) {
     image_info.imageType = VK_IMAGE_TYPE_2D;
     image_info.format = created.format;
     image_info.extent = VkExtent3D{desc.extent.width, desc.extent.height, 1};
-    image_info.mipLevels = 1;
-    image_info.arrayLayers = 1;
+    image_info.mipLevels = desc.mip_levels;
+    image_info.arrayLayers = desc.array_layers;
+    image_info.flags = desc.cubemap ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
     image_info.samples = VK_SAMPLE_COUNT_1_BIT;
     image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    image_info.usage = transient_usage(created.is_depth);
+    image_info.usage = transient_usage(created.is_depth, desc.storage);
     image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -140,11 +148,14 @@ VulkanFrameResourcePool::create_transient(const rhi::RenderResourceDesc& desc) {
     VkImageViewCreateInfo view_info{};
     view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     view_info.image = created.image;
-    view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view_info.viewType =
+        desc.cubemap
+            ? (desc.array_layers == 6 ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_CUBE_ARRAY)
+            : (desc.array_layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D);
     view_info.format = created.format;
     view_info.subresourceRange.aspectMask = aspect_for(created.is_depth);
-    view_info.subresourceRange.levelCount = 1;
-    view_info.subresourceRange.layerCount = 1;
+    view_info.subresourceRange.levelCount = desc.mip_levels;
+    view_info.subresourceRange.layerCount = desc.array_layers;
 
     result = vkCreateImageView(device_, &view_info, nullptr, &created.view);
     if (result != VK_SUCCESS) {
@@ -173,8 +184,8 @@ VulkanFrameResourcePool::ensure_transients(std::span<const rhi::RenderResourceDe
             continue;
         }
         const auto format = detail::vulkan_image_format(desc.format);
-        const auto existing = std::ranges::find_if(
-            transients_, [&desc, format](const Image& candidate) {
+        const auto existing =
+            std::ranges::find_if(transients_, [&desc, format](const Image& candidate) {
                 return candidate.image != VK_NULL_HANDLE && matches(candidate, desc, format);
             });
         if (existing != transients_.end()) {
@@ -208,10 +219,8 @@ VulkanFrameResourcePool::ensure_transients(std::span<const rhi::RenderResourceDe
 void VulkanFrameResourcePool::bind_external(std::string_view name, VkImage image, VkImageView view,
                                             VkFormat format, VkImageLayout layout,
                                             rhi::RenderExtent extent) {
-    const auto existing =
-        std::ranges::find_if(externals_, [name](const Image& candidate) noexcept {
-            return candidate.name == name;
-        });
+    const auto existing = std::ranges::find_if(
+        externals_, [name](const Image& candidate) noexcept { return candidate.name == name; });
     Image& slot = existing != externals_.end() ? *existing : externals_.emplace_back();
     slot.name = std::string(name);
     slot.image = image;
@@ -220,6 +229,10 @@ void VulkanFrameResourcePool::bind_external(std::string_view name, VkImage image
     slot.format = format;
     slot.layout = layout;
     slot.extent = extent;
+    slot.array_layers = 1;
+    slot.mip_levels = 1;
+    slot.cubemap = false;
+    slot.storage = false;
     slot.is_depth = false;
     slot.owned = false;
 }

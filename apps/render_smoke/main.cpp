@@ -7,12 +7,12 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstdlib>
-#include <string_view>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <thread>
 
 namespace {
@@ -114,6 +114,10 @@ int main(int argc, char** argv) {
             renderer::shaders::load_spirv_file(shader_root / "static_mesh.vert.spv");
         auto static_fragment_spirv =
             renderer::shaders::load_spirv_file(shader_root / "static_mesh.frag.spv");
+        auto shadow_terrain_fragment_spirv =
+            renderer::shaders::load_spirv_file(shader_root / "shadow_terrain.frag.spv");
+        auto shadow_static_fragment_spirv =
+            renderer::shaders::load_spirv_file(shader_root / "shadow_static.frag.spv");
         auto debug_vertex_spirv =
             renderer::shaders::load_spirv_file(shader_root / "debug_line.vert.spv");
         auto debug_fragment_spirv =
@@ -124,6 +128,14 @@ int main(int argc, char** argv) {
             renderer::shaders::load_spirv_file(shader_root / "tone_map.vert.spv");
         auto tone_map_fragment_spirv =
             renderer::shaders::load_spirv_file(shader_root / "tone_map.frag.spv");
+        auto ssao_fragment_spirv =
+            renderer::shaders::load_spirv_file(shader_root / "ssao.frag.spv");
+        auto ao_composite_fragment_spirv =
+            renderer::shaders::load_spirv_file(shader_root / "ao_composite.frag.spv");
+        auto fxaa_fragment_spirv =
+            renderer::shaders::load_spirv_file(shader_root / "fxaa.frag.spv");
+        auto bloom_fragment_spirv =
+            renderer::shaders::load_spirv_file(shader_root / "bloom.frag.spv");
         if (!sky_vertex_spirv || !sky_fragment_spirv) {
             return fail("Sky shader loading failed visibly: " +
                         (!sky_vertex_spirv ? sky_vertex_spirv.error().message
@@ -136,10 +148,14 @@ int main(int argc, char** argv) {
             return fail("Fragment shader loading failed visibly: " +
                         fragment_spirv.error().message);
         }
-        if (!static_vertex_spirv || !static_fragment_spirv) {
+        if (!static_vertex_spirv || !static_fragment_spirv || !shadow_terrain_fragment_spirv ||
+            !shadow_static_fragment_spirv) {
             return fail("Static-mesh shader loading failed visibly: " +
-                        (!static_vertex_spirv ? static_vertex_spirv.error().message
-                                              : static_fragment_spirv.error().message));
+                        (!static_vertex_spirv     ? static_vertex_spirv.error().message
+                         : !static_fragment_spirv ? static_fragment_spirv.error().message
+                         : !shadow_terrain_fragment_spirv
+                             ? shadow_terrain_fragment_spirv.error().message
+                             : shadow_static_fragment_spirv.error().message));
         }
         if (!debug_vertex_spirv || !debug_fragment_spirv) {
             return fail("Debug shader loading failed visibly: " +
@@ -151,10 +167,16 @@ int main(int argc, char** argv) {
                         (!ui_vertex_spirv ? ui_vertex_spirv.error().message
                                           : ui_fragment_spirv.error().message));
         }
-        if (!tone_map_vertex_spirv || !tone_map_fragment_spirv) {
+        if (!tone_map_vertex_spirv || !tone_map_fragment_spirv || !ssao_fragment_spirv ||
+            !ao_composite_fragment_spirv || !fxaa_fragment_spirv || !bloom_fragment_spirv) {
             return fail("Tone map shader loading failed visibly: " +
-                        (!tone_map_vertex_spirv ? tone_map_vertex_spirv.error().message
-                                                : tone_map_fragment_spirv.error().message));
+                        (!tone_map_vertex_spirv     ? tone_map_vertex_spirv.error().message
+                         : !tone_map_fragment_spirv ? tone_map_fragment_spirv.error().message
+                         : !ssao_fragment_spirv     ? ssao_fragment_spirv.error().message
+                         : !ao_composite_fragment_spirv
+                             ? ao_composite_fragment_spirv.error().message
+                         : !fxaa_fragment_spirv ? fxaa_fragment_spirv.error().message
+                                                : bloom_fragment_spirv.error().message));
         }
 
         renderer::RendererInitDesc renderer_init;
@@ -165,12 +187,20 @@ int main(int argc, char** argv) {
         renderer_init.terrain_fragment_spirv = std::move(fragment_spirv).value();
         renderer_init.static_mesh_vertex_spirv = std::move(static_vertex_spirv).value();
         renderer_init.static_mesh_fragment_spirv = std::move(static_fragment_spirv).value();
+        renderer_init.shadow_terrain_fragment_spirv =
+            std::move(shadow_terrain_fragment_spirv).value();
+        renderer_init.shadow_static_fragment_spirv =
+            std::move(shadow_static_fragment_spirv).value();
         renderer_init.debug_vertex_spirv = std::move(debug_vertex_spirv).value();
         renderer_init.debug_fragment_spirv = std::move(debug_fragment_spirv).value();
         renderer_init.ui_vertex_spirv = std::move(ui_vertex_spirv).value();
         renderer_init.ui_fragment_spirv = std::move(ui_fragment_spirv).value();
         renderer_init.tone_map_vertex_spirv = std::move(tone_map_vertex_spirv).value();
         renderer_init.tone_map_fragment_spirv = std::move(tone_map_fragment_spirv).value();
+        renderer_init.ssao_fragment_spirv = std::move(ssao_fragment_spirv).value();
+        renderer_init.ao_composite_fragment_spirv = std::move(ao_composite_fragment_spirv).value();
+        renderer_init.fxaa_fragment_spirv = std::move(fxaa_fragment_spirv).value();
+        renderer_init.bloom_fragment_spirv = std::move(bloom_fragment_spirv).value();
         // Exposure and tone curve are overridable so the resolve pass can be observed doing its
         // job: a pipeline that ignored its push constants would not respond to either.
         if (const auto* stops = std::getenv("HEARTSTEAD_EXPOSURE"); stops != nullptr) {

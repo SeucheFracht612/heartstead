@@ -56,11 +56,22 @@ enum class RenderIndexType : std::uint8_t {
 }
 
 enum class RenderImageFormat {
+    r8_unorm,
+    rg16_sfloat,
     rgba8_unorm,
     rgba8_srgb,
     // Linear HDR scene format. All world shading writes linear radiance into a target of this
     // format; display encoding happens once, in the tone mapping pass.
     rgba16_sfloat,
+    // Block-compressed material formats. BC5 is intended for two-channel normal maps; BC7
+    // preserves high-quality colour and alpha. Upload sizes are expressed in 4x4 blocks.
+    bc1_rgb_unorm,
+    bc1_rgb_srgb,
+    bc3_rgba_unorm,
+    bc3_rgba_srgb,
+    bc5_rg_unorm,
+    bc7_rgba_unorm,
+    bc7_rgba_srgb,
     d32_sfloat,
     d32_sfloat_s8_uint,
     d24_unorm_s8_uint,
@@ -68,6 +79,7 @@ enum class RenderImageFormat {
 
 enum class RenderDescriptorKind {
     sampled_texture,
+    storage_image,
     storage_buffer,
     uniform_scalar,
     uniform_color,
@@ -86,6 +98,15 @@ enum class RenderSamplerMipmapMode : std::uint8_t {
 enum class RenderSamplerAddressMode : std::uint8_t {
     repeat,
     clamp_to_edge,
+};
+
+enum class RenderCompareOperation : std::uint8_t {
+    never,
+    less,
+    less_or_equal,
+    equal,
+    greater,
+    always,
 };
 
 enum class RenderShaderStage {
@@ -235,6 +256,10 @@ struct RenderImageDesc {
     std::string debug_name;
     std::uint32_t array_layers = 1;
     std::uint32_t mip_levels = 1;
+    // Cubemaps are six-layer images (or a multiple of six for cube arrays) exposed through cube
+    // views. Keeping this explicit prevents a six-layer terrain array from changing dimension.
+    bool cubemap = false;
+    bool storage = false;
 };
 
 struct RenderSamplerDesc {
@@ -247,6 +272,8 @@ struct RenderSamplerDesc {
     float max_anisotropy = 1.0F;
     float min_lod = 0.0F;
     float max_lod = 0.0F;
+    bool comparison_enable = false;
+    RenderCompareOperation comparison = RenderCompareOperation::less_or_equal;
     std::string debug_name;
 };
 
@@ -388,15 +415,6 @@ enum class RenderFrontFace : std::uint8_t {
     counter_clockwise,
 };
 
-enum class RenderCompareOperation : std::uint8_t {
-    never,
-    less,
-    less_or_equal,
-    equal,
-    greater,
-    always,
-};
-
 enum class RenderBlendMode : std::uint8_t {
     disabled,
     alpha,
@@ -425,7 +443,11 @@ struct RenderGraphicsPipelineDesc {
     bool depth_write_enable = true;
     RenderCompareOperation depth_compare = RenderCompareOperation::less;
     RenderBlendMode blend_mode = RenderBlendMode::disabled;
+    // Depth-only pipelines set this false. Extra entries enable MRT while preserving the legacy
+    // primary format field used throughout the renderer.
+    bool color_write_enable = true;
     RenderImageFormat color_target_format = RenderImageFormat::rgba8_unorm;
+    std::vector<RenderImageFormat> additional_color_target_formats;
     RenderImageFormat depth_target_format = RenderImageFormat::d32_sfloat;
 
     RenderGraphicsPipelineDesc() = default;
@@ -521,6 +543,9 @@ struct RenderEnvironmentData {
     float fog_start = 384.0F;
     math::Vec3f fog_color{0.055F, 0.09F, 0.14F};
     float fog_end = 512.0F;
+    float sky_diffuse_intensity = 1.0F;
+    float environment_specular_intensity = 1.0F;
+    float environment_rotation_radians = 0.0F;
 };
 
 enum class RenderToneMapping : std::uint8_t {
@@ -541,6 +566,14 @@ struct RenderExposureSettings {
     RenderToneMapping tone_mapping = RenderToneMapping::aces_approx;
     // Scene luminance mapped to display white before the curve is applied.
     float white_point = 1.0F;
+    float saturation = 1.0F;
+    float contrast = 1.0F;
+    float bloom_intensity = 0.08F;
+    bool automatic_exposure = true;
+    float target_luminance = 0.18F;
+    float adaptation_speed = 1.5F;
+    float minimum_auto_stops = -6.0F;
+    float maximum_auto_stops = 6.0F;
 };
 
 // Shader-visible constants for the tone mapping pass. Mirrors ToneMapPushConstants in
@@ -550,9 +583,13 @@ struct ToneMapPushConstants {
     float white_point = 1.0F;
     std::uint32_t tone_mapping = 2U;
     std::uint32_t padding = 0U;
+    float saturation = 1.0F;
+    float contrast = 1.0F;
+    float bloom_intensity = 0.08F;
+    float grading_padding = 0.0F;
 };
 
-static_assert(sizeof(ToneMapPushConstants) == 16);
+static_assert(sizeof(ToneMapPushConstants) == 32);
 
 // Shader-visible constants. Mat4f is column-major and all vectors occupy complete 16-byte lanes.
 struct ChunkPushConstants {

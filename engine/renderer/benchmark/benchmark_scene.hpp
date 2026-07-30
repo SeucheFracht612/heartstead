@@ -30,6 +30,8 @@ enum class BenchmarkSceneKind {
     resize_minimize_stress,
     active_water,
     particle_stress,
+    light_heavy_settlement,
+    terrain_material_preview,
 };
 
 [[nodiscard]] std::string_view benchmark_scene_name(BenchmarkSceneKind kind) noexcept;
@@ -74,8 +76,7 @@ class BenchmarkScene {
     [[nodiscard]] core::Status initialize_palette();
     [[nodiscard]] core::Status populate_initial_chunks();
     [[nodiscard]] core::Status insert_generated_chunk(world::ChunkCoord coordinate);
-    [[nodiscard]] std::vector<world::VoxelCell>
-    generate_cells(world::ChunkCoord coordinate) const;
+    [[nodiscard]] std::vector<world::VoxelCell> generate_cells(world::ChunkCoord coordinate) const;
     [[nodiscard]] core::Status apply_rapid_edits(std::uint64_t frame_index);
     [[nodiscard]] core::Status apply_chunk_churn(std::uint64_t frame_index);
     void update_flythrough_camera(std::uint64_t frame_index) noexcept;

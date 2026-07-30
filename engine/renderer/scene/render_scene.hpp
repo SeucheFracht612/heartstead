@@ -100,6 +100,7 @@ struct RenderObjectProxy {
 enum class RenderLightKind : std::uint8_t {
     directional,
     point,
+    spot,
 };
 
 struct RenderLightProxy {
@@ -110,6 +111,14 @@ struct RenderLightProxy {
     math::Vec3f color{1.0F, 1.0F, 1.0F};
     float intensity = 1.0F;
     float radius = 8.0F;
+    // Spot cones are expressed as cosines so the shader avoids trigonometry. Point and
+    // directional lights ignore them.
+    float inner_cone_cosine = 0.9F;
+    float outer_cone_cosine = 0.8F;
+    float gameplay_importance = 1.0F;
+    bool casts_shadow = false;
+    std::uint64_t light_revision = 0;
+    std::uint64_t nearby_geometry_revision = 0;
 };
 
 struct RenderSkinPaletteProxy {
@@ -165,6 +174,12 @@ struct RenderLightInstance {
     math::Vec3f color{};
     float intensity = 0.0F;
     float radius = 0.0F;
+    float inner_cone_cosine = 0.9F;
+    float outer_cone_cosine = 0.8F;
+    float gameplay_importance = 1.0F;
+    bool casts_shadow = false;
+    std::uint64_t light_revision = 0;
+    std::uint64_t nearby_geometry_revision = 0;
 };
 
 struct RenderSceneStats {

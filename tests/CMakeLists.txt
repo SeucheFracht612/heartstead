@@ -48,6 +48,11 @@ heartstead_configure_test_target(heartstead_renderer_compute_tests)
 
 heartstead_register_unit_test(heartstead_renderer_compute_tests)
 
+add_executable(heartstead_renderer_lighting_tests renderer_lighting_tests.cpp)
+target_link_libraries(heartstead_renderer_lighting_tests PRIVATE Heartstead::Engine)
+heartstead_configure_test_target(heartstead_renderer_lighting_tests)
+heartstead_register_unit_test(heartstead_renderer_lighting_tests)
+
 add_executable(heartstead_game_runtime_tests game_runtime_tests.cpp)
 target_link_libraries(heartstead_game_runtime_tests PRIVATE Heartstead::GameRuntime)
 target_compile_definitions(
@@ -303,6 +308,20 @@ heartstead_add_smoke_test(
   1
   --output
   ${CMAKE_CURRENT_BINARY_DIR}/smoke_render_benchmark_particles.json
+)
+heartstead_add_smoke_test(
+  smoke.render_benchmark_terrain_materials
+  heartstead_render_benchmark
+  --scene
+  terrain-materials
+  --radius
+  0
+  --warmup
+  1
+  --frames
+  3
+  --output
+  ${CMAKE_CURRENT_BINARY_DIR}/smoke_render_benchmark_terrain_materials.json
 )
 heartstead_add_smoke_test(
   smoke.ui_benchmark
