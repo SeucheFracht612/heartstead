@@ -524,6 +524,13 @@ void test_chunk_render_system_retains_rebuilds_and_culls() {
                draw.index_buffer.is_valid() && draw.index_count > 0 &&
                std::abs(draw.camera_relative_origin.z + 64.0F) < 0.001F;
     }));
+    std::vector<std::uint32_t> variation_seeds;
+    std::ranges::transform(
+        draws.draws, std::back_inserter(variation_seeds),
+        [](const renderer::rhi::RenderDrawCommand& draw) { return draw.texture_variation_seed; });
+    std::ranges::sort(variation_seeds);
+    const auto unique_seeds = std::ranges::unique(variation_seeds);
+    assert(std::distance(variation_seeds.begin(), unique_seeds.begin()) == 2);
     assert(std::ranges::any_of(draws.draws, [](const renderer::rhi::RenderDrawCommand& draw) {
         return draw.first_index > 0 && draw.vertex_offset > 0;
     }));
@@ -652,11 +659,25 @@ void test_renderer_frontend_submits_headless_frames() {
         32, 96, 24, 255, 48, 128, 32, 255, 64, 144, 40, 255, 80, 160, 48, 255,
     };
     init.terrain_material_assets.textures.push_back(std::move(terrain_texture));
+    renderer::materials::TerrainTextureAsset terrain_texture_variant;
+    terrain_texture_variant.logical_id = "base:textures/voxels/test_grass_variant.png";
+    terrain_texture_variant.image.width = 2;
+    terrain_texture_variant.image.height = 2;
+    terrain_texture_variant.image.rgba8 = {
+        24, 88, 16, 255, 40, 120, 24, 255, 56, 136, 32, 255, 72, 152, 40, 255,
+    };
+    init.terrain_material_assets.textures.push_back(std::move(terrain_texture_variant));
     renderer::materials::TerrainVoxelMaterialAsset terrain_material;
     terrain_material.voxel_type = 1;
-    terrain_material.side_texture = 0;
-    terrain_material.top_texture = 0;
-    terrain_material.bottom_texture = 0;
+    for (auto& face : terrain_material.face_textures) {
+        face.push_back(0);
+    }
+    terrain_material
+        .face_textures[renderer::voxel_material_face_index(renderer::VoxelMaterialFace::west)] = {
+        0, 1};
+    terrain_material
+        .face_textures[renderer::voxel_material_face_index(renderer::VoxelMaterialFace::east)] = {
+        1, 0};
     terrain_material.base_color = {0.75F, 1.0F, 0.75F, 1.0F};
     terrain_material.roughness = 0.9F;
     init.terrain_material_assets.materials.push_back(terrain_material);
@@ -674,12 +695,19 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(retained_renderer.fallback_resources().is_valid());
     const auto terrain_array = retained_renderer.describe_terrain_texture();
     assert(terrain_array);
-    assert(terrain_array->array_layers == 8);
+    assert(terrain_array->array_layers == 11);
     const auto voxel_material = retained_renderer.describe_voxel_material(1);
     assert(voxel_material);
-    assert(voxel_material->side_texture == 7);
-    assert(voxel_material->top_texture == 7);
-    assert(voxel_material->bottom_texture == 7);
+    assert((std::array<std::uint32_t, renderer::voxel_material_face_count>{
+                voxel_material->face_texture_starts[0], voxel_material->face_texture_starts[1],
+                voxel_material->face_texture_starts[2], voxel_material->face_texture_starts[3],
+                voxel_material->face_texture_starts[4], voxel_material->face_texture_starts[5]} ==
+            std::array<std::uint32_t, renderer::voxel_material_face_count>{7, 9, 7, 7, 7, 7}));
+    assert((std::array<std::uint32_t, renderer::voxel_material_face_count>{
+                voxel_material->face_texture_counts[0], voxel_material->face_texture_counts[1],
+                voxel_material->face_texture_counts[2], voxel_material->face_texture_counts[3],
+                voxel_material->face_texture_counts[4], voxel_material->face_texture_counts[5]} ==
+            std::array<std::uint32_t, renderer::voxel_material_face_count>{2, 2, 1, 1, 1, 1}));
     assert(voxel_material->base_color == terrain_material.base_color);
     assert(voxel_material->roughness == terrain_material.roughness);
     const auto initialized_resource_count = retained_renderer.device()->live_resource_count();

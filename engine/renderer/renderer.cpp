@@ -10,6 +10,9 @@
 #include <cstddef>
 #include <iterator>
 #include <limits>
+#include <map>
+#include <ranges>
+#include <string>
 #include <utility>
 
 namespace heartstead::renderer {
@@ -97,7 +100,7 @@ make_terrain_shader_program(std::span<const std::uint32_t> vertex_spirv,
     shader_program.interface.push_constant_ranges.push_back(
         {rhi::RenderShaderStageFlags::vertex | rhi::RenderShaderStageFlags::fragment, 0,
          sizeof(rhi::ChunkPushConstants)});
-    shader_program.dependencies = {"gpu_chunk_vertex_v1", "gpu_voxel_material_v1",
+    shader_program.dependencies = {"gpu_chunk_vertex_v1", "gpu_voxel_material_v2",
                                    "chunk_push_constants_v2"};
     return shader_program;
 }
@@ -1661,43 +1664,20 @@ Renderer::create_terrain_pipeline(std::span<const std::uint32_t> vertex_spirv,
             return core::Status::failure(layer.error().code, layer.error().message);
         }
     }
+    std::vector<std::vector<std::byte>> resized_material_textures;
+    resized_material_textures.reserve(material_assets.textures.size());
     std::vector<std::uint32_t> material_texture_layers;
     material_texture_layers.reserve(material_assets.textures.size());
     for (const auto& texture : material_assets.textures) {
-        const auto resized = resize_surface_rgba8(texture.image.width, texture.image.height,
-                                                  texture.image.rgba8, 16, 16);
+        auto resized = resize_surface_rgba8(texture.image.width, texture.image.height,
+                                            texture.image.rgba8, 16, 16);
         layer = texture_builder.add_layer(texture.logical_id, resized);
         if (!layer) {
             return core::Status::failure(layer.error().code, layer.error().message);
         }
         material_texture_layers.push_back(layer.value());
+        resized_material_textures.push_back(std::move(resized));
     }
-    auto texture_desc = texture_builder.build("terrain_texture_array");
-    if (!texture_desc) {
-        return core::Status::failure(texture_desc.error().code, texture_desc.error().message);
-    }
-    auto texture = texture_manager_->create_texture(std::move(texture_desc).value());
-    if (!texture) {
-        return core::Status::failure(texture.error().code, texture.error().message);
-    }
-    terrain_texture_array_ = texture.value();
-    const auto* texture_view = texture_manager_->find(terrain_texture_array_);
-    if (texture_view == nullptr) {
-        return core::Status::failure("renderer.terrain_texture_missing",
-                                     "terrain texture array disappeared after creation");
-    }
-
-    rhi::RenderSamplerDesc sampler_desc;
-    sampler_desc.min_filter = rhi::RenderSamplerFilter::nearest;
-    sampler_desc.mag_filter = rhi::RenderSamplerFilter::nearest;
-    sampler_desc.mipmap_mode = rhi::RenderSamplerMipmapMode::linear;
-    sampler_desc.max_lod = static_cast<float>(texture_view->mip_levels - 1U);
-    sampler_desc.debug_name = "terrain_sampler";
-    auto sampler = sampler_cache_->get(std::move(sampler_desc));
-    if (!sampler) {
-        return core::Status::failure(sampler.error().code, sampler.error().message);
-    }
-    terrain_sampler_ = sampler.value();
 
     std::vector<std::uint16_t> voxel_types;
     if (voxel_palette != nullptr && !voxel_palette->empty()) {
@@ -1712,6 +1692,64 @@ Renderer::create_terrain_pipeline(std::span<const std::uint32_t> vertex_spirv,
             voxel_types.push_back(type);
         }
     }
+
+    struct TextureRange {
+        std::uint32_t start = 0;
+        std::uint32_t count = 1;
+    };
+    std::map<std::vector<std::uint32_t>, TextureRange> packed_texture_ranges;
+    const auto resolve_texture_range = [&](const std::vector<std::uint32_t>& asset_indices,
+                                           std::uint32_t fallback, std::uint16_t voxel_type,
+                                           VoxelMaterialFace face) -> core::Result<TextureRange> {
+        if (asset_indices.empty()) {
+            return core::Result<TextureRange>::success({fallback, 1});
+        }
+        if (asset_indices.size() > std::numeric_limits<std::uint32_t>::max()) {
+            return core::Result<TextureRange>::failure(
+                "renderer.too_many_terrain_texture_variants",
+                "terrain face texture variant count exceeds uint32");
+        }
+        const auto existing = packed_texture_ranges.find(asset_indices);
+        if (existing != packed_texture_ranges.end()) {
+            return core::Result<TextureRange>::success(existing->second);
+        }
+
+        TextureRange range;
+        range.start = material_texture_layers[asset_indices.front()];
+        range.count = static_cast<std::uint32_t>(asset_indices.size());
+        const auto already_contiguous =
+            std::ranges::equal(asset_indices | std::views::transform([&](std::uint32_t index) {
+                                   return material_texture_layers[index];
+                               }),
+                               std::views::iota(range.start, range.start + range.count));
+        if (!already_contiguous) {
+            const auto sequence = packed_texture_ranges.size();
+            for (std::size_t index = 0; index < asset_indices.size(); ++index) {
+                const auto asset_index = asset_indices[index];
+                const auto& texture_asset = material_assets.textures[asset_index];
+                const auto id = texture_asset.logical_id + "#voxel-" + std::to_string(voxel_type) +
+                                "-" + std::string(voxel_material_face_name(face)) + "-sequence-" +
+                                std::to_string(sequence) + "-variant-" + std::to_string(index);
+                auto packed = texture_builder.add_layer(id, resized_material_textures[asset_index]);
+                if (!packed) {
+                    return core::Result<TextureRange>::failure(packed.error().code,
+                                                               packed.error().message);
+                }
+                if (index == 0) {
+                    range.start = packed.value();
+                } else if (packed.value() != range.start + index) {
+                    return core::Result<TextureRange>::failure(
+                        "renderer.non_contiguous_terrain_texture_variants",
+                        "terrain texture array failed to pack face variants contiguously");
+                }
+            }
+        }
+        packed_texture_ranges.emplace(asset_indices, range);
+        return core::Result<TextureRange>::success(range);
+    };
+
+    std::vector<MaterialRuntimeDesc> runtime_materials;
+    runtime_materials.reserve(voxel_types.size());
     for (const auto type : voxel_types) {
         auto runtime_id =
             core::PrototypeId::parse("base:materials/runtime_voxel_" + std::to_string(type));
@@ -1722,22 +1760,23 @@ Renderer::create_terrain_pipeline(std::span<const std::uint32_t> vertex_spirv,
         MaterialRuntimeDesc runtime_material;
         runtime_material.id = runtime_id.value();
         runtime_material.voxel_type = type;
-        runtime_material.side_texture = 1U + (static_cast<std::uint32_t>(type) - 1U) % 6U;
-        runtime_material.top_texture = runtime_material.side_texture;
-        runtime_material.bottom_texture = runtime_material.side_texture;
+        const auto fallback_texture = 1U + (static_cast<std::uint32_t>(type) - 1U) % 6U;
+        runtime_material.face_texture_starts.fill(fallback_texture);
         if (const auto* material_asset = material_assets.find(type)) {
-            const auto resolve_texture = [&material_texture_layers](std::uint32_t asset_index,
-                                                                    std::uint32_t fallback) {
-                return asset_index == materials::no_terrain_texture_asset
-                           ? fallback
-                           : material_texture_layers[asset_index];
+            constexpr std::array faces{
+                VoxelMaterialFace::west, VoxelMaterialFace::east,  VoxelMaterialFace::bottom,
+                VoxelMaterialFace::top,  VoxelMaterialFace::north, VoxelMaterialFace::south,
             };
-            runtime_material.side_texture =
-                resolve_texture(material_asset->side_texture, runtime_material.side_texture);
-            runtime_material.top_texture =
-                resolve_texture(material_asset->top_texture, runtime_material.top_texture);
-            runtime_material.bottom_texture =
-                resolve_texture(material_asset->bottom_texture, runtime_material.bottom_texture);
+            for (const auto face : faces) {
+                auto range = resolve_texture_range(material_asset->textures_for(face),
+                                                   fallback_texture, type, face);
+                if (!range) {
+                    return core::Status::failure(range.error().code, range.error().message);
+                }
+                const auto face_index = voxel_material_face_index(face);
+                runtime_material.face_texture_starts[face_index] = range.value().start;
+                runtime_material.face_texture_counts[face_index] = range.value().count;
+            }
             runtime_material.base_color = material_asset->base_color;
             runtime_material.roughness = material_asset->roughness;
             if (material_asset->blend_mode == materials::MaterialBlendMode::masked) {
@@ -1772,6 +1811,37 @@ Renderer::create_terrain_pipeline(std::span<const std::uint32_t> vertex_spirv,
                 }
             }
         }
+        runtime_materials.push_back(std::move(runtime_material));
+    }
+
+    auto texture_desc = texture_builder.build("terrain_texture_array");
+    if (!texture_desc) {
+        return core::Status::failure(texture_desc.error().code, texture_desc.error().message);
+    }
+    auto texture = texture_manager_->create_texture(std::move(texture_desc).value());
+    if (!texture) {
+        return core::Status::failure(texture.error().code, texture.error().message);
+    }
+    terrain_texture_array_ = texture.value();
+    const auto* texture_view = texture_manager_->find(terrain_texture_array_);
+    if (texture_view == nullptr) {
+        return core::Status::failure("renderer.terrain_texture_missing",
+                                     "terrain texture array disappeared after creation");
+    }
+
+    rhi::RenderSamplerDesc sampler_desc;
+    sampler_desc.min_filter = rhi::RenderSamplerFilter::nearest;
+    sampler_desc.mag_filter = rhi::RenderSamplerFilter::nearest;
+    sampler_desc.mipmap_mode = rhi::RenderSamplerMipmapMode::linear;
+    sampler_desc.max_lod = static_cast<float>(texture_view->mip_levels - 1U);
+    sampler_desc.debug_name = "terrain_sampler";
+    auto sampler = sampler_cache_->get(std::move(sampler_desc));
+    if (!sampler) {
+        return core::Status::failure(sampler.error().code, sampler.error().message);
+    }
+    terrain_sampler_ = sampler.value();
+
+    for (auto& runtime_material : runtime_materials) {
         auto inserted = material_cache_->upsert(std::move(runtime_material));
         if (!inserted) {
             return core::Status::failure(inserted.error().code, inserted.error().message);

@@ -38,9 +38,8 @@ struct MaterialRuntimeDesc {
     core::PrototypeId id;
     MaterialRuntimeDomain domain = MaterialRuntimeDomain::voxel;
     std::uint16_t voxel_type = 0;
-    std::uint32_t side_texture = 0;
-    std::uint32_t top_texture = 0;
-    std::uint32_t bottom_texture = 0;
+    std::array<std::uint32_t, voxel_material_face_count> face_texture_starts{};
+    std::array<std::uint32_t, voxel_material_face_count> face_texture_counts{1, 1, 1, 1, 1, 1};
     std::uint32_t surface_texture = 0;
     RuntimeSurfaceTextureBinding base_color_texture;
     RuntimeSurfaceTextureBinding metallic_roughness_texture;

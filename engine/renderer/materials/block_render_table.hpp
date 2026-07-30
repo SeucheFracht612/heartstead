@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/core/result.hpp"
+#include "engine/renderer/materials/voxel_material_faces.hpp"
 #include "engine/renderer/rhi/render_device.hpp"
 
 #include <cstddef>
@@ -27,25 +28,26 @@ enum class VoxelMaterialFlags : std::uint32_t {
 }
 
 struct GpuVoxelMaterial {
-    std::uint32_t side_texture = 0;
-    std::uint32_t top_texture = 0;
-    std::uint32_t bottom_texture = 0;
+    std::uint32_t face_texture_starts[8]{};
+    std::uint32_t face_texture_counts[8]{1, 1, 1, 1, 1, 1, 1, 1};
     std::uint32_t flags = 0;
+    std::uint32_t padding[3]{};
     float base_color[4]{1.0F, 1.0F, 1.0F, 1.0F};
     float emissive_strength = 0.0F;
     float roughness = 1.0F;
     float animation_frame_time = 0.0F;
-    float padding = 0.0F;
+    float parameter_padding = 0.0F;
 
     friend bool operator==(const GpuVoxelMaterial&, const GpuVoxelMaterial&) = default;
 };
 
-static_assert(sizeof(GpuVoxelMaterial) == 48);
-static_assert(offsetof(GpuVoxelMaterial, side_texture) == 0);
-static_assert(offsetof(GpuVoxelMaterial, flags) == 12);
-static_assert(offsetof(GpuVoxelMaterial, base_color) == 16);
-static_assert(offsetof(GpuVoxelMaterial, emissive_strength) == 32);
-static_assert(offsetof(GpuVoxelMaterial, roughness) == 36);
+static_assert(sizeof(GpuVoxelMaterial) == 112);
+static_assert(offsetof(GpuVoxelMaterial, face_texture_starts) == 0);
+static_assert(offsetof(GpuVoxelMaterial, face_texture_counts) == 32);
+static_assert(offsetof(GpuVoxelMaterial, flags) == 64);
+static_assert(offsetof(GpuVoxelMaterial, base_color) == 80);
+static_assert(offsetof(GpuVoxelMaterial, emissive_strength) == 96);
+static_assert(offsetof(GpuVoxelMaterial, roughness) == 100);
 
 class BlockRenderTable {
   public:

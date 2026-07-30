@@ -10,7 +10,11 @@ layout(location = 5) in vec3 fragment_world_position;
 layout(set = 0, binding = 0) uniform sampler2DArray terrain_textures;
 
 struct GpuVoxelMaterial {
-    uvec4 texture_layers_and_flags;
+    uvec4 face_texture_starts_0;
+    uvec4 face_texture_starts_1;
+    uvec4 face_texture_counts_0;
+    uvec4 face_texture_counts_1;
+    uvec4 flags_and_padding;
     vec4 base_color;
     vec4 surface_parameters;
 };
@@ -38,20 +42,54 @@ vec3 linear_to_srgb(vec3 linear_color) {
     return mix(high, low, lessThanEqual(linear_color, vec3(0.0031308)));
 }
 
+uint face_index(vec3 normal) {
+    vec3 magnitude = abs(normal);
+    if (magnitude.y >= magnitude.x && magnitude.y >= magnitude.z) {
+        return normal.y < 0.0 ? 2U : 3U;
+    }
+    if (magnitude.x >= magnitude.z) {
+        return normal.x < 0.0 ? 0U : 1U;
+    }
+    return normal.z < 0.0 ? 4U : 5U;
+}
+
+uint face_table_value(uvec4 first, uvec4 second, uint face) {
+    return face < 4U ? first[face] : second[face - 4U];
+}
+
+uint texture_variant_hash(ivec3 local_cell, uint face, uint chunk_seed) {
+    uint hash = chunk_seed ^ (face * 0x9e3779b9U);
+    hash ^= uint(local_cell.x) * 0x85ebca6bU;
+    hash ^= uint(local_cell.y) * 0xc2b2ae35U;
+    hash ^= uint(local_cell.z) * 0x27d4eb2fU;
+    hash ^= hash >> 16U;
+    hash *= 0x7feb352dU;
+    hash ^= hash >> 15U;
+    hash *= 0x846ca68bU;
+    return hash ^ (hash >> 16U);
+}
+
 void main() {
     uint table_length = uint(voxel_material_table.materials.length());
     uint material_index = min(fragment_voxel_type, max(table_length, 1U) - 1U);
     GpuVoxelMaterial material = voxel_material_table.materials[material_index];
 
     vec3 normal = normalize(fragment_normal);
-    uint texture_layer = material.texture_layers_and_flags.x;
-    if (normal.y > 0.5) {
-        texture_layer = material.texture_layers_and_flags.y;
-    } else if (normal.y < -0.5) {
-        texture_layer = material.texture_layers_and_flags.z;
-    }
+    uint face = face_index(normal);
+    uint texture_start =
+        face_table_value(material.face_texture_starts_0, material.face_texture_starts_1, face);
+    uint texture_count =
+        max(face_table_value(material.face_texture_counts_0,
+                             material.face_texture_counts_1, face),
+            1U);
+    vec3 local_position = fragment_world_position - chunk.camera_relative_origin.xyz;
+    ivec3 local_cell = ivec3(floor(local_position - normal * 0.001));
+    uint variant =
+        texture_variant_hash(local_cell, face, floatBitsToUint(chunk.camera_relative_origin.w)) %
+        texture_count;
+    uint texture_layer = texture_start + variant;
     vec4 texel = texture(terrain_textures, vec3(fragment_uv, float(texture_layer)));
-    uint material_flags = material.texture_layers_and_flags.w;
+    uint material_flags = material.flags_and_padding.x;
     float surface_alpha = texel.a * material.base_color.a;
     if ((material_flags & MATERIAL_ALPHA_TESTED) != 0U && surface_alpha < 0.5) {
         discard;

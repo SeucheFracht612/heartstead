@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -4985,7 +4986,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                     const rhi::ChunkPushConstants constants{
                         frame.camera.view_projection,
                         {draw.camera_relative_origin.x, draw.camera_relative_origin.y,
-                         draw.camera_relative_origin.z, 0.0F},
+                         draw.camera_relative_origin.z,
+                         std::bit_cast<float>(draw.texture_variation_seed)},
                         {frame.environment.sun_direction.x, frame.environment.sun_direction.y,
                          frame.environment.sun_direction.z, frame.environment.sun_intensity},
                         {frame.environment.ambient_color.x, frame.environment.ambient_color.y,

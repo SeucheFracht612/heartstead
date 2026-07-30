@@ -380,6 +380,15 @@ core::Status validate_material_runtime_desc(const MaterialRuntimeDesc& desc) {
             "material_runtime.invalid_domain",
             "voxel materials require a non-air voxel type and surface materials require type zero");
     }
+    for (std::size_t index = 0; index < desc.face_texture_starts.size(); ++index) {
+        const auto start = desc.face_texture_starts[index];
+        const auto count = desc.face_texture_counts[index];
+        if (count == 0 || start > std::numeric_limits<std::uint32_t>::max() - (count - 1U)) {
+            return core::Status::failure(
+                "material_runtime.invalid_face_texture_range",
+                "voxel material face texture ranges must be non-empty and addressable");
+        }
+    }
     if (!std::isfinite(desc.alpha_cutoff) || desc.alpha_cutoff < 0.0F) {
         return core::Status::failure("material_runtime.invalid_alpha_cutoff",
                                      "material alpha cutoff must be finite and non-negative");
@@ -420,9 +429,8 @@ core::Status validate_material_runtime_desc(const MaterialRuntimeDesc& desc) {
 
 GpuVoxelMaterial gpu_voxel_material(const MaterialRuntimeDesc& desc) noexcept {
     GpuVoxelMaterial result;
-    result.side_texture = desc.side_texture;
-    result.top_texture = desc.top_texture;
-    result.bottom_texture = desc.bottom_texture;
+    std::ranges::copy(desc.face_texture_starts, result.face_texture_starts);
+    std::ranges::copy(desc.face_texture_counts, result.face_texture_counts);
     result.flags = static_cast<std::uint32_t>(desc.flags);
     std::ranges::copy(desc.base_color, result.base_color);
     result.emissive_strength = desc.emissive_strength;

@@ -136,6 +136,7 @@ struct RenderDrawCommand {
     float sort_depth = 0.0F;
     bool scissor_enabled = false;
     RenderScissorRect scissor{};
+    std::uint32_t texture_variation_seed = 0;
 };
 
 struct RenderPassCommands {

@@ -404,9 +404,8 @@ void test_material_table_updates_without_mesh_changes() {
     renderer::MaterialRuntimeDesc material;
     material.id = material_id.value();
     material.voxel_type = 1;
-    material.side_texture = 1;
-    material.top_texture = 1;
-    material.bottom_texture = 0;
+    material.face_texture_starts = {1, 2, 3, 4, 5, 6};
+    material.face_texture_counts = {1, 2, 3, 4, 2, 1};
     auto handle = materials.upsert(material);
     assert(handle);
     const auto revision = materials.block_render_table().revision();
@@ -419,6 +418,13 @@ void test_material_table_updates_without_mesh_changes() {
     assert(materials.stats().gpu_table.upload_count == 1);
     assert(materials.stats().surface_gpu_table.material_count == 1);
     assert(materials.stats().surface_gpu_table.upload_count == 1);
+    const auto gpu_material = renderer::gpu_voxel_material(material);
+    assert(std::ranges::equal(
+        material.face_texture_starts,
+        std::span{gpu_material.face_texture_starts}.first(renderer::voxel_material_face_count)));
+    assert(std::ranges::equal(
+        material.face_texture_counts,
+        std::span{gpu_material.face_texture_counts}.first(renderer::voxel_material_face_count)));
     const auto table_buffer = materials.gpu_table_buffer();
     const auto surface_table_buffer = materials.surface_gpu_table_buffer();
     assert(device.value()->live_resource_count() == baseline + 2);

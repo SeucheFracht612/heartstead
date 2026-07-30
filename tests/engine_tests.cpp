@@ -1941,8 +1941,14 @@ void test_terrain_material_asset_loading() {
     using namespace heartstead;
     const auto root = make_temp_root();
     const auto assets_root = root / "assets";
-    write_bytes(assets_root / "textures/voxels/grass.png", minimal_png_bytes());
-    write_bytes(assets_root / "textures/voxels/grass_top.png", minimal_png_bytes());
+    constexpr std::array texture_names{
+        "grass.png",      "grass_alt.png",      "grass_side.png",  "grass_side_alt.png",
+        "grass_west.png", "grass_west_alt.png", "grass_east.png",  "grass_bottom.png",
+        "grass_top.png",  "grass_top_alt.png",  "grass_north.png", "grass_south.png",
+    };
+    for (const auto* name : texture_names) {
+        write_bytes(assets_root / "textures/voxels" / name, minimal_png_bytes());
+    }
 
     assets::AssetCatalog catalog;
     const auto indexed = assets::AssetCatalogBuilder::index_directory(
@@ -1965,6 +1971,13 @@ void test_terrain_material_asset_loading() {
     grass.mining_tool = "shovel";
     world::VoxelPalette palette;
     assert(palette.add(std::move(grass)));
+    world::VoxelDefinition fallback;
+    fallback.type = 8;
+    fallback.prototype_id = core::PrototypeId::parse("base:voxels/fallback").value();
+    fallback.display_name = "Fallback";
+    fallback.terrain_material = "fallback";
+    fallback.mining_tool = "shovel";
+    assert(palette.add(std::move(fallback)));
 
     renderer::materials::MaterialDefinition material;
     material.id = core::PrototypeId::parse("base:materials/grass").value();
@@ -1975,26 +1988,127 @@ void test_terrain_material_asset_loading() {
     material.textures.push_back(
         {"albedo", assets::VirtualPath::parse("base:textures/voxels/grass.png").value(), true});
     material.textures.push_back(
+        {"albedo.variant.1",
+         assets::VirtualPath::parse("base:textures/voxels/grass_alt.png").value(), true});
+    material.textures.push_back(
+        {"side", assets::VirtualPath::parse("base:textures/voxels/grass_side.png").value(), true});
+    material.textures.push_back(
+        {"side.variant.1",
+         assets::VirtualPath::parse("base:textures/voxels/grass_side_alt.png").value(), true});
+    material.textures.push_back(
+        {"west", assets::VirtualPath::parse("base:textures/voxels/grass_west.png").value(), true});
+    material.textures.push_back(
+        {"west.variant.1",
+         assets::VirtualPath::parse("base:textures/voxels/grass_west_alt.png").value(), true});
+    material.textures.push_back(
+        {"east", assets::VirtualPath::parse("base:textures/voxels/grass_east.png").value(), true});
+    material.textures.push_back(
+        {"bottom", assets::VirtualPath::parse("base:textures/voxels/grass_bottom.png").value(),
+         true});
+    material.textures.push_back(
         {"top", assets::VirtualPath::parse("base:textures/voxels/grass_top.png").value(), true});
+    material.textures.push_back(
+        {"top.variant.1",
+         assets::VirtualPath::parse("base:textures/voxels/grass_top_alt.png").value(), true});
+    material.textures.push_back(
+        {"north", assets::VirtualPath::parse("base:textures/voxels/grass_north.png").value(),
+         true});
+    material.textures.push_back(
+        {"south", assets::VirtualPath::parse("base:textures/voxels/grass_south.png").value(),
+         true});
     material.scalars.push_back({"roughness", 0.9F});
     material.colors.push_back({"tint", renderer::materials::MaterialColor{0.8F, 1.0F, 0.8F, 1.0F}});
     renderer::materials::MaterialRegistry materials;
     assert(materials.add(std::move(material)));
+    renderer::materials::MaterialDefinition fallback_material;
+    fallback_material.id = core::PrototypeId::parse("base:materials/fallback").value();
+    fallback_material.domain = renderer::materials::MaterialDomain::terrain;
+    fallback_material.blend_mode = renderer::materials::MaterialBlendMode::opaque;
+    fallback_material.shader_template =
+        assets::VirtualPath::parse("base:shaders/templates/terrain.slang").value();
+    fallback_material.textures = {
+        {"albedo", assets::VirtualPath::parse("base:textures/voxels/grass.png").value(), true},
+        {"albedo.variant.1",
+         assets::VirtualPath::parse("base:textures/voxels/grass_alt.png").value(), true},
+        {"side", assets::VirtualPath::parse("base:textures/voxels/grass_side.png").value(), true},
+        {"side.variant.1",
+         assets::VirtualPath::parse("base:textures/voxels/grass_side_alt.png").value(), true},
+        {"top", assets::VirtualPath::parse("base:textures/voxels/grass_top.png").value(), true},
+        {"top.variant.1",
+         assets::VirtualPath::parse("base:textures/voxels/grass_top_alt.png").value(), true},
+    };
+    assert(materials.add(std::move(fallback_material)));
 
     const auto terrain_assets =
         renderer::materials::load_terrain_material_assets(palette, materials, store.value());
     assert(terrain_assets);
-    assert(terrain_assets.value().textures.size() == 2);
+    assert(terrain_assets.value().textures.size() == texture_names.size());
     assert(terrain_assets.value().textures[0].image.width == 2);
     assert(terrain_assets.value().textures[0].image.height == 2);
     assert(terrain_assets.value().textures[0].image.rgba8.size() == 16);
+    const auto face_texture_ids =
+        [&terrain_assets](const renderer::materials::TerrainVoxelMaterialAsset& assignment,
+                          renderer::VoxelMaterialFace face) {
+            std::vector<std::string> result;
+            for (const auto texture : assignment.textures_for(face)) {
+                result.push_back(terrain_assets.value().textures[texture].logical_id);
+            }
+            return result;
+        };
     const auto* assignment = terrain_assets.value().find(7);
     assert(assignment != nullptr);
-    assert(assignment->side_texture == 0);
-    assert(assignment->top_texture == 1);
-    assert(assignment->bottom_texture == 0);
+    assert((face_texture_ids(*assignment, renderer::VoxelMaterialFace::west) ==
+            std::vector<std::string>{"base:textures/voxels/grass_west.png",
+                                     "base:textures/voxels/grass_west_alt.png"}));
+    assert((face_texture_ids(*assignment, renderer::VoxelMaterialFace::east) ==
+            std::vector<std::string>{"base:textures/voxels/grass_east.png"}));
+    assert((face_texture_ids(*assignment, renderer::VoxelMaterialFace::bottom) ==
+            std::vector<std::string>{"base:textures/voxels/grass_bottom.png"}));
+    assert((face_texture_ids(*assignment, renderer::VoxelMaterialFace::top) ==
+            std::vector<std::string>{"base:textures/voxels/grass_top.png",
+                                     "base:textures/voxels/grass_top_alt.png"}));
+    assert((face_texture_ids(*assignment, renderer::VoxelMaterialFace::north) ==
+            std::vector<std::string>{"base:textures/voxels/grass_north.png"}));
+    assert((face_texture_ids(*assignment, renderer::VoxelMaterialFace::south) ==
+            std::vector<std::string>{"base:textures/voxels/grass_south.png"}));
     assert(assignment->roughness == 0.9F);
     assert((assignment->base_color == std::array<float, 4>{0.8F, 1.0F, 0.8F, 1.0F}));
+    const auto* fallback_assignment = terrain_assets.value().find(8);
+    assert(fallback_assignment != nullptr);
+    const std::vector<std::string> side_ids{"base:textures/voxels/grass_side.png",
+                                            "base:textures/voxels/grass_side_alt.png"};
+    assert(face_texture_ids(*fallback_assignment, renderer::VoxelMaterialFace::west) == side_ids);
+    assert(face_texture_ids(*fallback_assignment, renderer::VoxelMaterialFace::east) == side_ids);
+    assert(face_texture_ids(*fallback_assignment, renderer::VoxelMaterialFace::north) == side_ids);
+    assert(face_texture_ids(*fallback_assignment, renderer::VoxelMaterialFace::south) == side_ids);
+    assert((face_texture_ids(*fallback_assignment, renderer::VoxelMaterialFace::bottom) ==
+            std::vector<std::string>{"base:textures/voxels/grass.png",
+                                     "base:textures/voxels/grass_alt.png"}));
+
+    world::VoxelDefinition invalid;
+    invalid.type = 9;
+    invalid.prototype_id = core::PrototypeId::parse("base:voxels/invalid").value();
+    invalid.display_name = "Invalid";
+    invalid.terrain_material = "invalid";
+    invalid.mining_tool = "shovel";
+    assert(palette.add(std::move(invalid)));
+    renderer::materials::MaterialDefinition invalid_material;
+    invalid_material.id = core::PrototypeId::parse("base:materials/invalid").value();
+    invalid_material.domain = renderer::materials::MaterialDomain::terrain;
+    invalid_material.blend_mode = renderer::materials::MaterialBlendMode::opaque;
+    invalid_material.shader_template =
+        assets::VirtualPath::parse("base:shaders/templates/terrain.slang").value();
+    invalid_material.textures = {
+        {"top.variant.1",
+         assets::VirtualPath::parse("base:textures/voxels/grass_top_alt.png").value(), true},
+    };
+    renderer::materials::MaterialRegistry invalid_materials;
+    assert(invalid_materials.add(std::move(invalid_material)));
+    const auto invalid_assets = renderer::materials::load_terrain_material_assets(
+        palette, invalid_materials, store.value());
+    assert(!invalid_assets);
+    assert(invalid_assets.error().code == "terrain_material_assets.variant_without_primary");
+
     std::filesystem::remove_all(root);
 }
 
@@ -2611,6 +2725,19 @@ void test_renderer_rhi() {
     assert(loaded_material.value().textures.size() == 1);
     assert(loaded_material.value().scalars.size() == 1);
     assert(loaded_material.value().colors.size() == 1);
+
+    auto variant_material_prototype = material_prototype;
+    variant_material_prototype.id =
+        heartstead::core::PrototypeId::parse("base:materials/clay_variants").value();
+    variant_material_prototype.fields["id"] = "base:materials/clay_variants";
+    variant_material_prototype.fields["texture.top.variant.1"] =
+        "base:textures/voxels/clay_top_variant.png";
+    auto loaded_variant_material = material_definition_from_prototype(variant_material_prototype);
+    assert(loaded_variant_material);
+    assert(loaded_variant_material.value().textures.size() == 2);
+    assert(std::ranges::any_of(
+        loaded_variant_material.value().textures,
+        [](const MaterialTextureBinding& binding) { return binding.name == "top.variant.1"; }));
 
     heartstead::modding::PrototypeRegistry material_prototypes;
     auto material_prototype_registry_result = material_prototypes.build({material_prototype});

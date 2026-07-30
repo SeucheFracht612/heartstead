@@ -40,6 +40,21 @@ namespace {
     return static_cast<std::uint64_t>(right) - static_cast<std::uint64_t>(left);
 }
 
+[[nodiscard]] constexpr std::uint32_t
+terrain_texture_variation_seed(world::ChunkCoord coordinate) noexcept {
+    const auto mix = [](std::uint64_t value) {
+        value ^= value >> 30U;
+        value *= 0xbf58476d1ce4e5b9ULL;
+        value ^= value >> 27U;
+        value *= 0x94d049bb133111ebULL;
+        return value ^ (value >> 31U);
+    };
+    auto hash = mix(static_cast<std::uint64_t>(coordinate.x) + 0x9e3779b97f4a7c15ULL);
+    hash ^= mix(static_cast<std::uint64_t>(coordinate.y) + 0x243f6a8885a308d3ULL);
+    hash ^= mix(static_cast<std::uint64_t>(coordinate.z) + 0x13198a2e03707344ULL);
+    return static_cast<std::uint32_t>(hash ^ (hash >> 32U));
+}
+
 [[nodiscard]] core::Result<world::ChunkCoord>
 camera_chunk_coordinate(const RenderCamera& camera) noexcept {
     if (!camera.local_position.is_finite()) {
@@ -339,8 +354,7 @@ ChunkRenderSystem::set_terrain_pipeline(rhi::RenderResourceHandle terrain_pipeli
         return core::Status::failure("chunk_render_system.invalid_terrain_pipeline",
                                      "terrain pipeline handle must be valid");
     }
-    terrain_pipelines_ =
-        {terrain_pipeline, terrain_pipeline, terrain_pipeline, terrain_pipeline};
+    terrain_pipelines_ = {terrain_pipeline, terrain_pipeline, terrain_pipeline, terrain_pipeline};
     return core::Status::ok();
 }
 
@@ -418,11 +432,12 @@ ChunkRenderSystem::build_draw_list(const RenderCamera& camera,
                                                                sizeof(terrain::GpuChunkVertex));
                 draw.instance_count = 1;
                 draw.camera_relative_origin = visible.origin;
+                draw.texture_variation_seed =
+                    terrain_texture_variation_seed(visible.entry->identity.coordinate);
                 draw.index_type = visible.entry->mesh.index_type;
-                const auto center = visible.origin +
-                                    (visible.entry->local_bounds.min +
-                                     visible.entry->local_bounds.max) *
-                                        0.5F;
+                const auto center =
+                    visible.origin +
+                    (visible.entry->local_bounds.min + visible.entry->local_bounds.max) * 0.5F;
                 draw.sort_depth = math::length_squared(center - camera.local_position);
                 result.draws.push_back(draw);
             }
