@@ -455,13 +455,33 @@ domain = "terrain"
 blend_mode = "opaque"
 shader_template = "base:shaders/templates/terrain.slang"
 texture.albedo = "base:textures/voxels/grass.png"
+texture.top = "base:textures/voxels/grass_top.png"
+texture.top.variant.1 = "base:textures/voxels/grass_top_variant_1.png"
+texture.top.variant.2 = "base:textures/voxels/grass_top_variant_2.png"
+texture.bottom = "base:textures/voxels/dirt.png"
+texture.west = "base:textures/voxels/grass_west.png"
+texture.east = "base:textures/voxels/grass_east.png"
+texture.north = "base:textures/voxels/grass_north.png"
+texture.south = "base:textures/voxels/grass_south.png"
 scalar.roughness = "0.9"
 color.tint = "1.0,1.0,1.0,1.0"
 ```
 
-`texture.albedo` supplies every face. `texture.side`, `texture.top`, and `texture.bottom` may
-replace individual faces, which is useful for grass-over-dirt blocks. Unassigned faces retain the
-generated diagnostic palette. Resource packs can replace a texture at the same logical ID.
+`texture.albedo` is the all-face fallback. `texture.side` may replace all four lateral faces, and
+`texture.top`, `texture.bottom`, `texture.west`, `texture.east`, `texture.north`, and
+`texture.south` may replace individual faces. Directional names map to `-X`, `+X`, `-Z`, and `+Z`
+respectively. Resolution is most-specific face, then `side` for lateral faces, then `albedo`;
+faces with no resolved texture retain the generated diagnostic palette.
+
+Every primary binding may declare hand-authored alternatives with contiguous, one-based
+`.variant.N` suffixes. For example, `texture.top.variant.1` accompanies `texture.top`. A variant
+family must declare its own primary texture, and gaps such as variants 1 and 3 without 2 are
+rejected. The files are complete authored tiles—not procedural pixel changes. At runtime the
+renderer deterministically selects one tile for each block face from its authored set. The choice
+is stable for a world coordinate, needs no saved or replicated state, and continues to work inside
+greedy-merged quads.
+
+Resource packs can replace any primary or variant at the same logical ID.
 
 ## Build, import, and validation
 

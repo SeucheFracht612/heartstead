@@ -36,6 +36,9 @@ Implemented foundation:
   - is the default mode for `ChunkMeshScheduler` and `ChunkRenderSystem`
   - merges compatible exposed terrain faces while retaining material/render phase, voxel type,
     light, state bits, and block flags as merge boundaries
+  - does not split compatible geometry merely because neighboring cells select different authored
+    texture variants; the terrain fragment path recovers the owning local cell within the merged
+    quad and selects the stable per-face variant
   - emits the same validated `ChunkMesh` contract as the reference extractor
 
 - Immutable worker input

@@ -73,6 +73,11 @@ Rebuilds keep the previous resident mesh visible; rapid requests coalesce or can
 The readable reference mesher handles the complete supported voxel/rich-model path. The greedy
 full-cube mesher merges faces only when material, voxel type, phase, light, state, and relevant flags
 match. Mesh sections preserve material/phase ranges so visibility emits bounded indexed draws.
+Terrain materials carry six independent face texture ranges in west/east/bottom/top/north/south
+order. Each range contains a primary authored tile and zero or more authored variants. A stable
+chunk-coordinate seed plus the fragment's owning local cell and face selects the range entry, so
+variation remains fixed across camera movement and floating-origin rebases without entering world
+state or networking.
 
 Resident terrain uses explicit byte and distance budgets. Eviction prefers far, nonvisible, and
 least-recently-visible meshes. Memory-pressure suppression prevents immediate rebuild thrash.
@@ -127,6 +132,8 @@ output-transfer contract.
 The surface-material storage buffer has an explicit 224-byte CPU/GPU record contract. Its final
 flag word and padding are exposed to GLSL as one aligned `uvec4`; splitting that tail into a scalar
 and `uvec3` changes the std430 array stride and causes later materials to read neighboring records.
+The separate voxel-material buffer uses a 112-byte std430 record: two `uvec4` lanes each for six
+face-range starts and counts, one flags/padding lane, base color, and surface parameters.
 
 ## Shader and pipeline lifecycle
 
