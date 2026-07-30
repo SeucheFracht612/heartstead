@@ -4572,6 +4572,111 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         return core::Status::ok();
     }
 
+    // Moves the resources a pass samples into a shader-readable layout and points this frame's
+    // descriptor set at them. Graph resources carry no device handle, so the binding is resolved
+    // here from the pool, every frame, rather than once at material bind time.
+    [[nodiscard]] core::Status
+    prepare_sampled_resources(const rhi::RenderFrameSubmission& frame,
+                              const rhi::RenderPassDesc& pass, std::size_t pass_index,
+                              VulkanFrameContext& frame_context, std::size_t frame_context_index,
+                              VkCommandBuffer commands, std::size_t& submitted_barrier_count) {
+        auto sampler_status = ensure_default_sampler();
+        if (!sampler_status) {
+            return sampler_status;
+        }
+
+        std::vector<VkDescriptorImageInfo> image_infos;
+        image_infos.reserve(pass.sampled_resources.size());
+        for (const auto& sampled : pass.sampled_resources) {
+            auto* image = frame_context.resources.find(sampled.resource_name);
+            if (image == nullptr || image->view == VK_NULL_HANDLE) {
+                return core::Status::failure("renderer.vulkan_unbacked_sampled_resource",
+                                             "frame graph pass '" + pass.name + "' samples '" +
+                                                 sampled.resource_name +
+                                                 "' which has no backing image");
+            }
+            if (image->layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+                VkImageMemoryBarrier to_read{};
+                to_read.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                to_read.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                to_read.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                to_read.oldLayout = image->layout;
+                to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                to_read.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                to_read.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                to_read.image = image->image;
+                to_read.subresourceRange.aspectMask = static_cast<VkImageAspectFlags>(
+                    image->is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT);
+                to_read.subresourceRange.levelCount = 1;
+                to_read.subresourceRange.layerCount = 1;
+                vkCmdPipelineBarrier(commands,
+                                     image->layout == VK_IMAGE_LAYOUT_UNDEFINED
+                                         ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                                         : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
+                                     nullptr, 1, &to_read);
+                image->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                ++submitted_barrier_count;
+            }
+            image_infos.push_back(VkDescriptorImageInfo{default_sampler_, image->view,
+                                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+        }
+
+        // Which material's set to update follows from the draws recorded into this pass.
+        const auto pass_commands = std::ranges::find_if(
+            frame.pass_commands, [pass_index](const rhi::RenderPassCommands& candidate) {
+                return candidate.pass_index == pass_index;
+            });
+        if (pass_commands == frame.pass_commands.end() || pass_commands->draws.empty()) {
+            // Nothing draws here, so there is no set to point anywhere. The transitions above still
+            // matter for whichever later pass samples the resource.
+            return core::Status::ok();
+        }
+        const auto pipeline =
+            graphics_pipelines_.find(pass_commands->draws.front().pipeline.value);
+        if (pipeline == graphics_pipelines_.end()) {
+            return core::Status::failure("renderer.unknown_graphics_pipeline",
+                                         "sampling pass draw references an unknown pipeline");
+        }
+        const auto layout = pipeline_layouts_.find(pipeline->second.desc.material_id.value());
+        if (layout == pipeline_layouts_.end()) {
+            return core::Status::failure("renderer.unknown_pipeline_layout",
+                                         "sampling pass draw references an unknown layout");
+        }
+        if (layout->second.per_frame_descriptor_sets.size() <= frame_context_index) {
+            return core::Status::failure(
+                "renderer.material_missing_per_frame_descriptors",
+                "material '" + pipeline->second.desc.material_id.value() +
+                    "' samples frame graph resources but its pipeline layout did not request "
+                    "per-frame descriptors");
+        }
+
+        std::vector<VkWriteDescriptorSet> writes;
+        writes.reserve(pass.sampled_resources.size());
+        for (std::size_t index = 0; index < pass.sampled_resources.size(); ++index) {
+            const auto* binding = find_descriptor_binding(
+                layout->second.desc, pass.sampled_resources[index].binding_name);
+            if (binding == nullptr) {
+                return core::Status::failure(
+                    "renderer.unknown_descriptor_binding",
+                    "material '" + pipeline->second.desc.material_id.value() +
+                        "' has no descriptor binding named '" +
+                        pass.sampled_resources[index].binding_name + "'");
+            }
+            VkWriteDescriptorSet write{};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = layout->second.per_frame_descriptor_sets[frame_context_index];
+            write.dstBinding = binding->slot;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &image_infos[index];
+            writes.push_back(write);
+        }
+        vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0,
+                               nullptr);
+        return core::Status::ok();
+    }
+
     [[nodiscard]] core::Result<rhi::RenderFrameStats>
     execute_submitted_frame(const rhi::RenderFrameSubmission& frame) {
         using Clock = std::chrono::steady_clock;
@@ -4623,7 +4728,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 "renderer.vulkan_frame_context_unavailable",
                 "Vulkan frame contexts were not initialized");
         }
-        auto& frame_context = frame_contexts_[next_frame_context_];
+        const auto frame_context_index = next_frame_context_;
+        auto& frame_context = frame_contexts_[frame_context_index];
         auto context_status = wait_for_frame_context(frame_context, gpu_wait_ms);
         if (!context_status) {
             return core::Result<rhi::RenderFrameStats>::failure(context_status.error().code,
@@ -4869,10 +4975,16 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                         ++pipeline_bind_count;
                         vkCmdBindPipeline(frame_commands, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                           pipeline.pipeline);
-                        if (layout.descriptor_set != VK_NULL_HANDLE) {
+                        // A material sampling graph resources binds this frame's own set, which
+                        // was just pointed at the current frame's images.
+                        const auto descriptor_set =
+                            layout.per_frame_descriptor_sets.empty()
+                                ? layout.descriptor_set
+                                : layout.per_frame_descriptor_sets[frame_context_index];
+                        if (descriptor_set != VK_NULL_HANDLE) {
                             vkCmdBindDescriptorSets(frame_commands, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                                    layout.pipeline_layout, 0, 1,
-                                                    &layout.descriptor_set, 0, nullptr);
+                                                    layout.pipeline_layout, 0, 1, &descriptor_set,
+                                                    0, nullptr);
                         }
                     }
                     if (draw.vertex_buffer.is_valid()) {
@@ -5018,6 +5130,19 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                         "renderer.vulkan_unbacked_frame_resource",
                         "frame graph pass '" + pass.name + "' writes resource '" + *colour_name +
                             "' which has no backing image");
+                }
+
+                // Resources this pass samples were written as colour attachments by an earlier
+                // pass, so they need moving to a shader-readable layout and this frame's
+                // descriptor set needs pointing at them before anything is recorded.
+                if (!pass.sampled_resources.empty()) {
+                    auto sampled_status = prepare_sampled_resources(
+                        frame, pass, pass_index, frame_context, frame_context_index, frame_commands,
+                        submitted_barrier_count);
+                    if (!sampled_status) {
+                        return core::Result<rhi::RenderFrameStats>::failure(
+                            sampled_status.error().code, sampled_status.error().message);
+                    }
                 }
 
                 VkRenderingAttachmentInfo colour_attachment{};
