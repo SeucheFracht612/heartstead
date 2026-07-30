@@ -49,7 +49,7 @@ void test_render_device_mutations_are_owner_thread_only() {
         expect_wrong_thread(device->resize({320, 180}));
         expect_wrong_thread(device->render_frame({{}, {320, 180}, false}));
         expect_wrong_thread(device->execute_frame_plan(plan));
-        expect_wrong_thread(device->execute_frame({plan, {}, {}, {}}));
+        expect_wrong_thread(device->execute_frame({plan, {}, {}, {}, {}}));
         expect_wrong_thread(device->create_buffer(
             {RenderBufferUsage::storage, bytes.size(), "wrong_thread_create"}));
         expect_wrong_thread(device->upload_buffer_batch(buffer_writes));
@@ -206,7 +206,7 @@ void test_failed_batches_preserve_device_state() {
     invalid_draw.vertex_buffer = {900002};
     invalid_draw.index_buffer = {900003};
     invalid_draw.index_count = 1;
-    const RenderFrameSubmission frame{plan, {}, {}, {{0, {invalid_draw}}}};
+    const RenderFrameSubmission frame{plan, {}, {}, {}, {{0, {invalid_draw}}}};
     const auto frame_count_before_failure = device->completed_frame_count();
     const auto serial_before_frame = device->last_submission_serial();
     const auto failed_frame = device->execute_frame(frame);

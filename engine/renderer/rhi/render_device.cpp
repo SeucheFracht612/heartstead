@@ -129,7 +129,7 @@ class HeadlessRenderDevice final : public IRenderDevice {
 
     [[nodiscard]] core::Result<RenderFrameStats>
     execute_frame_plan(const RenderFramePlan& plan) override {
-        return execute_frame(RenderFrameSubmission{plan, {}, {}, {}});
+        return execute_frame(RenderFrameSubmission{plan, {}, {}, {}, {}});
     }
 
     [[nodiscard]] core::Result<RenderFrameStats>
