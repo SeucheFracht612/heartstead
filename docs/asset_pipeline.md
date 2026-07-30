@@ -19,7 +19,7 @@ finished source file
 
 | You are making | Deliver | Current use |
 | --- | --- | --- |
-| Static or skinned model | glTF 2.0 `.glb` or `.gltf` | Fully cooked and rendered through an `entity_visual` |
+| Static, rigid-node animated, or skinned model | glTF 2.0 `.glb` or `.gltf` | Fully cooked and rendered through an `entity_visual` |
 | Model material texture | 8-bit `.png`; `.jpg`/`.jpeg` for opaque art; Basis Universal `.ktx2` through `KHR_texture_basisu` | Decoded to RGBA8 during cooking and sampled by the model shader |
 | Standalone texture | `.png`, `.jpg`, `.jpeg` | Production-cooked and bindable by terrain materials; no authored UI or particle consumer yet |
 | Prebuilt texture container | `.ktx2` | Basis Universal KTX2 works in glTF; standalone KTX2 remains container-cooked without a general material binding |
@@ -141,6 +141,7 @@ The importer keeps:
 - normalized or floating-point `COLOR_0`;
 - one node hierarchy with translation/rotation/scale transforms;
 - static primitives;
+- unskinned primitives attached to animated nodes;
 - skinned primitives;
 - `JOINTS_0`/`WEIGHTS_0` and optional `JOINTS_1`/`WEIGHTS_1`; the strongest four influences are
   retained and normalized for the GPU;
@@ -207,33 +208,36 @@ bounds_padding = "0.15"
 cast_shadow = "true"
 ```
 
-Static models must not declare animation mappings.
+A static visual has no animation mappings. This describes presentation behavior, not mesh layout:
+an unskinned model may still contain animation clips and becomes animated when its visual maps
+locomotion roles to those clips.
 
 The corresponding gameplay `entity` prototype is separate content data. Declaring a visual does
 not spawn an entity by itself; a scenario or gameplay system must create and replicate that
 entity. Once it is in the replicated scene, the shared model presentation system displays it
 without an application or renderer change.
 
-### Skinned player visual and named clips
+### Animated player visual and named clips
 
-Skinned player visuals map semantic roles to authored clip names:
+Animated player visuals map semantic roles to authored clip names. The model may use rigid
+mesh-bearing nodes, skinning, morph targets, or a combination:
 
 ```toml
 kind = "entity_visual"
 id = "base:visuals/player"
 display_name = "Player Visual"
 entity = "base:entities/player"
-model = "base:models/entities/storybook_player.gltf"
-bounds_padding = "0.20"
+model = "base:models/entities/test_player.glb"
+bounds_padding = "0.40"
 transition_ticks = "9"
 cast_shadow = "true"
 
 animations.idle = "idle"
 animations.walk = "walk"
-animations.run = "run"
-animations.jump = "jump"
-animations.fall = "fall"
-animations.swim = "swim"
+animations.run = "sprint"
+animations.jump = "idle"
+animations.fall = "idle"
+animations.swim = "idle"
 
 sounds.footstep_default = "base:audio/earth_footstep"
 ```
@@ -242,8 +246,22 @@ Clip names, not numeric positions, are used. Every mapped name must exist exactl
 base player visual, all six locomotion roles are required. The clips may use STEP, LINEAR, or
 CUBICSPLINE interpolation and may animate node translation, rotation, scale, or morph weights.
 
-For other skinned entity types, the current general presenter still expects the same locomotion
+Skin presence is not an animation requirement. A visual with mappings is rejected only when its
+model has no animation clips. At runtime both rigid-node and skinned models sample a shared local
+node pose, blend transitions over `transition_ticks`, and evaluate the node hierarchy. Rigid
+primitives use their owning node matrix with the ordinary mesh shader; skinned primitives construct
+joint palettes from the same evaluated matrices.
+
+Locomotion is in-place: the player controller owns world movement, while presentation removes
+horizontal root motion from common root-motion carrier nodes. `bounds_padding` expands
+conservative per-primitive rigid bounds, including morph-target displacement. Increase it if an
+asset's rotations or unusual deformation still leave the maintained bounds.
+
+For other animated entity types, the current general presenter still expects the same locomotion
 role set. More specialized animation state maps are future work.
+
+`cast_shadow` is preserved on the render object for future use. The current renderer has no
+shadow-map pass, so it does not yet produce model shadows.
 
 ### Model safety ceilings
 
@@ -518,7 +536,7 @@ For a deliberate native fallback review:
   --no-save --diagnostic-asset-fallbacks
 ```
 
-This opt-in probe adds a missing-model visual, a skinned visual with only its required idle
+This opt-in probe adds a missing-model visual, an animated visual with only its required idle
 mapping, and an unregistered positional sound request. The overlay and log identify the missing
 logical ID, source/cooked path, failing dependency, and selected fallback. It never changes the
 authoritative development scene or save.

@@ -3,8 +3,9 @@
 This page records the maintained implementation status of Heartstead. It is not a roadmap or a
 promise that every architecture target is complete.
 
-**Audit baseline:** repository commit `0dfeb3f451996752d1cf76ef8d7997a0dc4424ad`
-(`feat(assets): close modern glTF import gaps`). Update the baseline when this page is re-audited.
+**Audit baseline:** repository commit `adc5c347fbdaa32964642b4efce47d29cafd58e7`
+(`fix(build): restore clang warning-as-error build`). Update the baseline when this page is
+re-audited.
 
 ## What works now
 
@@ -33,9 +34,10 @@ animation. A headless backend validates the same renderer-neutral contracts in t
 
 The asset pipeline discovers source assets through mods/resource packs, validates and cooks them,
 and loads versioned runtime payloads. The current model path handles the project's modern glTF
-requirements, including PBR material inputs, skinning, morph targets, texture transforms,
-quantization, mesh compression extensions, and Basis/KTX2 texture delivery. The detailed supported
-set and remaining contributor-facing limitations live in [the asset pipeline guide](asset_pipeline.md).
+requirements, including PBR material inputs, rigid-node animation independent of skinning, shared
+node-pose evaluation and transitions, skinning, morph targets, texture transforms, quantization,
+mesh compression extensions, and Basis/KTX2 texture delivery. The detailed supported set and
+remaining contributor-facing limitations live in [the asset pipeline guide](asset_pipeline.md).
 
 ### Multiplayer
 
@@ -102,7 +104,8 @@ cmake --build --preset default-debug --target help
   matchmaking, or public-service hardening.
 - **Dedicated persistence:** the dedicated executable is memory-only.
 - **Renderer:** the current frame graph and material binding model are intentionally bounded rather
-  than a general-purpose render graph.
+  than a general-purpose render graph. It has no shadow-map pass; `cast_shadow` is currently
+  declarative presentation data.
 - **Assets:** use the [asset pipeline guide](asset_pipeline.md) as the exact supported-format
   contract; do not infer support from what a third-party glTF exporter can produce.
 - **Compatibility:** schemas and binary payloads are versioned, but the project is pre-release and

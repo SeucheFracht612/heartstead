@@ -47,7 +47,7 @@ Implemented foundation:
   - keep runtime handles and session net ids out of permanent save data
 
 - `entity_visual` presentation definitions
-  - bind entity prototypes to production-cooked static or skinned models
+  - bind entity prototypes to production-cooked static, rigid-node animated, or skinned models
   - map locomotion roles to unique authored clip names
   - are synchronized for replicated scene objects by `ModelPresentationSystem`
   - share one immutable decoded model, including animation data, for every definition that names

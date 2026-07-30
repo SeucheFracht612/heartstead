@@ -91,6 +91,16 @@ Animation, model instances, particles, and UI retain their own engine-level hand
 checks. Presentation handles can be discarded and rebuilt without changing entity save identity or
 world state.
 
+Each retained model object carries an entity transform plus an optional model-local matrix. Static
+objects leave the latter at identity. Rigid-node animation supplies the evaluated matrix of the
+primitive's owning glTF node; skinned animation supplies a joint palette evaluated from that same
+node pose. Culling and every maintained surface layer compose the model-local matrix after the
+interpolated entity transform, so opaque, alpha-tested, and transparent results stay aligned.
+
+The current frame sequence has a depth attachment but no shadow-map pass. `cast_shadow` is retained
+as presentation intent only; a future shadow implementation must reuse the same composed object
+matrix and skin palette.
+
 ## Materials, models, and textures
 
 Renderer-facing material definitions use logical prototype IDs, domains, blend modes, validated

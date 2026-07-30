@@ -176,12 +176,18 @@ assets, and SFNT `font` assets into deterministic production-profile payload wra
 and GLB models are strictly parsed and validated by fastgltf, bounded by engine-owned limits, and
 converted into the versioned `heartstead.model.v4` binary. That runtime format contains indexed
 triangle geometry, tangents, two UV sets, vertex colors, the strongest four of up to eight skin
-influences, a node hierarchy, inverse-bind matrices, bounded transform and morph-weight animation,
-morph deltas, decoded RGBA8 images, exact glTF sampler/texture transforms, and core
+influences, a node hierarchy, primitive-to-node ownership, inverse-bind matrices, bounded transform
+and morph-weight animation, morph deltas, decoded RGBA8 images, exact glTF sampler/texture
+transforms, and core
 metallic-roughness PBR materials. Opaque, alpha-mask, alpha-blend, and double-sided material state
 is preserved. Color textures are filtered in sRGB while metallic-roughness, normal, and occlusion
 textures use a separate linear array. Required or optional `KHR_materials_unlit` state bypasses
 lighting without a pipeline variant.
+
+Runtime capability classification keeps animation clips, used skins, morph targets, and animated
+node transforms as independent facts. An unskinned model with node animation therefore retains its
+mesh-node relationship and uses the same pose evaluator as a skinned model rather than being
+classified as static.
 
 Cooking enables `KHR_texture_transform`, `KHR_texture_basisu`, `KHR_mesh_quantization`,
 `EXT_meshopt_compression`, and `KHR_draco_mesh_compression`. Compressed images and geometry are
