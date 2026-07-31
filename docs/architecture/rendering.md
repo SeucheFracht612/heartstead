@@ -52,8 +52,9 @@ pass. Frame-wide assumptions about these were the main obstacle to running the H
 
 A pass may sample a graph resource by declaring `sampled_resources`, which maps a resource name onto
 a named descriptor binding. Resources have no device handle, so the backend resolves the binding from
-the resource pool every frame. Layouts that do this set `per_frame_descriptors`, because a descriptor
-set bound to an in-flight command buffer must not be rewritten.
+the resource pool every frame. Layouts that do this set `per_frame_descriptors`. The Vulkan backend
+allocates graph descriptor sets per frame and per pass: a set bound by an earlier pass must not be
+rewritten while its command remains pending, even when a later pass uses the same material layout.
 
 Depth-only passes are first-class: a pass with a depth write and no colour write records normally
 and cannot be silently skipped. Graph resources can also be storage images or storage buffers.
@@ -100,7 +101,8 @@ A normal native frame:
 
 The maintained unified sequence contains four directional shadow cascades, two budgeted local
 shadow maps, sky, opaque terrain, alpha-tested terrain, rich/static geometry, SSAO and AO
-composition, transparent/fluid geometry, debug, FXAA, bloom, tone mapping, UI, and present.
+composition plus an immutable scene-depth copy, transparent/fluid geometry, debug, FXAA, bloom,
+tone mapping, UI, and present.
 Opaque, cutout, and transparent state are separate. The public frame is a dependency-validated,
 bounded render graph schema rather than a parallel ad hoc frame path.
 

@@ -44,6 +44,8 @@ The deterministic catalog includes static and stress coverage for:
 - cross-plane forest/foliage;
 - terrain material bands, nine surface states, and authored slopes;
 - a 128-light settlement grid with mixed point/spot lights and shadow selection;
+- the integrated starting biome with rolling terrain, river and large water, instanced meadow,
+  forest and crop vegetation, rain, smoke, embers, atmosphere, and a shadowed fire light;
 - rapid edits and replacement meshes;
 - high-speed flythrough/streaming;
 - load/unload churn;
@@ -161,6 +163,27 @@ The preserved greedy/reference comparison from the same optimization era showed:
 The durable conclusion is structural: greedy merging dramatically reduced flat full-cube geometry,
 while total frame time was already dominated by more than raw triangle count. Future optimization
 should use current subsystem measurements instead of assuming the same bottleneck.
+
+## Task 5 integrated environment workload
+
+Use `starting-biome` to measure the environmental systems together:
+
+```bash
+./build/default-release/apps/render_benchmark/heartstead_render_benchmark \
+  --vulkan --scene starting-biome --warmup 120 --frames 300 --radius 1 \
+  --output build/benchmarks/starting-biome.json
+```
+
+The scene loads production cooked content, evaluates environment profiles, and updates vegetation,
+large water, weather particles, smoke, and embers through the same interfaces as gameplay. Its
+fixed seed supplies thousands of grass, flowers, crops, trees, bushes, and magical plants without
+one draw per plant. Record visible/culled vegetation instances, instance draws, active particles,
+particle drops, local lights, GPU pass timings, and validation state when publishing a result.
+
+The small Debug/Vulkan closure smoke test on 2026-07-31 used 640×360, radius 1, one warm-up and two
+measured frames. It completed with no Vulkan validation messages, approximately 2,700 visible
+vegetation instances in seven instanced draws, and a mean GPU frame time of roughly 7.6 ms. This
+confirms integration and validation only; it is not an optimized performance baseline.
 
 ## Publishing a new baseline
 
