@@ -76,6 +76,95 @@ void log_load_diagnostic(const PresentationAssetLoadDiagnostic& diagnostic) {
                   ": " + diagnostic.message);
 }
 
+[[nodiscard]] const renderer::materials::MaterialScalarParameter*
+find_scalar(const renderer::materials::MaterialDefinition& material, std::string_view name) {
+    const auto found = std::ranges::find_if(
+        material.scalars, [name](const auto& value) { return value.name == name; });
+    return found == material.scalars.end() ? nullptr : &*found;
+}
+
+[[nodiscard]] const renderer::materials::MaterialColorParameter*
+find_color(const renderer::materials::MaterialDefinition& material, std::string_view name) {
+    const auto found = std::ranges::find_if(
+        material.colors, [name](const auto& value) { return value.name == name; });
+    return found == material.colors.end() ? nullptr : &*found;
+}
+
+[[nodiscard]] core::Status
+apply_material_overrides(assets::ModelAsset& model,
+                         std::span<const entities::VisualMaterialOverride> overrides,
+                         const renderer::materials::MaterialRegistry* materials) {
+    if (overrides.empty()) {
+        return core::Status::ok();
+    }
+    if (materials == nullptr) {
+        return core::Status::failure(
+            "model_presentation.missing_material_registry",
+            "visual prefab material overrides require the validated material registry");
+    }
+    for (const auto& override : overrides) {
+        const auto slot =
+            std::ranges::find_if(model.materials, [&](const assets::ModelMaterial& material) {
+                return material.name == override.slot;
+            });
+        if (slot == model.materials.end()) {
+            return core::Status::failure(
+                "model_presentation.missing_material_slot",
+                "visual prefab material slot does not exist in the cooked model: " + override.slot);
+        }
+        const auto* material = materials->find(override.material.value());
+        if (material == nullptr) {
+            return core::Status::failure(
+                "model_presentation.missing_material_override",
+                "visual prefab material override is absent from the validated registry: " +
+                    override.material.value());
+        }
+        if (!material->textures.empty()) {
+            return core::Status::failure(
+                "model_presentation.external_override_texture_unsupported",
+                "model material overrides currently require parameter-only materials; external "
+                "texture bindings must be authored in the source glTF material");
+        }
+        if (const auto* tint = find_color(*material, "tint"); tint != nullptr) {
+            slot->base_color_factor = {tint->value.red, tint->value.green, tint->value.blue,
+                                       tint->value.alpha};
+        }
+        if (const auto* emissive = find_color(*material, "emissive"); emissive != nullptr) {
+            slot->emissive_factor = {emissive->value.red, emissive->value.green,
+                                     emissive->value.blue};
+        }
+        if (const auto* value = find_scalar(*material, "roughness"); value != nullptr) {
+            slot->roughness_factor = value->value;
+        }
+        if (const auto* value = find_scalar(*material, "metallic"); value != nullptr) {
+            slot->metallic_factor = value->value;
+        }
+        if (const auto* value = find_scalar(*material, "normal_scale"); value != nullptr) {
+            slot->normal_scale = value->value;
+        }
+        if (const auto* value = find_scalar(*material, "occlusion_strength"); value != nullptr) {
+            slot->occlusion_strength = value->value;
+        }
+        if (const auto* value = find_scalar(*material, "alpha_cutoff"); value != nullptr) {
+            slot->alpha_cutoff = value->value;
+        }
+        slot->double_sided = material->double_sided;
+        switch (material->blend_mode) {
+        case renderer::materials::MaterialBlendMode::opaque:
+            slot->alpha_mode = assets::ModelAlphaMode::opaque;
+            break;
+        case renderer::materials::MaterialBlendMode::masked:
+            slot->alpha_mode = assets::ModelAlphaMode::mask;
+            break;
+        case renderer::materials::MaterialBlendMode::translucent:
+        case renderer::materials::MaterialBlendMode::additive:
+            slot->alpha_mode = assets::ModelAlphaMode::blend;
+            break;
+        }
+    }
+    return assets::validate_model_asset(model);
+}
+
 } // namespace
 
 core::Status ModelPresentationSystem::initialize(
@@ -217,6 +306,44 @@ core::Status ModelPresentationSystem::initialize(
                 bool using_model_fallback = false;
                 auto model_shared = load_cached_model(logical_model, using_model_fallback);
                 definition_used_fallback = definition_used_fallback || using_model_fallback;
+                std::vector<entities::VisualMaterialOverride> material_overrides =
+                    definition.material_overrides;
+                if (state_rule != nullptr) {
+                    for (const auto& state_override : state_rule->material_overrides) {
+                        const auto existing = std::ranges::find_if(
+                            material_overrides,
+                            [&](const entities::VisualMaterialOverride& candidate) {
+                                return candidate.slot == state_override.slot;
+                            });
+                        if (existing == material_overrides.end()) {
+                            material_overrides.push_back(state_override);
+                        } else {
+                            *existing = state_override;
+                        }
+                    }
+                }
+                std::string material_variant_id = std::string(logical_model);
+                if (!using_model_fallback && !material_overrides.empty()) {
+                    material_variant_id += "#visual-materials";
+                    for (const auto& material_override : material_overrides) {
+                        material_variant_id +=
+                            "/" + material_override.slot + "=" + material_override.material.value();
+                    }
+                    if (const auto existing = model_cache.find(material_variant_id);
+                        existing != model_cache.end()) {
+                        model_shared = existing->second;
+                    } else {
+                        auto overridden_model = std::make_shared<assets::ModelAsset>(*model_shared);
+                        auto override_status = apply_material_overrides(
+                            *overridden_model, material_overrides, config.material_registry);
+                        if (!override_status) {
+                            rollback();
+                            return override_status;
+                        }
+                        model_shared = overridden_model;
+                        model_cache.emplace(material_variant_id, std::move(overridden_model));
+                    }
+                }
                 const auto& model = *model_shared;
                 auto metadata_status = validate_variant_metadata(definition, state_rule, model);
                 if (!metadata_status && !using_model_fallback) {
@@ -225,9 +352,8 @@ core::Status ModelPresentationSystem::initialize(
                 }
 
                 AnimatedModelPresentationConfig presentation_config;
-                presentation_config.asset_id = using_model_fallback
-                                                   ? fallback_definition->model_asset
-                                                   : std::string(logical_model);
+                presentation_config.asset_id =
+                    using_model_fallback ? fallback_definition->model_asset : material_variant_id;
                 presentation_config.visual_prototype = definition.entity_prototype;
                 presentation_config.model = std::move(model_shared);
                 presentation_config.animated_bounds =

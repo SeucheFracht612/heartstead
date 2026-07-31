@@ -105,6 +105,7 @@ int main() {
     std::unordered_set<std::string> visual_models;
     std::unordered_map<std::string, std::size_t> visual_primitive_counts;
     std::size_t fallback_primitive_count = 0;
+    std::string fallback_material_slot;
     for (const auto& definition : content.visual_definitions.definitions()) {
         visual_models.insert(definition.model_asset);
         const auto* record = store.value().manifest().find_active(definition.model_asset);
@@ -118,6 +119,8 @@ int main() {
                                         model.value().primitives.size());
         if (definition.id == *fallback) {
             fallback_primitive_count = model.value().primitives.size();
+            assert(!model.value().materials.empty());
+            fallback_material_slot = model.value().materials.front().name;
         }
         if (definition.entity_prototype == *player) {
             const auto capabilities = assets::model_capabilities(model.value());
@@ -164,8 +167,11 @@ int main() {
     entities::VisualDefinitionRegistry shared_visuals;
     const auto* fallback_definition = content.visual_definitions.find(*fallback);
     assert(fallback_definition != nullptr);
-    assert(shared_visuals.add(*fallback_definition));
-    auto cache_probe = *fallback_definition;
+    auto overridden_fallback = *fallback_definition;
+    overridden_fallback.material_overrides = {
+        {fallback_material_slot, *core::PrototypeId::parse("base:materials/stone")}};
+    assert(shared_visuals.add(overridden_fallback));
+    auto cache_probe = overridden_fallback;
     cache_probe.id = *core::PrototypeId::parse("base:visuals/cache_probe");
     cache_probe.entity_prototype = *core::PrototypeId::parse("base:entities/cache_probe");
     assert(shared_visuals.add(std::move(cache_probe)));
@@ -173,10 +179,13 @@ int main() {
     renderer::Renderer cache_renderer;
     initialize_renderer(cache_renderer);
     game::ModelPresentationSystem shared_models;
+    game::ModelPresentationSystemConfig shared_config;
+    shared_config.material_registry = &content.material_registry;
     assert(shared_models.initialize(cache_renderer, shared_visuals,
-                                    std::filesystem::path{HEARTSTEAD_TEST_COOKED_ASSET_DIR}));
+                                    std::filesystem::path{HEARTSTEAD_TEST_COOKED_ASSET_DIR},
+                                    shared_config));
     assert(shared_models.stats().definition_count == 2);
-    assert(shared_models.stats().loaded_model_count == 1);
+    assert(shared_models.stats().loaded_model_count == 2);
     renderer::RenderCamera cache_camera;
     assert(cache_camera.set_aspect_ratio(640.0F / 360.0F));
     assert(cache_renderer.render(cache_camera));

@@ -54,6 +54,7 @@ layout(location = 4) out vec2 fragment_uv1;
 layout(location = 5) out vec4 fragment_color;
 layout(location = 6) flat out uint fragment_layer;
 layout(location = 7) flat out uint fragment_material;
+layout(location = 8) out vec4 fragment_skin_weights;
 
 void main() {
     GpuObjectInstance instance = object_instances.instances[gl_InstanceIndex];
@@ -100,4 +101,5 @@ void main() {
     fragment_color = instance.color * in_color;
     fragment_layer = instance.metadata.x;
     fragment_material = instance.metadata.w;
+    fragment_skin_weights = in_weights;
 }

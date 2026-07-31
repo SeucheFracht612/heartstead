@@ -8,6 +8,7 @@ layout(location = 4) in vec2 fragment_uv1;
 layout(location = 5) in vec4 fragment_color;
 layout(location = 6) flat in uint fragment_layer;
 layout(location = 7) flat in uint fragment_material;
+layout(location = 8) in vec4 fragment_skin_weights;
 
 layout(set = 0, binding = 2) uniform sampler2DArray surface_textures;
 layout(set = 0, binding = 4) uniform sampler2DArray surface_data_textures;
@@ -428,6 +429,39 @@ void main() {
             color = cascade_colors[shadow_cascade] * mix(0.35, 1.0, shadow);
         } else if (debug_view == 8U) {
             color = local_tile_debug_color();
+        } else if (debug_view == 9U) {
+            color = vec3(fract(fragment_uv0), 0.0);
+        } else if (debug_view == 10U) {
+            color = vec3(fract(fragment_uv1), 0.0);
+        } else if (debug_view == 11U) {
+            color = fragment_tangent.xyz * 0.5 + 0.5;
+        } else if (debug_view == 12U) {
+            color = fragment_color.rgb;
+        } else if (debug_view == 13U) {
+            float lod =
+                max(textureQueryLod(surface_textures,
+                                    binding_uv(material.textures[0])).x,
+                    0.0);
+            color = vec3(fract(lod / 6.0), fract(lod / 3.0), fract(lod / 1.5));
+        } else if (debug_view == 14U) {
+            vec2 density = fwidth(fragment_uv0) *
+                           vec2(textureSize(surface_textures, 0).xy);
+            float value = clamp(log2(max(length(density), 0.0001)) / 8.0 + 0.5,
+                                0.0, 1.0);
+            color = vec3(value, 1.0 - abs(value - 0.5) * 2.0, 1.0 - value);
+        } else if (debug_view == 15U) {
+            color = vec3(0.1, 0.9, 0.25);
+        } else if (debug_view == 16U) {
+            const vec3 lod_colors[4] =
+                vec3[4](vec3(0.15, 0.85, 0.25), vec3(0.2, 0.5, 1.0),
+                        vec3(1.0, 0.7, 0.15), vec3(1.0, 0.2, 0.3));
+            color = lod_colors[fragment_material & 3U];
+        } else if (debug_view == 19U) {
+            color = fragment_skin_weights.rgb +
+                    vec3(fragment_skin_weights.a * 0.5);
+        } else if (debug_view == 20U) {
+            color = vec3(1.0, 0.05, 0.5) *
+                    (0.2 + 0.8 * clamp(base_color.a, 0.0, 1.0));
         }
     }
     float fog = smoothstep(frame.ambient_color_fog_start.w,

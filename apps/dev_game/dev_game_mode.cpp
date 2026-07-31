@@ -91,8 +91,8 @@ namespace {
     return runtime.start_session(config, std::move(request));
 }
 
-[[nodiscard]] core::Status add_asset_fallback_diagnostics(
-    entities::VisualDefinitionRegistry& definitions) {
+[[nodiscard]] core::Status
+add_asset_fallback_diagnostics(entities::VisualDefinitionRegistry& definitions) {
     const auto missing_model_visual = core::PrototypeId::parse("diagnostic:visuals/missing_model");
     const auto missing_model_entity = core::PrototypeId::parse("diagnostic:entities/missing_model");
     const auto missing_animation_visual =
@@ -252,8 +252,11 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
             return status;
         }
     }
-    status = state.model_presentation.initialize(
-        *renderer, state.visual_definitions, state.config.cooked_asset_root);
+    game::ModelPresentationSystemConfig model_presentation_config;
+    model_presentation_config.material_registry = &state.config.content_report->material_registry;
+    status = state.model_presentation.initialize(*renderer, state.visual_definitions,
+                                                 state.config.cooked_asset_root,
+                                                 model_presentation_config);
     if (!status) {
         return status;
     }
@@ -288,8 +291,7 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
     state.splash = *splash;
     state.clay = *clay;
 
-    const auto* player_visual =
-        state.visual_definitions.find_for_entity(*player_prototype);
+    const auto* player_visual = state.visual_definitions.find_for_entity(*player_prototype);
     const auto* default_footstep =
         player_visual == nullptr ? nullptr : player_visual->sound("footstep_default");
     if (default_footstep == nullptr) {
@@ -445,9 +447,8 @@ DevGameMode::update(game::GameApplicationServices& services,
                                               previous_player->state.pitch_centidegrees);
         state.input_orientation_initialized = true;
     }
-    auto scheduled_input =
-        state.input_scheduler.advance(*frame.input, frame.delta_microseconds,
-                                      !ui_input.value().consumed.blocks_gameplay);
+    auto scheduled_input = state.input_scheduler.advance(
+        *frame.input, frame.delta_microseconds, !ui_input.value().consumed.blocks_gameplay);
     if (!scheduled_input) {
         return core::Result<game::GameApplicationFrameOutput>::failure(
             scheduled_input.error().code, scheduled_input.error().message);
@@ -457,8 +458,8 @@ DevGameMode::update(game::GameApplicationServices& services,
         if (!state.runtime.session()->client()->is_connected() || previous_player == nullptr) {
             continue;
         }
-        auto status = state.runtime.session()->submit_player_input(player_input,
-                                                                   frame.now_milliseconds);
+        auto status =
+            state.runtime.session()->submit_player_input(player_input, frame.now_milliseconds);
         if (!status) {
             return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
                                                                            status.error().message);
@@ -480,8 +481,7 @@ DevGameMode::update(game::GameApplicationServices& services,
             "player input scheduling diverged from the authoritative fixed-step clock");
     }
     state.authoritative_tick = runtime_frame.value().authoritative_world_tick;
-    state.reconciliation_hard_corrections +=
-        runtime_frame.value().client.hard_correction_count;
+    state.reconciliation_hard_corrections += runtime_frame.value().client.hard_correction_count;
     state.reconciliation_collision_revision_changes +=
         runtime_frame.value().client.collision_revision_change_count;
     state.maximum_reconciliation_distance =
@@ -503,9 +503,9 @@ DevGameMode::update(game::GameApplicationServices& services,
         renderer->set_voxel_fluid_stats(server->chunk_fluids().stats());
         renderer->set_voxel_lighting_stats(server->chunk_lighting().stats());
     }
-    auto day_night =
-        renderer::evaluate_day_night(runtime_frame.value().authoritative_world_tick,
-                                    state.runtime.session()->config().world_time, state.environment);
+    auto day_night = renderer::evaluate_day_night(runtime_frame.value().authoritative_world_tick,
+                                                  state.runtime.session()->config().world_time,
+                                                  state.environment);
     if (!day_night) {
         return core::Result<game::GameApplicationFrameOutput>::failure(day_night.error().code,
                                                                        day_night.error().message);
@@ -821,9 +821,9 @@ DevGameMode::update(game::GameApplicationServices& services,
             if (!asset_diagnostics.empty()) {
                 const auto& latest = asset_diagnostics.back();
                 asset_failure_text = latest.logical_id + " source=" + latest.source_path +
-                                     " cooked=" + latest.cooked_path + " dependency=" +
-                                     latest.failing_dependency + " fallback=" +
-                                     latest.fallback_used;
+                                     " cooked=" + latest.cooked_path +
+                                     " dependency=" + latest.failing_dependency +
+                                     " fallback=" + latest.fallback_used;
             }
             std::string selection_text = "none";
             if (selection.value().hit.has_value()) {
@@ -866,9 +866,8 @@ DevGameMode::update(game::GameApplicationServices& services,
                          ? "third-person"
                          : "first-person")
                  << " yaw/pitch " << player->state.yaw_centidegrees * 0.01 << '/'
-                 << player->state.pitch_centidegrees * 0.01
-                 << " [F1 toggle] | geometry " << (state.debug_geometry_visible ? "on" : "off")
-                 << " [F4]\n"
+                 << player->state.pitch_centidegrees * 0.01 << " [F1 toggle] | geometry "
+                 << (state.debug_geometry_visible ? "on" : "off") << " [F4]\n"
                  << "boom " << camera_frame.value().actual_boom_distance << " / "
                  << camera_frame.value().desired_boom_distance
                  << (camera_frame.value().boom_obstructed ? " obstructed" : "")
@@ -921,8 +920,8 @@ DevGameMode::update(game::GameApplicationServices& services,
                  << "fluid " << fluid_text << '\n'
                  << "environment daylight " << day_night.value().daylight << " sun "
                  << day_night.value().render.sun_intensity << " fog "
-                 << day_night.value().render.fog_start << '/'
-                 << day_night.value().render.fog_end << " sky on\n"
+                 << day_night.value().render.fog_start << '/' << day_night.value().render.fog_end
+                 << " sky on\n"
                  << "feedback remove/place " << feedback_stats.presented_removals << '/'
                  << feedback_stats.presented_placements << " particles/sounds "
                  << feedback_stats.emitted_particles << '/' << feedback_stats.emitted_sounds
@@ -930,10 +929,10 @@ DevGameMode::update(game::GameApplicationServices& services,
                  << "audio voices " << audio_stats.active_voices << " rejected "
                  << audio_stats.rejected_voices << " fallback " << audio_stats.fallback_voices
                  << " warnings " << audio_stats.fallback_diagnostics << '\n'
-                 << "footsteps emitted/surface/default/dropped "
-                 << footstep_stats.emitted_footsteps << '/' << footstep_stats.surface_footsteps
-                 << '/' << footstep_stats.default_footsteps << '/'
-                 << footstep_stats.dropped_footsteps << '\n'
+                 << "footsteps emitted/surface/default/dropped " << footstep_stats.emitted_footsteps
+                 << '/' << footstep_stats.surface_footsteps << '/'
+                 << footstep_stats.default_footsteps << '/' << footstep_stats.dropped_footsteps
+                 << '\n'
                  << "input " << state.last_player_input.move_x << ", "
                  << state.last_player_input.move_z << " | selected " << selection_text << '\n'
                  << "last command " << command_text << " | last error " << last_error_code;

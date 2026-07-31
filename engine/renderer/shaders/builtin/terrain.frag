@@ -557,6 +557,36 @@ void main() {
         color = cascade_colors[shadow_cascade] * mix(0.35, 1.0, shadow);
     } else if (debug_view == 8U) {
         color = local_tile_debug_color();
+    } else if (debug_view == 9U || debug_view == 10U) {
+        color = vec3(fract(fragment_uv), 0.0);
+    } else if (debug_view == 11U) {
+        vec3 tangent = normalize(abs(normal.y) > 0.9
+                                     ? vec3(1.0, 0.0, 0.0)
+                                     : cross(vec3(0.0, 1.0, 0.0), normal));
+        color = tangent * 0.5 + 0.5;
+    } else if (debug_view == 12U) {
+        color = albedo;
+    } else if (debug_view == 13U) {
+        float lod = max(textureQueryLod(terrain_textures, fragment_uv).x, 0.0);
+        color = vec3(fract(lod / 6.0), fract(lod / 3.0), fract(lod / 1.5));
+    } else if (debug_view == 14U) {
+        vec2 density =
+            fwidth(fragment_uv) * vec2(textureSize(terrain_textures, 0).xy);
+        float value =
+            clamp(log2(max(length(density), 0.0001)) / 8.0 + 0.5, 0.0, 1.0);
+        color = vec3(value, 1.0 - abs(value - 0.5) * 2.0, 1.0 - value);
+    } else if (debug_view == 15U) {
+        color = vec3(0.1, 0.9, 0.25);
+    } else if (debug_view == 16U) {
+        const vec3 lod_colors[4] =
+            vec3[4](vec3(0.15, 0.85, 0.25), vec3(0.2, 0.5, 1.0),
+                    vec3(1.0, 0.7, 0.15), vec3(1.0, 0.2, 0.3));
+        color = lod_colors[(fragment_state_bits >> 28U) & 3U];
+    } else if (debug_view == 19U) {
+        color = vec3(0.0);
+    } else if (debug_view == 20U) {
+        color = vec3(1.0, 0.05, 0.5) *
+                (0.2 + 0.8 * clamp(surface_alpha, 0.0, 1.0));
     }
     float fog_distance =
         length(fragment_world_position - shadows.camera_position.xyz);

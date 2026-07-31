@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/entities/entity_visual.hpp"
+#include "engine/renderer/materials/material_definition.hpp"
 #include "engine/renderer/renderer.hpp"
 #include "game/presentation/animated_model_presentation.hpp"
 #include "game/presentation/render_snapshot.hpp"
@@ -17,6 +18,7 @@ namespace heartstead::game {
 struct ModelPresentationSystemConfig {
     std::string fallback_visual_id = "base:visuals/fallback";
     std::string fallback_animation_role = "idle";
+    const renderer::materials::MaterialRegistry* material_registry = nullptr;
 };
 
 struct PresentationAssetLoadDiagnostic {

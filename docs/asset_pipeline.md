@@ -19,10 +19,10 @@ finished source file
 
 | You are making | Deliver | Current use |
 | --- | --- | --- |
-| Static, rigid-node animated, or skinned model | glTF 2.0 `.glb` or `.gltf` | Fully cooked and rendered through an `entity_visual` |
-| Model material texture | 8-bit `.png`; `.jpg`/`.jpeg` for opaque art; Basis Universal `.ktx2` through `KHR_texture_basisu` | Decoded to RGBA8 during cooking and sampled by the model shader |
-| Standalone texture | `.png`, `.jpg`, `.jpeg` | Production-cooked and bindable by terrain materials; no authored UI or particle consumer yet |
-| Prebuilt texture container | `.ktx2` | Basis Universal KTX2 works in glTF; standalone KTX2 remains container-cooked without a general material binding |
+| Static, rigid-node animated, or skinned model | glTF 2.0 `.glb` or `.gltf` | Fully cooked and rendered through a `visual_prefab` |
+| Model material texture | 8-bit `.png`; `.jpg`/`.jpeg` for opaque art; Basis Universal `.ktx2` through `KHR_texture_basisu` | Cooked into the versioned model asset and sampled by the shared PBR shader |
+| Standalone texture | `.png`, `.jpg`, `.jpeg`, `.ktx2` | Role-aware mip generation and BC5/BC7 or documented RGBA8 fallback |
+| Texture cook settings | `<image>.texture.toml` | Color space, role, compression, mip, and alpha-coverage policy |
 | Short sound effect | PCM/float `.wav` | Playable through a `sound_event`; mono 48 kHz is recommended for positional sound |
 | Long ambience or music | `.flac` or PCM `.wav` | Playable through a `sound_event`; set `streaming = true` |
 | Generated development sound | `.tone` | Playable, deterministic mono test/prototype audio |
@@ -133,7 +133,7 @@ automatically.
 GLB avoids missing sidecars and is the safest handoff. If using text glTF, keep `.bin` buffers and
 PNG/JPEG images with the delivery and do not move them after export.
 
-### Geometry supported by Model v4
+### Geometry supported by Model v5
 
 The importer keeps:
 
@@ -154,13 +154,14 @@ The importer keeps:
 - translation, rotation, scale, and morph-weight animation;
 - quantized attributes through `KHR_mesh_quantization`;
 - `EXT_meshopt_compression` and `KHR_draco_mesh_compression`, decoded once during cooking.
+- named sockets (`socket_`, `socket:`, or `anchor_` node naming);
+- node-authored LOD groups, collision metadata, cameras, and `KHR_lights_punctual`.
 
-Only triangle-list primitives are accepted. Cameras, lights, and UV sets above 1 are not runtime
-model features.
+Only triangle-list primitives and UV sets 0 and 1 are accepted.
 
 ### Material rules
 
-Material slots are preserved per glTF primitive. Model v4 supports core glTF
+Material slots are preserved per glTF primitive. Model v5 supports core glTF
 metallic-roughness materials:
 
 - glTF `baseColorTexture`;
@@ -189,7 +190,7 @@ when alpha matters, JPEG is opaque and lossy, and Basis Universal KTX2 is useful
 delivery.
 
 Model images are decoded to bounded RGBA8 during cooking and stored in the versioned
-`heartstead.model.v4` payload. An individual image may be at most 8192 pixels on either axis, and
+`heartstead.model.v5` payload. An individual image may be at most 8192 pixels on either axis, and
 the decoded images in one model share a 128 MiB limit.
 
 `KHR_materials_unlit` is supported for both optional and required glTF extensions. Unlit materials
@@ -200,12 +201,13 @@ variants. The base Kenney character is authored this way, so its texture should 
 flat-shaded color relationship as an unlit Blender/glTF preview; Heartstead does not add specular
 lighting that the material did not request.
 
-### Static visual definition
+### Static visual prefab
 
-An `entity_visual` connects an entity prototype to its cooked model:
+A `visual_prefab` connects gameplay-owned entity state to cooked presentation data. The legacy
+`entity_visual` kind remains readable for migration, but new content should use `visual_prefab`:
 
 ```toml
-kind = "entity_visual"
+kind = "visual_prefab"
 id = "base:visuals/oak_stump"
 display_name = "Oak Stump Visual"
 entity = "base:entities/oak_stump"
@@ -213,6 +215,8 @@ model = "base:models/props/oak_stump.glb"
 model_scale = "1.0"
 bounds_padding = "0.15"
 cast_shadow = "true"
+preview.lighting = "studio"
+preview.camera_distance = "4.0"
 ```
 
 A static visual has no animation mappings. This describes presentation behavior, not mesh layout:
@@ -235,7 +239,7 @@ Animated player visuals map semantic roles to authored clip names. The model may
 mesh-bearing nodes, skinning, morph targets, or a combination:
 
 ```toml
-kind = "entity_visual"
+kind = "visual_prefab"
 id = "base:visuals/player"
 display_name = "Player Visual"
 entity = "base:entities/player"
@@ -271,11 +275,11 @@ conservative per-primitive rigid bounds, including morph-target displacement. In
 asset's rotations or unusual deformation still leave the maintained bounds. Padding is expressed
 in model-local units and is scaled by `model_scale` together with the resulting bounds.
 
-For other animated entity types, the current general presenter still expects the same locomotion
-role set. More specialized animation state maps are future work.
-
-`cast_shadow` is preserved on the render object for future use. The current renderer has no
-shadow-map pass, so it does not yet produce model shadows.
+State mappings use `states.<channel>.<value>.*`; gameplay replicates channel/value state and the
+prefab maps it to a model, named animation, material parameters, and visibility groups. External
+LOD models use `lods.<N>.model` plus `lods.<N>.max_distance`, with `0` on the final unbounded LOD.
+Named equipment/effect/light anchors reference cooked sockets. See
+[Asset conventions](asset_conventions.md) for the complete schema.
 
 ### Model safety ceilings
 
@@ -304,13 +308,13 @@ Real-time assets should remain far below these ceilings.
 
 The production cooker recognizes `.png`, `.jpg`, `.jpeg`, and `.ktx2`.
 
-- PNG/JPEG are usable for all model texture roles.
-- Basis Universal KTX2 is usable by model textures through `KHR_texture_basisu`; it is transcoded
-  to bounded RGBA8 during cooking.
-- Standalone PNG/JPEG assets are decoded and production-cooked as bounded, versioned RGBA8
-  payloads. Their color space remains unspecified until a material consumer binds them.
-- Standalone KTX2 receives bounded container validation, but still has no general runtime material
-  consumer.
+- PNG/JPEG and supported KTX2 sources are decoded offline.
+- Role inference and optional `.texture.toml` settings select sRGB/linear handling and BC5, BC7,
+  or RGBA8 output.
+- The cooker generates the full mip chain. Normal mips are renormalized and mask mips can preserve
+  alpha-test coverage.
+- BC5/BC7 payloads stay GPU-native at runtime. The terrain/voxel shared-array path is the explicit
+  RGBA8 fallback because that array currently requires CPU-resizable pixels.
 
 Terrain materials can bind standalone production-cooked PNG/JPEG assets. The renderer resamples
 each source image into its 16 x 16 sRGB terrain texture array and generates mipmaps. UI atlas and
@@ -535,9 +539,9 @@ The development cooker is permissive. A production cook is the authoritative med
   --presentation-assets --inspect
 ```
 
-This reads all `entity_visual` and `sound_event` definitions, selects their active model and audio
-assets, follows transitive glTF dependencies, converts each supported asset to its runtime format,
-writes the cooked store, and reloads the store to verify it.
+This reads all `visual_prefab`/legacy `entity_visual` and `sound_event` definitions, selects their
+active model and audio assets, follows transitive glTF dependencies, converts each supported asset
+to its runtime format, writes the cooked store, and reloads the store to verify it.
 
 Building `heartstead_dev_game` runs this presentation cook automatically. Runtime audio consumes
 these cooked payloads by logical ID; it does not need the source media after startup. New entity
@@ -545,7 +549,19 @@ visual models and sound-event assets do not require editing the application or a
 
 Use `--entity-visuals` when you intentionally want only the declared model set.
 
-### 4. Preview in the development game
+### 4. Preview in Asset Lab
+
+```bash
+cmake --build --preset default-debug --target heartstead_asset_lab
+./build/default-debug/apps/asset_lab/heartstead_asset_lab \
+  --prefab base:visuals/player --preview visual-prefab --lighting studio
+```
+
+Use `--headless` for deterministic import inspection and `--list` for every preview, lighting, and
+debug name. Asset Lab uses the same cooked store, renderer, shaders, material system, model
+presentation, visual-prefab state mapping, and particle presentation as gameplay.
+
+### 5. Preview in the development game
 
 ```bash
 cmake --build --preset default-debug -j2 --target heartstead_dev_game
@@ -607,17 +623,14 @@ diagnostic safety nets, not substitutes for delivering valid definitions and ass
 
 ## Remaining glTF gaps
 
-The v4 path closes the common Blender/exporter holes, but it is not every glTF extension:
+The v5 path closes the common Blender/exporter holes, but it is not every glTF extension:
 
 - primitive modes other than triangle lists;
 - UV sets above `TEXCOORD_1`;
 - material extensions such as clearcoat, sheen, transmission/volume, IOR, specular, iridescence,
   anisotropy, emissive strength, and dispersion;
-- WebP/AVIF texture extensions, material variants, GPU instancing, animation pointers, and
-  authored LOD chains;
-- model cameras and punctual lights;
-- native BC/ASTC/ETC GPU texture residency. Basis KTX2 currently decompresses during cooking to
-  RGBA8, favoring deterministic runtime startup over GPU-memory compression;
+- WebP/AVIF texture extensions, material variants, GPU instancing, and animation pointers;
+- ASTC/ETC runtime targets (desktop production uses BC5/BC7);
 - per-triangle ordering for intersecting alpha-blended surfaces. Transparent objects are sorted
   back to front as objects.
 

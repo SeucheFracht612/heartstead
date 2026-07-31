@@ -70,12 +70,13 @@ Implemented foundation:
 
 - `CookedAssetManifest`
   - records active cooked asset outputs without changing gameplay prototype identity
-  - stores source virtual path, source hash, cooked relative output path, cooked hash,
-    pipeline version, and dependencies
+  - schema v2 stores source/dependency-closure hashes, exact converter identity, cooked relative
+    output path/hash, pipeline version, and dependencies
   - treats `cooked_hash` as the hash of the exact cooked payload wrapper bytes written by the
     cooker, not just the uncooked source bytes
   - reports unresolved active dependency edges before assets are cooked
-  - has a versioned text codec for deterministic tool output and tests
+  - has a versioned text codec with schema-v1 migration for deterministic output and tests
+  - drives incremental reuse, transitive invalidation, and stale-output pruning
 
 - `CookedAssetStore`
   - loads a cooked manifest from disk
@@ -109,8 +110,8 @@ Implemented foundation:
   - writes cooked payload files under deterministic relative paths
   - uses explicit development passthrough backends for textures, models, shaders,
     audio, materials, fonts, UI, localization, and data assets
-  - exposes a partial production backend for data-like assets, material payloads, converted
-    glTF/GLB runtime models, decoded PNG/JPEG RGBA8 textures, validated KTX2 payloads, SPIR-V shader
+  - exposes a production backend for data-like assets, material payloads, converted glTF/GLB
+    runtime models, role-aware mipmapped BC5/BC7 textures (plus explicit RGBA8 fallbacks), SPIR-V shader
     payloads, validated WAV/Ogg Vorbis/FLAC audio payloads, and validated SFNT font payloads while
     rejecting unsupported source formats with explicit validation errors
   - emits production metadata for media payloads, such as texture dimensions, glTF/GLB container
@@ -174,11 +175,11 @@ assets (`data`, `localization`, `ui`, and unknown/raw data), material assets, gl
 assets, PNG/KTX2/JPEG `texture` assets, `.spv` `shader` assets, WAV/OGG/FLAC `sound` or `music`
 assets, and SFNT `font` assets into deterministic production-profile payload wrappers. Text glTF
 and GLB models are strictly parsed and validated by fastgltf, bounded by engine-owned limits, and
-converted into the versioned `heartstead.model.v4` binary. That runtime format contains indexed
+converted into the versioned `heartstead.model.v5` binary. That runtime format contains indexed
 triangle geometry, tangents, two UV sets, vertex colors, the strongest four of up to eight skin
 influences, a node hierarchy, primitive-to-node ownership, inverse-bind matrices, bounded transform
 and morph-weight animation, morph deltas, decoded RGBA8 images, exact glTF sampler/texture
-transforms, and core
+transforms, named sockets, LOD/collision metadata, cameras, punctual lights, and core
 metallic-roughness PBR materials. Opaque, alpha-mask, alpha-blend, and double-sided material state
 is preserved. Color textures are filtered in sRGB while metallic-roughness, normal, and occlusion
 textures use a separate linear array. Required or optional `KHR_materials_unlit` state bypasses

@@ -119,6 +119,22 @@ endif()
 heartstead_configure_test_target(heartstead_model_presentation_system_tests)
 heartstead_register_unit_test(heartstead_model_presentation_system_tests)
 
+if(TARGET heartstead_asset_lab_runtime)
+  add_executable(heartstead_asset_lab_tests asset_lab_tests.cpp)
+  target_link_libraries(heartstead_asset_lab_tests PRIVATE heartstead_asset_lab_runtime)
+  target_compile_definitions(
+    heartstead_asset_lab_tests
+    PRIVATE
+      HEARTSTEAD_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+      HEARTSTEAD_TEST_COOKED_ASSET_DIR="${CMAKE_BINARY_DIR}/apps/dev_game/assets/cooked"
+  )
+  if(TARGET heartstead_dev_game_model_assets)
+    add_dependencies(heartstead_asset_lab_tests heartstead_dev_game_model_assets)
+  endif()
+  heartstead_configure_test_target(heartstead_asset_lab_tests)
+  heartstead_register_unit_test(heartstead_asset_lab_tests)
+endif()
+
 add_executable(heartstead_headless_session_tests headless_session_tests.cpp)
 target_link_libraries(heartstead_headless_session_tests PRIVATE Heartstead::GameRuntime)
 target_compile_definitions(
@@ -342,6 +358,8 @@ heartstead_add_smoke_test(smoke.scripting_benchmark heartstead_scripting_benchma
                           --warmup 10 --calls 50
                           --output ${CMAKE_CURRENT_BINARY_DIR}/smoke_scripting_benchmark.json)
 heartstead_add_smoke_test(smoke.dev_game heartstead_dev_game --frames 3)
+heartstead_add_smoke_test(smoke.asset_lab heartstead_asset_lab --headless
+                          --prefab base:visuals/player --preview visual-prefab)
 heartstead_add_smoke_test(smoke.dedicated_server heartstead_dedicated_server
                           --bind 127.0.0.1:0 --ticks 3)
 heartstead_add_smoke_test(smoke.physics heartstead_physics_sandbox)

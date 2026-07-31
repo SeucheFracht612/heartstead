@@ -46,7 +46,7 @@ Implemented foundation:
   - persist stable save id, prototype id, kind, sleeping state, opaque entity state, and transform
   - keep runtime handles and session net ids out of permanent save data
 
-- `entity_visual` presentation definitions
+- `visual_prefab` presentation definitions (with legacy `entity_visual` migration support)
   - bind entity prototypes to production-cooked static, rigid-node animated, or skinned models
   - map locomotion roles to unique authored clip names
   - may apply a positive uniform `model_scale` without changing authoritative entity dimensions

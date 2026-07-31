@@ -36,6 +36,18 @@ enum class LightingDebugView : std::uint32_t {
     emissive,
     shadow_cascades,
     local_light_tiles,
+    uv0,
+    uv1,
+    tangents,
+    vertex_colors,
+    mip_level,
+    texel_density,
+    texture_residency,
+    lod,
+    bounds,
+    skeletons,
+    skin_weights,
+    overdraw,
 };
 
 struct alignas(16) GpuDirectionalShadowData {

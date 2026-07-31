@@ -1,7 +1,7 @@
 # Animation
 
 Heartstead cooks glTF 2.0 geometry, materials, skins, and animation clips into the bounded
-`heartstead.model.v4` runtime asset described in [assets.md](assets.md). Runtime animation never
+`heartstead.model.v5` runtime asset described in [assets.md](assets.md). Runtime animation never
 parses JSON and never receives source-container paths.
 
 Animation support is independent from skinning. The runtime derives four separate model

@@ -35,4 +35,7 @@ if(TARGET heartstead_dev_game)
     DEPENDS "${heartstead_dev_game_cooked_manifest}"
   )
   add_dependencies(heartstead_dev_game heartstead_dev_game_model_assets)
+  if(TARGET heartstead_asset_lab)
+    add_dependencies(heartstead_asset_lab heartstead_dev_game_model_assets)
+  endif()
 endif()
