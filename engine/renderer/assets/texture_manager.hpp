@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/assets/texture_asset.hpp"
 #include "engine/core/result.hpp"
 #include "engine/renderer/assets/render_asset_handles.hpp"
 #include "engine/renderer/rhi/render_device.hpp"
@@ -26,6 +27,11 @@ struct TextureUploadDesc {
     TextureColorSpace color_space = TextureColorSpace::srgb;
     bool generate_mipmaps = true;
     std::vector<std::byte> rgba8;
+    // Production-cooked payloads provide a complete GPU-native mip chain here. This is mutually
+    // exclusive with rgba8 and bypasses runtime mip generation.
+    rhi::RenderImageFormat cooked_format = rhi::RenderImageFormat::rgba8_unorm;
+    std::uint32_t cooked_mip_levels = 0;
+    std::vector<std::byte> cooked_bytes;
 };
 
 struct TextureView {
@@ -38,6 +44,7 @@ struct TextureView {
     std::uint32_t array_layers = 0;
     std::uint32_t mip_levels = 0;
     TextureColorSpace color_space = TextureColorSpace::srgb;
+    rhi::RenderImageFormat format = rhi::RenderImageFormat::rgba8_unorm;
     std::size_t resident_bytes = 0;
 };
 
@@ -98,5 +105,7 @@ class TextureManager {
 [[nodiscard]] std::vector<std::byte>
 generate_rgba8_mip_chain(std::uint32_t width, std::uint32_t height, std::uint32_t array_layers,
                          TextureColorSpace color_space, std::span<const std::byte> base_level);
+[[nodiscard]] core::Result<TextureUploadDesc>
+texture_upload_desc_from_asset(std::string id, const assets::TextureAsset& asset);
 
 } // namespace heartstead::renderer

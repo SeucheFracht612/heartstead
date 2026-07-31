@@ -2,6 +2,7 @@
 
 #include "engine/assets/asset_catalog.hpp"
 #include "engine/assets/asset_cooker.hpp"
+#include "engine/assets/texture_asset.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -20,26 +21,6 @@ namespace heartstead::renderer::materials {
 
 namespace {
 
-[[nodiscard]] core::Result<std::uint32_t>
-parse_texture_dimension(const assets::CookedAssetPayload& payload, std::string_view field) {
-    const auto found = payload.metadata.find(std::string(field));
-    if (found == payload.metadata.end() || found->second.empty()) {
-        return core::Result<std::uint32_t>::failure(
-            "terrain_material_assets.missing_texture_metadata",
-            payload.logical_id + ": cooked texture is missing " + std::string(field));
-    }
-    std::uint32_t parsed = 0;
-    const auto* begin = found->second.data();
-    const auto* end = begin + found->second.size();
-    const auto [ptr, error] = std::from_chars(begin, end, parsed);
-    if (error != std::errc{} || ptr != end || parsed == 0) {
-        return core::Result<std::uint32_t>::failure(
-            "terrain_material_assets.invalid_texture_metadata",
-            payload.logical_id + ": cooked texture has invalid " + std::string(field));
-    }
-    return core::Result<std::uint32_t>::success(parsed);
-}
-
 [[nodiscard]] bool metadata_equals(const assets::CookedAssetPayload& payload,
                                    std::string_view field, std::string_view expected) {
     const auto found = payload.metadata.find(std::string(field));
@@ -56,40 +37,28 @@ image_from_cooked_texture(assets::CookedAssetPayload payload) {
             "terrain_material_assets.unsupported_cooked_texture",
             payload.logical_id + ": terrain textures require a production-cooked texture");
     }
-    if (!metadata_equals(payload, "texture.runtime_format", "heartstead.texture.rgba8.v1") ||
-        !metadata_equals(payload, "texture.container", "rgba8") ||
-        !metadata_equals(payload, "texture.channels", "4")) {
+    if (!metadata_equals(payload, "texture.runtime_format", "heartstead.texture.v2")) {
         return core::Result<assets::ImageAsset>::failure(
             "terrain_material_assets.unsupported_cooked_texture",
-            payload.logical_id + ": terrain textures require a cooked RGBA8 image");
+            payload.logical_id + ": terrain textures require a versioned cooked texture");
     }
-
-    auto width = parse_texture_dimension(payload, "texture.width");
-    if (!width) {
-        return core::Result<assets::ImageAsset>::failure(width.error().code, width.error().message);
-    }
-    auto height = parse_texture_dimension(payload, "texture.height");
-    if (!height) {
-        return core::Result<assets::ImageAsset>::failure(height.error().code,
-                                                         height.error().message);
-    }
-    const auto pixel_count = static_cast<std::uint64_t>(width.value()) * height.value();
-    if (pixel_count > std::numeric_limits<std::size_t>::max() / 4U) {
+    auto texture = assets::decode_texture_asset(payload.bytes);
+    if (!texture) {
         return core::Result<assets::ImageAsset>::failure(
-            "terrain_material_assets.texture_size_mismatch",
-            payload.logical_id + ": cooked RGBA8 dimensions exceed the runtime size limit");
+            texture.error().code, payload.logical_id + ": " + texture.error().message);
     }
-    const auto expected_size = static_cast<std::size_t>(pixel_count) * 4U;
-    if (payload.bytes.size() != expected_size) {
+    if (texture.value().format != assets::TextureAssetFormat::rgba8) {
         return core::Result<assets::ImageAsset>::failure(
-            "terrain_material_assets.texture_size_mismatch",
-            payload.logical_id + ": cooked RGBA8 byte count does not match its dimensions");
+            "terrain_material_assets.compressed_array_source",
+            payload.logical_id +
+                ": voxel array sources must use compression = rgba8 because the runtime "
+                "resamples and repacks their layers");
     }
 
     assets::ImageAsset image;
-    image.width = width.value();
-    image.height = height.value();
-    image.rgba8 = std::move(payload.bytes);
+    image.width = texture.value().width;
+    image.height = texture.value().height;
+    image.rgba8 = std::move(texture).value().mips.front().bytes;
     return core::Result<assets::ImageAsset>::success(std::move(image));
 }
 

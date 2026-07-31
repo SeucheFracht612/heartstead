@@ -1,6 +1,7 @@
 #include "engine/assets/asset_catalog.hpp"
 
 #include "engine/assets/model_asset.hpp"
+#include "engine/assets/texture_asset.hpp"
 #include "engine/core/hash.hpp"
 #include "engine/core/ids.hpp"
 
@@ -413,6 +414,9 @@ std::string_view asset_source_kind_name(AssetSourceKind kind) noexcept {
 
 AssetKind infer_asset_kind(const std::filesystem::path& relative_path) {
     const auto extension = lower_ascii(relative_path.extension().generic_string());
+    if (lower_ascii(relative_path.generic_string()).ends_with(".texture.toml")) {
+        return AssetKind::data;
+    }
     if (extension == ".bin") {
         return AssetKind::data;
     }
@@ -468,6 +472,25 @@ core::Status discover_asset_dependencies(AssetCatalog& catalog) {
     };
     std::vector<Discovered> discovered;
     for (const auto* record : catalog.records()) {
+        if (record->kind == AssetKind::texture) {
+            const auto sidecar = texture_cook_sidecar_path(record->source_path);
+            if (std::filesystem::exists(sidecar)) {
+                auto relative = record->virtual_path.relative_path;
+                relative += ".texture.toml";
+                auto virtual_path = VirtualPath::parse(record->virtual_path.namespace_id + ":" +
+                                                       relative.generic_string());
+                if (!virtual_path) {
+                    return core::Status::failure(
+                        "asset_catalog.invalid_discovered_dependency",
+                        "texture cook sidecar has an invalid virtual path: " + record->logical_id);
+                }
+                discovered.push_back({record->logical_id,
+                                      record->source_kind,
+                                      record->source_id,
+                                      {std::move(virtual_path).value()}});
+            }
+            continue;
+        }
         if (record->kind != AssetKind::model) {
             continue;
         }

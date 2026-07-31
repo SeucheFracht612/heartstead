@@ -14,6 +14,7 @@ target_sources(
     assets/image_asset.cpp
     assets/model_asset.cpp
     assets/resource_pack.cpp
+    assets/texture_asset.cpp
     assets/virtual_file_system.cpp
     audio/audio_mixer.cpp
     audio/audio_system.cpp

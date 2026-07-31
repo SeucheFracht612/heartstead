@@ -6,6 +6,7 @@
 #include "engine/assets/cooked_asset_store.hpp"
 #include "engine/assets/model_asset.hpp"
 #include "engine/assets/resource_pack.hpp"
+#include "engine/assets/texture_asset.hpp"
 #include "engine/assets/virtual_file_system.hpp"
 #include "engine/build/build_piece.hpp"
 #include "engine/build/build_piece_prototype.hpp"
@@ -92,6 +93,8 @@
 #include "engine/world/world_state.hpp"
 #include "engine/world/worldgen/terrain_generator.hpp"
 
+#include <ktx.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -101,10 +104,12 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -213,36 +218,33 @@ void append_le_u32(std::vector<std::uint8_t>& bytes, std::uint32_t value) {
     bytes.push_back(static_cast<std::uint8_t>((value >> 24U) & 0xFFU));
 }
 
-void append_le_u64(std::vector<std::uint8_t>& bytes, std::uint64_t value) {
-    append_le_u32(bytes, static_cast<std::uint32_t>(value & 0xFFFFFFFFULL));
-    append_le_u32(bytes, static_cast<std::uint32_t>((value >> 32U) & 0xFFFFFFFFULL));
-}
-
 std::vector<std::uint8_t> minimal_ktx2_bytes() {
-    std::vector<std::uint8_t> bytes{
-        0xAB, 'K', 'T', 'X', ' ', '2', '0', 0xBB, 0x0D, 0x0A, 0x1A, 0x0A,
-    };
-    append_le_u32(bytes, 37);
-    append_le_u32(bytes, 1);
-    append_le_u32(bytes, 1);
-    append_le_u32(bytes, 1);
-    append_le_u32(bytes, 0);
-    append_le_u32(bytes, 0);
-    append_le_u32(bytes, 1);
-    append_le_u32(bytes, 1);
-    append_le_u32(bytes, 0);
-    append_le_u32(bytes, 104);
-    append_le_u32(bytes, 4);
-    append_le_u32(bytes, 0);
-    append_le_u32(bytes, 0);
-    append_le_u64(bytes, 0);
-    append_le_u64(bytes, 0);
-    append_le_u64(bytes, 108);
-    append_le_u64(bytes, 4);
-    append_le_u64(bytes, 4);
-    bytes.insert(bytes.end(), {0, 0, 0, 0});
-    bytes.insert(bytes.end(), {255, 255, 255, 255});
-    return bytes;
+    ktxTextureCreateInfo info{};
+    info.vkFormat = 37;
+    info.baseWidth = 1;
+    info.baseHeight = 1;
+    info.baseDepth = 1;
+    info.numDimensions = 2;
+    info.numLevels = 1;
+    info.numLayers = 1;
+    info.numFaces = 1;
+    ktxTexture2* raw_texture = nullptr;
+    assert(ktxTexture2_Create(&info, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &raw_texture) ==
+           KTX_SUCCESS);
+    assert(raw_texture != nullptr);
+    const auto destroy = [](ktxTexture2* texture) { ktxTexture2_Destroy(texture); };
+    std::unique_ptr<ktxTexture2, decltype(destroy)> texture(raw_texture, destroy);
+    constexpr std::array<std::uint8_t, 4> pixel{255, 255, 255, 255};
+    assert(ktxTexture_SetImageFromMemory(ktxTexture(texture.get()), 0, 0, 0, pixel.data(),
+                                         pixel.size()) == KTX_SUCCESS);
+    ktx_uint8_t* encoded = nullptr;
+    ktx_size_t encoded_size = 0;
+    assert(ktxTexture_WriteToMemory(ktxTexture(texture.get()), &encoded, &encoded_size) ==
+           KTX_SUCCESS);
+    assert(encoded != nullptr);
+    std::vector<std::uint8_t> result(encoded, encoded + encoded_size);
+    std::free(encoded);
+    return result;
 }
 
 std::string minimal_gltf_text() {
@@ -830,7 +832,7 @@ void test_resource_pack_discovery_and_asset_catalog() {
         heartstead::assets::AssetCookBackend::production_converters);
     assert(production_texture_pipeline.available);
     assert(production_texture_pipeline.converts_source_format);
-    assert(production_texture_pipeline.name == "texture_png_ktx2_jpeg_converter_v2");
+    assert(production_texture_pipeline.name == "texture_gpu_runtime_converter_v3");
     const auto production_model_pipeline = heartstead::assets::asset_cook_pipeline_info(
         heartstead::assets::AssetKind::model,
         heartstead::assets::AssetCookBackend::production_converters);
@@ -1106,11 +1108,10 @@ void test_resource_pack_discovery_and_asset_catalog() {
     assert(production_jpeg_record->kind == heartstead::assets::AssetKind::texture);
     assert(read_text(production_texture_cook_config.output_root /
                      production_png_record->cooked_relative_path)
-               .find("backend=texture_png_ktx2_jpeg_converter_v2") != std::string::npos);
+               .find("backend=texture_gpu_runtime_converter_v3") != std::string::npos);
     assert(read_text(production_texture_cook_config.output_root /
                      production_png_record->cooked_relative_path)
-               .find("meta.texture.runtime_format=heartstead.texture.rgba8.v1") !=
-           std::string::npos);
+               .find("meta.texture.runtime_format=heartstead.texture.v2") != std::string::npos);
     auto production_texture_store =
         heartstead::assets::CookedAssetStore::load(production_texture_cook_config.output_root);
     assert(production_texture_store);
@@ -1118,38 +1119,51 @@ void test_resource_pack_discovery_and_asset_catalog() {
         production_texture_store.value().load_payload("base:textures/items/raw_clay.png");
     assert(production_png_payload);
     assert(production_png_payload.value().kind == heartstead::assets::AssetKind::texture);
-    assert(production_png_payload.value().backend == "texture_png_ktx2_jpeg_converter_v2");
+    assert(production_png_payload.value().backend == "texture_gpu_runtime_converter_v3");
     assert(production_png_payload.value().profile == "production");
     assert(production_png_payload.value().metadata.at("texture.source_container") == "png");
-    assert(production_png_payload.value().metadata.at("texture.container") == "rgba8");
+    assert(production_png_payload.value().metadata.at("texture.container") == "heartstead_texture");
     assert(production_png_payload.value().metadata.at("texture.runtime_format") ==
-           "heartstead.texture.rgba8.v1");
+           "heartstead.texture.v2");
     assert(production_png_payload.value().metadata.at("texture.width") == "2");
     assert(production_png_payload.value().metadata.at("texture.height") == "2");
-    assert(production_png_payload.value().metadata.at("texture.channels") == "4");
-    assert(production_png_payload.value().metadata.at("texture.color_space") == "unspecified");
+    assert(production_png_payload.value().metadata.at("texture.mip_levels") == "2");
+    assert(production_png_payload.value().metadata.at("texture.color_space") == "srgb");
+    assert(production_png_payload.value().metadata.at("texture.gpu_format") == "bc7_rgba");
     assert(production_png_payload.value().metadata.at("texture.color_type") == "6");
-    assert(production_png_payload.value().bytes.size() == 2U * 2U * 4U);
+    auto production_png_texture =
+        heartstead::assets::decode_texture_asset(production_png_payload.value().bytes);
+    assert(production_png_texture);
+    assert(production_png_texture.value().gpu_memory_bytes() == 32);
     auto production_ktx2_payload =
         production_texture_store.value().load_payload("base:textures/voxels/clay.ktx2");
     assert(production_ktx2_payload);
-    assert(production_ktx2_payload.value().metadata.at("texture.container") == "ktx2");
-    assert(production_ktx2_payload.value().metadata.at("texture.level_count") == "1");
-    assert(production_ktx2_payload.value().bytes.size() == minimal_ktx2_bytes().size());
+    assert(production_ktx2_payload.value().metadata.at("texture.source_container") == "ktx2");
+    assert(production_ktx2_payload.value().metadata.at("texture.runtime_format") ==
+           "heartstead.texture.v2");
+    auto production_ktx2_texture =
+        heartstead::assets::decode_texture_asset(production_ktx2_payload.value().bytes);
+    assert(production_ktx2_texture);
+    assert(production_ktx2_texture.value().format == heartstead::assets::TextureAssetFormat::rgba8);
     auto production_jpeg_payload =
         production_texture_store.value().load_payload("base:textures/ui/settlement_icon.jpeg");
     assert(production_jpeg_payload);
     assert(production_jpeg_payload.value().kind == heartstead::assets::AssetKind::texture);
-    assert(production_jpeg_payload.value().backend == "texture_png_ktx2_jpeg_converter_v2");
+    assert(production_jpeg_payload.value().backend == "texture_gpu_runtime_converter_v3");
     assert(production_jpeg_payload.value().metadata.at("texture.source_container") == "jpeg");
-    assert(production_jpeg_payload.value().metadata.at("texture.container") == "rgba8");
+    assert(production_jpeg_payload.value().metadata.at("texture.container") ==
+           "heartstead_texture");
     assert(production_jpeg_payload.value().metadata.at("texture.runtime_format") ==
-           "heartstead.texture.rgba8.v1");
+           "heartstead.texture.v2");
     assert(production_jpeg_payload.value().metadata.at("texture.width") == "9");
     assert(production_jpeg_payload.value().metadata.at("texture.height") == "9");
-    assert(production_jpeg_payload.value().metadata.at("texture.channels") == "4");
+    assert(production_jpeg_payload.value().metadata.at("texture.mip_levels") == "4");
+    assert(production_jpeg_payload.value().metadata.at("texture.role") == "ui");
     assert(production_jpeg_payload.value().metadata.at("texture.component_count") == "3");
-    assert(production_jpeg_payload.value().bytes.size() == 9U * 9U * 4U);
+    auto production_jpeg_texture =
+        heartstead::assets::decode_texture_asset(production_jpeg_payload.value().bytes);
+    assert(production_jpeg_texture);
+    assert(production_jpeg_texture.value().gpu_memory_bytes() == 192);
 
     const auto invalid_texture_assets = root / "invalid_texture_assets";
     write_text(invalid_texture_assets / "textures/bad.png", "not a png");
@@ -8091,7 +8105,7 @@ void test_debug_inspection() {
     assert(asset_pipeline_inspection.object_type == "asset_cook_pipeline");
     assert(asset_pipeline_inspection.state == "available");
     assert(asset_pipeline_inspection.find_field("pipeline")->value ==
-           "texture_png_ktx2_jpeg_converter_v2");
+           "texture_gpu_runtime_converter_v3");
     assert(asset_pipeline_inspection.find_field("converts_source_format")->value == "true");
     assert(asset_pipeline_inspection.issues.empty());
     auto asset_shader_pipeline_inspection =

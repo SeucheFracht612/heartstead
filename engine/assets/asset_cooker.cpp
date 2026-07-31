@@ -3,6 +3,7 @@
 #include "engine/assets/cooked_asset_store.hpp"
 #include "engine/assets/image_asset.hpp"
 #include "engine/assets/model_asset.hpp"
+#include "engine/assets/texture_asset.hpp"
 #include "engine/audio/procedural_tone.hpp"
 #include "engine/core/file_io.hpp"
 #include "engine/core/hash.hpp"
@@ -1047,7 +1048,7 @@ void add_model_runtime_metadata(CookedAssetMetadataFields& metadata, const Model
     add_metadata(metadata, "model.lights", model.lights.size());
 }
 
-void add_texture_runtime_metadata(CookedAssetMetadataFields& metadata, const ImageAsset& image,
+void add_texture_runtime_metadata(CookedAssetMetadataFields& metadata, const TextureAsset& texture,
                                   std::string_view source_container) {
     metadata.erase(std::remove_if(metadata.begin(), metadata.end(),
                                   [](const auto& field) {
@@ -1057,12 +1058,19 @@ void add_texture_runtime_metadata(CookedAssetMetadataFields& metadata, const Ima
                                   }),
                    metadata.end());
     add_metadata(metadata, "texture.source_container", std::string(source_container));
-    add_metadata(metadata, "texture.container", "rgba8");
-    add_metadata(metadata, "texture.runtime_format", "heartstead.texture.rgba8.v1");
-    add_metadata(metadata, "texture.width", image.width);
-    add_metadata(metadata, "texture.height", image.height);
-    add_metadata(metadata, "texture.channels", 4);
-    add_metadata(metadata, "texture.color_space", "unspecified");
+    add_metadata(metadata, "texture.container", "heartstead_texture");
+    add_metadata(metadata, "texture.runtime_format", "heartstead.texture.v2");
+    add_metadata(metadata, "texture.width", texture.width);
+    add_metadata(metadata, "texture.height", texture.height);
+    add_metadata(metadata, "texture.mip_levels", texture.mips.size());
+    add_metadata(metadata, "texture.role", std::string(texture_role_name(texture.role)));
+    add_metadata(metadata, "texture.color_space",
+                 std::string(texture_color_space_name(texture.color_space)));
+    add_metadata(metadata, "texture.gpu_format",
+                 std::string(texture_asset_format_name(texture.format)));
+    add_metadata(metadata, "texture.gpu_memory_bytes", texture.gpu_memory_bytes());
+    add_metadata(metadata, "texture.alpha_coverage_preserved",
+                 texture.alpha_coverage_preserved ? "true" : "false");
 }
 
 [[nodiscard]] std::vector<std::uint8_t>
@@ -1272,7 +1280,7 @@ core::Result<AssetCookResult> AssetCooker::cook(const AssetCatalog& catalog,
         }
         std::vector<std::uint8_t> converted_bytes;
         std::optional<ModelAsset> imported_model;
-        std::optional<ImageAsset> imported_texture;
+        std::optional<TextureAsset> imported_texture;
         const std::vector<std::uint8_t>* runtime_bytes = &source_bytes.value();
         if (config.backend == AssetCookBackend::production_converters &&
             source->kind == AssetKind::model) {
@@ -1298,6 +1306,7 @@ core::Result<AssetCookResult> AssetCooker::cook(const AssetCatalog& catalog,
         } else if (config.backend == AssetCookBackend::production_converters &&
                    source->kind == AssetKind::texture) {
             const auto extension = lower_ascii(source->source_path.extension().generic_string());
+            ImageAsset decoded_texture;
             if (extension == ".png" || extension == ".jpg" || extension == ".jpeg") {
                 ImageAssetLimits image_limits;
                 image_limits.maximum_decoded_bytes = config.maximum_source_bytes;
@@ -1308,16 +1317,50 @@ core::Result<AssetCookResult> AssetCooker::cook(const AssetCatalog& catalog,
                         "production texture decode failed for " + source->logical_id + ": " +
                             decoded.error().code + ": " + decoded.error().message);
                 }
-                imported_texture = std::move(decoded).value();
-                converted_bytes = std::move(imported_texture->rgba8);
-                runtime_bytes = &converted_bytes;
-            } else {
-                auto status = validate_production_source_payload(*source, source_bytes.value());
-                if (!status) {
-                    return core::Result<AssetCookResult>::failure(status.error().code,
-                                                                  status.error().message);
+                decoded_texture = std::move(decoded).value();
+            } else if (extension == ".ktx2") {
+                ImageAssetLimits image_limits;
+                image_limits.maximum_decoded_bytes = config.maximum_source_bytes;
+                auto decoded = decode_ktx2(source_bytes.value(), image_limits);
+                if (!decoded) {
+                    return core::Result<AssetCookResult>::failure(
+                        "asset_cooker.invalid_texture",
+                        "production KTX2 decode failed for " + source->logical_id + ": " +
+                            decoded.error().code + ": " + decoded.error().message);
                 }
+                decoded_texture = std::move(decoded).value();
+            } else {
+                return core::Result<AssetCookResult>::failure(
+                    "asset_cooker.invalid_texture",
+                    "production texture source has an unsupported extension: " +
+                        source->logical_id);
             }
+            auto settings = load_texture_cook_settings(source->source_path);
+            if (!settings) {
+                return core::Result<AssetCookResult>::failure(
+                    settings.error().code, "production texture settings failed for " +
+                                               source->logical_id + ": " +
+                                               settings.error().message);
+            }
+            TextureAssetLimits texture_limits;
+            texture_limits.maximum_payload_bytes = config.maximum_source_bytes;
+            auto texture = cook_texture_asset(decoded_texture, settings.value(), texture_limits);
+            if (!texture) {
+                return core::Result<AssetCookResult>::failure(
+                    "asset_cooker.invalid_texture",
+                    "production texture cooking failed for " + source->logical_id + ": " +
+                        texture.error().code + ": " + texture.error().message);
+            }
+            auto encoded = encode_texture_asset(texture.value(), texture_limits);
+            if (!encoded) {
+                return core::Result<AssetCookResult>::failure(
+                    "asset_cooker.invalid_texture",
+                    "production texture encoding failed for " + source->logical_id + ": " +
+                        encoded.error().code + ": " + encoded.error().message);
+            }
+            imported_texture = std::move(texture).value();
+            converted_bytes = std::move(encoded).value();
+            runtime_bytes = &converted_bytes;
         } else if (config.backend == AssetCookBackend::production_converters) {
             auto status = validate_production_source_payload(*source, source_bytes.value());
             if (!status) {
@@ -1334,7 +1377,9 @@ core::Result<AssetCookResult> AssetCooker::cook(const AssetCatalog& catalog,
         if (imported_texture.has_value()) {
             const auto extension = lower_ascii(source->source_path.extension().generic_string());
             add_texture_runtime_metadata(metadata, *imported_texture,
-                                         extension == ".png" ? "png" : "jpeg");
+                                         extension == ".png"    ? "png"
+                                         : extension == ".ktx2" ? "ktx2"
+                                                                : "jpeg");
         }
 
         const auto payload = build_cooked_payload_bytes(
@@ -1465,7 +1510,7 @@ std::string_view asset_cook_pipeline_name(AssetKind kind, AssetCookBackend backe
     if (backend == AssetCookBackend::production_converters) {
         switch (kind) {
         case AssetKind::texture:
-            return "texture_png_ktx2_jpeg_converter_v2";
+            return "texture_gpu_runtime_converter_v3";
         case AssetKind::model:
             return "model_gltf_runtime_converter_v5";
         case AssetKind::shader:

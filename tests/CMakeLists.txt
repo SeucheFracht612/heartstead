@@ -17,7 +17,7 @@ function(heartstead_register_unit_test target_name)
 endfunction()
 
 add_executable(heartstead_engine_tests engine_tests.cpp)
-target_link_libraries(heartstead_engine_tests PRIVATE Heartstead::Engine)
+target_link_libraries(heartstead_engine_tests PRIVATE Heartstead::Engine KTX::ktx)
 heartstead_configure_test_target(heartstead_engine_tests)
 
 heartstead_register_unit_test(heartstead_engine_tests)
@@ -185,6 +185,7 @@ target_link_libraries(
   heartstead_model_compression_tests
   PRIVATE draco::draco KTX::ktx meshoptimizer::meshoptimizer
 )
+heartstead_add_foundation_test(heartstead_texture_asset_tests texture_asset_tests.cpp)
 heartstead_add_foundation_test(heartstead_skeletal_animation_tests skeletal_animation_tests.cpp)
 heartstead_add_foundation_test(heartstead_voxel_light_tests voxel_light_tests.cpp)
 heartstead_add_foundation_test(heartstead_voxel_fluid_tests voxel_fluid_tests.cpp)

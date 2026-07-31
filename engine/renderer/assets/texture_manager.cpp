@@ -282,17 +282,21 @@ TextureManager::prepare(TextureUploadDesc desc) const {
     }
     PreparedTexture result;
     result.source = std::move(desc);
-    result.mip_levels = result.source.generate_mipmaps
+    const auto is_cooked = !result.source.cooked_bytes.empty();
+    result.mip_levels = is_cooked ? result.source.cooked_mip_levels
+                        : result.source.generate_mipmaps
                             ? complete_mip_level_count(result.source.width, result.source.height)
                             : 1;
     auto upload_bytes =
-        result.source.generate_mipmaps
+        is_cooked ? result.source.cooked_bytes
+        : result.source.generate_mipmaps
             ? generate_rgba8_mip_chain(result.source.width, result.source.height,
                                        result.source.array_layers, result.source.color_space,
                                        result.source.rgba8)
             : result.source.rgba8;
     rhi::RenderImageDesc image_desc;
-    image_desc.format = result.source.color_space == TextureColorSpace::srgb
+    image_desc.format = is_cooked ? result.source.cooked_format
+                        : result.source.color_space == TextureColorSpace::srgb
                             ? rhi::RenderImageFormat::rgba8_srgb
                             : rhi::RenderImageFormat::rgba8_unorm;
     image_desc.width = result.source.width;
@@ -336,6 +340,11 @@ void TextureManager::refresh_view(TextureRecord& record) {
     record.view.array_layers = record.texture.source.array_layers;
     record.view.mip_levels = record.texture.mip_levels;
     record.view.color_space = record.texture.source.color_space;
+    record.view.format = record.texture.source.cooked_bytes.empty()
+                             ? record.texture.source.color_space == TextureColorSpace::srgb
+                                   ? rhi::RenderImageFormat::rgba8_srgb
+                                   : rhi::RenderImageFormat::rgba8_unorm
+                             : record.texture.source.cooked_format;
     record.view.resident_bytes = record.texture.resident_bytes;
 }
 
@@ -359,6 +368,24 @@ core::Status validate_texture_upload_desc(const TextureUploadDesc& desc) {
         return core::Status::failure("texture_manager.invalid_extent",
                                      "texture dimensions and array layers must be nonzero");
     }
+    if (!desc.cooked_bytes.empty()) {
+        if (!desc.rgba8.empty() || desc.generate_mipmaps || desc.cooked_mip_levels == 0) {
+            return core::Status::failure(
+                "texture_manager.invalid_cooked_texture",
+                "cooked texture uploads require only a complete supplied mip chain");
+        }
+        rhi::RenderImageDesc image_desc;
+        image_desc.format = desc.cooked_format;
+        image_desc.width = desc.width;
+        image_desc.height = desc.height;
+        image_desc.array_layers = desc.array_layers;
+        image_desc.mip_levels = desc.cooked_mip_levels;
+        return rhi::validate_render_image_upload(image_desc, desc.cooked_bytes);
+    }
+    if (desc.cooked_mip_levels != 0) {
+        return core::Status::failure("texture_manager.invalid_cooked_texture",
+                                     "cooked mip counts require supplied cooked texture bytes");
+    }
     constexpr auto maximum = std::numeric_limits<std::size_t>::max();
     auto expected = static_cast<std::size_t>(desc.width);
     if (desc.height > maximum / expected) {
@@ -377,6 +404,55 @@ core::Status validate_texture_upload_desc(const TextureUploadDesc& desc) {
                                      "RGBA8 texture bytes must match its base extent and layers");
     }
     return core::Status::ok();
+}
+
+core::Result<TextureUploadDesc> texture_upload_desc_from_asset(std::string id,
+                                                               const assets::TextureAsset& asset) {
+    auto status = assets::validate_texture_asset(asset);
+    if (!status) {
+        return core::Result<TextureUploadDesc>::failure(status.error().code,
+                                                        status.error().message);
+    }
+    if (id.empty()) {
+        return core::Result<TextureUploadDesc>::failure("texture_manager.missing_id",
+                                                        "texture id must not be empty");
+    }
+    TextureUploadDesc result;
+    result.id = std::move(id);
+    result.width = asset.width;
+    result.height = asset.height;
+    result.color_space = asset.color_space == assets::TextureAssetColorSpace::srgb
+                             ? TextureColorSpace::srgb
+                             : TextureColorSpace::linear;
+    result.generate_mipmaps = false;
+    result.cooked_mip_levels = static_cast<std::uint32_t>(asset.mips.size());
+    switch (asset.format) {
+    case assets::TextureAssetFormat::rgba8:
+        result.cooked_format = asset.color_space == assets::TextureAssetColorSpace::srgb
+                                   ? rhi::RenderImageFormat::rgba8_srgb
+                                   : rhi::RenderImageFormat::rgba8_unorm;
+        break;
+    case assets::TextureAssetFormat::bc5_rg:
+        result.cooked_format = rhi::RenderImageFormat::bc5_rg_unorm;
+        break;
+    case assets::TextureAssetFormat::bc7_rgba:
+        result.cooked_format = asset.color_space == assets::TextureAssetColorSpace::srgb
+                                   ? rhi::RenderImageFormat::bc7_rgba_srgb
+                                   : rhi::RenderImageFormat::bc7_rgba_unorm;
+        break;
+    }
+    result.cooked_bytes.reserve(asset.gpu_memory_bytes());
+    for (const auto& mip : asset.mips) {
+        result.cooked_bytes.insert(
+            result.cooked_bytes.end(), reinterpret_cast<const std::byte*>(mip.bytes.data()),
+            reinterpret_cast<const std::byte*>(mip.bytes.data() + mip.bytes.size()));
+    }
+    status = validate_texture_upload_desc(result);
+    if (!status) {
+        return core::Result<TextureUploadDesc>::failure(status.error().code,
+                                                        status.error().message);
+    }
+    return core::Result<TextureUploadDesc>::success(std::move(result));
 }
 
 std::uint32_t complete_mip_level_count(std::uint32_t width, std::uint32_t height) noexcept {
