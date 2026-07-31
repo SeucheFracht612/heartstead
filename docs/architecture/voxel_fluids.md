@@ -1,5 +1,9 @@
 # Voxel Fluids
 
+Rendering and environmental authoring are documented in
+[Environment Rendering](environment_rendering.md). Fluid simulation state supplies the production
+water shader with surface height, falling state, and deterministic flow orientation.
+
 Voxel fluids are authoritative chunk cells, not renderer effects. A fluid prototype uses
 `BlockLogicalOccupancy::fluid`; its compact simulation state is stored in
 `VoxelCell::state_bits`, so existing chunk snapshots, replication, edit deltas, and save/reload

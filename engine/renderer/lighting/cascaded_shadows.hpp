@@ -56,11 +56,21 @@ struct alignas(16) GpuDirectionalShadowData {
     float parameters[4]{};
     float environment_parameters[4]{};
     float camera_position[4]{};
+    float atmosphere_parameters[4]{};
+    float wind_parameters[4]{};
+    float weather_parameters[4]{};
+    float sky_zenith_cloud[4]{};
+    float sky_horizon_cloud[4]{};
+    float water_shallow_absorption[4]{};
+    float water_deep_scattering[4]{};
+    float water_scattering_refraction[4]{};
+    float water_foam_strength[4]{};
+    float water_parameters[4]{};
     std::array<math::Mat4f, local_shadow_map_count> local_light_view_projection{};
     std::array<std::array<float, 4>, local_shadow_map_count> local_parameters{};
 };
 
-static_assert(sizeof(GpuDirectionalShadowData) == 480);
+static_assert(sizeof(GpuDirectionalShadowData) == 640);
 
 class CascadedShadowSystem {
   public:
@@ -68,10 +78,8 @@ class CascadedShadowSystem {
     ~CascadedShadowSystem();
 
     [[nodiscard]] core::Status initialize(DirectionalShadowConfig config = {});
-    [[nodiscard]] core::Status update(const RenderCamera& camera, math::Vec3f sun_direction,
-                                      float sky_diffuse_intensity,
-                                      float environment_specular_intensity,
-                                      float environment_rotation_radians,
+    [[nodiscard]] core::Status update(const RenderCamera& camera,
+                                      const rhi::RenderEnvironmentData& environment,
                                       std::span<const RenderLightInstance> local_shadow_lights = {});
     [[nodiscard]] core::Status bind(core::PrototypeId material, std::string_view binding);
     [[nodiscard]] core::Status shutdown();

@@ -55,6 +55,16 @@ layout(std430, set = 0, binding = 4) readonly buffer DirectionalShadowData {
     vec4 shadow_parameters;
     vec4 environment_parameters;
     vec4 camera_position;
+    vec4 atmosphere_parameters;
+    vec4 wind_parameters;
+    vec4 weather_parameters;
+    vec4 sky_zenith_cloud;
+    vec4 sky_horizon_cloud;
+    vec4 water_shallow_absorption;
+    vec4 water_deep_scattering;
+    vec4 water_scattering_refraction;
+    vec4 water_foam_strength;
+    vec4 water_parameters;
     mat4 local_light_view_projection[2];
     vec4 local_shadow_parameters[2];
 } shadows;
@@ -440,14 +450,37 @@ void main() {
     uint variant = variant_hash % texture_count;
     uint texture_layer = texture_start + variant;
     uint material_flags = material.flags_and_padding.x;
-    vec2 mapped_uv =
-        fract(world_mapped_uv(stable_position, geometry_normal) *
-              material.mapping_parameters.x);
+    bool fluid = (material_flags & MATERIAL_FLUID) != 0U;
+    float environment_time = shadows.atmosphere_parameters.x;
+    vec2 mapped_uv = fluid
+                         ? fract(fragment_uv * material.mapping_parameters.x +
+                                 vec2(0.0, environment_time *
+                                                   shadows.water_parameters.y))
+                         : fract(world_mapped_uv(stable_position, geometry_normal) *
+                                 material.mapping_parameters.x);
     vec2 orientation_placeholder = vec2(0.0);
     orient_variant_uv(mapped_uv, orientation_placeholder, variant_hash, material_flags);
     vec4 texel = texture(terrain_textures, vec3(mapped_uv, float(texture_layer)));
     vec3 tangent_normal =
         texture(terrain_normal_textures, vec3(mapped_uv, float(texture_layer))).xyz * 2.0 - 1.0;
+    if (fluid) {
+        vec2 counter_uv =
+            fract(mapped_uv * 1.37 +
+                  vec2(environment_time * shadows.water_parameters.y * 0.61,
+                       -environment_time * shadows.water_parameters.y * 0.43));
+        vec3 counter_normal =
+            texture(terrain_normal_textures,
+                    vec3(counter_uv, float(texture_layer))).xyz *
+                2.0 -
+            1.0;
+        tangent_normal =
+            normalize(mix(tangent_normal, counter_normal, 0.45));
+        float rain_ripples =
+            sin((stable_position.x + stable_position.z) * 11.0 +
+                environment_time * 18.0) *
+            shadows.weather_parameters.x * shadows.water_parameters.w;
+        tangent_normal.xy += vec2(rain_ripples, -rain_ripples) * 0.08;
+    }
     tangent_normal.xy *= material.mapping_parameters.y;
     tangent_normal = normalize(tangent_normal);
     vec2 normal_uv_placeholder = mapped_uv;
@@ -500,6 +533,15 @@ void main() {
     }
     apply_surface_layers(material, material_flags, mapped_uv, stable_position,
                          geometry_normal, albedo, roughness, metallic, emissive);
+    if (!fluid) {
+        float upward = smoothstep(0.25, 0.85, geometry_normal.y);
+        float weather_wetness = shadows.weather_parameters.y;
+        albedo *= mix(1.0, 0.72, weather_wetness);
+        roughness = mix(roughness, 0.16, weather_wetness);
+        float weather_snow = shadows.weather_parameters.z * upward;
+        albedo = mix(albedo, vec3(0.78, 0.84, 0.88), weather_snow);
+        roughness = mix(roughness, 0.82, weather_snow);
+    }
     vec3 view_direction =
         normalize(shadows.camera_position.xyz - fragment_world_position);
     vec3 light_direction = normalize(chunk.sun_direction_intensity.xyz);
@@ -537,6 +579,55 @@ void main() {
     vec3 color = (material_flags & MATERIAL_UNLIT) != 0U
                      ? albedo
                      : lit + albedo * emissive;
+    if (fluid) {
+        float amount = float(fragment_state_bits & 0x0fU) / 8.0;
+        bool falling = (fragment_state_bits & 0x10U) != 0U;
+        float view_depth =
+            max(amount, 0.125) /
+            max(abs(dot(normal, view_direction)), 0.16);
+        float absorption =
+            1.0 -
+            exp(-view_depth /
+                max(shadows.water_shallow_absorption.w, 0.001));
+        vec3 water_color =
+            mix(shadows.water_shallow_absorption.rgb,
+                shadows.water_deep_scattering.rgb,
+                clamp(absorption * 4.0, 0.0, 1.0));
+        vec3 refracted_direction =
+            refract(-view_direction, normal, 1.0 / 1.333);
+        vec3 refracted_environment =
+            textureLod(environment_map, refracted_direction, 2.0).rgb;
+        float water_fresnel =
+            shadows.water_parameters.z +
+            (1.0 - shadows.water_parameters.z) *
+                pow(1.0 - max(dot(normal, view_direction), 0.0), 5.0);
+        float refraction_strength =
+            shadows.water_scattering_refraction.w;
+        vec3 refracted =
+            mix(albedo, refracted_environment * water_color,
+                clamp(refraction_strength * 12.0 + absorption, 0.0, 1.0));
+        vec3 reflected =
+            environment_specular *
+            (0.65 + chunk.sun_direction_intensity.w * 0.35);
+        vec3 scattered =
+            shadows.water_scattering_refraction.rgb *
+            shadows.water_deep_scattering.w *
+            (0.25 + absorption * 0.75);
+        float slope_foam =
+            smoothstep(0.06, 0.30, 1.0 - geometry_normal.y);
+        float edge_foam =
+            smoothstep(0.0, 0.32, 1.0 - amount);
+        float foam =
+            clamp(max(slope_foam, edge_foam) + (falling ? 0.65 : 0.0) +
+                      shadows.weather_parameters.x * 0.12,
+                  0.0, 1.0) *
+            shadows.water_foam_strength.w;
+        color = mix(refracted + scattered, reflected + scattered,
+                    clamp(water_fresnel, 0.0, 1.0));
+        color = mix(color, shadows.water_foam_strength.rgb, foam);
+        surface_alpha =
+            clamp(mix(0.34, 0.82, absorption) + foam * 0.16, 0.0, 0.96);
+    }
     uint debug_view = uint(shadows.shadow_parameters.w + 0.5);
     if (debug_view == 1U) {
         color = albedo;
@@ -592,7 +683,18 @@ void main() {
         length(fragment_world_position - shadows.camera_position.xyz);
     float fog = smoothstep(chunk.ambient_color_fog_start.w, chunk.fog_color_fog_end.w,
                            fog_distance);
+    float height_density =
+        shadows.atmosphere_parameters.y *
+        exp(-max(fragment_world_position.y - shadows.camera_position.y, 0.0) *
+            shadows.atmosphere_parameters.z);
+    float volumetric_fog =
+        1.0 - exp(-fog_distance *
+                  (height_density + shadows.atmosphere_parameters.w * 0.0008));
+    fog = max(fog, clamp(volumetric_fog, 0.0, 1.0));
     color = mix(color, chunk.fog_color_fog_end.rgb, fog);
-    float output_alpha = (material_flags & MATERIAL_TRANSLUCENT) != 0U ? surface_alpha : 1.0;
+    float output_alpha =
+        (material_flags & MATERIAL_TRANSLUCENT) != 0U || fluid
+            ? surface_alpha
+            : 1.0;
     out_color = vec4(max(color, vec3(0.0)), output_alpha);
 }

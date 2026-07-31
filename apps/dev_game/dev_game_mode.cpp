@@ -47,6 +47,16 @@ namespace {
     return camera;
 }
 
+[[nodiscard]] math::Vec3f component_multiply(math::Vec3f left,
+                                             math::Vec3f right) noexcept {
+    return {left.x * right.x, left.y * right.y, left.z * right.z};
+}
+
+[[nodiscard]] math::Vec3f mix(math::Vec3f left, math::Vec3f right,
+                              float amount) noexcept {
+    return left * (1.0F - amount) + right * amount;
+}
+
 [[nodiscard]] core::Status start_runtime(game::GameRuntime& runtime,
                                          const content::ContentValidationReport& content_report,
                                          const DevGameModeConfig& options,
@@ -184,6 +194,8 @@ struct DevGameMode::Impl {
     bool input_orientation_initialized = false;
     movement::PlayerCameraRig camera_rig;
     renderer::DayNightCycleConfig environment;
+    std::string biome = "meadow";
+    std::string weather = "clear";
     std::uint64_t frame_count = 0;
     std::uint64_t authoritative_tick = 0;
     std::uint64_t reconciliation_hard_corrections = 0;
@@ -510,15 +522,52 @@ DevGameMode::update(game::GameApplicationServices& services,
         return core::Result<game::GameApplicationFrameOutput>::failure(day_night.error().code,
                                                                        day_night.error().message);
     }
-    auto status = renderer->set_environment(day_night.value().render);
+    const auto* player = state.runtime.session()->client()->local_player_snapshot();
+    if (player == nullptr || !frame.extent.is_valid()) {
+        return core::Result<game::GameApplicationFrameOutput>::success({});
+    }
+    const auto swimming = player->state.mode == movement::PlayerControllerMode::swimming;
+    renderer::EnvironmentBlendContext environment_context;
+    environment_context.biome = state.biome;
+    environment_context.weather = state.weather;
+    environment_context.day_fraction = day_night.value().day_fraction;
+    environment_context.elapsed_seconds =
+        static_cast<float>(frame.now_milliseconds % 4'096'000) * 0.001F;
+    environment_context.altitude =
+        static_cast<float>(player->state.position.anchor.y) +
+        static_cast<float>(player->state.position.local_offset.y);
+    environment_context.underground = environment_context.altitude < 0.0F;
+    environment_context.aerial = environment_context.altitude > 128.0F;
+    environment_context.underwater = swimming;
+    auto evaluated_environment =
+        state.config.content_report->environment_profiles.evaluate(environment_context);
+    if (!evaluated_environment) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(
+            evaluated_environment.error().code,
+            evaluated_environment.error().message);
+    }
+    auto render_environment = evaluated_environment.value().render;
+    render_environment.sun_direction = day_night.value().render.sun_direction;
+    render_environment.sun_intensity *=
+        std::max(day_night.value().solar_elevation, 0.0F) *
+        day_night.value().daylight;
+    render_environment.ambient_color =
+        component_multiply(
+            render_environment.ambient_color,
+            math::splat(0.18F + day_night.value().daylight * 0.82F)) +
+        day_night.value().render.ambient_color * 0.22F;
+    render_environment.fog_color =
+        mix(day_night.value().render.fog_color, render_environment.fog_color,
+            0.72F);
+    auto status = renderer->set_environment(render_environment);
     if (!status) {
         return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
                                                                        status.error().message);
     }
-
-    const auto* player = state.runtime.session()->client()->local_player_snapshot();
-    if (player == nullptr || !frame.extent.is_valid()) {
-        return core::Result<game::GameApplicationFrameOutput>::success({});
+    status = renderer->set_exposure(evaluated_environment.value().exposure);
+    if (!status) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
+                                                                       status.error().message);
     }
     const movement::PlayerCameraCollisionContext camera_collision{
         state.runtime.session()->client()->world().chunks(),
@@ -563,7 +612,6 @@ DevGameMode::update(game::GameApplicationServices& services,
         state.fire_emitter = created_emitter.value();
     }
 
-    const auto swimming = player->state.mode == movement::PlayerControllerMode::swimming;
     if (swimming && !state.was_swimming) {
         status = state.particle_system->queue_event({state.splash,
                                                      player->state.position,

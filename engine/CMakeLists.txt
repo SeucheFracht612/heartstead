@@ -120,6 +120,7 @@ target_sources(
     renderer/chunks/chunk_render_system.cpp
     renderer/debug/debug_renderer.cpp
     renderer/environment/day_night.cpp
+    renderer/environment/environment_profile.cpp
     renderer/environment/environment_lighting.cpp
     renderer/environment/sky_renderer.cpp
     renderer/frame/frame_builder.cpp

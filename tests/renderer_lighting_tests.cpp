@@ -57,7 +57,8 @@ int main() {
 
     CascadedShadowSystem shadows(*device);
     assert(shadows.initialize());
-    assert(shadows.update(camera, {0.45F, 0.82F, 0.35F}, 1.0F, 1.0F, 0.0F));
+    rhi::RenderEnvironmentData environment;
+    assert(shadows.update(camera, environment));
     const auto first = shadows.gpu_data();
     assert(first.split_distances[0] > camera.near_plane);
     for (std::size_t index = 1; index < 4; ++index) {
@@ -67,11 +68,19 @@ int main() {
     camera.local_position.x += 0.0001F;
     assert(camera.update_matrices());
     const std::array selected_spotlights{lights[4], lights[2]};
-    assert(shadows.update(camera, {0.45F, 0.82F, 0.35F}, 0.8F, 1.2F, 0.4F,
-                          selected_spotlights));
+    environment.sky_diffuse_intensity = 0.8F;
+    environment.environment_specular_intensity = 1.2F;
+    environment.environment_rotation_radians = 0.4F;
+    environment.wind_velocity = {2.0F, 0.0F, 1.0F};
+    environment.wetness = 0.75F;
+    environment.water_absorption_distance = 6.0F;
+    assert(shadows.update(camera, environment, selected_spotlights));
     const auto second = shadows.gpu_data();
     assert(std::abs(second.environment_parameters[0] - 0.8F) < 1.0e-6F);
     assert(std::abs(second.environment_parameters[1] - 1.2F) < 1.0e-6F);
+    assert(std::abs(second.wind_parameters[0] - 2.0F) < 1.0e-6F);
+    assert(std::abs(second.weather_parameters[1] - 0.75F) < 1.0e-6F);
+    assert(std::abs(second.water_shallow_absorption[3] - 6.0F) < 1.0e-6F);
     assert(std::abs(second.camera_position[0] - camera.local_position.x) < 1.0e-6F);
     assert(second.local_light_view_projection[0].is_finite());
     assert(second.local_parameters[0][3] == 1.0F);

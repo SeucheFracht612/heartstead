@@ -89,10 +89,7 @@ core::Status CascadedShadowSystem::initialize(DirectionalShadowConfig config) {
 }
 
 core::Status CascadedShadowSystem::update(const RenderCamera& camera,
-                                          math::Vec3f sun_direction,
-                                          float sky_diffuse_intensity,
-                                          float environment_specular_intensity,
-                                          float environment_rotation_radians,
+                                          const rhi::RenderEnvironmentData& environment,
                                           std::span<const RenderLightInstance>
                                               local_shadow_lights) {
     if (!data_buffer_.is_valid()) {
@@ -122,7 +119,7 @@ core::Status CascadedShadowSystem::update(const RenderCamera& camera,
             (2.0F * radius) / static_cast<float>(config_.resolution);
         radius = std::ceil(radius / texel_world) * texel_world;
         auto center = camera.local_position + camera.forward() * center_distance;
-        auto view = light_view(center, sun_direction);
+        auto view = light_view(center, environment.sun_direction);
         auto light_center = view * math::Vec4f{center.x, center.y, center.z, 1.0F};
         light_center.x = std::floor(light_center.x / texel_world) * texel_world;
         light_center.y = std::floor(light_center.y / texel_world) * texel_world;
@@ -133,7 +130,7 @@ core::Status CascadedShadowSystem::update(const RenderCamera& camera,
         const auto unsnapped = view * math::Vec4f{center.x, center.y, center.z, 1.0F};
         center = center + right * (light_center.x - unsnapped.x) +
                  up * (light_center.y - unsnapped.y);
-        view = light_view(center, sun_direction);
+        view = light_view(center, environment.sun_direction);
         gpu_data_.light_view_projection[cascade] =
             orthographic(radius, -radius * 2.0F, radius * 2.0F) * view;
         previous_split = split;
@@ -142,12 +139,52 @@ core::Status CascadedShadowSystem::update(const RenderCamera& camera,
     gpu_data_.parameters[1] = config_.normal_bias;
     gpu_data_.parameters[2] = config_.fade_fraction;
     gpu_data_.parameters[3] = static_cast<float>(debug_view_);
-    gpu_data_.environment_parameters[0] = sky_diffuse_intensity;
-    gpu_data_.environment_parameters[1] = environment_specular_intensity;
-    gpu_data_.environment_parameters[2] = environment_rotation_radians;
+    gpu_data_.environment_parameters[0] = environment.sky_diffuse_intensity;
+    gpu_data_.environment_parameters[1] = environment.environment_specular_intensity;
+    gpu_data_.environment_parameters[2] = environment.environment_rotation_radians;
     gpu_data_.camera_position[0] = camera.local_position.x;
     gpu_data_.camera_position[1] = camera.local_position.y;
     gpu_data_.camera_position[2] = camera.local_position.z;
+    gpu_data_.atmosphere_parameters[0] = environment.elapsed_seconds;
+    gpu_data_.atmosphere_parameters[1] = environment.height_fog_density;
+    gpu_data_.atmosphere_parameters[2] = environment.height_fog_falloff;
+    gpu_data_.atmosphere_parameters[3] = environment.aerial_perspective;
+    gpu_data_.wind_parameters[0] = environment.wind_velocity.x;
+    gpu_data_.wind_parameters[1] = environment.wind_velocity.y;
+    gpu_data_.wind_parameters[2] = environment.wind_velocity.z;
+    gpu_data_.wind_parameters[3] = environment.wind_gust_strength;
+    gpu_data_.weather_parameters[0] = environment.precipitation_intensity;
+    gpu_data_.weather_parameters[1] = environment.wetness;
+    gpu_data_.weather_parameters[2] = environment.snow;
+    gpu_data_.weather_parameters[3] = environment.storm_intensity;
+    gpu_data_.sky_zenith_cloud[0] = environment.sky_zenith_color.x;
+    gpu_data_.sky_zenith_cloud[1] = environment.sky_zenith_color.y;
+    gpu_data_.sky_zenith_cloud[2] = environment.sky_zenith_color.z;
+    gpu_data_.sky_zenith_cloud[3] = environment.cloud_coverage;
+    gpu_data_.sky_horizon_cloud[0] = environment.sky_horizon_color.x;
+    gpu_data_.sky_horizon_cloud[1] = environment.sky_horizon_color.y;
+    gpu_data_.sky_horizon_cloud[2] = environment.sky_horizon_color.z;
+    gpu_data_.sky_horizon_cloud[3] = environment.cloud_density;
+    gpu_data_.water_shallow_absorption[0] = environment.water_shallow_color.x;
+    gpu_data_.water_shallow_absorption[1] = environment.water_shallow_color.y;
+    gpu_data_.water_shallow_absorption[2] = environment.water_shallow_color.z;
+    gpu_data_.water_shallow_absorption[3] = environment.water_absorption_distance;
+    gpu_data_.water_deep_scattering[0] = environment.water_deep_color.x;
+    gpu_data_.water_deep_scattering[1] = environment.water_deep_color.y;
+    gpu_data_.water_deep_scattering[2] = environment.water_deep_color.z;
+    gpu_data_.water_deep_scattering[3] = environment.water_scattering_strength;
+    gpu_data_.water_scattering_refraction[0] = environment.water_scattering_color.x;
+    gpu_data_.water_scattering_refraction[1] = environment.water_scattering_color.y;
+    gpu_data_.water_scattering_refraction[2] = environment.water_scattering_color.z;
+    gpu_data_.water_scattering_refraction[3] = environment.water_refraction_strength;
+    gpu_data_.water_foam_strength[0] = environment.water_foam_color.x;
+    gpu_data_.water_foam_strength[1] = environment.water_foam_color.y;
+    gpu_data_.water_foam_strength[2] = environment.water_foam_color.z;
+    gpu_data_.water_foam_strength[3] = environment.water_foam_strength;
+    gpu_data_.water_parameters[0] = environment.water_normal_strength;
+    gpu_data_.water_parameters[1] = environment.water_normal_speed;
+    gpu_data_.water_parameters[2] = environment.water_fresnel_f0;
+    gpu_data_.water_parameters[3] = environment.water_ripple_strength;
     for (std::size_t slot = 0; slot < local_shadow_map_count; ++slot) {
         gpu_data_.local_light_view_projection[slot] = math::Mat4f::identity();
         gpu_data_.local_parameters[slot] = {};

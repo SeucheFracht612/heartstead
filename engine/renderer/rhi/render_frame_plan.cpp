@@ -689,23 +689,79 @@ core::Status validate_render_environment(const RenderEnvironmentData& environmen
     const auto nonnegative = [](math::Vec3f value) {
         return value.x >= 0.0F && value.y >= 0.0F && value.z >= 0.0F;
     };
-    if (!environment.sun_direction.is_finite() || !environment.ambient_color.is_finite() ||
-        !environment.fog_color.is_finite() || !std::isfinite(environment.sun_intensity) ||
+    if (!environment.sun_direction.is_finite() || !environment.sun_color.is_finite() ||
+        !environment.ambient_color.is_finite() || !environment.fog_color.is_finite() ||
+        !environment.sky_zenith_color.is_finite() ||
+        !environment.sky_horizon_color.is_finite() || !environment.wind_velocity.is_finite() ||
+        !environment.water_shallow_color.is_finite() ||
+        !environment.water_deep_color.is_finite() ||
+        !environment.water_scattering_color.is_finite() ||
+        !environment.water_foam_color.is_finite() ||
+        !std::isfinite(environment.sun_intensity) ||
+        !std::isfinite(environment.elapsed_seconds) ||
         !std::isfinite(environment.fog_start) || !std::isfinite(environment.fog_end) ||
         !std::isfinite(environment.sky_diffuse_intensity) ||
         !std::isfinite(environment.environment_specular_intensity) ||
-        !std::isfinite(environment.environment_rotation_radians)) {
+        !std::isfinite(environment.environment_rotation_radians) ||
+        !std::isfinite(environment.aerial_perspective) ||
+        !std::isfinite(environment.cloud_coverage) ||
+        !std::isfinite(environment.cloud_density) ||
+        !std::isfinite(environment.wind_gust_strength) ||
+        !std::isfinite(environment.wind_gust_frequency) ||
+        !std::isfinite(environment.wind_turbulence) ||
+        !std::isfinite(environment.precipitation_intensity) ||
+        !std::isfinite(environment.wetness) || !std::isfinite(environment.snow) ||
+        !std::isfinite(environment.storm_intensity) ||
+        !std::isfinite(environment.visibility) ||
+        !std::isfinite(environment.height_fog_density) ||
+        !std::isfinite(environment.height_fog_falloff) ||
+        !std::isfinite(environment.local_fog_density) ||
+        !std::isfinite(environment.water_absorption_distance) ||
+        !std::isfinite(environment.water_scattering_strength) ||
+        !std::isfinite(environment.water_refraction_strength) ||
+        !std::isfinite(environment.water_foam_strength) ||
+        !std::isfinite(environment.water_normal_strength) ||
+        !std::isfinite(environment.water_normal_speed) ||
+        !std::isfinite(environment.water_fresnel_f0) ||
+        !std::isfinite(environment.water_ripple_strength) ||
+        !std::isfinite(environment.underwater_fog_distance)) {
         return core::Status::failure("renderer.invalid_environment_finite",
                                      "render environment values must be finite");
     }
     if (math::length_squared(environment.sun_direction) <= 0.0F ||
-        environment.sun_intensity < 0.0F || !nonnegative(environment.ambient_color) ||
-        !nonnegative(environment.fog_color) || environment.fog_start < 0.0F ||
+        environment.sun_intensity < 0.0F || environment.elapsed_seconds < 0.0F ||
+        !nonnegative(environment.sun_color) || !nonnegative(environment.ambient_color) ||
+        !nonnegative(environment.fog_color) || !nonnegative(environment.sky_zenith_color) ||
+        !nonnegative(environment.sky_horizon_color) ||
+        !nonnegative(environment.water_shallow_color) ||
+        !nonnegative(environment.water_deep_color) ||
+        !nonnegative(environment.water_scattering_color) ||
+        !nonnegative(environment.water_foam_color) || environment.fog_start < 0.0F ||
         environment.fog_end <= environment.fog_start || environment.sky_diffuse_intensity < 0.0F ||
-        environment.environment_specular_intensity < 0.0F) {
+        environment.environment_specular_intensity < 0.0F ||
+        environment.aerial_perspective < 0.0F || environment.cloud_coverage < 0.0F ||
+        environment.cloud_coverage > 1.0F || environment.cloud_density < 0.0F ||
+        environment.cloud_density > 1.0F || environment.wind_gust_strength < 0.0F ||
+        environment.wind_gust_frequency < 0.0F || environment.wind_turbulence < 0.0F ||
+        environment.precipitation_intensity < 0.0F ||
+        environment.precipitation_intensity > 1.0F || environment.wetness < 0.0F ||
+        environment.wetness > 1.0F || environment.snow < 0.0F ||
+        environment.snow > 1.0F || environment.storm_intensity < 0.0F ||
+        environment.storm_intensity > 1.0F || environment.visibility < 0.0F ||
+        environment.visibility > 1.0F || environment.height_fog_density < 0.0F ||
+        environment.height_fog_falloff < 0.0F || environment.local_fog_density < 0.0F ||
+        environment.water_absorption_distance <= 0.0F ||
+        environment.water_scattering_strength < 0.0F ||
+        environment.water_refraction_strength < 0.0F ||
+        environment.water_foam_strength < 0.0F ||
+        environment.water_normal_strength < 0.0F || environment.water_normal_speed < 0.0F ||
+        environment.water_fresnel_f0 < 0.0F || environment.water_fresnel_f0 > 1.0F ||
+        environment.water_ripple_strength < 0.0F ||
+        environment.underwater_fog_distance <= 0.0F) {
         return core::Status::failure(
             "renderer.invalid_environment_range",
-            "render environment lighting and fog values are outside their valid ranges");
+            "render environment lighting, atmosphere, weather, wind, and water values are "
+            "outside their valid ranges");
     }
     return core::Status::ok();
 }

@@ -539,13 +539,46 @@ struct RenderCameraData {
 struct RenderEnvironmentData {
     math::Vec3f sun_direction{0.45F, 0.82F, 0.35F};
     float sun_intensity = 0.68F;
+    math::Vec3f sun_color{1.0F, 0.96F, 0.88F};
+    float elapsed_seconds = 0.0F;
     math::Vec3f ambient_color{0.32F, 0.36F, 0.42F};
     float fog_start = 384.0F;
     math::Vec3f fog_color{0.055F, 0.09F, 0.14F};
     float fog_end = 512.0F;
+    math::Vec3f sky_zenith_color{0.12F, 0.30F, 0.58F};
+    float cloud_coverage = 0.0F;
+    math::Vec3f sky_horizon_color{0.38F, 0.56F, 0.72F};
+    float cloud_density = 0.0F;
     float sky_diffuse_intensity = 1.0F;
     float environment_specular_intensity = 1.0F;
     float environment_rotation_radians = 0.0F;
+    float aerial_perspective = 0.0F;
+    math::Vec3f wind_velocity{};
+    float wind_gust_strength = 0.0F;
+    float wind_gust_frequency = 0.2F;
+    float wind_turbulence = 0.0F;
+    float precipitation_intensity = 0.0F;
+    float wetness = 0.0F;
+    float snow = 0.0F;
+    float storm_intensity = 0.0F;
+    float visibility = 1.0F;
+    float height_fog_density = 0.0F;
+    float height_fog_falloff = 0.1F;
+    float local_fog_density = 0.0F;
+    math::Vec3f water_shallow_color{0.16F, 0.46F, 0.58F};
+    float water_absorption_distance = 8.0F;
+    math::Vec3f water_deep_color{0.015F, 0.10F, 0.18F};
+    float water_scattering_strength = 0.25F;
+    math::Vec3f water_scattering_color{0.08F, 0.34F, 0.42F};
+    float water_refraction_strength = 0.025F;
+    math::Vec3f water_foam_color{0.86F, 0.94F, 0.92F};
+    float water_foam_strength = 0.5F;
+    float water_normal_strength = 0.45F;
+    float water_normal_speed = 0.08F;
+    float water_fresnel_f0 = 0.02F;
+    float water_ripple_strength = 0.2F;
+    float underwater_fog_distance = 24.0F;
+    bool underwater = false;
 };
 
 enum class RenderToneMapping : std::uint8_t {

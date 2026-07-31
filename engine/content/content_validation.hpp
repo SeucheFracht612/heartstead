@@ -18,6 +18,7 @@
 #include "engine/processes/process.hpp"
 #include "engine/renderer/materials/material_asset_validation.hpp"
 #include "engine/renderer/materials/material_definition.hpp"
+#include "engine/renderer/environment/environment_profile.hpp"
 #include "engine/renderer/particles/particle_system.hpp"
 #include "engine/rooms/room_descriptor_prototype.hpp"
 #include "engine/save/save_metadata.hpp"
@@ -61,6 +62,7 @@ struct ContentValidationReport {
     std::vector<scenarios::ScenarioDefinition> scenario_definitions;
     renderer::materials::MaterialRegistry material_registry;
     renderer::materials::MaterialAssetValidationResult material_assets;
+    renderer::EnvironmentProfileRegistry environment_profiles;
     std::vector<renderer::ParticlePrototype> particle_prototypes;
     ui::UiSkin ui_skin;
     std::vector<modding::ModDiagnostic> diagnostics;

@@ -51,6 +51,16 @@ layout(std430, set = 0, binding = 9) readonly buffer DirectionalShadowData {
     vec4 shadow_parameters;
     vec4 environment_parameters;
     vec4 camera_position;
+    vec4 atmosphere_parameters;
+    vec4 wind_parameters;
+    vec4 weather_parameters;
+    vec4 sky_zenith_cloud;
+    vec4 sky_horizon_cloud;
+    vec4 water_shallow_absorption;
+    vec4 water_deep_scattering;
+    vec4 water_scattering_refraction;
+    vec4 water_foam_strength;
+    vec4 water_parameters;
     mat4 local_light_view_projection[2];
     vec4 local_shadow_parameters[2];
 } shadows;
@@ -468,6 +478,16 @@ void main() {
                            frame.fog_color_fog_end.w,
                            length(fragment_world_position -
                                   shadows.camera_position.xyz));
+    float fog_distance =
+        length(fragment_world_position - shadows.camera_position.xyz);
+    float height_density =
+        shadows.atmosphere_parameters.y *
+        exp(-max(fragment_world_position.y - shadows.camera_position.y, 0.0) *
+            shadows.atmosphere_parameters.z);
+    float volumetric_fog =
+        1.0 - exp(-fog_distance *
+                  (height_density + shadows.atmosphere_parameters.w * 0.0008));
+    fog = max(fog, clamp(volumetric_fog, 0.0, 1.0));
     color = mix(color, frame.fog_color_fog_end.rgb, fog);
     float alpha = fragment_layer == LAYER_TRANSPARENT ? base_color.a : 1.0;
     out_color = vec4(max(color, vec3(0.0)), alpha);

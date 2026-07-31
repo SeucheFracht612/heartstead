@@ -209,6 +209,8 @@ heartstead_add_foundation_test(heartstead_chunk_light_system_tests
                                chunk_light_system_tests.cpp)
 heartstead_add_foundation_test(heartstead_day_night_environment_tests
                                day_night_environment_tests.cpp)
+heartstead_add_foundation_test(heartstead_environment_profile_tests
+                               environment_profile_tests.cpp)
 heartstead_add_foundation_test(heartstead_gpu_buffer_arena_tests gpu_buffer_arena_tests.cpp)
 heartstead_add_foundation_test(heartstead_renderer_benchmark_tests renderer_benchmark_tests.cpp)
 heartstead_add_foundation_test(heartstead_render_runtime_asset_tests

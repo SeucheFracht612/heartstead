@@ -1088,6 +1088,11 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
         frame_started_at_ = std::chrono::steady_clock::now();
         frame_timing_active_ = true;
     }
+    if (std::isfinite(delta_seconds) && delta_seconds > 0.0F) {
+        environment_.elapsed_seconds =
+            std::fmod(environment_.elapsed_seconds + std::min(delta_seconds, 0.25F),
+                      4'096.0F);
+    }
     ChunkDrawList draws;
     {
         profiling::ScopedCpuTimingZone extraction_zone(cpu_timings_,
@@ -1170,8 +1175,7 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
         }
     }
     auto shadow_status = cascaded_shadows_->update(
-        camera, environment_.sun_direction, environment_.sky_diffuse_intensity,
-        environment_.environment_specular_intensity, environment_.environment_rotation_radians,
+        camera, environment_,
         std::span{selected_local_shadows.data(), selected_local_shadow_count});
     if (!shadow_status) {
         frame_timing_active_ = false;

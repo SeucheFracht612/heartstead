@@ -6,6 +6,7 @@
 #include "engine/items/item_prototype.hpp"
 #include "engine/modding/mod_validation.hpp"
 #include "engine/processes/process_prototype.hpp"
+#include "engine/renderer/environment/environment_profile.hpp"
 #include "engine/renderer/materials/material_prototype_loader.hpp"
 #include "engine/renderer/particles/particle_prototype.hpp"
 #include "engine/rooms/room_descriptor_prototype.hpp"
@@ -176,6 +177,15 @@ ContentValidation::validate(const std::filesystem::path& mods_root,
             continue;
         }
         report.particle_prototypes.push_back(std::move(definition).value());
+    }
+
+    auto environment_profiles =
+        renderer::environment_profile_registry_from_prototypes(report.registry);
+    if (!environment_profiles) {
+        add_error(report, mods_root, environment_profiles.error().code,
+                  environment_profiles.error().message);
+    } else {
+        report.environment_profiles = std::move(environment_profiles).value();
     }
 
     const auto ui_panel_prototypes =
