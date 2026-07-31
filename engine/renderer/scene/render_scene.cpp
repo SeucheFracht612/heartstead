@@ -103,6 +103,22 @@ core::Status validate_render_object_proxy(const RenderObjectProxy& object) {
         object.wind_stiffness < 0.0F || object.wind_stiffness > 1.0F ||
         !std::isfinite(object.foliage_transmission) ||
         object.foliage_transmission < 0.0F || object.foliage_transmission > 4.0F ||
+        !std::isfinite(object.water_wave_height) || object.water_wave_height < 0.0F ||
+        object.water_wave_height > 16.0F || !std::isfinite(object.water_wave_speed) ||
+        object.water_wave_speed < 0.0F || object.water_wave_speed > 16.0F ||
+        !std::isfinite(object.water_optical_depth) || object.water_optical_depth < 0.0F ||
+        object.water_optical_depth > 1'024.0F ||
+        !std::isfinite(object.water_foam_strength) || object.water_foam_strength < 0.0F ||
+        object.water_foam_strength > 4.0F ||
+        !std::isfinite(object.particle_emissive_intensity) ||
+        object.particle_emissive_intensity < 0.0F ||
+        object.particle_emissive_intensity > 64.0F ||
+        !std::isfinite(object.particle_soft_fade_distance) ||
+        object.particle_soft_fade_distance < 0.0F ||
+        object.particle_soft_fade_distance > 64.0F ||
+        !std::isfinite(object.particle_velocity_stretch) ||
+        object.particle_velocity_stretch < 0.0F ||
+        object.particle_velocity_stretch > 16.0F ||
         !std::isfinite(object.distance_fade_width) ||
         object.distance_fade_width < 0.0F ||
         object.morph_weights.size() > 64U ||
@@ -510,6 +526,14 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
         instance.wind_phase = object.wind_phase;
         instance.wind_stiffness = object.wind_stiffness;
         instance.foliage_transmission = object.foliage_transmission;
+        instance.effect_parameters2 =
+            any(object.effect_flags & RenderEffectFlags::particle)
+                ? std::array<float, 4>{object.particle_emissive_intensity,
+                                       object.particle_soft_fade_distance,
+                                       object.particle_velocity_stretch, 0.0F}
+                : std::array<float, 4>{object.water_wave_height, object.water_wave_speed,
+                                       object.water_optical_depth,
+                                       object.water_foam_strength};
         instance.visibility = visibility;
         auto batch =
             std::ranges::find_if(frame.batches, [&object](const RenderInstanceBatch& value) {

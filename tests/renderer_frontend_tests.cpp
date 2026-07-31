@@ -724,8 +724,9 @@ void test_renderer_frontend_submits_headless_frames() {
     const auto initialized_resource_count = retained_renderer.device()->live_resource_count();
     // Includes the world/shadow/post-process shader modules and prewarmed pipelines, sky
     // geometry, fallback and material texture arrays, environment cube/sampler, clustered-light
-    // buffers, shadow data, material tables, scene arenas/rings, and buffered debug/UI geometry.
-    assert(initialized_resource_count == 77);
+    // buffers, shadow data, opaque/transparent material tables, the soft-particle depth copy,
+    // scene arenas/rings, and buffered debug/UI geometry.
+    assert(initialized_resource_count == 81);
 
     assets::ModelAsset material_model;
     material_model.vertices.resize(3);
@@ -894,7 +895,7 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(renderer_stats.pipeline_switches == 8);
     assert(renderer_stats.resident_textures == 10);
     assert(renderer_stats.runtime_materials == 257);
-    assert(renderer_stats.resident_pipelines == 21);
+    assert(renderer_stats.resident_pipelines == 25);
     assert(renderer_stats.resident_texture_bytes > 0);
     assert(renderer_stats.vertices > 0);
     assert(renderer_stats.triangles > 0);
@@ -960,9 +961,9 @@ void test_renderer_frontend_submits_headless_frames() {
         {{12.0F, 48.0F}, "FPS 144", 8.0F, {1.0F, 1.0F, 1.0F, 1.0F}}));
     auto instanced_frame = retained_renderer.render(camera, 0.5F);
     assert(instanced_frame);
-    assert(instanced_frame.value().draw_count == 19);
-    assert(instanced_frame.value().indexed_draw_count == 14);
-    assert(instanced_frame.value().pipeline_bind_count == 18);
+    assert(instanced_frame.value().draw_count == 15);
+    assert(instanced_frame.value().indexed_draw_count == 10);
+    assert(instanced_frame.value().pipeline_bind_count == 11);
     assert(retained_renderer.scene_stats().scene.visible_objects == 3);
     assert(retained_renderer.scene_stats().submitted_instances == 2);
     assert(retained_renderer.scene_stats().draw_calls == 1);
@@ -1040,7 +1041,7 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(second_animated_object_id);
     auto animated_frame = retained_renderer.render(camera);
     assert(animated_frame);
-    assert(animated_frame.value().draw_count == 16);
+    assert(animated_frame.value().draw_count == 12);
     assert(retained_renderer.scene_stats().submitted_instances == 2);
     assert(retained_renderer.scene_stats().submitted_skin_palettes == 1);
     assert(retained_renderer.scene_stats().submitted_skin_matrices == 1);

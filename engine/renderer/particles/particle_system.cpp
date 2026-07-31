@@ -68,6 +68,54 @@ translated(const world::WorldPosition& position, math::Vec3f delta) {
 
 } // namespace
 
+std::string_view particle_blend_mode_name(ParticleBlendMode value) noexcept {
+    switch (value) {
+    case ParticleBlendMode::alpha:
+        return "alpha";
+    case ParticleBlendMode::additive:
+        return "additive";
+    case ParticleBlendMode::premultiplied_alpha:
+        return "premultiplied_alpha";
+    }
+    return "alpha";
+}
+
+std::string_view particle_shading_name(ParticleShading value) noexcept {
+    switch (value) {
+    case ParticleShading::lit:
+        return "lit";
+    case ParticleShading::unlit:
+        return "unlit";
+    case ParticleShading::emissive:
+        return "emissive";
+    }
+    return "lit";
+}
+
+std::string_view particle_geometry_name(ParticleGeometry value) noexcept {
+    return value == ParticleGeometry::mesh ? "mesh" : "billboard";
+}
+
+std::string_view particle_alignment_name(ParticleAlignment value) noexcept {
+    return value == ParticleAlignment::velocity ? "velocity" : "camera";
+}
+
+std::string_view particle_simulation_space_name(ParticleSimulationSpace value) noexcept {
+    return value == ParticleSimulationSpace::local ? "local" : "world";
+}
+
+std::string_view particle_collision_mode_name(ParticleCollisionMode value) noexcept {
+    switch (value) {
+    case ParticleCollisionMode::none:
+        return "none";
+    case ParticleCollisionMode::depth:
+        return "depth";
+    case ParticleCollisionMode::voxel:
+        return "voxel";
+    }
+    return "none";
+}
+
 core::Status ParticlePrototype::validate() const noexcept {
     if (!id.is_valid() || material_group > 3 || !std::isfinite(lifetime_min_seconds) ||
         !std::isfinite(lifetime_max_seconds) || lifetime_min_seconds <= 0.0F ||
@@ -81,10 +129,24 @@ core::Status ParticlePrototype::validate() const noexcept {
         atlas_columns == 0 || atlas_rows == 0 || atlas_frame_count == 0 ||
         static_cast<std::uint32_t>(atlas_frame_count) >
             static_cast<std::uint32_t>(atlas_columns) * atlas_rows ||
-        !std::isfinite(atlas_frames_per_second) || atlas_frames_per_second < 0.0F) {
+        !std::isfinite(atlas_frames_per_second) || atlas_frames_per_second < 0.0F ||
+        mesh_group > 3U || !std::isfinite(emissive_intensity) ||
+        emissive_intensity < 0.0F || emissive_intensity > 64.0F ||
+        !std::isfinite(wind_response) || wind_response < 0.0F ||
+        wind_response > 16.0F || !std::isfinite(soft_fade_distance) ||
+        soft_fade_distance < 0.0F || soft_fade_distance > 64.0F ||
+        !std::isfinite(velocity_stretch) || velocity_stretch < 0.0F ||
+        velocity_stretch > 16.0F || !std::isfinite(collision_radius) ||
+        collision_radius < 0.0F || collision_radius > 8.0F ||
+        !std::isfinite(collision_restitution) || collision_restitution < 0.0F ||
+        collision_restitution > 1.0F || !std::isfinite(lod_start_distance) ||
+        !std::isfinite(lod_end_distance) || lod_start_distance < 0.0F ||
+        lod_end_distance <= lod_start_distance || maximum_live_particles == 0U ||
+        spawn_budget_per_update == 0U || priority > 3U) {
         return core::Status::failure(
             "particle.invalid_prototype",
-            "particle prototype contains invalid ranges, color, material, or atlas data");
+            "particle prototype contains invalid ranges, color, material, atlas, simulation, "
+            "collision, or budget data");
     }
     return core::Status::ok();
 }
@@ -256,6 +318,35 @@ core::Status CpuParticleSystem::update_emitter(ParticleEmitterId id,
         return core::Status::failure("particle.stale_emitter",
                                      "particle emitter update uses a stale id");
     }
+    if (slot.desc.position != position) {
+        const auto delta =
+            position.relative_to(slot.desc.position.anchor) -
+            slot.desc.position.local_offset;
+        if (!delta.is_finite() ||
+            std::abs(delta.x) > static_cast<double>(std::numeric_limits<float>::max()) ||
+            std::abs(delta.y) > static_cast<double>(std::numeric_limits<float>::max()) ||
+            std::abs(delta.z) > static_cast<double>(std::numeric_limits<float>::max())) {
+            return core::Status::failure(
+                "particle.emitter_delta_out_of_range",
+                "local particle emitter movement cannot be represented by simulation");
+        }
+        const math::Vec3f shift{static_cast<float>(delta.x), static_cast<float>(delta.y),
+                                static_cast<float>(delta.z)};
+        for (auto& particle : particles_) {
+            if (particle.simulation_space != ParticleSimulationSpace::local ||
+                particle.source_emitter != id) {
+                continue;
+            }
+            auto shifted = translated(particle.position, shift);
+            auto previous = translated(particle.previous_position, shift);
+            if (!shifted || !previous) {
+                const auto& error = !shifted ? shifted.error() : previous.error();
+                return core::Status::failure(error.code, error.message);
+            }
+            particle.position = shifted.value();
+            particle.previous_position = previous.value();
+        }
+    }
     slot.desc.position = position;
     slot.desc.direction = direction;
     return core::Status::ok();
@@ -284,16 +375,65 @@ core::Status CpuParticleSystem::destroy_emitter(ParticleEmitterId id) {
     return core::Status::ok();
 }
 
-void CpuParticleSystem::spawn(const ParticleEmitEvent& event, std::uint32_t& spawn_budget) {
+void CpuParticleSystem::set_environment(
+    math::Vec3f wind_velocity,
+    std::optional<world::WorldPosition> viewpoint) noexcept {
+    wind_velocity_ = wind_velocity.is_finite() ? wind_velocity : math::Vec3f{};
+    viewpoint_ = viewpoint.has_value() && viewpoint->is_valid() ? viewpoint : std::nullopt;
+}
+
+void CpuParticleSystem::set_collision_queries(ParticleCollisionQuery depth_collision,
+                                              ParticleCollisionQuery voxel_collision) {
+    depth_collision_ = std::move(depth_collision);
+    voxel_collision_ = std::move(voxel_collision);
+}
+
+void CpuParticleSystem::spawn(const ParticleEmitEvent& event, std::uint32_t& spawn_budget,
+                              ParticleEmitterId source_emitter) {
     const auto* prototype = find_prototype(event.prototype_id);
     if (prototype == nullptr) {
         stats_.dropped_particles += event.count;
         return;
     }
+    std::uint32_t requested = event.count;
+    if (viewpoint_.has_value()) {
+        const auto relative =
+            event.position.relative_to(viewpoint_->anchor) - viewpoint_->local_offset;
+        const auto distance = std::sqrt(relative.x * relative.x + relative.y * relative.y +
+                                        relative.z * relative.z);
+        const auto lod_factor =
+            std::clamp(1.0 - (distance - prototype->lod_start_distance) /
+                                 (prototype->lod_end_distance - prototype->lod_start_distance),
+                       0.0, 1.0);
+        auto random = event.seed;
+        const auto scaled = static_cast<double>(event.count) * lod_factor;
+        requested = static_cast<std::uint32_t>(std::floor(scaled));
+        if (unit_float(random) < static_cast<float>(scaled - std::floor(scaled))) {
+            ++requested;
+        }
+        stats_.lod_rejected_particles += event.count - requested;
+    }
+    const auto live_count = static_cast<std::uint32_t>(std::ranges::count_if(
+        particles_, [&](const ParticleState& particle) {
+            return particle.prototype_id == prototype->id;
+        }));
+    const auto live_remaining =
+        prototype->maximum_live_particles > live_count
+            ? prototype->maximum_live_particles - live_count
+            : 0U;
+    auto& prototype_spawns = prototype_spawns_this_update_[prototype->id.value()];
+    const auto prototype_budget_remaining =
+        prototype->spawn_budget_per_update > prototype_spawns
+            ? prototype->spawn_budget_per_update - prototype_spawns
+            : 0U;
     const auto capacity = config_.maximum_particles - static_cast<std::uint32_t>(particles_.size());
-    const auto accepted = std::min({event.count, capacity, spawn_budget});
+    const auto accepted =
+        std::min({requested, capacity, spawn_budget, live_remaining,
+                  prototype_budget_remaining});
+    stats_.prototype_budget_rejected_particles += requested - accepted;
     stats_.dropped_particles += static_cast<std::uint64_t>(event.count - accepted);
     spawn_budget -= accepted;
+    prototype_spawns += accepted;
 
     const auto base_direction = normalized_or(event.direction, {0.0F, 1.0F, 0.0F});
     for (std::uint32_t index = 0; index < accepted; ++index) {
@@ -332,6 +472,20 @@ void CpuParticleSystem::spawn(const ParticleEmitEvent& event, std::uint32_t& spa
         particle.atlas_rows = prototype->atlas_rows;
         particle.atlas_frame_count = prototype->atlas_frame_count;
         particle.atlas_frames_per_second = prototype->atlas_frames_per_second;
+        particle.blend_mode = prototype->blend_mode;
+        particle.shading = prototype->shading;
+        particle.geometry = prototype->geometry;
+        particle.alignment = prototype->alignment;
+        particle.simulation_space = prototype->simulation_space;
+        particle.collision_mode = prototype->collision_mode;
+        particle.source_emitter = source_emitter;
+        particle.mesh_group = prototype->mesh_group;
+        particle.emissive_intensity = prototype->emissive_intensity;
+        particle.wind_response = prototype->wind_response;
+        particle.soft_fade_distance = prototype->soft_fade_distance;
+        particle.velocity_stretch = prototype->velocity_stretch;
+        particle.collision_radius = prototype->collision_radius;
+        particle.collision_restitution = prototype->collision_restitution;
         particles_.push_back(std::move(particle));
     }
     stats_.spawned_this_update += accepted;
@@ -345,6 +499,7 @@ core::Status CpuParticleSystem::update(float delta_seconds) {
     const auto started = std::chrono::steady_clock::now();
     stats_.spawned_this_update = 0;
     stats_.expired_this_update = 0;
+    prototype_spawns_this_update_.clear();
     std::uint32_t spawn_budget = config_.maximum_spawns_per_update;
 
     for (const auto& event : queued_events_) {
@@ -379,7 +534,7 @@ core::Status CpuParticleSystem::update(float delta_seconds) {
                 count,
                 mix(emitter.desc.seed ^ emitter.emission_serial++),
             };
-            spawn(event, spawn_budget);
+            spawn(event, spawn_budget, {index + 1U, emitter.generation});
         }
         emitter.age_seconds += delta_seconds;
         if (emitter.age_seconds >= emitter.desc.lifetime_seconds) {
@@ -395,13 +550,45 @@ core::Status CpuParticleSystem::update(float delta_seconds) {
         auto& particle = particles_[read];
         particle.previous_position = particle.position;
         particle.velocity.y += particle.gravity * delta_seconds;
+        if (particle.wind_response > 0.0F) {
+            const auto wind_blend =
+                1.0F - std::exp(-particle.wind_response * delta_seconds);
+            particle.velocity += (wind_velocity_ - particle.velocity) * wind_blend;
+        }
         particle.velocity *= std::max(0.0F, 1.0F - particle.drag * delta_seconds);
         if (math::length_squared(particle.velocity) > 0.0F) {
             auto next = translated(particle.position, particle.velocity * delta_seconds);
             if (!next) {
                 return core::Status::failure(next.error().code, next.error().message);
             }
-            particle.position = next.value();
+            const auto* query =
+                particle.collision_mode == ParticleCollisionMode::depth
+                    ? &depth_collision_
+                    : particle.collision_mode == ParticleCollisionMode::voxel
+                          ? &voxel_collision_
+                          : nullptr;
+            if (query != nullptr && *query) {
+                const auto hit = (*query)(particle.position, next.value(),
+                                          particle.collision_radius);
+                if (hit.has_value() && hit->position.is_valid() &&
+                    hit->normal.is_finite() &&
+                    math::length_squared(hit->normal) > 0.00001F) {
+                    const auto normal =
+                        hit->normal / std::sqrt(math::length_squared(hit->normal));
+                    const auto normal_velocity = math::dot(particle.velocity, normal);
+                    if (normal_velocity < 0.0F) {
+                        particle.velocity -=
+                            normal * normal_velocity *
+                            (1.0F + particle.collision_restitution);
+                    }
+                    particle.position = hit->position;
+                    ++stats_.collision_count;
+                } else {
+                    particle.position = next.value();
+                }
+            } else {
+                particle.position = next.value();
+            }
         }
         particle.age_seconds += delta_seconds;
         if (particle.age_seconds >= particle.lifetime_seconds) {
@@ -429,6 +616,7 @@ void CpuParticleSystem::clear() noexcept {
     emitters_.clear();
     free_emitters_.clear();
     next_particle_serial_ = 1;
+    prototype_spawns_this_update_.clear();
     stats_ = {};
 }
 

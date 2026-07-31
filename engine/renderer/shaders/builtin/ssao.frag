@@ -3,6 +3,7 @@
 layout(set = 0, binding = 0) uniform sampler2D scene_depth;
 layout(location = 0) in vec2 in_uv;
 layout(location = 0) out float out_occlusion;
+layout(location = 1) out vec2 out_depth_copy;
 
 float random_angle(vec2 pixel) {
     return fract(sin(dot(pixel, vec2(12.9898, 78.233))) * 43758.5453) * 6.2831853;
@@ -10,6 +11,7 @@ float random_angle(vec2 pixel) {
 
 void main() {
     float center = texture(scene_depth, in_uv).r;
+    out_depth_copy = vec2(center, 0.0);
     if (center >= 0.99999) {
         out_occlusion = 1.0;
         return;

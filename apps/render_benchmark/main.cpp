@@ -1,11 +1,15 @@
+#include "engine/content/content_validation.hpp"
 #include "engine/core/logging.hpp"
 #include "engine/core/process_entry.hpp"
 #include "engine/platform/platform.hpp"
 #include "engine/renderer/benchmark/benchmark_scene.hpp"
 #include "engine/renderer/benchmark/benchmark_statistics.hpp"
+#include "engine/renderer/environment/weather_effects.hpp"
 #include "engine/renderer/particles/particle_system.hpp"
 #include "engine/renderer/renderer.hpp"
 #include "engine/renderer/shaders/spirv_loader.hpp"
+#include "engine/renderer/vegetation/vegetation_renderer.hpp"
+#include "engine/renderer/water/large_water_renderer.hpp"
 #include "engine/world/fluids/chunk_fluid_system.hpp"
 #include "engine/world/lighting/chunk_light_system.hpp"
 #include "game/presentation/particle_presentation.hpp"
@@ -153,11 +157,133 @@ struct Options {
     return prototype;
 }
 
+[[nodiscard]] core::Result<world::WorldPosition>
+camera_world_position(const renderer::RenderCamera& camera) {
+    return world::WorldPosition::from_anchor(
+        camera.floating_origin.block,
+        {static_cast<double>(camera.local_position.x),
+         static_cast<double>(camera.local_position.y),
+         static_cast<double>(camera.local_position.z)});
+}
+
+[[nodiscard]] core::Status populate_starting_biome(
+    renderer::Renderer& active_renderer,
+    const content::ContentValidationReport& content,
+    renderer::VegetationRenderer& vegetation,
+    renderer::LargeWaterRenderer& water,
+    const renderer::RenderCamera& camera, std::uint64_t seed) {
+    auto status = vegetation.initialize(
+        active_renderer, content.vegetation_species,
+        std::filesystem::path{HEARTSTEAD_RENDER_BENCHMARK_COOKED_ASSET_DIR});
+    if (!status) {
+        return status;
+    }
+    const auto make_origin = [&camera](double x, double y, double z) {
+        return world::WorldPosition::from_anchor(camera.floating_origin.block, {x, y, z});
+    };
+    struct PatchSpec {
+        std::uint64_t id;
+        std::string_view species;
+        math::Vec3d offset;
+        math::Vec2f extent;
+        std::uint32_t count;
+        std::string_view growth;
+    };
+    constexpr std::array patches{
+        PatchSpec{1, "base:vegetation/meadow_grass", {-44.0, 9.0, -98.0},
+                  {34.0F, 84.0F}, 3'200, "mature"},
+        PatchSpec{2, "base:vegetation/wildflower", {-42.0, 9.1, -92.0},
+                  {31.0F, 72.0F}, 620, "bloom"},
+        PatchSpec{3, "base:vegetation/field_crop", {10.0, 9.2, -66.0},
+                  {30.0F, 28.0F}, 1'800, "mature"},
+        PatchSpec{4, "base:vegetation/temperate_tree", {-76.0, 9.0, -124.0},
+                  {42.0F, 112.0F}, 220, "mature"},
+        PatchSpec{5, "base:vegetation/forest_bush", {-66.0, 9.0, -112.0},
+                  {38.0F, 92.0F}, 460, ""},
+        PatchSpec{6, "base:vegetation/aether_bloom", {35.0, 9.0, -58.0},
+                  {12.0F, 16.0F}, 96, ""},
+    };
+    for (const auto& spec : patches) {
+        const auto species = core::PrototypeId::parse(spec.species);
+        auto origin = make_origin(spec.offset.x, spec.offset.y, spec.offset.z);
+        if (!species || !origin) {
+            return core::Status::failure(
+                "render_benchmark.invalid_starting_biome",
+                "starting-biome vegetation uses an invalid prototype or world position");
+        }
+        renderer::VegetationPatchDesc patch;
+        patch.id = spec.id;
+        patch.species = *species;
+        patch.origin = origin.value();
+        patch.extent = spec.extent;
+        patch.instance_count = spec.count;
+        patch.seed = seed ^ (0x9e3779b97f4a7c15ULL * spec.id);
+        if (patch.seed == 0U) {
+            patch.seed = spec.id;
+        }
+        patch.growth_state = spec.growth;
+        status = vegetation.upsert_patch(patch, [](float x, float z) {
+            return std::sin(x * 0.055F) * 2.1F + std::cos(z * 0.047F) * 1.5F;
+        });
+        if (!status) {
+            return status;
+        }
+    }
+    status = vegetation.update_occlusion(camera, {});
+    if (!status) {
+        return status;
+    }
+
+    status = water.initialize(active_renderer);
+    if (!status) {
+        return status;
+    }
+    auto lake_center = make_origin(52.0, 8.65, -104.0);
+    if (!lake_center) {
+        return core::Status::failure(lake_center.error().code,
+                                     lake_center.error().message);
+    }
+    renderer::LargeWaterBodyDesc lake;
+    lake.id = 1;
+    lake.center = lake_center.value();
+    lake.half_extent = 34.0F;
+    lake.wave_height = 0.08F;
+    lake.wave_speed = 0.7F;
+    lake.optical_depth = 7.0F;
+    lake.foam_strength = 0.55F;
+    lake.follows_camera = false;
+    status = water.add_body(lake);
+    if (!status) {
+        return status;
+    }
+
+    auto fire_position = make_origin(6.0, 11.0, -28.0);
+    if (!fire_position) {
+        return core::Status::failure(fire_position.error().code,
+                                     fire_position.error().message);
+    }
+    renderer::RenderLightProxy fire;
+    fire.id = active_renderer.reserve_light_id();
+    fire.kind = renderer::RenderLightKind::point;
+    fire.anchor = fire_position.value();
+    fire.color = {1.0F, 0.32F, 0.08F};
+    fire.intensity = 58.0F;
+    fire.radius = 16.0F;
+    fire.casts_shadow = true;
+    fire.gameplay_importance = 3.0F;
+    auto light = active_renderer.create_light(std::move(fire));
+    if (!light) {
+        return core::Status::failure(light.error().code, light.error().message);
+    }
+    return core::Status::ok();
+}
+
 void print_usage(std::ostream& output) {
     output << "Usage: heartstead_render_benchmark [options]\n"
               "  --scene NAME       flat, mountains, caves, checkerboard, forest, rapid-edits,\n"
               "                     flythrough, churn, large-coordinates, resize-minimize,\n"
-              "                     active-water, particles, light-heavy, terrain-materials\n"
+              "                     active-water, particles, light-heavy, terrain-materials,\n"
+              "                     starting-biome\n"
               "  --vulkan           Use a native Vulkan window (headless is the default)\n"
               "  --headless         Use the deterministic validation backend\n"
               "  --frames N         Measured frames (default 300)\n"
@@ -192,6 +318,7 @@ void print_scenes() {
         Kind::particle_stress,
         Kind::light_heavy_settlement,
         Kind::terrain_material_preview,
+        Kind::starting_biome,
     };
     for (const auto kind : kinds) {
         std::cout << renderer::benchmark::benchmark_scene_name(kind) << '\n';
@@ -616,6 +743,26 @@ int main(int argc, char** argv) {
         if (!status) {
             return fail(status.error().message);
         }
+        std::unique_ptr<content::ContentValidationReport> environmental_content;
+        renderer::VegetationRenderer vegetation;
+        renderer::LargeWaterRenderer large_water;
+        renderer::WeatherEffects weather_effects;
+        std::optional<renderer::EvaluatedEnvironment> evaluated_environment;
+        if (options.scene == renderer::benchmark::BenchmarkSceneKind::starting_biome) {
+            environmental_content =
+                std::make_unique<content::ContentValidationReport>(
+                    content::ContentValidation::validate(
+                        std::filesystem::path{HEARTSTEAD_SOURCE_ROOT}));
+            if (environmental_content->has_errors()) {
+                return fail("starting-biome content validation failed");
+            }
+            status = populate_starting_biome(
+                active_renderer, *environmental_content, vegetation, large_water,
+                scene.value()->camera(), options.seed);
+            if (!status) {
+                return fail(status.error().message);
+            }
+        }
         if (options.scene == renderer::benchmark::BenchmarkSceneKind::light_heavy_settlement) {
             for (std::uint32_t index = 0; index < 128U; ++index) {
                 const auto x = static_cast<double>(static_cast<int>(index % 16U) - 8) * 5.0;
@@ -701,6 +848,100 @@ int main(int argc, char** argv) {
             }
             auto presented = particle_presentation.synchronize(active_renderer, *particle_system,
                                                                scene.value()->camera());
+            if (!presented) {
+                return fail(presented.error().message);
+            }
+            active_renderer.set_particle_stats(
+                particle_system->stats(), presented.value().synchronize_ms,
+                presented.value().material_groups, presented.value().dropped_particles);
+        } else if (options.scene ==
+                   renderer::benchmark::BenchmarkSceneKind::starting_biome) {
+            renderer::ParticleSystemConfig particle_config;
+            particle_config.maximum_particles = 24'000;
+            particle_config.maximum_emitters = 16;
+            particle_config.maximum_queued_events = 2'048;
+            particle_config.maximum_spawns_per_update = 4'096;
+            auto created_particles = renderer::CpuParticleSystem::create(
+                particle_config, environmental_content->particle_prototypes);
+            if (!created_particles) {
+                return fail(created_particles.error().message);
+            }
+            particle_system.emplace(std::move(created_particles).value());
+            status = weather_effects.initialize(*particle_system);
+            if (!status) {
+                return fail(status.error().message);
+            }
+            renderer::EnvironmentBlendContext environment_context;
+            environment_context.biome = "meadow";
+            environment_context.weather = "rain";
+            environment_context.day_fraction = 0.68F;
+            environment_context.elapsed_seconds = 32.0F;
+            environment_context.altitude = 12.0F;
+            auto evaluated =
+                environmental_content->environment_profiles.evaluate(environment_context);
+            if (!evaluated) {
+                return fail(evaluated.error().message);
+            }
+            evaluated_environment = std::move(evaluated).value();
+            status = active_renderer.set_environment(evaluated_environment->render);
+            if (!status) {
+                return fail(status.error().message);
+            }
+            status = active_renderer.set_exposure(evaluated_environment->exposure);
+            if (!status) {
+                return fail(status.error().message);
+            }
+            auto viewpoint = camera_world_position(scene.value()->camera());
+            if (!viewpoint) {
+                return fail(viewpoint.error().message);
+            }
+            status = weather_effects.update(*evaluated_environment, viewpoint.value(),
+                                            1.0F / 60.0F);
+            if (!status) {
+                return fail(status.error().message);
+            }
+            const auto create_emitter =
+                [&](std::string_view prototype, float rate, std::uint64_t seed_offset) {
+                    auto id = core::PrototypeId::parse(prototype);
+                    auto position = world::WorldPosition::from_anchor(
+                        scene.value()->camera().floating_origin.block,
+                        {6.0, 11.0, -28.0});
+                    if (!id || !position) {
+                        return core::Status::failure(
+                            "render_benchmark.invalid_effect_emitter",
+                            "starting-biome effect emitter uses invalid data");
+                    }
+                    renderer::ParticleEmitterDesc emitter;
+                    emitter.prototype_id = *id;
+                    emitter.position = position.value();
+                    emitter.direction = {0.0F, 1.0F, 0.0F};
+                    emitter.lifetime_seconds = 3'600.0F;
+                    emitter.rate_per_second = rate;
+                    emitter.burst_count = 8;
+                    emitter.seed = (options.seed ^ seed_offset) | 1U;
+                    auto created = particle_system->create_emitter(emitter);
+                    return created
+                               ? core::Status::ok()
+                               : core::Status::failure(created.error().code,
+                                                       created.error().message);
+                };
+            status = create_emitter("base:particles/fire_ember", 22.0F, 0xE11B'3EULL);
+            if (status) {
+                status = create_emitter("base:particles/smoke", 8.0F, 0x5A0C'EULL);
+            }
+            if (!status) {
+                return fail(status.error().message);
+            }
+            status = particle_system->update(1.0F / 60.0F);
+            if (!status) {
+                return fail(status.error().message);
+            }
+            status = particle_presentation.initialize(active_renderer);
+            if (!status) {
+                return fail(status.error().message);
+            }
+            auto presented = particle_presentation.synchronize(
+                active_renderer, *particle_system, scene.value()->camera());
             if (!presented) {
                 return fail(presented.error().message);
             }
@@ -810,6 +1051,25 @@ int main(int argc, char** argv) {
                 return fail(status.error().message);
             }
             active_renderer.set_voxel_fluid_stats(chunk_fluids.value()->stats());
+            if (evaluated_environment.has_value()) {
+                auto viewpoint = camera_world_position(scene.value()->camera());
+                if (!viewpoint) {
+                    return fail(viewpoint.error().message);
+                }
+                status = weather_effects.update(*evaluated_environment,
+                                                viewpoint.value(), 1.0F / 60.0F);
+                if (!status) {
+                    return fail(status.error().message);
+                }
+                status = large_water.synchronize(scene.value()->camera());
+                if (!status) {
+                    return fail(status.error().message);
+                }
+                status = vegetation.update_occlusion(scene.value()->camera(), {});
+                if (!status) {
+                    return fail(status.error().message);
+                }
+            }
             if (particle_system.has_value()) {
                 status = particle_system->update(1.0F / 60.0F);
                 if (!status) {
@@ -880,6 +1140,19 @@ int main(int argc, char** argv) {
         chunk_lighting.value()->shutdown();
         if (particle_presentation.is_initialized()) {
             status = particle_presentation.shutdown(active_renderer);
+            if (!status) {
+                return fail(status.error().message);
+            }
+        }
+        weather_effects.reset();
+        if (vegetation.is_initialized()) {
+            status = vegetation.shutdown();
+            if (!status) {
+                return fail(status.error().message);
+            }
+        }
+        if (large_water.is_initialized()) {
+            status = large_water.shutdown();
             if (!status) {
                 return fail(status.error().message);
             }

@@ -49,6 +49,17 @@ using detail::find_memory_type;
 using detail::vk_result_name;
 using detail::vulkan_image_format;
 
+// Graph descriptors are immutable for the lifetime of a recorded command buffer. A frame/pass
+// pair therefore owns its own descriptor set; updating one shared frame set between passes would
+// invalidate commands recorded by an earlier pass under Vulkan's descriptor lifetime rules.
+constexpr std::size_t graph_descriptor_pass_capacity = 64;
+
+[[nodiscard]] constexpr std::size_t
+graph_descriptor_set_index(std::size_t frame_context_index,
+                           std::size_t pass_index) noexcept {
+    return frame_context_index * graph_descriptor_pass_capacity + pass_index;
+}
+
 [[nodiscard]] bool requests_x11_surface(const rhi::RenderDeviceDesc& desc) noexcept {
     return desc.native_window.has_value() &&
            desc.native_window->system == platform::NativeWindowSystem::x11;
@@ -1221,8 +1232,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
         VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
-        // Populated only when the layout declares per_frame_descriptors. Indexed by frame context,
-        // so updating this frame's set cannot touch one a previous frame is still reading.
+        // Populated only when the layout declares per_frame_descriptors. Indexed by frame context
+        // and graph pass so neither another in-flight frame nor an earlier command-buffer pass is
+        // invalidated by a graph descriptor update.
         std::vector<VkDescriptorSet> per_frame_descriptor_sets;
         std::uint64_t last_used_submission_serial = 0;
     };
@@ -4240,9 +4252,11 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         auto pool_sizes = make_descriptor_pool_sizes(resource.desc);
         // A layout that samples frame graph resources needs one set per frame in flight, so the
         // pool has to be sized for all of them.
-        const auto set_count = resource.desc.per_frame_descriptors && !frame_contexts_.empty()
-                                   ? static_cast<std::uint32_t>(frame_contexts_.size())
-                                   : 1U;
+        const auto set_count =
+            resource.desc.per_frame_descriptors && !frame_contexts_.empty()
+                ? static_cast<std::uint32_t>(frame_contexts_.size() *
+                                             graph_descriptor_pass_capacity)
+                : 1U;
         if (!pool_sizes.empty()) {
             for (auto& pool_size : pool_sizes) {
                 pool_size.descriptorCount *= set_count;
@@ -5000,7 +5014,14 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 return core::Status::failure("renderer.unknown_pipeline_layout",
                                              "sampling pass references an unknown layout");
             }
-            if (layout->second.per_frame_descriptor_sets.size() <= frame_context_index) {
+            if (pass_index >= graph_descriptor_pass_capacity) {
+                return core::Status::failure(
+                    "renderer.graph_descriptor_pass_capacity",
+                    "frame graph pass count exceeds Vulkan graph descriptor capacity");
+            }
+            const auto descriptor_index =
+                graph_descriptor_set_index(frame_context_index, pass_index);
+            if (layout->second.per_frame_descriptor_sets.size() <= descriptor_index) {
                 return core::Status::failure(
                     "renderer.material_missing_per_frame_descriptors",
                     "material '" + material_id +
@@ -5019,7 +5040,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 }
                 VkWriteDescriptorSet write{};
                 write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                write.dstSet = layout->second.per_frame_descriptor_sets[frame_context_index];
+                write.dstSet = layout->second.per_frame_descriptor_sets[descriptor_index];
                 write.dstBinding = binding->slot;
                 write.descriptorCount = 1;
                 write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -5107,8 +5128,15 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         }
         for (const auto& material_id : material_ids) {
             const auto layout = pipeline_layouts_.find(material_id);
+            if (pass_index >= graph_descriptor_pass_capacity) {
+                return core::Status::failure(
+                    "renderer.graph_descriptor_pass_capacity",
+                    "frame graph pass count exceeds Vulkan graph descriptor capacity");
+            }
+            const auto descriptor_index =
+                graph_descriptor_set_index(frame_context_index, pass_index);
             if (layout == pipeline_layouts_.end() ||
-                layout->second.per_frame_descriptor_sets.size() <= frame_context_index) {
+                layout->second.per_frame_descriptor_sets.size() <= descriptor_index) {
                 return core::Status::failure(
                     "renderer.material_missing_per_frame_descriptors",
                     "graph storage images require a per-frame material layout");
@@ -5126,7 +5154,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 }
                 VkWriteDescriptorSet write{};
                 write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                write.dstSet = layout->second.per_frame_descriptor_sets[frame_context_index];
+                write.dstSet = layout->second.per_frame_descriptor_sets[descriptor_index];
                 write.dstBinding = binding->slot;
                 write.descriptorCount = 1;
                 write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -5187,10 +5215,18 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                                              "compute dispatch pipeline layout is no longer bound");
             }
             vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->second.pipeline);
+            if (pass_index >= graph_descriptor_pass_capacity) {
+                end_debug_label(commands);
+                return core::Status::failure(
+                    "renderer.graph_descriptor_pass_capacity",
+                    "frame graph pass count exceeds Vulkan graph descriptor capacity");
+            }
+            const auto descriptor_index =
+                graph_descriptor_set_index(frame_context_index, pass_index);
             const auto descriptor_set =
                 layout->second.per_frame_descriptor_sets.empty()
                     ? layout->second.descriptor_set
-                    : layout->second.per_frame_descriptor_sets[frame_context_index];
+                    : layout->second.per_frame_descriptor_sets[descriptor_index];
             if (descriptor_set != VK_NULL_HANDLE) {
                 vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
                                         layout->second.pipeline_layout, 0, 1, &descriptor_set, 0,
@@ -5234,6 +5270,11 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         if (!resource_status) {
             return core::Result<rhi::RenderFrameStats>::failure(resource_status.error().code,
                                                                 resource_status.error().message);
+        }
+        if (frame.plan.passes.size() > graph_descriptor_pass_capacity) {
+            return core::Result<rhi::RenderFrameStats>::failure(
+                "renderer.graph_descriptor_pass_capacity",
+                "frame graph pass count exceeds Vulkan graph descriptor capacity");
         }
         auto execution_plan = frame.plan.build_execution_plan();
         if (!execution_plan) {
@@ -5493,6 +5534,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 if (commands == nullptr) {
                     return;
                 }
+                const auto descriptor_index =
+                    graph_descriptor_set_index(frame_context_index,
+                                               commands->pass_index);
                 for (const auto& draw : commands->draws) {
                     auto& pipeline = graphics_pipelines_.at(draw.pipeline.value);
                     auto& layout = pipeline_layouts_.at(pipeline.desc.material_id.value());
@@ -5507,7 +5551,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                         const auto descriptor_set =
                             layout.per_frame_descriptor_sets.empty()
                                 ? layout.descriptor_set
-                                : layout.per_frame_descriptor_sets[frame_context_index];
+                                : layout.per_frame_descriptor_sets[descriptor_index];
                         if (descriptor_set != VK_NULL_HANDLE) {
                             vkCmdBindDescriptorSets(frame_commands, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                                     layout.pipeline_layout, 0, 1, &descriptor_set,
@@ -5544,6 +5588,13 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                                            VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants),
                                            &constants);
                     } else if (recorded_pass.kind != rhi::RenderPassKind::post_process) {
+                        const auto sky_pass = recorded_pass.name == "sky";
+                        const auto ambient =
+                            sky_pass ? frame.environment.sky_zenith_color
+                                     : frame.environment.ambient_color;
+                        const auto fog =
+                            sky_pass ? frame.environment.sky_horizon_color
+                                     : frame.environment.fog_color;
                         const rhi::ChunkPushConstants constants{
                             draw.view_projection_override_enabled ? draw.view_projection_override
                                                                   : frame.camera.view_projection,
@@ -5552,10 +5603,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                              std::bit_cast<float>(draw.texture_variation_seed)},
                             {frame.environment.sun_direction.x, frame.environment.sun_direction.y,
                              frame.environment.sun_direction.z, frame.environment.sun_intensity},
-                            {frame.environment.ambient_color.x, frame.environment.ambient_color.y,
-                             frame.environment.ambient_color.z, frame.environment.fog_start},
-                            {frame.environment.fog_color.x, frame.environment.fog_color.y,
-                             frame.environment.fog_color.z, frame.environment.fog_end},
+                            {ambient.x, ambient.y, ambient.z, frame.environment.fog_start},
+                            {fog.x, fog.y, fog.z, frame.environment.fog_end},
                         };
                         vkCmdPushConstants(frame_commands, layout.pipeline_layout,
                                            VK_SHADER_STAGE_VERTEX_BIT |

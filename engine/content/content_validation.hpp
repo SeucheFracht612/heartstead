@@ -19,6 +19,7 @@
 #include "engine/renderer/materials/material_asset_validation.hpp"
 #include "engine/renderer/materials/material_definition.hpp"
 #include "engine/renderer/environment/environment_profile.hpp"
+#include "engine/renderer/effects/surface_mark_renderer.hpp"
 #include "engine/renderer/particles/particle_system.hpp"
 #include "engine/renderer/vegetation/vegetation_species.hpp"
 #include "engine/rooms/room_descriptor_prototype.hpp"
@@ -65,6 +66,7 @@ struct ContentValidationReport {
     renderer::materials::MaterialAssetValidationResult material_assets;
     renderer::EnvironmentProfileRegistry environment_profiles;
     renderer::VegetationSpeciesRegistry vegetation_species;
+    renderer::SurfaceMarkPrototypeRegistry surface_marks;
     std::vector<renderer::ParticlePrototype> particle_prototypes;
     ui::UiSkin ui_skin;
     std::vector<modding::ModDiagnostic> diagnostics;

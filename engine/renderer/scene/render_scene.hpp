@@ -71,6 +71,10 @@ enum class RenderEffectFlags : std::uint32_t {
     particle = 1U << 3U,
     velocity_aligned = 1U << 4U,
     soft_particle = 1U << 5U,
+    water_surface = 1U << 6U,
+    unlit_particle = 1U << 7U,
+    emissive_particle = 1U << 8U,
+    premultiplied_particle = 1U << 9U,
 };
 
 [[nodiscard]] constexpr RenderEffectFlags operator|(RenderEffectFlags left,
@@ -130,6 +134,13 @@ struct RenderObjectProxy {
     // Zero bends freely; one is rigid.
     float wind_stiffness = 1.0F;
     float foliage_transmission = 0.0F;
+    float water_wave_height = 0.0F;
+    float water_wave_speed = 1.0F;
+    float water_optical_depth = 8.0F;
+    float water_foam_strength = 0.0F;
+    float particle_emissive_intensity = 1.0F;
+    float particle_soft_fade_distance = 0.0F;
+    float particle_velocity_stretch = 0.0F;
     // Smooth visibility width at minimum/maximum view-distance boundaries. Zero is a hard cut.
     float distance_fade_width = 0.0F;
     // Inclusive lower and exclusive upper camera-distance bounds. A zero maximum is unbounded.
@@ -202,6 +213,7 @@ struct RenderObjectInstance {
     float wind_phase = 0.0F;
     float wind_stiffness = 1.0F;
     float foliage_transmission = 0.0F;
+    std::array<float, 4> effect_parameters2{};
     float visibility = 1.0F;
 };
 

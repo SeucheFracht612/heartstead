@@ -20,15 +20,17 @@ struct alignas(16) GpuObjectInstance {
     std::uint32_t morph_metadata[4]{};
     float effect_parameters[4]{};
     std::uint32_t effect_metadata[4]{};
+    float effect_parameters2[4]{};
 };
 
-static_assert(sizeof(GpuObjectInstance) == 144);
+static_assert(sizeof(GpuObjectInstance) == 160);
 static_assert(offsetof(GpuObjectInstance, camera_relative_transform) == 0);
 static_assert(offsetof(GpuObjectInstance, color) == 64);
 static_assert(offsetof(GpuObjectInstance, metadata) == 80);
 static_assert(offsetof(GpuObjectInstance, morph_metadata) == 96);
 static_assert(offsetof(GpuObjectInstance, effect_parameters) == 112);
 static_assert(offsetof(GpuObjectInstance, effect_metadata) == 128);
+static_assert(offsetof(GpuObjectInstance, effect_parameters2) == 144);
 
 struct ScenePipelineSet {
     rhi::RenderResourceHandle opaque;

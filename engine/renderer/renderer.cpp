@@ -202,6 +202,11 @@ make_terrain_shader_program(std::span<const std::uint32_t> vertex_spirv,
          rhi::RenderShaderStageFlags::fragment},
         {"terrain_surface_textures", rhi::RenderDescriptorKind::sampled_texture, 13, true,
          rhi::RenderShaderStageFlags::fragment},
+        // Supplied by the transparent pass so every material in that mixed pass shares a graph
+        // binding shape. Terrain performs fixed-function depth testing; particle meshes consume
+        // the copied depth through their dedicated transparent layout.
+        {"scene_depth", rhi::RenderDescriptorKind::sampled_texture, 14, false,
+         rhi::RenderShaderStageFlags::fragment},
     };
     shader_program.interface.push_constant_ranges.push_back(
         {rhi::RenderShaderStageFlags::vertex | rhi::RenderShaderStageFlags::fragment, 0,
@@ -265,11 +270,13 @@ make_static_mesh_shader_program(std::span<const std::uint32_t> vertex_spirv,
          rhi::RenderShaderStageFlags::fragment},
         {"local_shadow_1", rhi::RenderDescriptorKind::sampled_texture, 16, true,
          rhi::RenderShaderStageFlags::fragment},
+        {"scene_depth", rhi::RenderDescriptorKind::sampled_texture, 17, true,
+         rhi::RenderShaderStageFlags::fragment},
     };
     shader_program.interface.push_constant_ranges.push_back(
         {rhi::RenderShaderStageFlags::vertex | rhi::RenderShaderStageFlags::fragment, 0,
          sizeof(rhi::ChunkPushConstants)});
-    shader_program.dependencies = {"gpu_static_mesh_vertex_v3", "gpu_object_instance_v3",
+    shader_program.dependencies = {"gpu_static_mesh_vertex_v3", "gpu_object_instance_v4",
                                    "gpu_surface_material_v2", "gpu_morph_delta_v1",
                                    "chunk_push_constants_v2"};
     return shader_program;
@@ -294,7 +301,7 @@ make_static_shadow_shader_program(std::span<const std::uint32_t> vertex_spirv,
     program.id = "static_shadow";
     program.stages[1].source_name = "shadow_static.frag.spv";
     program.interface.descriptors.resize(7);
-    program.dependencies = {"gpu_static_mesh_vertex_v3", "gpu_object_instance_v3",
+    program.dependencies = {"gpu_static_mesh_vertex_v3", "gpu_object_instance_v4",
                             "gpu_surface_material_v2",   "gpu_morph_delta_v1",
                             "chunk_push_constants_v2",   "depth_only_v1"};
     return program;
@@ -737,7 +744,9 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         return core::Status::failure(error.code, error.message);
     }
     const auto scene_material = core::PrototypeId::parse("base:materials/static_instances");
-    if (!scene_material) {
+    const auto transparent_material =
+        core::PrototypeId::parse("base:materials/transparent_instances");
+    if (!scene_material || !transparent_material) {
         (void)shutdown();
         return core::Status::failure("renderer.invalid_scene_material",
                                      "internal static-instance material id is invalid");
@@ -748,6 +757,34 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
     auto scene_status = scene_render_system_->initialize(desc.scene_render_config);
     if (!scene_status) {
         const auto error = scene_status.error();
+        (void)shutdown();
+        return core::Status::failure(error.code, error.message);
+    }
+    const std::array transparent_geometry_writes{
+        rhi::RenderDescriptorWrite{
+            transparent_material.value(), "object_instances",
+            scene_render_system_->instance_buffer(), 0,
+            static_cast<std::size_t>(
+                scene_render_system_->stats().instance_buffer_bytes)},
+        rhi::RenderDescriptorWrite{
+            transparent_material.value(), "skin_matrices",
+            scene_render_system_->skin_matrix_buffer(), 0,
+            static_cast<std::size_t>(
+                scene_render_system_->stats().skin_matrix_buffer_bytes)},
+        rhi::RenderDescriptorWrite{
+            transparent_material.value(), "morph_deltas",
+            mesh_manager_->morph_delta_buffer(), 0,
+            static_cast<std::size_t>(mesh_manager_->stats().morph_arena.capacity_bytes)},
+        rhi::RenderDescriptorWrite{
+            transparent_material.value(), "morph_weights",
+            scene_render_system_->morph_weight_buffer(), 0,
+            static_cast<std::size_t>(
+                scene_render_system_->stats().morph_weight_buffer_bytes)},
+    };
+    auto transparent_geometry =
+        device_->write_descriptors(transparent_geometry_writes);
+    if (!transparent_geometry) {
+        const auto error = transparent_geometry.error();
         (void)shutdown();
         return core::Status::failure(error.code, error.message);
     }
@@ -776,6 +813,10 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
     if (environment_status) {
         environment_status = environment_lighting_->bind(scene_material.value(), "environment_map");
     }
+    if (environment_status) {
+        environment_status =
+            environment_lighting_->bind(transparent_material.value(), "environment_map");
+    }
     if (!environment_status) {
         const auto error = environment_status.error();
         (void)shutdown();
@@ -802,6 +843,10 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         lighting_status =
             clustered_lighting_->bind(scene_material.value(), "local_lights", "light_grid");
     }
+    if (lighting_status) {
+        lighting_status = clustered_lighting_->bind(
+            transparent_material.value(), "local_lights", "light_grid");
+    }
     if (!lighting_status) {
         const auto error = lighting_status.error();
         (void)shutdown();
@@ -811,6 +856,10 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         cascaded_shadows_->bind(terrain_lighting_material.value(), "shadow_data");
     if (shadow_resource_status) {
         shadow_resource_status = cascaded_shadows_->bind(scene_material.value(), "shadow_data");
+    }
+    if (shadow_resource_status) {
+        shadow_resource_status =
+            cascaded_shadows_->bind(transparent_material.value(), "shadow_data");
     }
     if (!shadow_resource_status) {
         const auto error = shadow_resource_status.error();
@@ -1107,7 +1156,15 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
         return core::Result<rhi::RenderFrameStats>::failure(sky_draw.error().code,
                                                             sky_draw.error().message);
     }
-    command_lists.sky_draws.push_back(sky_draw.value());
+    auto sky_command = sky_draw.value();
+    sky_command.camera_relative_origin = {
+        environment_.cloud_coverage,
+        environment_.cloud_density,
+        environment_.elapsed_seconds,
+    };
+    sky_command.texture_variation_seed =
+        std::bit_cast<std::uint32_t>(environment_.storm_intensity);
+    command_lists.sky_draws.push_back(sky_command);
     command_lists.opaque_terrain_draws = std::move(draw_command_scratch_.opaque_terrain_draws);
     command_lists.alpha_tested_terrain_draws =
         std::move(draw_command_scratch_.alpha_tested_terrain_draws);
@@ -1369,7 +1426,9 @@ core::Status Renderer::resize(rhi::RenderExtent extent) {
     }
     const auto terrain_material = core::PrototypeId::parse("base:materials/milestone_terrain");
     const auto scene_material = core::PrototypeId::parse("base:materials/static_instances");
-    if (!terrain_material || !scene_material) {
+    const auto transparent_material =
+        core::PrototypeId::parse("base:materials/transparent_instances");
+    if (!terrain_material || !scene_material || !transparent_material) {
         return core::Status::failure("renderer.invalid_lighting_material",
                                      "internal lighting material ids are invalid");
     }
@@ -1378,6 +1437,11 @@ core::Status Renderer::resize(rhi::RenderExtent extent) {
         return status;
     }
     status = clustered_lighting_->bind(scene_material.value(), "local_lights", "light_grid");
+    if (!status) {
+        return status;
+    }
+    status =
+        clustered_lighting_->bind(transparent_material.value(), "local_lights", "light_grid");
     if (!status) {
         return status;
     }
@@ -2589,6 +2653,8 @@ Renderer::create_terrain_pipeline(std::span<const std::uint32_t> vertex_spirv,
          rhi::RenderShaderStageFlags::fragment},
         {"terrain_surface_textures", rhi::RenderDescriptorKind::sampled_texture, 13, true,
          rhi::RenderShaderStageFlags::fragment},
+        {"scene_depth", rhi::RenderDescriptorKind::sampled_texture, 14, false,
+         rhi::RenderShaderStageFlags::fragment},
     };
     layout.push_constant_ranges.push_back(
         {rhi::RenderShaderStageFlags::vertex | rhi::RenderShaderStageFlags::fragment, 0,
@@ -2691,7 +2757,9 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
                                      "scene runtime asset managers must be initialized first");
     }
     const auto material = core::PrototypeId::parse("base:materials/static_instances");
-    if (!material) {
+    const auto transparent_material =
+        core::PrototypeId::parse("base:materials/transparent_instances");
+    if (!material || !transparent_material) {
         return core::Status::failure("renderer.invalid_scene_material",
                                      "internal static-instance material id is invalid");
     }
@@ -2740,12 +2808,17 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
          rhi::RenderShaderStageFlags::fragment},
         {"local_shadow_1", rhi::RenderDescriptorKind::sampled_texture, 16, true,
          rhi::RenderShaderStageFlags::fragment},
+        {"scene_depth", rhi::RenderDescriptorKind::sampled_texture, 17, true,
+         rhi::RenderShaderStageFlags::fragment},
     };
     layout.push_constant_ranges.push_back(
         {rhi::RenderShaderStageFlags::vertex | rhi::RenderShaderStageFlags::fragment, 0,
          sizeof(rhi::ChunkPushConstants)});
     layout.debug_name = "static_instances_layout";
     layout.per_frame_descriptors = true;
+    auto transparent_layout = layout;
+    transparent_layout.material_id = transparent_material.value();
+    transparent_layout.debug_name = "transparent_instances_layout";
 
     rhi::RenderGraphicsPipelineDesc pipeline;
     pipeline.material_id = material.value();
@@ -2784,6 +2857,7 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
         hash_vertex_layout(pipeline.vertex_stride, pipeline.vertex_attributes);
     const auto prewarm =
         [&](std::size_t index, RenderPhase phase,
+            const rhi::RenderPipelineLayoutDesc& phase_layout,
             rhi::RenderGraphicsPipelineDesc desc) -> core::Result<rhi::RenderResourceHandle> {
         GraphicsPipelineKey key;
         key.shader_program = scene_shader_program_;
@@ -2798,42 +2872,48 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
         key.depth_compare = desc.depth_compare;
         key.blend_mode = desc.blend_mode;
         scene_pipeline_keys_[index] = key;
-        return pipeline_cache_->prewarm(key, layout, std::move(desc));
+        return pipeline_cache_->prewarm(key, phase_layout, std::move(desc));
     };
     pipeline.debug_name = "opaque_static_instances_pipeline";
-    auto opaque = prewarm(0, RenderPhase::static_instances, pipeline);
+    auto opaque = prewarm(0, RenderPhase::static_instances, layout, pipeline);
     if (!opaque) {
         return core::Status::failure(opaque.error().code, opaque.error().message);
     }
     auto alpha_desc = pipeline;
     alpha_desc.debug_name = "alpha_tested_static_instances_pipeline";
     alpha_desc.cull_mode = rhi::RenderCullMode::none;
-    auto alpha = prewarm(1, RenderPhase::static_instances, std::move(alpha_desc));
+    auto alpha = prewarm(1, RenderPhase::static_instances, layout, std::move(alpha_desc));
     if (!alpha) {
         return core::Status::failure(alpha.error().code, alpha.error().message);
     }
     auto transparent_desc = pipeline;
+    transparent_desc.material_id = transparent_material.value();
     transparent_desc.debug_name = "transparent_static_instances_pipeline";
     transparent_desc.depth_write_enable = false;
     transparent_desc.blend_mode = rhi::RenderBlendMode::alpha;
-    auto transparent = prewarm(2, RenderPhase::transparent_terrain, std::move(transparent_desc));
+    auto transparent = prewarm(2, RenderPhase::transparent_terrain,
+                               transparent_layout, std::move(transparent_desc));
     if (!transparent) {
         return core::Status::failure(transparent.error().code, transparent.error().message);
     }
     auto additive_desc = pipeline;
+    additive_desc.material_id = transparent_material.value();
     additive_desc.debug_name = "additive_static_instances_pipeline";
     additive_desc.depth_write_enable = false;
     additive_desc.blend_mode = rhi::RenderBlendMode::additive;
-    auto additive = prewarm(3, RenderPhase::transparent_terrain, std::move(additive_desc));
+    auto additive = prewarm(3, RenderPhase::transparent_terrain,
+                            transparent_layout, std::move(additive_desc));
     if (!additive) {
         return core::Status::failure(additive.error().code, additive.error().message);
     }
     auto premultiplied_desc = pipeline;
+    premultiplied_desc.material_id = transparent_material.value();
     premultiplied_desc.debug_name = "premultiplied_static_instances_pipeline";
     premultiplied_desc.depth_write_enable = false;
     premultiplied_desc.blend_mode = rhi::RenderBlendMode::premultiplied_alpha;
     auto premultiplied =
-        prewarm(4, RenderPhase::transparent_terrain, std::move(premultiplied_desc));
+        prewarm(4, RenderPhase::transparent_terrain, transparent_layout,
+                std::move(premultiplied_desc));
     if (!premultiplied) {
         return core::Status::failure(premultiplied.error().code,
                                      premultiplied.error().message);
@@ -2841,7 +2921,8 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
     auto two_sided_desc = pipeline;
     two_sided_desc.debug_name = "opaque_two_sided_static_instances_pipeline";
     two_sided_desc.cull_mode = rhi::RenderCullMode::none;
-    auto opaque_two_sided = prewarm(5, RenderPhase::static_instances, std::move(two_sided_desc));
+    auto opaque_two_sided =
+        prewarm(5, RenderPhase::static_instances, layout, std::move(two_sided_desc));
     if (!opaque_two_sided) {
         return core::Status::failure(opaque_two_sided.error().code,
                                      opaque_two_sided.error().message);
@@ -2850,33 +2931,38 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
     alpha_two_sided_desc.debug_name = "alpha_tested_two_sided_static_instances_pipeline";
     alpha_two_sided_desc.cull_mode = rhi::RenderCullMode::none;
     auto alpha_two_sided =
-        prewarm(6, RenderPhase::static_instances, std::move(alpha_two_sided_desc));
+        prewarm(6, RenderPhase::static_instances, layout, std::move(alpha_two_sided_desc));
     if (!alpha_two_sided) {
         return core::Status::failure(alpha_two_sided.error().code, alpha_two_sided.error().message);
     }
     auto transparent_two_sided_desc = pipeline;
+    transparent_two_sided_desc.material_id = transparent_material.value();
     transparent_two_sided_desc.debug_name = "transparent_two_sided_static_instances_pipeline";
     transparent_two_sided_desc.cull_mode = rhi::RenderCullMode::none;
     transparent_two_sided_desc.depth_write_enable = false;
     transparent_two_sided_desc.blend_mode = rhi::RenderBlendMode::alpha;
     auto transparent_two_sided =
-        prewarm(7, RenderPhase::transparent_terrain, std::move(transparent_two_sided_desc));
+        prewarm(7, RenderPhase::transparent_terrain, transparent_layout,
+                std::move(transparent_two_sided_desc));
     if (!transparent_two_sided) {
         return core::Status::failure(transparent_two_sided.error().code,
                                      transparent_two_sided.error().message);
     }
     auto additive_two_sided_desc = pipeline;
+    additive_two_sided_desc.material_id = transparent_material.value();
     additive_two_sided_desc.debug_name = "additive_two_sided_static_instances_pipeline";
     additive_two_sided_desc.cull_mode = rhi::RenderCullMode::none;
     additive_two_sided_desc.depth_write_enable = false;
     additive_two_sided_desc.blend_mode = rhi::RenderBlendMode::additive;
     auto additive_two_sided =
-        prewarm(8, RenderPhase::transparent_terrain, std::move(additive_two_sided_desc));
+        prewarm(8, RenderPhase::transparent_terrain, transparent_layout,
+                std::move(additive_two_sided_desc));
     if (!additive_two_sided) {
         return core::Status::failure(additive_two_sided.error().code,
                                      additive_two_sided.error().message);
     }
     auto premultiplied_two_sided_desc = pipeline;
+    premultiplied_two_sided_desc.material_id = transparent_material.value();
     premultiplied_two_sided_desc.debug_name =
         "premultiplied_two_sided_static_instances_pipeline";
     premultiplied_two_sided_desc.cull_mode = rhi::RenderCullMode::none;
@@ -2884,7 +2970,7 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
     premultiplied_two_sided_desc.blend_mode =
         rhi::RenderBlendMode::premultiplied_alpha;
     auto premultiplied_two_sided =
-        prewarm(9, RenderPhase::transparent_terrain,
+        prewarm(9, RenderPhase::transparent_terrain, transparent_layout,
                 std::move(premultiplied_two_sided_desc));
     if (!premultiplied_two_sided) {
         return core::Status::failure(premultiplied_two_sided.error().code,
@@ -3094,25 +3180,41 @@ core::Status Renderer::bind_scene_surface_resources() {
                                      "scene surface resources must be initialized first");
     }
     const auto scene_material = core::PrototypeId::parse("base:materials/static_instances");
+    const auto transparent_material =
+        core::PrototypeId::parse("base:materials/transparent_instances");
     const auto* texture = surface_texture_array_->texture_view();
     const auto* data_texture = surface_data_texture_array_->texture_view();
-    if (!scene_material || texture == nullptr || !texture->image.is_valid() ||
-        data_texture == nullptr || !data_texture->image.is_valid()) {
+    const auto* fallback_depth =
+        texture_manager_->find(texture_manager_->white_texture());
+    if (!scene_material || !transparent_material || texture == nullptr ||
+        !texture->image.is_valid() ||
+        data_texture == nullptr || !data_texture->image.is_valid() ||
+        fallback_depth == nullptr || !fallback_depth->image.is_valid()) {
         return core::Status::failure("renderer.scene_surface_resources_missing",
                                      "scene surface texture or material identity is missing");
     }
-    const std::array texture_writes{
-        rhi::RenderDescriptorWrite{scene_material.value(), "surface_textures", texture->image, 0, 0,
-                                   surface_sampler_},
-        rhi::RenderDescriptorWrite{scene_material.value(), "surface_data_textures",
-                                   data_texture->image, 0, 0, surface_sampler_},
-    };
-    auto written = device_->write_descriptors(texture_writes);
-    if (!written) {
-        return core::Status::failure(written.error().code, written.error().message);
+    for (const auto& material :
+         {scene_material.value(), transparent_material.value()}) {
+        const std::array texture_writes{
+            rhi::RenderDescriptorWrite{material, "surface_textures", texture->image, 0,
+                                       0, surface_sampler_},
+            rhi::RenderDescriptorWrite{material, "surface_data_textures",
+                                       data_texture->image, 0, 0, surface_sampler_},
+            rhi::RenderDescriptorWrite{material, "scene_depth",
+                                       fallback_depth->image, 0, 0, surface_sampler_},
+        };
+        auto written = device_->write_descriptors(texture_writes);
+        if (!written) {
+            return core::Status::failure(written.error().code,
+                                         written.error().message);
+        }
+        auto material_status = material_cache_->write_gpu_surface_table_descriptor(
+            material, "surface_materials");
+        if (!material_status) {
+            return material_status;
+        }
     }
-    return material_cache_->write_gpu_surface_table_descriptor(scene_material.value(),
-                                                               "surface_materials");
+    return core::Status::ok();
 }
 
 core::Status Renderer::create_debug_pipelines(std::span<const std::uint32_t> vertex_spirv,
@@ -3359,6 +3461,10 @@ Renderer::create_image_quality_pipelines(std::span<const std::uint32_t> vertex_s
         pipeline.depth_test_enable = false;
         pipeline.depth_write_enable = false;
         pipeline.color_target_format = post.format;
+        if (index == 0U) {
+            pipeline.additional_color_target_formats = {
+                rhi::RenderImageFormat::rg16_sfloat};
+        }
 
         GraphicsPipelineKey key;
         key.shader_program = shader.value();
@@ -3366,6 +3472,7 @@ Renderer::create_image_quality_pipelines(std::span<const std::uint32_t> vertex_s
             hash_vertex_layout(0, std::span<const rhi::RenderVertexAttributeDesc>{});
         key.render_phase = RenderPhase::post_process;
         key.color_format = post.format;
+        key.additional_color_formats = pipeline.additional_color_target_formats;
         key.depth_format = pipeline.depth_target_format;
         key.cull_mode = pipeline.cull_mode;
         key.front_face = pipeline.front_face;

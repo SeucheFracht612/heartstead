@@ -11,6 +11,7 @@ layout(location = 7) flat in uint fragment_material;
 layout(location = 8) in vec4 fragment_skin_weights;
 layout(location = 9) in vec4 fragment_effect_parameters;
 layout(location = 10) flat in uvec4 fragment_effect_metadata;
+layout(location = 11) in vec4 fragment_effect_parameters2;
 
 layout(set = 0, binding = 2) uniform sampler2DArray surface_textures;
 layout(set = 0, binding = 4) uniform sampler2DArray surface_data_textures;
@@ -74,6 +75,7 @@ layout(set = 0, binding = 13) uniform sampler2DShadow shadow_cascade_3;
 layout(set = 0, binding = 14) uniform samplerCube environment_map;
 layout(set = 0, binding = 15) uniform sampler2DShadow local_shadow_0;
 layout(set = 0, binding = 16) uniform sampler2DShadow local_shadow_1;
+layout(set = 0, binding = 17) uniform sampler2D scene_depth;
 
 layout(push_constant) uniform FramePushConstants {
     mat4 view_projection;
@@ -91,6 +93,11 @@ const uint MATERIAL_TWO_SIDED = 8U;
 const uint MATERIAL_UNLIT = 32U;
 const uint EFFECT_VEGETATION = 1U;
 const uint EFFECT_FOLIAGE_TRANSMISSION = 2U;
+const uint EFFECT_WATER_SURFACE = 64U;
+const uint EFFECT_UNLIT_PARTICLE = 128U;
+const uint EFFECT_EMISSIVE_PARTICLE = 256U;
+const uint EFFECT_PREMULTIPLIED_PARTICLE = 512U;
+const uint EFFECT_SOFT_PARTICLE = 32U;
 const float PI = 3.14159265358979323846;
 
 vec3 evaluate_light(vec3 albedo, float metallic, float roughness, vec3 normal,
@@ -349,6 +356,59 @@ void main() {
     vec4 base_color =
         sample_binding(surface_textures, material.textures[0]) *
         material.base_color * fragment_color;
+    if ((fragment_effect_metadata.x & EFFECT_WATER_SURFACE) != 0U) {
+        vec3 view_direction =
+            normalize(shadows.camera_position.xyz - fragment_world_position);
+        float time = frame.unused_origin.z * fragment_effect_parameters2.y;
+        vec2 first_direction = normalize(vec2(0.82, 0.57));
+        vec2 second_direction = normalize(vec2(-0.38, 0.93));
+        float first = cos(dot(fragment_world_position.xz, first_direction) * 0.14 +
+                          time * 1.1);
+        float second = cos(dot(fragment_world_position.xz, second_direction) * 0.21 -
+                           time * 0.8);
+        float ripple = sin(dot(fragment_world_position.xz, vec2(0.83, -0.71)) +
+                           time * 3.2) * shadows.weather_parameters.x;
+        vec3 water_normal =
+            normalize(vec3((first * first_direction.x + second * second_direction.x) *
+                               shadows.water_parameters.x +
+                           ripple * 0.05,
+                           1.0,
+                           (first * first_direction.y + second * second_direction.y) *
+                               shadows.water_parameters.x +
+                           ripple * 0.05));
+        float normal_view = clamp(dot(water_normal, view_direction), 0.0, 1.0);
+        float fresnel =
+            shadows.water_parameters.z +
+            (1.0 - shadows.water_parameters.z) * pow(1.0 - normal_view, 5.0);
+        vec3 reflection = reflect(-view_direction, water_normal);
+        vec3 reflected = textureLod(environment_map, reflection, 1.2).rgb;
+        float optical_depth =
+            max(fragment_effect_parameters2.z, 0.1) /
+            max(normal_view, 0.12);
+        float absorption =
+            1.0 - exp(-optical_depth /
+                      max(shadows.water_shallow_absorption.w, 0.01));
+        vec3 body =
+            mix(shadows.water_shallow_absorption.rgb,
+                shadows.water_deep_scattering.rgb, absorption);
+        body += shadows.water_scattering_refraction.rgb *
+                shadows.water_deep_scattering.w *
+                (1.0 - exp(-optical_depth * 0.08));
+        float crest = smoothstep(0.72, 1.0, max(first, second)) *
+                      fragment_effect_parameters2.w *
+                      shadows.water_foam_strength.w;
+        vec3 color =
+            mix(body, reflected, fresnel) +
+            shadows.water_foam_strength.rgb * crest;
+        float distance_to_camera =
+            length(fragment_world_position - shadows.camera_position.xyz);
+        float fog = smoothstep(frame.ambient_color_fog_start.w,
+                               frame.fog_color_fog_end.w, distance_to_camera);
+        color = mix(color, frame.fog_color_fog_end.rgb, fog);
+        out_color = vec4(max(color, vec3(0.0)),
+                         clamp(0.72 + fresnel * 0.24, 0.0, 0.98));
+        return;
+    }
     const uint material_flags = material.flags_and_padding.x;
     if ((fragment_effect_metadata.x & EFFECT_VEGETATION) != 0U &&
         fragment_effect_parameters.w < 1.0) {
@@ -369,8 +429,16 @@ void main() {
     vec3 emissive =
         sample_binding(surface_textures, material.textures[4]).rgb *
         material.emissive_metallic.rgb;
-    vec3 color = base_color.rgb + emissive;
-    if ((material_flags & MATERIAL_UNLIT) == 0U) {
+    bool particle_unlit =
+        (fragment_effect_metadata.x & EFFECT_UNLIT_PARTICLE) != 0U;
+    bool particle_emissive =
+        (fragment_effect_metadata.x & EFFECT_EMISSIVE_PARTICLE) != 0U;
+    vec3 color =
+        particle_emissive
+            ? base_color.rgb * max(fragment_effect_parameters2.x, 0.0)
+            : base_color.rgb + emissive;
+    if ((material_flags & MATERIAL_UNLIT) == 0U && !particle_unlit &&
+        !particle_emissive) {
         vec3 normal = normalize(fragment_normal);
         if ((material_flags & MATERIAL_TWO_SIDED) != 0U && !gl_FrontFacing) {
             normal = -normal;
@@ -512,6 +580,18 @@ void main() {
                   (height_density + shadows.atmosphere_parameters.w * 0.0008));
     fog = max(fog, clamp(volumetric_fog, 0.0, 1.0));
     color = mix(color, frame.fog_color_fog_end.rgb, fog);
-    float alpha = fragment_layer == LAYER_TRANSPARENT ? base_color.a : 1.0;
+    float alpha = fragment_layer >= LAYER_TRANSPARENT ? base_color.a : 1.0;
+    if ((fragment_effect_metadata.x & EFFECT_SOFT_PARTICLE) != 0U) {
+        vec2 depth_uv = gl_FragCoord.xy / vec2(textureSize(scene_depth, 0));
+        float opaque_depth = texture(scene_depth, depth_uv).r;
+        float depth_delta = max(opaque_depth - gl_FragCoord.z, 0.0);
+        float depth_scale =
+            max(fwidth(gl_FragCoord.z) * 12.0, 0.000002) *
+            max(fragment_effect_parameters2.y, 0.001);
+        alpha *= clamp(depth_delta / depth_scale, 0.0, 1.0);
+    }
+    if ((fragment_effect_metadata.x & EFFECT_PREMULTIPLIED_PARTICLE) != 0U) {
+        color *= alpha;
+    }
     out_color = vec4(max(color, vec3(0.0)), alpha);
 }

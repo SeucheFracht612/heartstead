@@ -16,6 +16,7 @@ struct GpuObjectInstance {
     uvec4 morph_metadata;
     vec4 effect_parameters;
     uvec4 effect_metadata;
+    vec4 effect_parameters2;
 };
 
 struct GpuMorphDelta {
@@ -59,8 +60,10 @@ layout(location = 7) flat out uint fragment_material;
 layout(location = 8) out vec4 fragment_skin_weights;
 layout(location = 9) out vec4 fragment_effect_parameters;
 layout(location = 10) flat out uvec4 fragment_effect_metadata;
+layout(location = 11) out vec4 fragment_effect_parameters2;
 
 const uint EFFECT_VEGETATION = 1U;
+const uint EFFECT_WATER_SURFACE = 64U;
 
 void main() {
     GpuObjectInstance instance = object_instances.instances[gl_InstanceIndex];
@@ -91,6 +94,20 @@ void main() {
                 wind_direction * (primary + detail) * wind_speed *
                 flexibility * height_weight * 0.075;
         }
+    }
+    if ((instance.effect_metadata.x & EFFECT_WATER_SURFACE) != 0U) {
+        vec3 approximate_world =
+            (instance.camera_relative_transform * vec4(local_position, 1.0)).xyz;
+        float time = frame.unused_origin.z * instance.effect_parameters2.y;
+        float first = sin(dot(approximate_world.xz, vec2(0.071, 0.043)) +
+                          time * 1.17);
+        float second = sin(dot(approximate_world.xz, vec2(-0.037, 0.091)) -
+                           time * 0.83);
+        float detail = sin(dot(approximate_world.xz, vec2(0.19, -0.14)) +
+                           time * 1.91);
+        local_position.y +=
+            (first + second * 0.62 + detail * 0.18) *
+            instance.effect_parameters2.x;
     }
     uint vertex_count = instance.morph_metadata.w & 0x00ffffffU;
     uint morph_count = instance.morph_metadata.w >> 24U;
@@ -141,4 +158,5 @@ void main() {
     fragment_skin_weights = in_weights;
     fragment_effect_parameters = instance.effect_parameters;
     fragment_effect_metadata = instance.effect_metadata;
+    fragment_effect_parameters2 = instance.effect_parameters2;
 }

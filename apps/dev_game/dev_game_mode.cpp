@@ -7,6 +7,7 @@
 #include "engine/movement/player_camera.hpp"
 #include "engine/movement/player_input.hpp"
 #include "engine/renderer/environment/day_night.hpp"
+#include "engine/renderer/environment/weather_effects.hpp"
 #include "engine/save/save_database.hpp"
 #include "game/features/animals/wandering_animal_module.hpp"
 #include "game/features/interaction/voxel_raycast.hpp"
@@ -176,6 +177,7 @@ struct DevGameMode::Impl {
     bool model_presentation_initialized = false;
     std::optional<renderer::CpuParticleSystem> particle_system;
     renderer::ParticleSystemConfig particle_config;
+    renderer::WeatherEffects weather_effects;
     game::ParticlePresentation particle_presentation;
     game::VoxelInteractionPresentation voxel_interaction_presentation;
     bool particle_presentation_initialized = false;
@@ -284,6 +286,10 @@ core::Status DevGameMode::initialize(game::GameApplicationServices& services) {
         return core::Status::failure(particle_system.error().code, particle_system.error().message);
     }
     state.particle_system.emplace(std::move(particle_system).value());
+    status = state.weather_effects.initialize(*state.particle_system);
+    if (!status) {
+        return status;
+    }
     status = state.particle_presentation.initialize(
         *renderer, {.maximum_presented_particles = state.particle_config.maximum_particles});
     if (!status) {
@@ -579,6 +585,13 @@ DevGameMode::update(game::GameApplicationServices& services,
     if (!camera_frame) {
         return core::Result<game::GameApplicationFrameOutput>::failure(
             camera_frame.error().code, camera_frame.error().message);
+    }
+    status = state.weather_effects.update(evaluated_environment.value(),
+                                          camera_frame.value().position,
+                                          frame.delta_seconds());
+    if (!status) {
+        return core::Result<game::GameApplicationFrameOutput>::failure(
+            status.error().code, status.error().message);
     }
     status = state.audio_presentation.update(*audio, player->state, camera_frame.value(),
                                              state.runtime.session()->client()->world().chunks(),
@@ -1034,6 +1047,7 @@ core::Status DevGameMode::shutdown(game::GameApplicationServices& services) {
         }
     }
     state.game_ui.reset();
+    state.weather_effects.reset();
     state.particle_system.reset();
     if (state.runtime_started) {
         if (state.save_database.has_value() && state.runtime.session() != nullptr &&

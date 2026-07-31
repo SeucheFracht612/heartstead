@@ -131,6 +131,12 @@ core::Result<rhi::RenderFramePlan> FrameBuilder::build_plan() const {
     if (!status) {
         return fail(status);
     }
+    status = builder.add_resource(
+        {"scene_depth_copy", extent_, RenderResourceLifetime::transient,
+         RenderImageFormat::rg16_sfloat});
+    if (!status) {
+        return fail(status);
+    }
     for (const auto* name : {"scene_grounded", "scene_aa", "bloom_hdr"}) {
         status = builder.add_resource(
             {name, extent_, RenderResourceLifetime::transient, RenderImageFormat::rgba16_sfloat});
@@ -198,7 +204,7 @@ core::Result<rhi::RenderFramePlan> FrameBuilder::build_plan() const {
     status = builder.add_pass({.name = "ssao",
                                .kind = RenderPassKind::post_process,
                                .reads = {depth},
-                               .writes = {"scene_ao"},
+                               .writes = {"scene_ao", "scene_depth_copy"},
                                .sampled_resources = {{"scene_depth", depth, false}}});
     if (!status) {
         return fail(status);
@@ -215,11 +221,14 @@ core::Result<rhi::RenderFramePlan> FrameBuilder::build_plan() const {
     auto transparent_reads = world_shadow_reads;
     transparent_reads.push_back("scene_grounded");
     transparent_reads.push_back(depth);
+    transparent_reads.push_back("scene_depth_copy");
+    auto transparent_samples = shadow_samples;
+    transparent_samples.push_back({"scene_depth", "scene_depth_copy", false});
     status = builder.add_pass({.name = "transparent_terrain",
                                .kind = RenderPassKind::world,
                                .reads = std::move(transparent_reads),
                                .writes = {"scene_grounded", depth},
-                               .sampled_resources = shadow_samples});
+                               .sampled_resources = std::move(transparent_samples)});
     if (!status) {
         return fail(status);
     }

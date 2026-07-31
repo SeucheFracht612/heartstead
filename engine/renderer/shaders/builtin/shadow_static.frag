@@ -7,6 +7,7 @@ layout(location = 6) flat in uint fragment_layer;
 layout(location = 7) flat in uint fragment_material;
 layout(location = 9) in vec4 fragment_effect_parameters;
 layout(location = 10) flat in uvec4 fragment_effect_metadata;
+layout(location = 11) in vec4 fragment_effect_parameters2;
 
 layout(set = 0, binding = 2) uniform sampler2DArray surface_textures;
 

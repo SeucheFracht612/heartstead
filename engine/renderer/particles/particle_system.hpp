@@ -8,10 +8,56 @@
 #include <array>
 #include <compare>
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <span>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace heartstead::renderer {
+
+enum class ParticleBlendMode : std::uint8_t {
+    alpha,
+    additive,
+    premultiplied_alpha,
+};
+
+enum class ParticleShading : std::uint8_t {
+    lit,
+    unlit,
+    emissive,
+};
+
+enum class ParticleGeometry : std::uint8_t {
+    billboard,
+    mesh,
+};
+
+enum class ParticleAlignment : std::uint8_t {
+    camera,
+    velocity,
+};
+
+enum class ParticleSimulationSpace : std::uint8_t {
+    world,
+    local,
+};
+
+enum class ParticleCollisionMode : std::uint8_t {
+    none,
+    depth,
+    voxel,
+};
+
+[[nodiscard]] std::string_view particle_blend_mode_name(ParticleBlendMode value) noexcept;
+[[nodiscard]] std::string_view particle_shading_name(ParticleShading value) noexcept;
+[[nodiscard]] std::string_view particle_geometry_name(ParticleGeometry value) noexcept;
+[[nodiscard]] std::string_view particle_alignment_name(ParticleAlignment value) noexcept;
+[[nodiscard]] std::string_view
+particle_simulation_space_name(ParticleSimulationSpace value) noexcept;
+[[nodiscard]] std::string_view
+particle_collision_mode_name(ParticleCollisionMode value) noexcept;
 
 struct ParticlePrototype {
     core::PrototypeId id;
@@ -32,6 +78,24 @@ struct ParticlePrototype {
     std::uint16_t atlas_rows = 1;
     std::uint16_t atlas_frame_count = 1;
     float atlas_frames_per_second = 0.0F;
+    ParticleBlendMode blend_mode = ParticleBlendMode::alpha;
+    ParticleShading shading = ParticleShading::lit;
+    ParticleGeometry geometry = ParticleGeometry::billboard;
+    ParticleAlignment alignment = ParticleAlignment::camera;
+    ParticleSimulationSpace simulation_space = ParticleSimulationSpace::world;
+    ParticleCollisionMode collision_mode = ParticleCollisionMode::none;
+    std::uint8_t mesh_group = 0;
+    float emissive_intensity = 1.0F;
+    float wind_response = 0.0F;
+    float soft_fade_distance = 0.0F;
+    float velocity_stretch = 0.0F;
+    float collision_radius = 0.05F;
+    float collision_restitution = 0.25F;
+    float lod_start_distance = 48.0F;
+    float lod_end_distance = 128.0F;
+    std::uint32_t maximum_live_particles = 10'000;
+    std::uint32_t spawn_budget_per_update = 2'048;
+    std::uint8_t priority = 1;
 
     [[nodiscard]] core::Status validate() const noexcept;
 };
@@ -87,6 +151,20 @@ struct ParticleState {
     std::uint16_t atlas_rows = 1;
     std::uint16_t atlas_frame_count = 1;
     float atlas_frames_per_second = 0.0F;
+    ParticleBlendMode blend_mode = ParticleBlendMode::alpha;
+    ParticleShading shading = ParticleShading::lit;
+    ParticleGeometry geometry = ParticleGeometry::billboard;
+    ParticleAlignment alignment = ParticleAlignment::camera;
+    ParticleSimulationSpace simulation_space = ParticleSimulationSpace::world;
+    ParticleCollisionMode collision_mode = ParticleCollisionMode::none;
+    ParticleEmitterId source_emitter;
+    std::uint8_t mesh_group = 0;
+    float emissive_intensity = 1.0F;
+    float wind_response = 0.0F;
+    float soft_fade_distance = 0.0F;
+    float velocity_stretch = 0.0F;
+    float collision_radius = 0.05F;
+    float collision_restitution = 0.25F;
 
     [[nodiscard]] float normalized_age() const noexcept;
     [[nodiscard]] float size() const noexcept;
@@ -111,8 +189,21 @@ struct ParticleSystemStats {
     std::uint32_t expired_this_update = 0;
     std::uint64_t dropped_particles = 0;
     std::uint64_t dropped_events = 0;
+    std::uint64_t lod_rejected_particles = 0;
+    std::uint64_t prototype_budget_rejected_particles = 0;
+    std::uint64_t collision_count = 0;
     double update_ms = 0.0;
 };
+
+struct ParticleCollisionHit {
+    world::WorldPosition position;
+    math::Vec3f normal{0.0F, 1.0F, 0.0F};
+};
+
+using ParticleCollisionQuery =
+    std::function<std::optional<ParticleCollisionHit>(
+        const world::WorldPosition& previous, const world::WorldPosition& proposed,
+        float radius)>;
 
 class CpuParticleSystem {
   public:
@@ -125,6 +216,10 @@ class CpuParticleSystem {
                                               const world::WorldPosition& position,
                                               math::Vec3f direction);
     [[nodiscard]] core::Status destroy_emitter(ParticleEmitterId id);
+    void set_environment(math::Vec3f wind_velocity,
+                         std::optional<world::WorldPosition> viewpoint = {}) noexcept;
+    void set_collision_queries(ParticleCollisionQuery depth_collision,
+                               ParticleCollisionQuery voxel_collision);
     [[nodiscard]] core::Status update(float delta_seconds);
     void clear() noexcept;
 
@@ -148,7 +243,8 @@ class CpuParticleSystem {
 
     [[nodiscard]] core::Status validate_event(const ParticleEmitEvent& event) const noexcept;
     [[nodiscard]] core::Status validate_emitter(const ParticleEmitterDesc& emitter) const noexcept;
-    void spawn(const ParticleEmitEvent& event, std::uint32_t& spawn_budget);
+    void spawn(const ParticleEmitEvent& event, std::uint32_t& spawn_budget,
+               ParticleEmitterId source_emitter = {});
 
     ParticleSystemConfig config_{};
     std::vector<ParticlePrototype> prototypes_;
@@ -157,6 +253,11 @@ class CpuParticleSystem {
     std::vector<EmitterSlot> emitters_;
     std::vector<std::uint32_t> free_emitters_;
     std::uint64_t next_particle_serial_ = 1;
+    math::Vec3f wind_velocity_{};
+    std::optional<world::WorldPosition> viewpoint_;
+    ParticleCollisionQuery depth_collision_;
+    ParticleCollisionQuery voxel_collision_;
+    std::unordered_map<std::string, std::uint32_t> prototype_spawns_this_update_;
     ParticleSystemStats stats_{};
 };
 

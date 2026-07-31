@@ -302,6 +302,7 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
             gpu.effect_metadata[1] = instance.sprite_frame;
             gpu.effect_metadata[2] = instance.atlas_columns;
             gpu.effect_metadata[3] = instance.atlas_rows;
+            std::ranges::copy(instance.effect_parameters2, gpu.effect_parameters2);
             morph_weight_scratch_.insert(morph_weight_scratch_.end(),
                                          instance.morph_weights.begin(),
                                          instance.morph_weights.end());

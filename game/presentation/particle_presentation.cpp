@@ -25,19 +25,53 @@ constexpr std::array<std::uint32_t, 6> billboard_indices{0, 1, 2, 0, 2, 3};
 [[nodiscard]] math::Transform3f particle_transform(const world::WorldPosition& position,
                                                    world::BlockCoord anchor, float size,
                                                    const renderer::RenderCamera& camera,
-                                                   float roll_degrees) noexcept {
+                                                   float roll_degrees,
+                                                   math::Vec3f velocity,
+                                                   renderer::ParticleGeometry geometry,
+                                                   renderer::ParticleAlignment alignment,
+                                                   float velocity_stretch) noexcept {
     const auto relative = position.relative_to(anchor);
     math::Transform3f transform;
     transform.position = {static_cast<float>(relative.x), static_cast<float>(relative.y),
                           static_cast<float>(relative.z)};
     constexpr float radians_to_degrees = 180.0F / std::numbers::pi_v<float>;
-    transform.rotation_degrees = {
-        -camera.pitch_radians * radians_to_degrees,
-        camera.yaw_radians * radians_to_degrees + 180.0F,
-        roll_degrees,
-    };
-    transform.scale = {size, size, size};
+    const auto speed = std::sqrt(math::length_squared(velocity));
+    if (geometry == renderer::ParticleGeometry::mesh) {
+        const auto horizontal =
+            std::sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+        transform.rotation_degrees = {
+            std::atan2(velocity.y, std::max(horizontal, 0.0001F)) *
+                radians_to_degrees,
+            std::atan2(velocity.x, -velocity.z) * radians_to_degrees,
+            roll_degrees,
+        };
+    } else {
+        auto aligned_roll = roll_degrees;
+        if (alignment == renderer::ParticleAlignment::velocity && speed > 0.0001F) {
+            const auto screen_x = math::dot(velocity, camera.right());
+            aligned_roll += std::atan2(-screen_x, velocity.y) * radians_to_degrees;
+        }
+        transform.rotation_degrees = {
+            -camera.pitch_radians * radians_to_degrees,
+            camera.yaw_radians * radians_to_degrees + 180.0F,
+            aligned_roll,
+        };
+    }
+    transform.scale = {size, size * (1.0F + speed * velocity_stretch), size};
     return transform;
+}
+
+[[nodiscard]] renderer::RenderLayer
+particle_layer(renderer::ParticleBlendMode blend) noexcept {
+    switch (blend) {
+    case renderer::ParticleBlendMode::alpha:
+        return renderer::RenderLayer::transparent;
+    case renderer::ParticleBlendMode::additive:
+        return renderer::RenderLayer::additive;
+    case renderer::ParticleBlendMode::premultiplied_alpha:
+        return renderer::RenderLayer::premultiplied;
+    }
+    return renderer::RenderLayer::transparent;
 }
 
 [[nodiscard]] renderer::RenderSceneUpdate
@@ -59,6 +93,13 @@ core::Status ParticlePresentationConfig::validate() const noexcept {
         return core::Status::failure(
             "particle_presentation.invalid_config",
             "particle presentation requires valid material groups and a bounded capacity");
+    }
+    for (std::size_t index = 0; index < mesh_groups.size(); ++index) {
+        if (mesh_groups[index].is_valid() && !mesh_group_bounds[index].is_valid()) {
+            return core::Status::failure(
+                "particle_presentation.invalid_mesh_bounds",
+                "configured mesh-particle groups require finite local bounds");
+        }
     }
     return core::Status::ok();
 }
@@ -126,16 +167,26 @@ ParticlePresentation::synchronize(renderer::Renderer& renderer,
             object.id = found->second.object;
         }
         object.anchor = particle.position;
-        object.previous_transform =
-            particle_transform(particle.previous_position, particle.position.anchor, current_size,
-                               camera, particle.roll_degrees);
-        object.current_transform =
-            particle_transform(particle.position, particle.position.anchor, current_size, camera,
-                               particle.roll_degrees);
-        object.mesh = billboard_mesh_;
+        object.previous_transform = particle_transform(
+            particle.previous_position, particle.position.anchor, current_size, camera,
+            particle.roll_degrees, particle.velocity, particle.geometry,
+            particle.alignment, particle.velocity_stretch);
+        object.current_transform = particle_transform(
+            particle.position, particle.position.anchor, current_size, camera,
+            particle.roll_degrees, particle.velocity, particle.geometry,
+            particle.alignment, particle.velocity_stretch);
+        const auto configured_mesh = config_.mesh_groups[particle.mesh_group];
+        object.mesh =
+            particle.geometry == renderer::ParticleGeometry::mesh &&
+                    configured_mesh.is_valid()
+                ? configured_mesh
+                : billboard_mesh_;
         object.material = config_.material_groups[particle.material_group];
-        object.local_bounds = {{-0.5F, -0.5F, -0.01F}, {0.5F, 0.5F, 0.01F}};
-        object.layer = renderer::RenderLayer::transparent;
+        object.local_bounds =
+            object.mesh == billboard_mesh_
+                ? math::Bounds3f{{-0.5F, -0.5F, -0.01F}, {0.5F, 0.5F, 0.01F}}
+                : config_.mesh_group_bounds[particle.mesh_group];
+        object.layer = particle_layer(particle.blend_mode);
         object.flags = renderer::RenderObjectFlags::two_sided;
         object.color = particle.color();
         object.sprite_frame = particle.atlas_frame();
@@ -143,6 +194,34 @@ ParticlePresentation::synchronize(renderer::Renderer& renderer,
         object.atlas_rows = particle.atlas_rows;
         object.effect_flags = renderer::RenderEffectFlags::particle |
                               renderer::RenderEffectFlags::billboard;
+        if (particle.geometry == renderer::ParticleGeometry::mesh) {
+            object.effect_flags = static_cast<renderer::RenderEffectFlags>(
+                static_cast<std::uint32_t>(object.effect_flags) &
+                ~static_cast<std::uint32_t>(renderer::RenderEffectFlags::billboard));
+        }
+        if (particle.alignment == renderer::ParticleAlignment::velocity) {
+            object.effect_flags =
+                object.effect_flags | renderer::RenderEffectFlags::velocity_aligned;
+        }
+        if (particle.soft_fade_distance > 0.0F) {
+            object.effect_flags =
+                object.effect_flags | renderer::RenderEffectFlags::soft_particle;
+        }
+        if (particle.shading == renderer::ParticleShading::unlit) {
+            object.effect_flags =
+                object.effect_flags | renderer::RenderEffectFlags::unlit_particle;
+        } else if (particle.shading == renderer::ParticleShading::emissive) {
+            object.effect_flags =
+                object.effect_flags | renderer::RenderEffectFlags::emissive_particle;
+        }
+        if (particle.blend_mode == renderer::ParticleBlendMode::premultiplied_alpha) {
+            object.effect_flags =
+                object.effect_flags |
+                renderer::RenderEffectFlags::premultiplied_particle;
+        }
+        object.particle_emissive_intensity = particle.emissive_intensity;
+        object.particle_soft_fade_distance = particle.soft_fade_distance;
+        object.particle_velocity_stretch = particle.velocity_stretch;
         if (found == retained_.end()) {
             auto created = renderer.create_object(std::move(object));
             if (!created) {

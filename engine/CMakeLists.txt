@@ -123,6 +123,9 @@ target_sources(
     renderer/environment/environment_profile.cpp
     renderer/environment/environment_lighting.cpp
     renderer/environment/sky_renderer.cpp
+    renderer/environment/weather_effects.cpp
+    renderer/effects/surface_mark_renderer.cpp
+    renderer/effects/trail_renderer.cpp
     renderer/frame/frame_builder.cpp
     renderer/lighting/clustered_lighting.cpp
     renderer/lighting/cascaded_shadows.cpp
@@ -141,6 +144,7 @@ target_sources(
     renderer/ui/ui_renderer.cpp
     renderer/vegetation/vegetation_renderer.cpp
     renderer/vegetation/vegetation_species.cpp
+    renderer/water/large_water_renderer.cpp
     renderer/vulkan/vulkan_backend.cpp
     renderer/vulkan/vulkan_common.cpp
     renderer/vulkan/vulkan_frame_resources.cpp
@@ -262,6 +266,9 @@ target_sources(
       items/item_prototype.hpp
       renderer/vegetation/vegetation_species.hpp
       renderer/vegetation/vegetation_renderer.hpp
+      renderer/water/large_water_renderer.hpp
+      renderer/effects/surface_mark_renderer.hpp
+      renderer/effects/trail_renderer.hpp
       jobs/job_system.hpp
       jobs/thread_pool/thread_pool_backend.hpp
       math/matrix.hpp
@@ -339,8 +346,10 @@ target_sources(
       renderer/chunks/chunk_render_system.hpp
       renderer/debug/debug_renderer.hpp
       renderer/environment/day_night.hpp
+      renderer/environment/environment_profile.hpp
       renderer/environment/environment_lighting.hpp
       renderer/environment/sky_renderer.hpp
+      renderer/environment/weather_effects.hpp
       renderer/frame/frame_builder.hpp
       renderer/frame/render_commands.hpp
       renderer/lighting/clustered_lighting.hpp

@@ -1,5 +1,6 @@
 #include "engine/modding/generic_prototype.hpp"
 #include "engine/modding/prototype_registry.hpp"
+#include "engine/renderer/environment/weather_effects.hpp"
 #include "engine/renderer/particles/particle_prototype.hpp"
 #include "engine/renderer/particles/particle_system.hpp"
 
@@ -138,14 +139,94 @@ int main() {
             {"atlas_rows", "2"},
             {"atlas_frame_count", "8"},
             {"atlas_frames_per_second", "12"},
+            {"blend_mode", "premultiplied_alpha"},
+            {"shading", "emissive"},
+            {"geometry", "mesh"},
+            {"alignment", "velocity"},
+            {"simulation_space", "local"},
+            {"collision", "voxel"},
+            {"mesh_group", "3"},
+            {"emissive_intensity", "4.5"},
+            {"wind_response", "1.25"},
+            {"soft_fade_distance", "0.4"},
+            {"velocity_stretch", "1.8"},
+            {"collision_radius", "0.08"},
+            {"collision_restitution", "0.6"},
+            {"lod_start_distance", "30"},
+            {"lod_end_distance", "90"},
+            {"maximum_live_particles", "123"},
+            {"spawn_budget_per_update", "17"},
+            {"priority", "3"},
         },
     };
     auto parsed = renderer::particle_prototype_from_generic(generic);
     assert(parsed);
     assert(parsed.value().material_group == 2);
     assert(parsed.value().atlas_frame_count == 8);
+    assert(parsed.value().blend_mode == renderer::ParticleBlendMode::premultiplied_alpha);
+    assert(parsed.value().shading == renderer::ParticleShading::emissive);
+    assert(parsed.value().geometry == renderer::ParticleGeometry::mesh);
+    assert(parsed.value().alignment == renderer::ParticleAlignment::velocity);
+    assert(parsed.value().simulation_space == renderer::ParticleSimulationSpace::local);
+    assert(parsed.value().collision_mode == renderer::ParticleCollisionMode::voxel);
+    assert(parsed.value().mesh_group == 3);
+    assert(parsed.value().emissive_intensity == 4.5F);
+    assert(parsed.value().wind_response == 1.25F);
+    assert(parsed.value().soft_fade_distance == 0.4F);
+    assert(parsed.value().maximum_live_particles == 123);
+    assert(parsed.value().spawn_budget_per_update == 17);
     generic.fields["start_color"] = "1,2,3";
     assert(!renderer::particle_prototype_from_generic(generic));
+
+    std::vector<renderer::ParticlePrototype> weather_prototypes;
+    for (const auto id : {"base:particles/rain_drop", "base:particles/snow_flake",
+                          "base:particles/dust_mote", "base:particles/spore"}) {
+        auto prototype = make_prototype(id);
+        prototype.lod_start_distance = 128.0F;
+        prototype.lod_end_distance = 256.0F;
+        weather_prototypes.push_back(prototype);
+    }
+    renderer::ParticleSystemConfig weather_system_config;
+    weather_system_config.maximum_particles = 64;
+    weather_system_config.maximum_emitters = 1;
+    weather_system_config.maximum_queued_events = 64;
+    weather_system_config.maximum_spawns_per_update = 64;
+    auto weather_particles =
+        renderer::CpuParticleSystem::create(weather_system_config, weather_prototypes);
+    assert(weather_particles);
+    renderer::WeatherEffects weather;
+    renderer::WeatherEffectsConfig weather_config;
+    weather_config.rain_particles_per_second = 60.0F;
+    weather_config.maximum_spawns_per_update = 8;
+    weather_config.horizontal_radius = 12.0F;
+    weather_config.minimum_spawn_height = 6.0F;
+    weather_config.maximum_spawn_height = 10.0F;
+    assert(weather.initialize(weather_particles.value(), weather_config));
+    renderer::EvaluatedEnvironment rainy_environment;
+    rainy_environment.weather.precipitation =
+        renderer::EnvironmentPrecipitation::rain;
+    rainy_environment.weather.precipitation_intensity = 0.5F;
+    rainy_environment.wind.direction = {1.0F, 0.0F, 0.0F};
+    rainy_environment.wind.speed = 4.0F;
+    const world::WorldPosition weather_viewpoint{
+        5'000'000'000.0, 80.0, -5'000'000'000.0};
+    assert(weather.update(rainy_environment, weather_viewpoint, 0.1F));
+    assert(weather.stats().emitted_this_update == 3);
+    assert(weather_particles.value().stats().queued_events == 3);
+    assert(weather_particles.value().update(0.1F));
+    assert(weather_particles.value().stats().active_particles == 3);
+    for (const auto& particle : weather_particles.value().particles()) {
+        const auto delta =
+            particle.position.relative_to(weather_viewpoint.anchor) -
+            weather_viewpoint.local_offset;
+        assert(std::abs(delta.x) <= 16.0);
+        assert(delta.y >= 3.0 && delta.y <= 12.0);
+        assert(std::abs(delta.z) <= 16.0);
+    }
+    rainy_environment.weather.precipitation =
+        renderer::EnvironmentPrecipitation::none;
+    assert(weather.update(rainy_environment, weather_viewpoint, 0.1F));
+    assert(weather.stats().emitted_this_update == 0);
 
     return 0;
 }

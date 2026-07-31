@@ -63,6 +63,7 @@ constexpr std::uint16_t slope_type = 6;
     case BenchmarkSceneKind::checkerboard_geometry:
     case BenchmarkSceneKind::forest_cross_planes:
     case BenchmarkSceneKind::terrain_material_preview:
+    case BenchmarkSceneKind::starting_biome:
         return kind;
     case BenchmarkSceneKind::flat_terrain:
     case BenchmarkSceneKind::rapid_voxel_edits:
@@ -110,6 +111,8 @@ std::string_view benchmark_scene_name(BenchmarkSceneKind kind) noexcept {
         return "light-heavy";
     case BenchmarkSceneKind::terrain_material_preview:
         return "terrain-materials";
+    case BenchmarkSceneKind::starting_biome:
+        return "starting-biome";
     }
     return "unknown";
 }
@@ -130,6 +133,7 @@ std::optional<BenchmarkSceneKind> parse_benchmark_scene(std::string_view name) n
         BenchmarkSceneKind::particle_stress,
         BenchmarkSceneKind::light_heavy_settlement,
         BenchmarkSceneKind::terrain_material_preview,
+        BenchmarkSceneKind::starting_biome,
     };
     const auto found = std::ranges::find_if(
         kinds, [name](BenchmarkSceneKind kind) { return benchmark_scene_name(kind) == name; });
@@ -430,6 +434,37 @@ std::vector<world::VoxelCell> BenchmarkScene::generate_cells(world::ChunkCoord c
                     }
                     break;
                 }
+                case BenchmarkSceneKind::starting_biome: {
+                    const auto river_center =
+                        static_cast<double>(center_chunk_.x * edge_i64 + 16) +
+                        std::sin(static_cast<double>(global_z) * 0.075) * 7.0;
+                    const auto river =
+                        std::abs(static_cast<double>(global_x) - river_center) < 3.25;
+                    if (river) {
+                        if (y <= 5) {
+                            type = y == 5 ? soil_type : stone_type;
+                        } else if (y <= 8) {
+                            type = water_type;
+                            state_bits = world::full_fluid_source_state_bits();
+                        }
+                    } else {
+                        const auto height = std::clamp<std::int64_t>(
+                            9 + static_cast<std::int64_t>(
+                                    std::round(std::sin(static_cast<double>(global_x) * 0.055) *
+                                                   2.5 +
+                                               std::cos(static_cast<double>(global_z) * 0.047) *
+                                                   1.8)),
+                            6, 14);
+                        if (static_cast<std::int64_t>(y) <= height) {
+                            type = static_cast<std::int64_t>(y) == height
+                                       ? surface_type
+                                       : (static_cast<std::int64_t>(y) >= height - 2
+                                              ? soil_type
+                                              : stone_type);
+                        }
+                    }
+                    break;
+                }
                 case BenchmarkSceneKind::rapid_voxel_edits:
                 case BenchmarkSceneKind::high_speed_flythrough:
                 case BenchmarkSceneKind::chunk_load_unload_churn:
@@ -486,6 +521,7 @@ core::Result<BenchmarkSceneStep> BenchmarkScene::advance(std::uint64_t frame_ind
     case BenchmarkSceneKind::particle_stress:
     case BenchmarkSceneKind::light_heavy_settlement:
     case BenchmarkSceneKind::terrain_material_preview:
+    case BenchmarkSceneKind::starting_biome:
         break;
     }
     if (!status) {

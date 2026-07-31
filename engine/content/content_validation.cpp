@@ -7,6 +7,7 @@
 #include "engine/modding/mod_validation.hpp"
 #include "engine/processes/process_prototype.hpp"
 #include "engine/renderer/environment/environment_profile.hpp"
+#include "engine/renderer/effects/surface_mark_renderer.hpp"
 #include "engine/renderer/materials/material_prototype_loader.hpp"
 #include "engine/renderer/particles/particle_prototype.hpp"
 #include "engine/renderer/vegetation/vegetation_species.hpp"
@@ -197,6 +198,15 @@ ContentValidation::validate(const std::filesystem::path& mods_root,
                   vegetation_species.error().message);
     } else {
         report.vegetation_species = std::move(vegetation_species).value();
+    }
+
+    auto surface_marks =
+        renderer::surface_mark_registry_from_prototypes(report.registry);
+    if (!surface_marks) {
+        add_error(report, mods_root, surface_marks.error().code,
+                  surface_marks.error().message);
+    } else {
+        report.surface_marks = std::move(surface_marks).value();
     }
 
     const auto ui_panel_prototypes =
