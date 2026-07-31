@@ -18,7 +18,8 @@ namespace heartstead::assets {
 
 namespace {
 
-constexpr std::string_view magic = "heartstead.cooked_assets.v1";
+constexpr std::string_view magic_v1 = "heartstead.cooked_assets.v1";
+constexpr std::string_view magic_v2 = "heartstead.cooked_assets.v2";
 constexpr std::size_t max_manifest_bytes = 64U * 1024U * 1024U;
 constexpr std::size_t max_manifest_line_bytes = 1024U * 1024U;
 constexpr std::size_t max_manifest_records = 1'000'000;
@@ -187,10 +188,54 @@ constexpr std::size_t max_record_dependencies = 4096;
         core::stable_hash64_hex(asset.logical_id + "|" + asset.content_hash + "|" + config.profile +
                                 "|" + std::to_string(config.pipeline_version));
 
-    return CookedAssetRecord{asset.logical_id,  asset.kind,        asset.virtual_path,
-                             asset.source_kind, asset.source_id,   asset.content_hash,
-                             cooked_path,       cooked_hash,       config.pipeline_version,
-                             active == &asset,  asset.dependencies};
+    return CookedAssetRecord{
+        asset.logical_id,  asset.kind,         asset.virtual_path,      asset.source_kind,
+        asset.source_id,   asset.content_hash, "0000000000000000",      "unassigned",
+        cooked_path,       cooked_hash,        config.pipeline_version, active == &asset,
+        asset.dependencies};
+}
+
+[[nodiscard]] core::Result<std::string> dependency_closure_hash(const AssetCatalog& catalog,
+                                                                const AssetRecord& root) {
+    core::StableHash64 hasher;
+    std::unordered_set<std::string> visited;
+    std::unordered_set<std::string> visiting;
+    const auto visit = [&](const auto& self, const AssetRecord& record) -> core::Status {
+        if (visited.contains(record.logical_id)) {
+            return core::Status::ok();
+        }
+        if (!visiting.insert(record.logical_id).second) {
+            return core::Status::failure("cooked_asset_manifest.dependency_cycle",
+                                         "asset dependency graph contains a cycle at " +
+                                             record.logical_id);
+        }
+        auto dependencies = record.dependencies;
+        std::ranges::sort(dependencies, {}, &VirtualPath::to_string);
+        for (const auto& dependency : dependencies) {
+            const auto logical_id = asset_logical_id(dependency);
+            const auto* child = catalog.find_active(logical_id);
+            if (child == nullptr) {
+                return core::Status::failure(
+                    "cooked_asset_manifest.missing_dependency",
+                    "asset dependency closure contains an unresolved asset: " + record.logical_id +
+                        " -> " + logical_id);
+            }
+            hasher.add_string(logical_id);
+            hasher.add_string(child->content_hash);
+            auto status = self(self, *child);
+            if (!status) {
+                return status;
+            }
+        }
+        visiting.erase(record.logical_id);
+        visited.insert(record.logical_id);
+        return core::Status::ok();
+    };
+    auto status = visit(visit, root);
+    if (!status) {
+        return core::Result<std::string>::failure(status.error().code, status.error().message);
+    }
+    return core::Result<std::string>::success(hasher.hex());
 }
 
 [[nodiscard]] std::string encode_dependencies(const std::vector<VirtualPath>& dependencies) {
@@ -232,12 +277,14 @@ constexpr std::size_t max_record_dependencies = 4096;
     return core::Result<std::vector<VirtualPath>>::success(std::move(dependencies));
 }
 
-[[nodiscard]] core::Result<CookedAssetRecord> parse_record(std::string_view value) {
+[[nodiscard]] core::Result<CookedAssetRecord> parse_record(std::string_view value,
+                                                           std::uint32_t schema_version) {
     const auto parts = split(value, '|');
-    if (parts.size() != 11) {
+    const auto expected_fields = schema_version >= 2U ? 13U : 11U;
+    if (parts.size() != expected_fields) {
         return core::Result<CookedAssetRecord>::failure(
             "cooked_asset_manifest.invalid_record",
-            "cooked asset record must contain 11 pipe-separated fields");
+            "cooked asset record has the wrong number of pipe-separated fields");
     }
 
     auto logical_id = percent_unescape(parts[0]);
@@ -246,14 +293,24 @@ constexpr std::size_t max_record_dependencies = 4096;
     auto source_kind = parse_source_kind(parts[3]);
     auto source_id = percent_unescape(parts[4]);
     auto source_hash = percent_unescape(parts[5]);
-    auto cooked_relative_path = percent_unescape(parts[6]);
-    auto cooked_hash = percent_unescape(parts[7]);
-    auto pipeline_version = parse_u32(parts[8], "pipeline_version");
-    auto dependencies = decode_dependencies(parts[10]);
+    const auto cooked_path_field = schema_version >= 2U ? 8U : 6U;
+    const auto cooked_hash_field = cooked_path_field + 1U;
+    const auto pipeline_version_field = cooked_path_field + 2U;
+    const auto active_field = cooked_path_field + 3U;
+    const auto dependency_field = cooked_path_field + 4U;
+    auto dependency_hash = schema_version >= 2U
+                               ? percent_unescape(parts[6])
+                               : core::Result<std::string>::success("0000000000000000");
+    auto pipeline_id = schema_version >= 2U ? percent_unescape(parts[7])
+                                            : core::Result<std::string>::success("legacy_v1");
+    auto cooked_relative_path = percent_unescape(parts[cooked_path_field]);
+    auto cooked_hash = percent_unescape(parts[cooked_hash_field]);
+    auto pipeline_version = parse_u32(parts[pipeline_version_field], "pipeline_version");
+    auto dependencies = decode_dependencies(parts[dependency_field]);
 
     if (!logical_id || !kind || !source_virtual_path_text || !source_kind || !source_id ||
-        !source_hash || !cooked_relative_path || !cooked_hash || !pipeline_version ||
-        !dependencies) {
+        !source_hash || !dependency_hash || !pipeline_id || !cooked_relative_path || !cooked_hash ||
+        !pipeline_version || !dependencies) {
         return core::Result<CookedAssetRecord>::failure(
             "cooked_asset_manifest.invalid_record", "cooked asset record contains invalid fields");
     }
@@ -264,7 +321,7 @@ constexpr std::size_t max_record_dependencies = 4096;
                                                         source_virtual_path.error().message);
     }
 
-    if (parts[9] != "0" && parts[9] != "1") {
+    if (parts[active_field] != "0" && parts[active_field] != "1") {
         return core::Result<CookedAssetRecord>::failure("cooked_asset_manifest.invalid_active_flag",
                                                         "cooked asset active flag must be 0 or 1");
     }
@@ -276,10 +333,12 @@ constexpr std::size_t max_record_dependencies = 4096;
         source_kind.value(),
         std::move(source_id).value(),
         std::move(source_hash).value(),
+        std::move(dependency_hash).value(),
+        std::move(pipeline_id).value(),
         std::filesystem::path(std::move(cooked_relative_path).value()),
         std::move(cooked_hash).value(),
         pipeline_version.value(),
-        parts[9] == "1",
+        parts[active_field] == "1",
         std::move(dependencies).value(),
     });
 }
@@ -324,10 +383,18 @@ core::Status CookedAssetManifest::validate() const {
             return core::Status::failure("cooked_asset_manifest.invalid_source_id",
                                          "cooked asset source id is invalid");
         }
-        if (!is_valid_stable_hash(record.source_hash)) {
+        if (!is_valid_stable_hash(record.source_hash) ||
+            !is_valid_stable_hash(record.dependency_hash)) {
             return core::Status::failure(
                 "cooked_asset_manifest.invalid_source_hash",
-                "cooked asset source hash must be a lowercase 64-bit hexadecimal digest");
+                "cooked asset source and dependency hashes must be lowercase 64-bit hexadecimal "
+                "digests");
+        }
+        if (record.pipeline_id.empty() || record.pipeline_id.size() > 256U ||
+            record.pipeline_id.find_first_of("\r\n|") != std::string::npos) {
+            return core::Status::failure(
+                "cooked_asset_manifest.invalid_pipeline_id",
+                "cooked asset pipeline identity must be a bounded single-line value");
         }
         if (!is_valid_relative_path(record.cooked_relative_path)) {
             return core::Status::failure("cooked_asset_manifest.invalid_cooked_path",
@@ -478,7 +545,14 @@ core::Result<CookedAssetManifest> CookedAssetManifestBuilder::build(const AssetC
     CookedAssetManifest manifest;
     manifest.profile = config.profile;
     for (const auto* asset : source_records) {
-        manifest.records.push_back(make_cooked_record(catalog, *asset, config));
+        auto record = make_cooked_record(catalog, *asset, config);
+        auto dependency_hash = dependency_closure_hash(catalog, *asset);
+        if (!dependency_hash) {
+            return core::Result<CookedAssetManifest>::failure(dependency_hash.error().code,
+                                                              dependency_hash.error().message);
+        }
+        record.dependency_hash = std::move(dependency_hash).value();
+        manifest.records.push_back(std::move(record));
     }
 
     auto status = manifest.validate();
@@ -497,7 +571,8 @@ core::Result<CookedAssetManifest> CookedAssetManifestBuilder::build(const AssetC
 
 std::string CookedAssetManifestTextCodec::encode(const CookedAssetManifest& manifest) {
     std::ostringstream output;
-    output << magic << '\n';
+    const auto use_v2 = manifest.schema_version >= 2U;
+    output << (use_v2 ? magic_v2 : magic_v1) << '\n';
     output << "schema_version=" << manifest.schema_version << '\n';
     output << "profile=" << percent_escape(manifest.profile) << '\n';
 
@@ -507,7 +582,12 @@ std::string CookedAssetManifestTextCodec::encode(const CookedAssetManifest& mani
                << percent_escape(record.source_virtual_path.to_string()) << '|'
                << asset_source_kind_name(record.source_kind) << '|'
                << percent_escape(record.source_id) << '|' << percent_escape(record.source_hash)
-               << '|' << percent_escape(record.cooked_relative_path.generic_string()) << '|'
+               << '|';
+        if (use_v2) {
+            output << percent_escape(record.dependency_hash) << '|'
+                   << percent_escape(record.pipeline_id) << '|';
+        }
+        output << percent_escape(record.cooked_relative_path.generic_string()) << '|'
                << percent_escape(record.cooked_hash) << '|' << record.pipeline_version << '|'
                << (record.active ? '1' : '0') << '|' << encode_dependencies(record.dependencies)
                << '\n';
@@ -527,6 +607,7 @@ core::Result<CookedAssetManifest> CookedAssetManifestTextCodec::decode(std::stri
     bool saw_end = false;
     bool saw_schema = false;
     bool saw_profile = false;
+    std::uint32_t magic_version = 0;
     std::size_t consumed_bytes = 0;
 
     std::size_t line_start = 0;
@@ -545,7 +626,8 @@ core::Result<CookedAssetManifest> CookedAssetManifestTextCodec::decode(std::stri
         }
 
         if (!saw_magic) {
-            if (line != magic) {
+            magic_version = line == magic_v2 ? 2U : line == magic_v1 ? 1U : 0U;
+            if (magic_version == 0U) {
                 return core::Result<CookedAssetManifest>::failure(
                     "cooked_asset_manifest.invalid_magic",
                     "cooked asset manifest does not start with the expected magic");
@@ -596,7 +678,12 @@ core::Result<CookedAssetManifest> CookedAssetManifestTextCodec::decode(std::stri
                         "cooked_asset_manifest.too_large",
                         "cooked asset manifest has too many records");
                 }
-                auto parsed = parse_record(value);
+                if (!saw_schema) {
+                    return core::Result<CookedAssetManifest>::failure(
+                        "cooked_asset_manifest.missing_schema",
+                        "schema_version must precede cooked asset records");
+                }
+                auto parsed = parse_record(value, manifest.schema_version);
                 if (!parsed) {
                     return core::Result<CookedAssetManifest>::failure(parsed.error().code,
                                                                       parsed.error().message);
@@ -619,6 +706,11 @@ core::Result<CookedAssetManifest> CookedAssetManifestTextCodec::decode(std::stri
         return core::Result<CookedAssetManifest>::failure(
             "cooked_asset_manifest.incomplete_manifest",
             "cooked asset manifest is missing required fields");
+    }
+    if (manifest.schema_version != magic_version || manifest.schema_version > 2U) {
+        return core::Result<CookedAssetManifest>::failure(
+            "cooked_asset_manifest.unsupported_schema",
+            "cooked asset manifest magic and schema version are unsupported or inconsistent");
     }
     if (consumed_bytes != text.size()) {
         return core::Result<CookedAssetManifest>::failure(

@@ -38,6 +38,8 @@ struct AssetCookConfig {
     std::filesystem::path manifest_relative_path = "asset_manifest.txt";
     CookedAssetBuildConfig manifest_config;
     std::size_t maximum_source_bytes = default_maximum_asset_source_bytes;
+    bool incremental = true;
+    bool prune_stale_outputs = true;
 };
 
 struct AssetCookResult {
@@ -45,6 +47,9 @@ struct AssetCookResult {
     CookedAssetManifest manifest;
     std::filesystem::path manifest_path;
     std::size_t cooked_file_count = 0;
+    std::size_t reused_file_count = 0;
+    std::size_t invalidated_file_count = 0;
+    std::size_t removed_file_count = 0;
     std::uintmax_t cooked_payload_bytes = 0;
 };
 

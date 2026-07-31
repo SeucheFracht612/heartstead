@@ -836,7 +836,7 @@ void test_resource_pack_discovery_and_asset_catalog() {
         heartstead::assets::AssetCookBackend::production_converters);
     assert(production_model_pipeline.available);
     assert(production_model_pipeline.converts_source_format);
-    assert(production_model_pipeline.name == "model_gltf_runtime_converter_v4");
+    assert(production_model_pipeline.name == "model_gltf_runtime_converter_v5");
     const auto production_shader_pipeline = heartstead::assets::asset_cook_pipeline_info(
         heartstead::assets::AssetKind::shader,
         heartstead::assets::AssetCookBackend::production_converters);
@@ -971,9 +971,54 @@ void test_resource_pack_discovery_and_asset_catalog() {
         heartstead::assets::AssetCooker::cook(dependency_catalog, dependency_cook_config);
     assert(dependency_cook_result);
     assert(dependency_cook_result.value().cooked_file_count == 2);
+    assert(dependency_cook_result.value().manifest.schema_version == 2);
     assert(dependency_cook_result.value()
                .manifest.find_active("base:materials/clay.mat")
                ->dependencies.size() == 1);
+    const auto* dependency_material =
+        dependency_cook_result.value().manifest.find_active("base:materials/clay.mat");
+    assert(dependency_material != nullptr);
+    assert(dependency_material->dependency_hash != "0000000000000000");
+    assert(dependency_material->pipeline_id != "unassigned");
+
+    auto unchanged_dependency_cook =
+        heartstead::assets::AssetCooker::cook(dependency_catalog, dependency_cook_config);
+    assert(unchanged_dependency_cook);
+    assert(unchanged_dependency_cook.value().cooked_file_count == 0);
+    assert(unchanged_dependency_cook.value().reused_file_count == 2);
+    assert(unchanged_dependency_cook.value().invalidated_file_count == 0);
+
+    heartstead::assets::AssetCatalog changed_dependency_catalog;
+    assert(changed_dependency_catalog.add(heartstead::assets::AssetRecord{
+        "base:textures/items/clay.txt",
+        heartstead::assets::AssetKind::texture,
+        dependency_texture_path.value(),
+        heartstead::assets::AssetSourceKind::mod,
+        "base",
+        0,
+        dependency_assets / "textures/items/clay.txt",
+        heartstead::core::stable_hash64_hex("texture_hash_changed"),
+        false,
+        {},
+    }));
+    assert(changed_dependency_catalog.add(heartstead::assets::AssetRecord{
+        "base:materials/clay.mat",
+        heartstead::assets::AssetKind::material,
+        dependency_material_path.value(),
+        heartstead::assets::AssetSourceKind::mod,
+        "base",
+        0,
+        dependency_assets / "materials/clay.mat",
+        heartstead::core::stable_hash64_hex("material_hash"),
+        false,
+        {dependency_texture_path.value()},
+    }));
+    auto invalidated_dependency_cook =
+        heartstead::assets::AssetCooker::cook(changed_dependency_catalog, dependency_cook_config);
+    assert(invalidated_dependency_cook);
+    assert(invalidated_dependency_cook.value().cooked_file_count == 2);
+    assert(invalidated_dependency_cook.value().reused_file_count == 0);
+    assert(invalidated_dependency_cook.value().invalidated_file_count == 2);
 
     heartstead::assets::AssetCatalog missing_dependency_catalog;
     assert(missing_dependency_catalog.add(heartstead::assets::AssetRecord{
@@ -1172,7 +1217,7 @@ void test_resource_pack_discovery_and_asset_catalog() {
     assert(production_glb_record->kind == heartstead::assets::AssetKind::model);
     assert(read_text(production_model_cook_config.output_root /
                      production_gltf_record->cooked_relative_path)
-               .find("backend=model_gltf_runtime_converter_v4") != std::string::npos);
+               .find("backend=model_gltf_runtime_converter_v5") != std::string::npos);
     auto production_model_store =
         heartstead::assets::CookedAssetStore::load(production_model_cook_config.output_root);
     assert(production_model_store);
@@ -1180,12 +1225,12 @@ void test_resource_pack_discovery_and_asset_catalog() {
         production_model_store.value().load_payload("base:models/building/wall.gltf");
     assert(production_gltf_payload);
     assert(production_gltf_payload.value().kind == heartstead::assets::AssetKind::model);
-    assert(production_gltf_payload.value().backend == "model_gltf_runtime_converter_v4");
+    assert(production_gltf_payload.value().backend == "model_gltf_runtime_converter_v5");
     assert(production_gltf_payload.value().profile == "production");
     assert(production_gltf_payload.value().metadata.at("model.container") == "gltf");
     assert(production_gltf_payload.value().metadata.at("model.gltf_version") == "2.0");
     assert(production_gltf_payload.value().metadata.at("model.runtime_format") ==
-           "heartstead.model.v4");
+           "heartstead.model.v5");
     assert(production_gltf_payload.value().metadata.at("model.vertices") == "3");
     assert(production_gltf_payload.value().metadata.at("model.indices") == "3");
     assert(production_gltf_payload.value().metadata.at("model.nodes") == "1");
@@ -8035,7 +8080,7 @@ void test_debug_inspection() {
     assert(asset_model_pipeline_inspection.object_type == "asset_cook_pipeline");
     assert(asset_model_pipeline_inspection.state == "available");
     assert(asset_model_pipeline_inspection.find_field("pipeline")->value ==
-           "model_gltf_runtime_converter_v4");
+           "model_gltf_runtime_converter_v5");
     assert(asset_model_pipeline_inspection.find_field("converts_source_format")->value == "true");
     assert(asset_model_pipeline_inspection.issues.empty());
 

@@ -89,6 +89,10 @@ struct ModelPrimitive {
     std::uint32_t skin = no_model_index;
     std::uint32_t material = no_model_index;
     std::vector<ModelMorphTarget> morph_targets;
+    math::Bounds3f bounds{};
+    std::uint32_t lod_level = 0;
+    bool renderable = true;
+    bool collision_source = false;
 
     ModelPrimitive() = default;
     ModelPrimitive(std::string source_name, std::uint32_t source_first_vertex,
@@ -96,13 +100,83 @@ struct ModelPrimitive {
                    std::uint32_t source_index_count, std::uint32_t source_node,
                    std::uint32_t source_skin = no_model_index,
                    std::uint32_t source_material = no_model_index,
-                   std::vector<ModelMorphTarget> source_morph_targets = {})
+                   std::vector<ModelMorphTarget> source_morph_targets = {},
+                   math::Bounds3f source_bounds = {}, std::uint32_t source_lod_level = 0,
+                   bool source_renderable = true, bool source_collision_source = false)
         : name(std::move(source_name)), first_vertex(source_first_vertex),
           vertex_count(source_vertex_count), first_index(source_first_index),
           index_count(source_index_count), node(source_node), skin(source_skin),
-          material(source_material), morph_targets(std::move(source_morph_targets)) {}
+          material(source_material), morph_targets(std::move(source_morph_targets)),
+          bounds(source_bounds), lod_level(source_lod_level), renderable(source_renderable),
+          collision_source(source_collision_source) {}
 
     friend bool operator==(const ModelPrimitive&, const ModelPrimitive&) = default;
+};
+
+struct ModelSocket {
+    std::string name;
+    std::uint32_t node = no_model_index;
+
+    friend bool operator==(const ModelSocket&, const ModelSocket&) = default;
+};
+
+struct ModelLod {
+    std::uint32_t level = 0;
+    float screen_coverage = 1.0F;
+    float geometric_error = 0.0F;
+    std::vector<std::uint32_t> primitives;
+
+    friend bool operator==(const ModelLod&, const ModelLod&) = default;
+};
+
+struct ModelCollisionShape {
+    std::string name;
+    std::uint32_t node = no_model_index;
+    math::Bounds3f bounds{};
+
+    friend bool operator==(const ModelCollisionShape&, const ModelCollisionShape&) = default;
+};
+
+enum class ModelCameraKind : std::uint8_t {
+    perspective,
+    orthographic,
+};
+
+struct ModelCamera {
+    std::string name;
+    std::uint32_t node = no_model_index;
+    ModelCameraKind kind = ModelCameraKind::perspective;
+    float aspect_ratio = 0.0F;
+    float vertical_fov_radians = 0.785398F;
+    float x_magnification = 1.0F;
+    float y_magnification = 1.0F;
+    float near_plane = 0.1F;
+    float far_plane = 0.0F;
+
+    [[nodiscard]] bool has_infinite_far_plane() const noexcept {
+        return far_plane == 0.0F;
+    }
+
+    friend bool operator==(const ModelCamera&, const ModelCamera&) = default;
+};
+
+enum class ModelLightKind : std::uint8_t {
+    directional,
+    point,
+    spot,
+};
+
+struct ModelLight {
+    std::string name;
+    std::uint32_t node = no_model_index;
+    ModelLightKind kind = ModelLightKind::point;
+    math::Vec3f color{1.0F, 1.0F, 1.0F};
+    float intensity = 1.0F;
+    float range = 0.0F;
+    float inner_cone_radians = 0.0F;
+    float outer_cone_radians = 0.785398F;
+
+    friend bool operator==(const ModelLight&, const ModelLight&) = default;
 };
 
 struct ModelImage {
@@ -247,6 +321,11 @@ struct ModelAsset {
     std::vector<ModelMaterial> materials;
     std::vector<ModelSkin> skins;
     std::vector<ModelAnimationClip> animations;
+    std::vector<ModelSocket> sockets;
+    std::vector<ModelLod> lods;
+    std::vector<ModelCollisionShape> collision_shapes;
+    std::vector<ModelCamera> cameras;
+    std::vector<ModelLight> lights;
     math::Bounds3f bounds{};
 
     friend bool operator==(const ModelAsset& left, const ModelAsset& right) {
@@ -254,8 +333,10 @@ struct ModelAsset {
                left.nodes == right.nodes && left.primitives == right.primitives &&
                left.images == right.images && left.samplers == right.samplers &&
                left.materials == right.materials && left.skins == right.skins &&
-               left.animations == right.animations && left.bounds.min == right.bounds.min &&
-               left.bounds.max == right.bounds.max;
+               left.animations == right.animations && left.sockets == right.sockets &&
+               left.lods == right.lods && left.collision_shapes == right.collision_shapes &&
+               left.cameras == right.cameras && left.lights == right.lights &&
+               left.bounds.min == right.bounds.min && left.bounds.max == right.bounds.max;
     }
 };
 
@@ -264,6 +345,11 @@ struct ModelCapabilities {
     bool has_skins = false;
     bool has_morph_targets = false;
     bool has_animated_nodes = false;
+    bool has_lods = false;
+    bool has_sockets = false;
+    bool has_collision_metadata = false;
+    bool has_cameras = false;
+    bool has_lights = false;
 
     [[nodiscard]] bool supports_animation() const noexcept {
         return has_animation_clips;
@@ -290,6 +376,11 @@ struct ModelAssetLimits {
     std::uint32_t maximum_keyframes_per_channel = 1'000'000;
     std::uint32_t maximum_morph_targets_per_primitive = 64;
     std::size_t maximum_morph_delta_values = 16U * 1024U * 1024U;
+    std::uint32_t maximum_sockets = 4'096;
+    std::uint32_t maximum_lods = 16;
+    std::uint32_t maximum_collision_shapes = 4'096;
+    std::uint32_t maximum_cameras = 256;
+    std::uint32_t maximum_lights = 4'096;
     std::size_t maximum_name_bytes = 1'024;
 
     [[nodiscard]] core::Status validate() const;

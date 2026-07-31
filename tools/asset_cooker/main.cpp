@@ -262,8 +262,11 @@ int main(int argc, char** argv) {
 
         core::log(core::LogLevel::info,
                   "Cooked assets: " + std::to_string(cooked.value().cooked_file_count) +
-                      " files, " + std::to_string(cooked.value().cooked_payload_bytes) +
-                      " source bytes");
+                      " written, " + std::to_string(cooked.value().reused_file_count) +
+                      " reused, " + std::to_string(cooked.value().invalidated_file_count) +
+                      " invalidated, " + std::to_string(cooked.value().removed_file_count) +
+                      " removed, " + std::to_string(cooked.value().cooked_payload_bytes) +
+                      " runtime bytes");
         core::log(
             core::LogLevel::info,
             "Cooked asset manifest: " + std::to_string(cooked.value().manifest.records.size()) +

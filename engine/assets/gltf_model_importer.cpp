@@ -11,10 +11,13 @@
 #include <meshoptimizer.h>
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -29,7 +32,7 @@ namespace {
 constexpr auto supported_gltf_extensions =
     fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_transform |
     fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::KHR_mesh_quantization |
-    fastgltf::Extensions::EXT_meshopt_compression |
+    fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::EXT_meshopt_compression |
     fastgltf::Extensions::KHR_draco_mesh_compression;
 
 [[nodiscard]] core::Result<ModelAsset> importer_failure(std::string code, std::string message) {
@@ -86,6 +89,70 @@ constexpr auto supported_gltf_extensions =
                                          " count exceeds its configured limit");
     }
     return core::Status::ok();
+}
+
+[[nodiscard]] std::string lowercase_ascii(std::string_view value) {
+    std::string result(value);
+    std::ranges::transform(result, result.begin(), [](char character) {
+        return static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    });
+    return result;
+}
+
+[[nodiscard]] std::optional<std::string>
+node_marker_payload(std::string_view source_name, std::span<const std::string_view> markers) {
+    const auto lowered = lowercase_ascii(source_name);
+    for (const auto marker : markers) {
+        if (lowered.starts_with(marker) && source_name.size() > marker.size()) {
+            return std::string(source_name.substr(marker.size()));
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] bool is_collision_node(std::string_view source_name) {
+    constexpr std::array collision_markers{
+        std::string_view{"collision_"}, std::string_view{"collision."},
+        std::string_view{"collision:"}, std::string_view{"ucx_"},
+        std::string_view{"ubx_"},       std::string_view{"ucp_"},
+        std::string_view{"usp_"},
+    };
+    return node_marker_payload(source_name, collision_markers).has_value();
+}
+
+[[nodiscard]] core::Result<std::uint32_t> node_lod_level(std::string_view source_name,
+                                                         const ModelAssetLimits& limits) {
+    const auto lowered = lowercase_ascii(source_name);
+    for (std::size_t offset = 0; offset + 3U < lowered.size(); ++offset) {
+        const auto at_token_start = offset == 0 || lowered[offset - 1U] == '_' ||
+                                    lowered[offset - 1U] == '.' || lowered[offset - 1U] == '-' ||
+                                    lowered[offset - 1U] == ':';
+        if (!at_token_start || lowered.substr(offset, 3U) != "lod") {
+            continue;
+        }
+        std::size_t cursor = offset + 3U;
+        std::uint32_t level = 0;
+        bool has_digit = false;
+        while (cursor < lowered.size() && lowered[cursor] >= '0' && lowered[cursor] <= '9') {
+            has_digit = true;
+            const auto digit = static_cast<std::uint32_t>(lowered[cursor] - '0');
+            if (level > (std::numeric_limits<std::uint32_t>::max() - digit) / 10U) {
+                return core::Result<std::uint32_t>::failure(
+                    "gltf_import.lod_limit", "glTF node LOD suffix overflows its level");
+            }
+            level = level * 10U + digit;
+            ++cursor;
+        }
+        if (has_digit) {
+            if (level >= limits.maximum_lods) {
+                return core::Result<std::uint32_t>::failure(
+                    "gltf_import.lod_limit",
+                    "glTF node LOD suffix exceeds the configured LOD count");
+            }
+            return core::Result<std::uint32_t>::success(level);
+        }
+    }
+    return core::Result<std::uint32_t>::success(0U);
 }
 
 [[nodiscard]] core::Result<std::span<const std::byte>>
@@ -426,6 +493,110 @@ buffer_view_bytes(const fastgltf::Asset& source, std::size_t buffer_view_index) 
                                              "glTF node hierarchy gives a child multiple parents");
             }
             target.nodes[child].parent = static_cast<std::uint32_t>(index);
+        }
+    }
+    return core::Status::ok();
+}
+
+[[nodiscard]] core::Status import_node_metadata(const fastgltf::Asset& source, ModelAsset& target,
+                                                const ModelAssetLimits& limits) {
+    constexpr std::array socket_markers{
+        std::string_view{"socket_"},
+        std::string_view{"socket."},
+        std::string_view{"socket:"},
+    };
+    for (std::size_t node_index = 0; node_index < source.nodes.size(); ++node_index) {
+        const auto& source_node = source.nodes[node_index];
+        if (auto socket_name = node_marker_payload(source_node.name, socket_markers);
+            socket_name.has_value()) {
+            if (target.sockets.size() >= limits.maximum_sockets ||
+                socket_name->size() > limits.maximum_name_bytes) {
+                return core::Status::failure(
+                    "gltf_import.socket_limit",
+                    "glTF socket name or socket count exceeds its configured limit");
+            }
+            target.sockets.push_back(
+                {std::move(*socket_name), static_cast<std::uint32_t>(node_index)});
+        }
+
+        if (source_node.cameraIndex.has_value()) {
+            if (*source_node.cameraIndex >= source.cameras.size() ||
+                target.cameras.size() >= limits.maximum_cameras) {
+                return core::Status::failure(
+                    "gltf_import.camera_out_of_bounds",
+                    "glTF node camera reference is missing or exceeds its configured limit");
+            }
+            const auto& source_camera = source.cameras[*source_node.cameraIndex];
+            auto name = model_name(source_camera.name, "camera", target.cameras.size(), limits);
+            if (!name) {
+                return core::Status::failure(name.error().code, name.error().message);
+            }
+            ModelCamera camera;
+            camera.name = std::move(name).value();
+            camera.node = static_cast<std::uint32_t>(node_index);
+            if (const auto* perspective =
+                    std::get_if<fastgltf::Camera::Perspective>(&source_camera.camera)) {
+                camera.kind = ModelCameraKind::perspective;
+                camera.aspect_ratio = perspective->aspectRatio.has_value()
+                                          ? static_cast<float>(*perspective->aspectRatio)
+                                          : 0.0F;
+                camera.vertical_fov_radians = static_cast<float>(perspective->yfov);
+                camera.near_plane = static_cast<float>(perspective->znear);
+                camera.far_plane =
+                    perspective->zfar.has_value() ? static_cast<float>(*perspective->zfar) : 0.0F;
+            } else {
+                const auto& orthographic =
+                    std::get<fastgltf::Camera::Orthographic>(source_camera.camera);
+                camera.kind = ModelCameraKind::orthographic;
+                camera.x_magnification = static_cast<float>(orthographic.xmag);
+                camera.y_magnification = static_cast<float>(orthographic.ymag);
+                camera.near_plane = static_cast<float>(orthographic.znear);
+                camera.far_plane = static_cast<float>(orthographic.zfar);
+            }
+            target.cameras.push_back(std::move(camera));
+        }
+
+        if (source_node.lightIndex.has_value()) {
+            if (*source_node.lightIndex >= source.lights.size() ||
+                target.lights.size() >= limits.maximum_lights) {
+                return core::Status::failure(
+                    "gltf_import.light_out_of_bounds",
+                    "glTF node light reference is missing or exceeds its configured limit");
+            }
+            const auto& source_light = source.lights[*source_node.lightIndex];
+            auto name = model_name(source_light.name, "light", target.lights.size(), limits);
+            if (!name) {
+                return core::Status::failure(name.error().code, name.error().message);
+            }
+            ModelLight light;
+            light.name = std::move(name).value();
+            light.node = static_cast<std::uint32_t>(node_index);
+            switch (source_light.type) {
+            case fastgltf::LightType::Directional:
+                light.kind = ModelLightKind::directional;
+                break;
+            case fastgltf::LightType::Point:
+                light.kind = ModelLightKind::point;
+                break;
+            case fastgltf::LightType::Spot:
+                light.kind = ModelLightKind::spot;
+                break;
+            }
+            light.color = {
+                static_cast<float>(source_light.color[0]),
+                static_cast<float>(source_light.color[1]),
+                static_cast<float>(source_light.color[2]),
+            };
+            light.intensity = static_cast<float>(source_light.intensity);
+            light.range =
+                source_light.range.has_value() ? static_cast<float>(*source_light.range) : 0.0F;
+            light.inner_cone_radians = source_light.innerConeAngle.has_value()
+                                           ? static_cast<float>(*source_light.innerConeAngle)
+                                           : 0.0F;
+            light.outer_cone_radians = source_light.outerConeAngle.has_value()
+                                           ? static_cast<float>(*source_light.outerConeAngle)
+                                           : 0.785398F;
+            target.lights.push_back(std::move(light));
         }
     }
     return core::Status::ok();
@@ -1075,6 +1246,7 @@ void generate_tangents(std::vector<ModelVertex>& vertices,
 [[nodiscard]] core::Status import_geometry(const fastgltf::Asset& source, ModelAsset& target,
                                            const ModelAssetLimits& limits) {
     bool has_bounds = false;
+    bool has_renderable_geometry = false;
     std::size_t morph_delta_values = 0;
     for (std::size_t node_index = 0; node_index < source.nodes.size(); ++node_index) {
         const auto& node = source.nodes[node_index];
@@ -1096,6 +1268,11 @@ void generate_tangents(std::vector<ModelVertex>& vertices,
             skin = &target.skins[skin_index];
         }
         const auto& mesh = source.meshes[*node.meshIndex];
+        const auto collision_source = is_collision_node(node.name);
+        auto lod_level = node_lod_level(node.name, limits);
+        if (!lod_level) {
+            return core::Status::failure(lod_level.error().code, lod_level.error().message);
+        }
         for (std::size_t primitive_index = 0; primitive_index < mesh.primitives.size();
              ++primitive_index) {
             const auto& primitive = mesh.primitives[primitive_index];
@@ -1155,6 +1332,7 @@ void generate_tangents(std::vector<ModelVertex>& vertices,
             const auto first_index = static_cast<std::uint32_t>(target.indices.size());
             target.vertices.insert(target.vertices.end(), vertices.begin(), vertices.end());
             target.indices.resize(target.indices.size() + index_accessor.count);
+            std::vector<std::uint32_t> local_indices(index_accessor.count);
             bool bad_index = false;
             fastgltf::iterateAccessorWithIndex<std::uint32_t>(
                 source, index_accessor, [&](std::uint32_t value, std::size_t index) {
@@ -1162,6 +1340,7 @@ void generate_tangents(std::vector<ModelVertex>& vertices,
                         value > std::numeric_limits<std::uint32_t>::max() - first_vertex) {
                         bad_index = true;
                     } else {
+                        local_indices[index] = value;
                         target.indices[first_index + index] = first_vertex + value;
                     }
                 });
@@ -1177,6 +1356,16 @@ void generate_tangents(std::vector<ModelVertex>& vertices,
                     first_vertex,
                     primitive.findAttribute("TEXCOORD_0") != primitive.attributes.end());
                 std::ranges::copy(vertices, target.vertices.begin() + first_vertex);
+            }
+            std::vector<std::uint32_t> cache_optimized(local_indices.size());
+            meshopt_optimizeVertexCache(cache_optimized.data(), local_indices.data(),
+                                        local_indices.size(), vertices.size());
+            std::vector<std::uint32_t> overdraw_optimized(local_indices.size());
+            meshopt_optimizeOverdraw(overdraw_optimized.data(), cache_optimized.data(),
+                                     cache_optimized.size(), &vertices.front().position.x,
+                                     vertices.size(), sizeof(ModelVertex), 1.05F);
+            for (std::size_t index = 0; index < overdraw_optimized.size(); ++index) {
+                target.indices[first_index + index] = first_vertex + overdraw_optimized[index];
             }
             const auto primitive_label =
                 mesh.name.empty() ? std::string{}
@@ -1205,17 +1394,18 @@ void generate_tangents(std::vector<ModelVertex>& vertices,
                 skin_index,
                 material_index,
                 std::move(morph_targets).value(),
+                {},
+                lod_level.value(),
+                !collision_source,
+                collision_source,
             });
+            auto primitive_bounds =
+                math::Bounds3f{vertices.front().position, vertices.front().position};
             for (const auto& vertex : vertices) {
-                if (!has_bounds) {
-                    target.bounds = {vertex.position, vertex.position};
-                    has_bounds = true;
-                } else {
-                    target.bounds.min = math::component_min(target.bounds.min, vertex.position);
-                    target.bounds.max = math::component_max(target.bounds.max, vertex.position);
-                }
+                primitive_bounds.min = math::component_min(primitive_bounds.min, vertex.position);
+                primitive_bounds.max = math::component_max(primitive_bounds.max, vertex.position);
             }
-            const auto& imported_primitive = target.primitives.back();
+            auto& imported_primitive = target.primitives.back();
             for (std::size_t vertex_index = 0; vertex_index < vertices.size(); ++vertex_index) {
                 auto maximum_delta = math::Vec3f{};
                 for (const auto& morph_target : imported_primitive.morph_targets) {
@@ -1226,16 +1416,60 @@ void generate_tangents(std::vector<ModelVertex>& vertices,
                         maximum_delta.z += std::abs(delta.z);
                     }
                 }
-                target.bounds.min = math::component_min(
-                    target.bounds.min, vertices[vertex_index].position - maximum_delta);
-                target.bounds.max = math::component_max(
-                    target.bounds.max, vertices[vertex_index].position + maximum_delta);
+                primitive_bounds.min = math::component_min(
+                    primitive_bounds.min, vertices[vertex_index].position - maximum_delta);
+                primitive_bounds.max = math::component_max(
+                    primitive_bounds.max, vertices[vertex_index].position + maximum_delta);
+            }
+            imported_primitive.bounds = primitive_bounds;
+            if (collision_source) {
+                if (target.collision_shapes.size() >= limits.maximum_collision_shapes) {
+                    return core::Status::failure(
+                        "gltf_import.collision_limit",
+                        "glTF collision shape count exceeds its configured limit");
+                }
+                target.collision_shapes.push_back(
+                    {target.nodes[node_index].name + "_" + std::to_string(primitive_index),
+                     static_cast<std::uint32_t>(node_index), primitive_bounds});
+            } else {
+                has_renderable_geometry = true;
+                if (!has_bounds) {
+                    target.bounds = primitive_bounds;
+                    has_bounds = true;
+                } else {
+                    target.bounds = target.bounds.merged_with(primitive_bounds);
+                }
             }
         }
     }
-    if (target.primitives.empty()) {
+    if (!has_renderable_geometry) {
         return core::Status::failure("gltf_import.no_geometry",
                                      "glTF runtime model contains no triangle geometry");
+    }
+    std::uint32_t maximum_lod = 0;
+    for (const auto& primitive : target.primitives) {
+        if (primitive.renderable) {
+            maximum_lod = std::max(maximum_lod, primitive.lod_level);
+        }
+    }
+    target.lods.resize(static_cast<std::size_t>(maximum_lod) + 1U);
+    for (std::uint32_t level = 0; level <= maximum_lod; ++level) {
+        auto& lod = target.lods[level];
+        lod.level = level;
+        lod.screen_coverage = std::exp2(-static_cast<float>(level));
+    }
+    for (std::uint32_t primitive_index = 0; primitive_index < target.primitives.size();
+         ++primitive_index) {
+        const auto& primitive = target.primitives[primitive_index];
+        if (primitive.renderable) {
+            target.lods[primitive.lod_level].primitives.push_back(primitive_index);
+        }
+    }
+    if (std::ranges::any_of(target.lods,
+                            [](const ModelLod& lod) { return lod.primitives.empty(); })) {
+        return core::Status::failure(
+            "gltf_import.non_contiguous_lods",
+            "glTF LOD node suffixes must form a contiguous sequence beginning at LOD0");
     }
     return core::Status::ok();
 }
@@ -1515,6 +1749,10 @@ core::Result<ModelAsset> import_gltf_model(const std::filesystem::path& path,
 
     ModelAsset result;
     status = import_nodes(parsed.get(), result, limits);
+    if (!status) {
+        return importer_failure(status.error().code, status.error().message);
+    }
+    status = import_node_metadata(parsed.get(), result, limits);
     if (!status) {
         return importer_failure(status.error().code, status.error().message);
     }

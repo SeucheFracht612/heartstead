@@ -170,6 +170,9 @@ core::Status AnimatedModelPresentation::initialize(renderer::Renderer& renderer,
     uploaded.reserve(model.primitives.size());
     for (std::uint32_t index = 0; index < model.primitives.size(); ++index) {
         const auto& primitive = model.primitives[index];
+        if (!primitive.renderable || primitive.lod_level != 0U) {
+            continue;
+        }
         auto mesh = renderer.create_model_primitive(
             config.asset_id + "#" + std::to_string(index) + ":" + primitive.name, model, index);
         if (!mesh) {

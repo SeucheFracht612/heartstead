@@ -1,5 +1,6 @@
 #include "engine/assets/asset_cooker.hpp"
 
+#include "engine/assets/cooked_asset_store.hpp"
 #include "engine/assets/image_asset.hpp"
 #include "engine/assets/model_asset.hpp"
 #include "engine/audio/procedural_tone.hpp"
@@ -15,6 +16,7 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -968,8 +970,7 @@ validate_production_source_payload(const AssetRecord& source,
         auto tone = audio::load_procedural_tone_asset(source.source_path, 48'000);
         if (tone) {
             add_metadata(metadata, "audio.container", "tone");
-            add_metadata(metadata, "audio.runtime_format",
-                         "heartstead.audio.procedural_tone.v1");
+            add_metadata(metadata, "audio.runtime_format", "heartstead.audio.procedural_tone.v1");
             add_metadata(metadata, "audio.channels", 1);
             add_metadata(metadata, "audio.sample_rate", tone.value().sample_rate);
             add_metadata(metadata, "audio.frames", tone.value().mono_samples.size());
@@ -1026,20 +1027,24 @@ production_metadata_fields(const AssetRecord& source, std::span<const std::uint8
 }
 
 void add_model_runtime_metadata(CookedAssetMetadataFields& metadata, const ModelAsset& model) {
-    add_metadata(metadata, "model.runtime_format", "heartstead.model.v4");
+    add_metadata(metadata, "model.runtime_format", "heartstead.model.v5");
     add_metadata(metadata, "model.vertices", model.vertices.size());
     add_metadata(metadata, "model.indices", model.indices.size());
     add_metadata(metadata, "model.nodes", model.nodes.size());
     add_metadata(metadata, "model.primitives", model.primitives.size());
     add_metadata(metadata, "model.images", model.images.size());
     add_metadata(metadata, "model.materials", model.materials.size());
-    add_metadata(metadata, "model.unlit_materials",
-                 static_cast<std::uint64_t>(
-                     std::ranges::count_if(model.materials, [](const ModelMaterial& material) {
-                         return material.unlit;
-                     })));
+    add_metadata(
+        metadata, "model.unlit_materials",
+        static_cast<std::uint64_t>(std::ranges::count_if(
+            model.materials, [](const ModelMaterial& material) { return material.unlit; })));
     add_metadata(metadata, "model.skins", model.skins.size());
     add_metadata(metadata, "model.animations", model.animations.size());
+    add_metadata(metadata, "model.lods", model.lods.size());
+    add_metadata(metadata, "model.sockets", model.sockets.size());
+    add_metadata(metadata, "model.collisions", model.collision_shapes.size());
+    add_metadata(metadata, "model.cameras", model.cameras.size());
+    add_metadata(metadata, "model.lights", model.lights.size());
 }
 
 void add_texture_runtime_metadata(CookedAssetMetadataFields& metadata, const ImageAsset& image,
@@ -1073,6 +1078,8 @@ build_cooked_payload_bytes(const CookedAssetRecord& cooked, const AssetRecord& s
     header << "profile=" << profile << '\n';
     header << "source_virtual_path=" << cooked.source_virtual_path.to_string() << '\n';
     header << "source_hash=" << cooked.source_hash << '\n';
+    header << "dependency_hash=" << cooked.dependency_hash << '\n';
+    header << "pipeline_id=" << cooked.pipeline_id << '\n';
     header << "pipeline_version=" << cooked.pipeline_version << '\n';
     header << "source_bytes=" << source_bytes.size() << '\n';
     for (const auto& [key, value] : metadata) {
@@ -1203,6 +1210,14 @@ core::Result<AssetCookResult> AssetCooker::cook(const AssetCatalog& catalog,
     result.manifest = std::move(manifest).value();
     result.manifest_path = std::move(manifest_path).value();
 
+    std::optional<CookedAssetStore> previous_store;
+    if (config.incremental && std::filesystem::exists(result.manifest_path)) {
+        auto loaded = CookedAssetStore::load(output_root.value(), config.manifest_relative_path);
+        if (loaded && loaded.value().manifest().profile == result.manifest.profile) {
+            previous_store = std::move(loaded).value();
+        }
+    }
+
     for (auto& cooked : result.manifest.records) {
         const auto* source = find_source_record(resolved_catalog, cooked);
         if (source == nullptr) {
@@ -1219,6 +1234,35 @@ core::Result<AssetCookResult> AssetCooker::cook(const AssetCatalog& catalog,
         if (!pipeline_info.available) {
             return core::Result<AssetCookResult>::failure(
                 "asset_cooker.pipeline_unavailable", pipeline_unavailable_message(source->kind));
+        }
+        cooked.pipeline_id = std::string(pipeline_info.name);
+
+        const CookedAssetRecord* previous = nullptr;
+        if (previous_store.has_value()) {
+            for (const auto& candidate : previous_store->manifest().records) {
+                if (candidate.logical_id == cooked.logical_id &&
+                    candidate.source_kind == cooked.source_kind &&
+                    candidate.source_id == cooked.source_id) {
+                    previous = &candidate;
+                    break;
+                }
+            }
+        }
+        if (previous != nullptr && previous->source_hash == cooked.source_hash &&
+            previous->dependency_hash == cooked.dependency_hash &&
+            previous->pipeline_id == cooked.pipeline_id &&
+            previous->pipeline_version == cooked.pipeline_version &&
+            previous->cooked_relative_path == cooked.cooked_relative_path) {
+            auto verified = previous_store->load_payload(*previous);
+            if (verified) {
+                cooked.cooked_hash = previous->cooked_hash;
+                ++result.reused_file_count;
+                result.cooked_payload_bytes += verified.value().bytes.size();
+                continue;
+            }
+        }
+        if (previous != nullptr) {
+            ++result.invalidated_file_count;
         }
 
         auto source_bytes = read_file_bytes(source->source_path, config.maximum_source_bytes);
@@ -1310,6 +1354,32 @@ core::Result<AssetCookResult> AssetCooker::cook(const AssetCatalog& catalog,
         result.cooked_payload_bytes += runtime_bytes->size();
     }
 
+    if (config.prune_stale_outputs && previous_store.has_value()) {
+        std::unordered_set<std::string> retained_paths;
+        retained_paths.reserve(result.manifest.records.size());
+        for (const auto& record : result.manifest.records) {
+            retained_paths.insert(record.cooked_relative_path.generic_string());
+        }
+        for (const auto& record : previous_store->manifest().records) {
+            if (retained_paths.contains(record.cooked_relative_path.generic_string())) {
+                continue;
+            }
+            auto stale_path = resolve_asset_path(output_root.value(), record.cooked_relative_path);
+            if (!stale_path) {
+                return core::Result<AssetCookResult>::failure(stale_path.error().code,
+                                                              stale_path.error().message);
+            }
+            std::error_code remove_error;
+            const auto removed = std::filesystem::remove(stale_path.value(), remove_error);
+            if (remove_error) {
+                return core::Result<AssetCookResult>::failure(
+                    "asset_cooker.remove_stale_failed",
+                    "failed to remove stale cooked payload: " + remove_error.message());
+            }
+            result.removed_file_count += removed ? 1U : 0U;
+        }
+    }
+
     auto status = write_manifest(result.manifest_path, result.manifest);
     if (!status) {
         return core::Result<AssetCookResult>::failure(status.error().code, status.error().message);
@@ -1397,12 +1467,12 @@ std::string_view asset_cook_pipeline_name(AssetKind kind, AssetCookBackend backe
         case AssetKind::texture:
             return "texture_png_ktx2_jpeg_converter_v2";
         case AssetKind::model:
-            return "model_gltf_runtime_converter_v4";
+            return "model_gltf_runtime_converter_v5";
         case AssetKind::shader:
             return "shader_spirv_runtime_passthrough_v1";
-    case AssetKind::sound:
-    case AssetKind::music:
-        return "audio_runtime_converter_v3";
+        case AssetKind::sound:
+        case AssetKind::music:
+            return "audio_runtime_converter_v3";
         case AssetKind::material:
             return "material_runtime_converter_v1";
         case AssetKind::font:

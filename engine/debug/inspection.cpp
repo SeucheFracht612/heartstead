@@ -1080,6 +1080,8 @@ InspectionData Inspector::inspect(const assets::CookedAssetRecord& record) {
     add_field(data, "source_kind", std::string(assets::asset_source_kind_name(record.source_kind)));
     add_field(data, "source_id", record.source_id);
     add_field(data, "source_hash", record.source_hash);
+    add_field(data, "dependency_hash", record.dependency_hash);
+    add_field(data, "pipeline_id", record.pipeline_id);
     add_field(data, "cooked_relative_path", record.cooked_relative_path.generic_string());
     add_field(data, "cooked_hash", record.cooked_hash);
     add_field(data, "pipeline_version", std::to_string(record.pipeline_version));
@@ -1109,6 +1111,14 @@ InspectionData Inspector::inspect(const assets::CookedAssetRecord& record) {
     if (record.source_hash.empty()) {
         add_issue(data, InspectionSeverity::error, "cooked_asset_record.missing_source_hash",
                   "cooked asset source hash is missing");
+    }
+    if (record.dependency_hash.empty()) {
+        add_issue(data, InspectionSeverity::error, "cooked_asset_record.missing_dependency_hash",
+                  "cooked asset dependency hash is missing");
+    }
+    if (record.pipeline_id.empty()) {
+        add_issue(data, InspectionSeverity::error, "cooked_asset_record.missing_pipeline_id",
+                  "cooked asset pipeline identity is missing");
     }
     if (!is_valid_relative_path(record.cooked_relative_path)) {
         add_issue(data, InspectionSeverity::error, "cooked_asset_record.invalid_cooked_path",
@@ -1565,8 +1575,7 @@ InspectionData Inspector::inspect(const scripting::ScriptRuntimeStats& stats) {
     add_field(data, "module_count", std::to_string(stats.module_count));
     add_field(data, "current_memory_bytes", std::to_string(stats.current_memory_bytes));
     add_field(data, "peak_memory_bytes", std::to_string(stats.peak_memory_bytes));
-    add_field(data, "memory_limit_bytes_per_vm",
-              std::to_string(stats.memory_limit_bytes_per_vm));
+    add_field(data, "memory_limit_bytes_per_vm", std::to_string(stats.memory_limit_bytes_per_vm));
     add_field(data, "compiled_source_bytes", std::to_string(stats.compiled_source_bytes));
     add_field(data, "compiled_bytecode_bytes", std::to_string(stats.compiled_bytecode_bytes));
     add_field(data, "call_count", std::to_string(stats.call_count));

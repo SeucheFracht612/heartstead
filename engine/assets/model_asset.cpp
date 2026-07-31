@@ -6,6 +6,7 @@
 #include <limits>
 #include <ranges>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 
 namespace heartstead::assets {
@@ -15,6 +16,7 @@ namespace {
 constexpr std::string_view model_magic_v2 = "heartstead.model.v2";
 constexpr std::string_view model_magic_v3 = "heartstead.model.v3";
 constexpr std::string_view model_magic_v4 = "heartstead.model.v4";
+constexpr std::string_view model_magic_v5 = "heartstead.model.v5";
 constexpr std::uint8_t model_material_double_sided = 1U << 0U;
 constexpr std::uint8_t model_material_unlit = 1U << 1U;
 constexpr std::uint8_t known_model_material_flags =
@@ -429,8 +431,9 @@ core::Status ModelAssetLimits::validate() const {
         maximum_joints_per_skin == 0 || maximum_joints_per_skin > UINT16_MAX ||
         maximum_animations == 0 || maximum_channels_per_animation == 0 ||
         maximum_keyframes_per_channel == 0 || maximum_morph_targets_per_primitive == 0 ||
-        maximum_morph_delta_values == 0 || maximum_name_bytes == 0 ||
-        maximum_name_bytes > UINT32_MAX) {
+        maximum_morph_delta_values == 0 || maximum_sockets == 0 || maximum_lods == 0 ||
+        maximum_collision_shapes == 0 || maximum_cameras == 0 || maximum_lights == 0 ||
+        maximum_name_bytes == 0 || maximum_name_bytes > UINT32_MAX) {
         return core::Status::failure("model_asset.invalid_limits",
                                      "model asset limits must be finite and non-zero");
     }
@@ -451,7 +454,11 @@ core::Status validate_model_asset(const ModelAsset& asset, const ModelAssetLimit
         asset.samplers.size() > limits.maximum_samplers ||
         asset.materials.size() > limits.maximum_materials ||
         asset.skins.size() > limits.maximum_skins ||
-        asset.animations.size() > limits.maximum_animations || !asset.bounds.is_valid()) {
+        asset.animations.size() > limits.maximum_animations ||
+        asset.sockets.size() > limits.maximum_sockets || asset.lods.size() > limits.maximum_lods ||
+        asset.collision_shapes.size() > limits.maximum_collision_shapes ||
+        asset.cameras.size() > limits.maximum_cameras ||
+        asset.lights.size() > limits.maximum_lights || !asset.bounds.is_valid()) {
         return core::Status::failure("model_asset.invalid_counts",
                                      "model asset geometry or bounded counts are invalid");
     }
@@ -506,7 +513,8 @@ core::Status validate_model_asset(const ModelAsset& asset, const ModelAssetLimit
             primitive.vertex_count > asset.vertices.size() - primitive.first_vertex ||
             primitive.first_index > asset.indices.size() ||
             primitive.index_count > asset.indices.size() - primitive.first_index ||
-            primitive.index_count % 3U != 0) {
+            primitive.index_count % 3U != 0 || !primitive.bounds.is_valid() ||
+            primitive.lod_level >= limits.maximum_lods) {
             return core::Status::failure("model_asset.invalid_primitive",
                                          "model asset primitive range or binding is invalid");
         }
@@ -586,6 +594,71 @@ core::Status validate_model_asset(const ModelAsset& asset, const ModelAssetLimit
                                          "model asset clip duration does not match its channels");
         }
     }
+    std::unordered_set<std::string> socket_names;
+    for (const auto& socket : asset.sockets) {
+        if (!valid_name(socket.name, limits) || socket.node >= asset.nodes.size() ||
+            !socket_names.insert(socket.name).second) {
+            return core::Status::failure(
+                "model_asset.invalid_socket",
+                "model sockets must have unique bounded names and reference valid nodes");
+        }
+    }
+    std::uint32_t expected_lod = 0;
+    for (const auto& lod : asset.lods) {
+        if (lod.level != expected_lod++ || !std::isfinite(lod.screen_coverage) ||
+            lod.screen_coverage <= 0.0F || lod.screen_coverage > 1.0F ||
+            !std::isfinite(lod.geometric_error) || lod.geometric_error < 0.0F ||
+            lod.primitives.empty() ||
+            !std::ranges::all_of(lod.primitives, [&](std::uint32_t primitive) {
+                return primitive < asset.primitives.size() &&
+                       asset.primitives[primitive].lod_level == lod.level &&
+                       asset.primitives[primitive].renderable;
+            })) {
+            return core::Status::failure(
+                "model_asset.invalid_lod",
+                "model LODs must be contiguous, bounded, and reference matching primitives");
+        }
+    }
+    for (const auto& collision : asset.collision_shapes) {
+        if (!valid_name(collision.name, limits) || collision.node >= asset.nodes.size() ||
+            !collision.bounds.is_valid()) {
+            return core::Status::failure(
+                "model_asset.invalid_collision",
+                "model collision metadata must name a valid node and finite bounds");
+        }
+    }
+    for (const auto& camera : asset.cameras) {
+        const auto finite_projection =
+            std::isfinite(camera.aspect_ratio) && camera.aspect_ratio >= 0.0F &&
+            std::isfinite(camera.vertical_fov_radians) && camera.vertical_fov_radians > 0.0F &&
+            std::isfinite(camera.x_magnification) && camera.x_magnification > 0.0F &&
+            std::isfinite(camera.y_magnification) && camera.y_magnification > 0.0F &&
+            std::isfinite(camera.near_plane) && camera.near_plane > 0.0F &&
+            std::isfinite(camera.far_plane) && camera.far_plane >= 0.0F &&
+            (camera.far_plane == 0.0F || camera.far_plane > camera.near_plane);
+        if (!valid_name(camera.name, limits) || camera.node >= asset.nodes.size() ||
+            !finite_projection ||
+            (camera.kind != ModelCameraKind::perspective &&
+             camera.kind != ModelCameraKind::orthographic)) {
+            return core::Status::failure("model_asset.invalid_camera",
+                                         "model camera metadata is invalid");
+        }
+    }
+    for (const auto& light : asset.lights) {
+        const auto valid_kind = light.kind == ModelLightKind::directional ||
+                                light.kind == ModelLightKind::point ||
+                                light.kind == ModelLightKind::spot;
+        if (!valid_name(light.name, limits) || light.node >= asset.nodes.size() || !valid_kind ||
+            !light.color.is_finite() || light.color.x < 0.0F || light.color.y < 0.0F ||
+            light.color.z < 0.0F || !std::isfinite(light.intensity) || light.intensity < 0.0F ||
+            !std::isfinite(light.range) || light.range < 0.0F ||
+            !std::isfinite(light.inner_cone_radians) || light.inner_cone_radians < 0.0F ||
+            !std::isfinite(light.outer_cone_radians) ||
+            light.outer_cone_radians < light.inner_cone_radians) {
+            return core::Status::failure("model_asset.invalid_light",
+                                         "model punctual-light metadata is invalid");
+        }
+    }
     return core::Status::ok();
 }
 
@@ -597,7 +670,7 @@ core::Result<std::vector<std::uint8_t>> encode_model_asset(const ModelAsset& ass
                                                                 status.error().message);
     }
     ByteWriter writer;
-    writer.string(model_magic_v4);
+    writer.string(model_magic_v5);
     writer.u32(static_cast<std::uint32_t>(asset.vertices.size()));
     writer.u32(static_cast<std::uint32_t>(asset.indices.size()));
     writer.u32(static_cast<std::uint32_t>(asset.nodes.size()));
@@ -696,7 +769,6 @@ core::Result<std::vector<std::uint8_t>> encode_model_asset(const ModelAsset& ass
             }
         }
     }
-
     // V4 appends the new vertex, material, sampler, and morph state after the
     // V2/V3-compatible core. This keeps legacy decoding simple and makes the
     // version boundary explicit without duplicating the mature core codec.
@@ -776,6 +848,62 @@ core::Result<std::vector<std::uint8_t>> encode_model_asset(const ModelAsset& ass
             }
         }
     }
+
+    // V5 appends production presentation metadata. V2-V4 remain readable for cooked-store
+    // migration, while new output has an explicit ABI boundary.
+    for (const auto& primitive : asset.primitives) {
+        write_vec3(writer, primitive.bounds.min);
+        write_vec3(writer, primitive.bounds.max);
+        writer.u32(primitive.lod_level);
+        std::uint8_t flags = primitive.renderable ? 1U : 0U;
+        flags |= primitive.collision_source ? 2U : 0U;
+        writer.u8(flags);
+    }
+    writer.u32(static_cast<std::uint32_t>(asset.sockets.size()));
+    for (const auto& socket : asset.sockets) {
+        writer.string(socket.name);
+        writer.u32(socket.node);
+    }
+    writer.u32(static_cast<std::uint32_t>(asset.lods.size()));
+    for (const auto& lod : asset.lods) {
+        writer.u32(lod.level);
+        writer.f32(lod.screen_coverage);
+        writer.f32(lod.geometric_error);
+        writer.u32(static_cast<std::uint32_t>(lod.primitives.size()));
+        for (const auto primitive : lod.primitives) {
+            writer.u32(primitive);
+        }
+    }
+    writer.u32(static_cast<std::uint32_t>(asset.collision_shapes.size()));
+    for (const auto& collision : asset.collision_shapes) {
+        writer.string(collision.name);
+        writer.u32(collision.node);
+        write_vec3(writer, collision.bounds.min);
+        write_vec3(writer, collision.bounds.max);
+    }
+    writer.u32(static_cast<std::uint32_t>(asset.cameras.size()));
+    for (const auto& camera : asset.cameras) {
+        writer.string(camera.name);
+        writer.u32(camera.node);
+        writer.u8(static_cast<std::uint8_t>(camera.kind));
+        writer.f32(camera.aspect_ratio);
+        writer.f32(camera.vertical_fov_radians);
+        writer.f32(camera.x_magnification);
+        writer.f32(camera.y_magnification);
+        writer.f32(camera.near_plane);
+        writer.f32(camera.far_plane);
+    }
+    writer.u32(static_cast<std::uint32_t>(asset.lights.size()));
+    for (const auto& light : asset.lights) {
+        writer.string(light.name);
+        writer.u32(light.node);
+        writer.u8(static_cast<std::uint8_t>(light.kind));
+        write_vec3(writer, light.color);
+        writer.f32(light.intensity);
+        writer.f32(light.range);
+        writer.f32(light.inner_cone_radians);
+        writer.f32(light.outer_cone_radians);
+    }
     auto encoded = writer.take();
     if (encoded.size() > limits.maximum_source_bytes) {
         return core::Result<std::vector<std::uint8_t>>::failure(
@@ -797,11 +925,12 @@ core::Result<ModelAsset> decode_model_asset(std::span<const std::uint8_t> bytes,
                                                  "model asset payload size is invalid");
     }
     ByteReader reader(bytes);
-    auto magic = reader.string(model_magic_v4.size());
+    auto magic = reader.string(model_magic_v5.size());
     if (!magic) {
         return decode_failure<ModelAsset>(magic.error());
     }
-    const auto model_version = magic.value() == model_magic_v4   ? 4U
+    const auto model_version = magic.value() == model_magic_v5   ? 5U
+                               : magic.value() == model_magic_v4 ? 4U
                                : magic.value() == model_magic_v3 ? 3U
                                : magic.value() == model_magic_v2 ? 2U
                                                                  : 0U;
@@ -1318,6 +1447,175 @@ core::Result<ModelAsset> decode_model_asset(std::span<const std::uint8_t> bytes,
             }
         }
     }
+    if (model_version >= 5U) {
+        for (auto& primitive : asset.primitives) {
+            auto minimum = read_vec3(reader);
+            auto maximum = read_vec3(reader);
+            auto lod_level = reader.u32();
+            auto flags = reader.u8();
+            if (!minimum || !maximum || !lod_level || !flags) {
+                const auto& error = !minimum     ? minimum.error()
+                                    : !maximum   ? maximum.error()
+                                    : !lod_level ? lod_level.error()
+                                                 : flags.error();
+                return decode_failure<ModelAsset>(error);
+            }
+            if ((flags.value() & static_cast<std::uint8_t>(~0x03U)) != 0U) {
+                return core::Result<ModelAsset>::failure(
+                    "model_asset.invalid_primitive_flags",
+                    "model primitive contains unsupported production flags");
+            }
+            primitive.bounds = {minimum.value(), maximum.value()};
+            primitive.lod_level = lod_level.value();
+            primitive.renderable = (flags.value() & 1U) != 0U;
+            primitive.collision_source = (flags.value() & 2U) != 0U;
+        }
+        auto socket_count = reader.u32();
+        if (!socket_count || socket_count.value() > limits.maximum_sockets) {
+            return core::Result<ModelAsset>::failure(
+                "model_asset.socket_limit", "model socket count exceeds its configured limit");
+        }
+        asset.sockets.resize(socket_count.value());
+        for (auto& socket : asset.sockets) {
+            auto name = reader.string(limits.maximum_name_bytes);
+            auto node = reader.u32();
+            if (!name || !node) {
+                return decode_failure<ModelAsset>(!name ? name.error() : node.error());
+            }
+            socket.name = std::move(name).value();
+            socket.node = node.value();
+        }
+        auto lod_count = reader.u32();
+        if (!lod_count || lod_count.value() > limits.maximum_lods) {
+            return core::Result<ModelAsset>::failure(
+                "model_asset.lod_limit", "model LOD count exceeds its configured limit");
+        }
+        asset.lods.resize(lod_count.value());
+        for (auto& lod : asset.lods) {
+            auto level = reader.u32();
+            auto coverage = reader.f32();
+            auto error = reader.f32();
+            auto lod_primitive_count = reader.u32();
+            if (!level || !coverage || !error || !lod_primitive_count) {
+                const auto& failure = !level      ? level.error()
+                                      : !coverage ? coverage.error()
+                                      : !error    ? error.error()
+                                                  : lod_primitive_count.error();
+                return decode_failure<ModelAsset>(failure);
+            }
+            if (lod_primitive_count.value() > limits.maximum_primitives) {
+                return core::Result<ModelAsset>::failure(
+                    "model_asset.lod_primitive_limit",
+                    "model LOD primitive count exceeds its configured limit");
+            }
+            lod.level = level.value();
+            lod.screen_coverage = coverage.value();
+            lod.geometric_error = error.value();
+            lod.primitives.resize(lod_primitive_count.value());
+            for (auto& primitive : lod.primitives) {
+                auto value = reader.u32();
+                if (!value) {
+                    return decode_failure<ModelAsset>(value.error());
+                }
+                primitive = value.value();
+            }
+        }
+        auto collision_count = reader.u32();
+        if (!collision_count || collision_count.value() > limits.maximum_collision_shapes) {
+            return core::Result<ModelAsset>::failure(
+                "model_asset.collision_limit",
+                "model collision shape count exceeds its configured limit");
+        }
+        asset.collision_shapes.resize(collision_count.value());
+        for (auto& collision : asset.collision_shapes) {
+            auto name = reader.string(limits.maximum_name_bytes);
+            auto node = reader.u32();
+            auto minimum = read_vec3(reader);
+            auto maximum = read_vec3(reader);
+            if (!name || !node || !minimum || !maximum) {
+                const auto& error = !name      ? name.error()
+                                    : !node    ? node.error()
+                                    : !minimum ? minimum.error()
+                                               : maximum.error();
+                return decode_failure<ModelAsset>(error);
+            }
+            collision = {std::move(name).value(), node.value(), {minimum.value(), maximum.value()}};
+        }
+        auto camera_count = reader.u32();
+        if (!camera_count || camera_count.value() > limits.maximum_cameras) {
+            return core::Result<ModelAsset>::failure(
+                "model_asset.camera_limit", "model camera count exceeds its configured limit");
+        }
+        asset.cameras.resize(camera_count.value());
+        for (auto& camera : asset.cameras) {
+            auto name = reader.string(limits.maximum_name_bytes);
+            auto node = reader.u32();
+            auto kind = reader.u8();
+            auto aspect = reader.f32();
+            auto fov = reader.f32();
+            auto xmag = reader.f32();
+            auto ymag = reader.f32();
+            auto near_plane = reader.f32();
+            auto far_plane = reader.f32();
+            if (!name || !node || !kind || !aspect || !fov || !xmag || !ymag || !near_plane ||
+                !far_plane) {
+                const auto& error = !name         ? name.error()
+                                    : !node       ? node.error()
+                                    : !kind       ? kind.error()
+                                    : !aspect     ? aspect.error()
+                                    : !fov        ? fov.error()
+                                    : !xmag       ? xmag.error()
+                                    : !ymag       ? ymag.error()
+                                    : !near_plane ? near_plane.error()
+                                                  : far_plane.error();
+                return decode_failure<ModelAsset>(error);
+            }
+            camera = {std::move(name).value(),
+                      node.value(),
+                      static_cast<ModelCameraKind>(kind.value()),
+                      aspect.value(),
+                      fov.value(),
+                      xmag.value(),
+                      ymag.value(),
+                      near_plane.value(),
+                      far_plane.value()};
+        }
+        auto light_count = reader.u32();
+        if (!light_count || light_count.value() > limits.maximum_lights) {
+            return core::Result<ModelAsset>::failure(
+                "model_asset.light_limit", "model light count exceeds its configured limit");
+        }
+        asset.lights.resize(light_count.value());
+        for (auto& light : asset.lights) {
+            auto name = reader.string(limits.maximum_name_bytes);
+            auto node = reader.u32();
+            auto kind = reader.u8();
+            auto color = read_vec3(reader);
+            auto intensity = reader.f32();
+            auto range = reader.f32();
+            auto inner = reader.f32();
+            auto outer = reader.f32();
+            if (!name || !node || !kind || !color || !intensity || !range || !inner || !outer) {
+                const auto& error = !name        ? name.error()
+                                    : !node      ? node.error()
+                                    : !kind      ? kind.error()
+                                    : !color     ? color.error()
+                                    : !intensity ? intensity.error()
+                                    : !range     ? range.error()
+                                    : !inner     ? inner.error()
+                                                 : outer.error();
+                return decode_failure<ModelAsset>(error);
+            }
+            light = {std::move(name).value(),
+                     node.value(),
+                     static_cast<ModelLightKind>(kind.value()),
+                     color.value(),
+                     intensity.value(),
+                     range.value(),
+                     inner.value(),
+                     outer.value()};
+        }
+    }
     if (!reader.at_end()) {
         return core::Result<ModelAsset>::failure("model_asset.trailing_data",
                                                  "model asset payload has trailing data");
@@ -1371,10 +1669,9 @@ std::string_view model_alpha_mode_name(ModelAlphaMode mode) noexcept {
 ModelCapabilities model_capabilities(const ModelAsset& model) noexcept {
     ModelCapabilities result;
     result.has_animation_clips = !model.animations.empty();
-    result.has_skins =
-        std::ranges::any_of(model.primitives, [](const ModelPrimitive& primitive) {
-            return primitive.skin != no_model_index;
-        });
+    result.has_skins = std::ranges::any_of(model.primitives, [](const ModelPrimitive& primitive) {
+        return primitive.skin != no_model_index;
+    });
     result.has_morph_targets =
         std::ranges::any_of(model.primitives, [](const ModelPrimitive& primitive) {
             return !primitive.morph_targets.empty();
@@ -1387,6 +1684,11 @@ ModelCapabilities model_capabilities(const ModelAsset& model) noexcept {
                        channel.path == ModelAnimationPath::scale;
             });
         });
+    result.has_lods = model.lods.size() > 1U;
+    result.has_sockets = !model.sockets.empty();
+    result.has_collision_metadata = !model.collision_shapes.empty();
+    result.has_cameras = !model.cameras.empty();
+    result.has_lights = !model.lights.empty();
     return result;
 }
 

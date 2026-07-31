@@ -137,15 +137,25 @@ std::vector<std::uint8_t> one_pixel_png() {
 std::string animated_triangle_gltf() {
     return R"({
   "asset":{"version":"2.0"},
-  "extensionsUsed":["KHR_materials_unlit","KHR_texture_transform","KHR_mesh_quantization"],
+  "extensionsUsed":["KHR_materials_unlit","KHR_texture_transform","KHR_mesh_quantization",
+                    "KHR_lights_punctual"],
   "extensionsRequired":["KHR_materials_unlit","KHR_texture_transform","KHR_mesh_quantization"],
+  "extensions":{"KHR_lights_punctual":{"lights":[{
+    "name":"preview_key","type":"spot","color":[1,0.8,0.6],"intensity":80,
+    "range":12,"spot":{"innerConeAngle":0.2,"outerConeAngle":0.6}
+  }]}},
   "scene":0,
-  "scenes":[{"nodes":[0,1]}],
+  "scenes":[{"nodes":[0,1,3,4,5]}],
   "nodes":[
     {"name":"body","mesh":0,"skin":0},
     {"name":"root","children":[2]},
-    {"name":"hand","translation":[0,1,0]}
+    {"name":"hand","translation":[0,1,0]},
+    {"name":"socket_right_hand","translation":[0,1,0]},
+    {"name":"preview_camera","camera":0},
+    {"name":"preview_light","extensions":{"KHR_lights_punctual":{"light":0}}}
   ],
+  "cameras":[{"name":"asset_preview","type":"perspective",
+              "perspective":{"yfov":0.8,"znear":0.1,"zfar":100}}],
   "meshes":[{"name":"player","weights":[0],"primitives":[{
     "attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2,"TEXCOORD_1":9,
                   "COLOR_0":10,"TANGENT":11,
@@ -267,7 +277,7 @@ void test_typed_gltf_import_and_codec() {
     assert(imported.value().vertices[0].tangent.x > 0.99F);
     assert(imported.value().vertices[0].joints[0] == 1);
     assert(imported.value().indices == std::vector<std::uint32_t>({0, 1, 2}));
-    assert(imported.value().nodes.size() == 3);
+    assert(imported.value().nodes.size() == 6);
     assert(imported.value().nodes[2].parent == 1);
     assert(imported.value().skins.size() == 1);
     assert(imported.value().skins[0].joints == std::vector<std::uint32_t>({1, 2}));
@@ -276,6 +286,19 @@ void test_typed_gltf_import_and_codec() {
     assert(imported.value().primitives[0].material == 0);
     assert(imported.value().primitives[0].morph_targets.size() == 1);
     assert(imported.value().primitives[0].morph_targets[0].position_deltas.size() == 3);
+    assert(imported.value().primitives[0].renderable);
+    assert(imported.value().primitives[0].lod_level == 0);
+    assert(imported.value().primitives[0].bounds.is_valid());
+    assert(imported.value().lods.size() == 1);
+    assert(imported.value().lods[0].primitives == std::vector<std::uint32_t>({0}));
+    assert(imported.value().sockets.size() == 1);
+    assert(imported.value().sockets[0].name == "right_hand");
+    assert(imported.value().sockets[0].node == 3);
+    assert(imported.value().cameras.size() == 1);
+    assert(imported.value().cameras[0].node == 4);
+    assert(imported.value().lights.size() == 1);
+    assert(imported.value().lights[0].node == 5);
+    assert(imported.value().lights[0].kind == heartstead::assets::ModelLightKind::spot);
     assert(imported.value().images.size() == 1);
     assert(imported.value().images[0].width == 1);
     assert(imported.value().images[0].height == 1);
@@ -357,7 +380,18 @@ void test_typed_gltf_import_and_codec() {
         material.double_sided = double_sided;
     }
     legacy_model.nodes[0].morph_weights.clear();
-    legacy_model.primitives[0].morph_targets.clear();
+    for (auto& primitive : legacy_model.primitives) {
+        primitive.morph_targets.clear();
+        primitive.bounds = {};
+        primitive.lod_level = 0;
+        primitive.renderable = true;
+        primitive.collision_source = false;
+    }
+    legacy_model.sockets.clear();
+    legacy_model.lods.clear();
+    legacy_model.collision_shapes.clear();
+    legacy_model.cameras.clear();
+    legacy_model.lights.clear();
     legacy_model.animations.resize(1);
     auto legacy_encoded = heartstead::assets::encode_model_asset(legacy_model);
     assert(legacy_encoded);
@@ -381,9 +415,13 @@ void test_typed_gltf_import_and_codec() {
             v4_extension_bytes += 8U + channel.weight_values.size() * sizeof(float);
         }
     }
-    assert(v4_extension_bytes < legacy_encoded.value().size());
-    legacy_encoded.value().resize(legacy_encoded.value().size() - v4_extension_bytes);
-    constexpr std::string_view current_magic = "heartstead.model.v4";
+    const std::size_t v5_extension_bytes =
+        legacy_model.primitives.size() * (sizeof(float) * 6U + sizeof(std::uint32_t) + 1U) +
+        sizeof(std::uint32_t) * 5U;
+    assert(v4_extension_bytes + v5_extension_bytes < legacy_encoded.value().size());
+    legacy_encoded.value().resize(legacy_encoded.value().size() - v4_extension_bytes -
+                                  v5_extension_bytes);
+    constexpr std::string_view current_magic = "heartstead.model.v5";
     const auto magic = std::search(legacy_encoded.value().begin(), legacy_encoded.value().end(),
                                    current_magic.begin(), current_magic.end());
     assert(magic != legacy_encoded.value().end());

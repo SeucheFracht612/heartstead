@@ -76,6 +76,8 @@ template <typename T> struct Bounds3 {
     Vec3<T> min{};
     Vec3<T> max{};
 
+    friend constexpr bool operator==(const Bounds3&, const Bounds3&) = default;
+
     [[nodiscard]] constexpr bool is_valid() const noexcept {
         return min.is_finite() && max.is_finite() && min.x <= max.x && min.y <= max.y &&
                min.z <= max.z;

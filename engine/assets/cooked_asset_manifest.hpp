@@ -18,6 +18,12 @@ struct CookedAssetRecord {
     AssetSourceKind source_kind = AssetSourceKind::mod;
     std::string source_id;
     std::string source_hash;
+    // Stable digest of the active transitive dependency closure. This changes when any
+    // dependency changes even when this record's own source bytes do not.
+    std::string dependency_hash = "0000000000000000";
+    // Exact converter identity used to produce the payload. The manifest keeps this separately
+    // from the numeric ABI version so converter changes cannot accidentally reuse stale output.
+    std::string pipeline_id = "unknown";
     std::filesystem::path cooked_relative_path;
     std::string cooked_hash;
     std::uint32_t pipeline_version = 1;
@@ -39,7 +45,7 @@ struct CookedAssetDependencyReport {
 };
 
 struct CookedAssetManifest {
-    std::uint32_t schema_version = 1;
+    std::uint32_t schema_version = 2;
     std::string profile = "development";
     std::vector<CookedAssetRecord> records;
 
@@ -57,7 +63,7 @@ struct CookedAssetManifest {
 struct CookedAssetBuildConfig {
     std::string profile = "development";
     bool active_assets_only = true;
-    std::uint32_t pipeline_version = 1;
+    std::uint32_t pipeline_version = 2;
 };
 
 class CookedAssetManifestBuilder {

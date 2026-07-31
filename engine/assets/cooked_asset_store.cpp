@@ -239,6 +239,18 @@ CookedAssetPayloadCodec::decode(std::span<const std::uint8_t> bytes,
         return core::Result<CookedAssetPayload>::failure(status.error().code,
                                                          status.error().message);
     }
+    if (expected.pipeline_id != "legacy_v1") {
+        status = require_field_value(fields.value(), "dependency_hash", expected.dependency_hash);
+        if (!status) {
+            return core::Result<CookedAssetPayload>::failure(status.error().code,
+                                                             status.error().message);
+        }
+        status = require_field_value(fields.value(), "pipeline_id", expected.pipeline_id);
+        if (!status) {
+            return core::Result<CookedAssetPayload>::failure(status.error().code,
+                                                             status.error().message);
+        }
+    }
     const auto expected_pipeline_version = std::to_string(expected.pipeline_version);
     status = require_field_value(fields.value(), "pipeline_version", expected_pipeline_version);
     if (!status) {
@@ -258,7 +270,11 @@ CookedAssetPayloadCodec::decode(std::span<const std::uint8_t> bytes,
             "cooked_asset_store.missing_key",
             "cooked asset payload is missing required header keys");
     }
-    if (backend.value() != expected_backend_for_profile(expected.kind, expected_profile)) {
+    const auto expected_backend =
+        expected.pipeline_id == "legacy_v1"
+            ? expected_backend_for_profile(expected.kind, expected_profile)
+            : std::string_view(expected.pipeline_id);
+    if (backend.value() != expected_backend) {
         return core::Result<CookedAssetPayload>::failure(
             "cooked_asset_store.backend_mismatch",
             "cooked asset payload backend does not match expected asset kind and profile");
