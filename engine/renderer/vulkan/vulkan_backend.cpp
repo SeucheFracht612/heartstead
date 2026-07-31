@@ -54,9 +54,8 @@ using detail::vulkan_image_format;
 // invalidate commands recorded by an earlier pass under Vulkan's descriptor lifetime rules.
 constexpr std::size_t graph_descriptor_pass_capacity = 64;
 
-[[nodiscard]] constexpr std::size_t
-graph_descriptor_set_index(std::size_t frame_context_index,
-                           std::size_t pass_index) noexcept {
+[[nodiscard]] constexpr std::size_t graph_descriptor_set_index(std::size_t frame_context_index,
+                                                               std::size_t pass_index) noexcept {
     return frame_context_index * graph_descriptor_pass_capacity + pass_index;
 }
 
@@ -1108,23 +1107,6 @@ translate_frame_transitions_for_vulkan(const rhi::RenderFrameExecutionPlan& exec
 }
 
 [[nodiscard]] std::string
-present_target_resource_name(const rhi::RenderFrameExecutionPlan& execution_plan) {
-    const auto transition = std::ranges::find_if(
-        execution_plan.transitions, [](const rhi::RenderFrameResourceTransition& candidate) {
-            return candidate.after_state == rhi::RenderResourceState::present;
-        });
-    if (transition != execution_plan.transitions.end()) {
-        return transition->resource_name;
-    }
-
-    const auto use = std::ranges::find_if(
-        execution_plan.resource_uses, [](const rhi::RenderFrameResourceUse& candidate) {
-            return candidate.access == rhi::RenderResourceAccess::present;
-        });
-    return use == execution_plan.resource_uses.end() ? std::string{} : use->resource_name;
-}
-
-[[nodiscard]] std::string
 offscreen_target_resource_name(const rhi::RenderFrameExecutionPlan& execution_plan) {
     const auto written_use = std::ranges::find_if(
         execution_plan.resource_uses, [](const rhi::RenderFrameResourceUse& candidate) {
@@ -1361,6 +1343,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             if (default_sampler_ != VK_NULL_HANDLE) {
                 vkDestroySampler(device_, default_sampler_, nullptr);
                 default_sampler_ = VK_NULL_HANDLE;
+            }
+            if (graph_sampler_ != VK_NULL_HANDLE) {
+                vkDestroySampler(device_, graph_sampler_, nullptr);
+                graph_sampler_ = VK_NULL_HANDLE;
             }
             if (default_comparison_sampler_ != VK_NULL_HANDLE) {
                 vkDestroySampler(device_, default_comparison_sampler_, nullptr);
@@ -1827,16 +1813,11 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 return core::Result<rhi::RenderFrameStats>::failure(
                     translated_transitions.error().code, translated_transitions.error().message);
             }
-            auto target_transitions =
-                transitions_for_resource(translated_transitions.value(),
-                                         present_target_resource_name(execution_plan.value()));
-            auto present_stats = render_present_frame(
-                rhi::RenderFrameDesc{
-                    clear_color,
-                    plan.extent,
-                    true,
-                },
-                target_transitions);
+            auto present_stats = render_present_frame(rhi::RenderFrameDesc{
+                clear_color,
+                plan.extent,
+                true,
+            });
             if (!present_stats) {
                 return present_stats;
             }
@@ -1847,8 +1828,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             present_stats.value().transition_count = execution_plan.value().transitions.size();
             present_stats.value().synchronization_barrier_count =
                 translated_transitions.value().size();
-            present_stats.value().submitted_synchronization_barrier_count =
-                target_transitions.size();
+            present_stats.value().submitted_synchronization_barrier_count = 0;
             present_stats.value().clear_color = clear_color;
             return present_stats;
         }
@@ -3908,6 +3888,31 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         return core::Status::ok();
     }
 
+    [[nodiscard]] core::Status ensure_graph_sampler() {
+        if (graph_sampler_ != VK_NULL_HANDLE) {
+            return core::Status::ok();
+        }
+        VkSamplerCreateInfo sampler_info{};
+        sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sampler_info.magFilter = VK_FILTER_LINEAR;
+        sampler_info.minFilter = VK_FILTER_LINEAR;
+        sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.maxAnisotropy = 1.0F;
+        sampler_info.minLod = 0.0F;
+        sampler_info.maxLod = VK_LOD_CLAMP_NONE;
+        const auto result = vkCreateSampler(device_, &sampler_info, nullptr, &graph_sampler_);
+        if (result != VK_SUCCESS) {
+            graph_sampler_ = VK_NULL_HANDLE;
+            return core::Status::failure("renderer.vulkan_graph_sampler_failed",
+                                         "failed to create Vulkan frame graph sampler: " +
+                                             std::string(vk_result_name(result)));
+        }
+        return core::Status::ok();
+    }
+
     void destroy_image_resource(VulkanImageResource& resource) noexcept {
         if (resource.owns_sampler && resource.sampler != VK_NULL_HANDLE) {
             vkDestroySampler(device_, resource.sampler, nullptr);
@@ -4252,11 +4257,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         auto pool_sizes = make_descriptor_pool_sizes(resource.desc);
         // A layout that samples frame graph resources needs one set per frame in flight, so the
         // pool has to be sized for all of them.
-        const auto set_count =
-            resource.desc.per_frame_descriptors && !frame_contexts_.empty()
-                ? static_cast<std::uint32_t>(frame_contexts_.size() *
-                                             graph_descriptor_pass_capacity)
-                : 1U;
+        const auto set_count = resource.desc.per_frame_descriptors && !frame_contexts_.empty()
+                                   ? static_cast<std::uint32_t>(frame_contexts_.size() *
+                                                                graph_descriptor_pass_capacity)
+                                   : 1U;
         if (!pool_sizes.empty()) {
             for (auto& pool_size : pool_sizes) {
                 pool_size.descriptorCount *= set_count;
@@ -4689,8 +4693,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
     }
 
     [[nodiscard]] core::Result<rhi::RenderFrameStats>
-    render_present_frame(rhi::RenderFrameDesc desc,
-                         std::span<const VulkanFrameTransition> frame_transitions) {
+    render_present_frame(rhi::RenderFrameDesc desc) {
         auto status = ensure_swapchain();
         if (!status) {
             return core::Result<rhi::RenderFrameStats>::failure(status.error().code,
@@ -4724,7 +4727,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 "Vulkan acquired an out-of-range swapchain image");
         }
 
-        status = submit_swapchain_clear(image_index, desc.clear_color, frame_transitions);
+        status = submit_swapchain_clear(image_index, desc.clear_color);
         if (!status) {
             return core::Result<rhi::RenderFrameStats>::failure(status.error().code,
                                                                 status.error().message);
@@ -4770,8 +4773,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         stats.presented = true;
         stats.render_pass_count = 2;
         stats.present_pass_count = 1;
-        stats.synchronization_barrier_count = frame_transitions.size();
-        stats.submitted_synchronization_barrier_count = frame_transitions.size();
+        stats.synchronization_barrier_count = 0;
+        stats.submitted_synchronization_barrier_count = 0;
         attach_latest_gpu_upload_timing(stats);
         ++completed_frame_count_;
         return core::Result<rhi::RenderFrameStats>::success(stats);
@@ -4923,7 +4926,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                               const rhi::RenderPassDesc& pass, std::size_t pass_index,
                               VulkanFrameContext& frame_context, std::size_t frame_context_index,
                               VkCommandBuffer commands, std::size_t& submitted_barrier_count) {
-        auto sampler_status = ensure_default_sampler();
+        auto sampler_status = ensure_graph_sampler();
         if (!sampler_status) {
             return sampler_status;
         }
@@ -4975,7 +4978,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 ++submitted_barrier_count;
             }
             image_infos.push_back(VkDescriptorImageInfo{
-                sampled.comparison ? default_comparison_sampler_ : default_sampler_, image->view,
+                sampled.comparison ? default_comparison_sampler_ : graph_sampler_, image->view,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
         }
 
@@ -5535,8 +5538,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                     return;
                 }
                 const auto descriptor_index =
-                    graph_descriptor_set_index(frame_context_index,
-                                               commands->pass_index);
+                    graph_descriptor_set_index(frame_context_index, commands->pass_index);
                 for (const auto& draw : commands->draws) {
                     auto& pipeline = graphics_pipelines_.at(draw.pipeline.value);
                     auto& layout = pipeline_layouts_.at(pipeline.desc.material_id.value());
@@ -5589,12 +5591,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                                            &constants);
                     } else if (recorded_pass.kind != rhi::RenderPassKind::post_process) {
                         const auto sky_pass = recorded_pass.name == "sky";
-                        const auto ambient =
-                            sky_pass ? frame.environment.sky_zenith_color
-                                     : frame.environment.ambient_color;
-                        const auto fog =
-                            sky_pass ? frame.environment.sky_horizon_color
-                                     : frame.environment.fog_color;
+                        const auto ambient = sky_pass ? frame.environment.sky_zenith_color
+                                                      : frame.environment.ambient_color;
+                        const auto fog = sky_pass ? frame.environment.sky_horizon_color
+                                                  : frame.environment.fog_color;
                         const rhi::ChunkPushConstants constants{
                             draw.view_projection_override_enabled ? draw.view_projection_override
                                                                   : frame.camera.view_projection,
@@ -5785,32 +5785,38 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                             "frame graph pass '" + pass.name + "' writes resource '" +
                                 *colour_name + "' which has no backing image");
                     }
-                    if (colour->layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
-                        const auto undefined = colour->layout == VK_IMAGE_LAYOUT_UNDEFINED;
-                        VkImageMemoryBarrier to_attachment{};
-                        to_attachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                        to_attachment.srcAccessMask =
-                            undefined ? 0
-                                      : static_cast<VkAccessFlags>(VK_ACCESS_SHADER_READ_BIT |
+                    const auto undefined = colour->layout == VK_IMAGE_LAYOUT_UNDEFINED;
+                    const auto attachment_layout =
+                        colour->layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                    VkImageMemoryBarrier to_attachment{};
+                    to_attachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    to_attachment.srcAccessMask =
+                        undefined
+                            ? 0
+                            : static_cast<VkAccessFlags>(attachment_layout
+                                                             ? VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                                                             : VK_ACCESS_SHADER_READ_BIT |
                                                                    VK_ACCESS_SHADER_WRITE_BIT);
-                        to_attachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-                        to_attachment.oldLayout = colour->layout;
-                        to_attachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                        to_attachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                        to_attachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                        to_attachment.image = colour->image;
-                        to_attachment.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0,
-                                                          colour->mip_levels, 0,
-                                                          colour->array_layers};
-                        vkCmdPipelineBarrier(frame_commands,
-                                             undefined ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-                                                       : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-                                                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0,
-                                             nullptr, 0, nullptr, 1, &to_attachment);
-                        colour->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                        ++submitted_barrier_count;
-                    }
+                    to_attachment.dstAccessMask =
+                        VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                    to_attachment.oldLayout = colour->layout;
+                    to_attachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                    to_attachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    to_attachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    to_attachment.image = colour->image;
+                    to_attachment.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                                      colour->mip_levels, 0, colour->array_layers};
+                    vkCmdPipelineBarrier(frame_commands,
+                                         undefined
+                                             ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                                             : (attachment_layout
+                                                    ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                                                    : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT),
+                                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0,
+                                         nullptr, 0, nullptr, 1, &to_attachment);
+                    colour->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                    ++submitted_barrier_count;
                     VkRenderingAttachmentInfo attachment{};
                     attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
                     attachment.imageView = colour->view;
@@ -5825,16 +5831,21 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 }
 
                 const auto bind_depth = binds_depth[pass_index];
-                if (bind_depth && depth != nullptr &&
-                    depth->layout != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+                if (bind_depth && depth != nullptr) {
                     const auto undefined = depth->layout == VK_IMAGE_LAYOUT_UNDEFINED;
+                    const auto attachment_layout =
+                        depth->layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                    const auto general_layout = depth->layout == VK_IMAGE_LAYOUT_GENERAL;
                     VkImageMemoryBarrier to_depth{};
                     to_depth.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
                     to_depth.srcAccessMask =
-                        undefined ? 0
-                                  : static_cast<VkAccessFlags>(
-                                        VK_ACCESS_SHADER_READ_BIT |
-                                        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+                        undefined
+                            ? 0
+                            : static_cast<VkAccessFlags>(
+                                  attachment_layout
+                                      ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                                      : VK_ACCESS_SHADER_READ_BIT |
+                                            (general_layout ? VK_ACCESS_SHADER_WRITE_BIT : 0U));
                     to_depth.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                                              VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
                     to_depth.oldLayout = depth->layout;
@@ -5844,12 +5855,19 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                     to_depth.image = depth->image;
                     to_depth.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, depth->mip_levels, 0,
                                                  depth->array_layers};
-                    vkCmdPipelineBarrier(frame_commands,
-                                         undefined ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-                                                   : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-                                                         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                                         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, nullptr,
-                                         0, nullptr, 1, &to_depth);
+                    vkCmdPipelineBarrier(
+                        frame_commands,
+                        undefined
+                            ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                            : (attachment_layout
+                                   ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT
+                                   : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                         (general_layout ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                                                         : 0U)),
+                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                        0, 0, nullptr, 0, nullptr, 1, &to_depth);
                     depth->layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
                     ++submitted_barrier_count;
                 }
@@ -6352,9 +6370,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         return core::Status::ok();
     }
 
-    [[nodiscard]] core::Status
-    submit_swapchain_clear(std::uint32_t image_index, rhi::ClearColor clear_color,
-                           std::span<const VulkanFrameTransition> frame_transitions) {
+    [[nodiscard]] core::Status submit_swapchain_clear(std::uint32_t image_index,
+                                                      rhi::ClearColor clear_color) {
         auto result = vkResetFences(device_, 1, &fence_);
         if (result != VK_SUCCESS) {
             return core::Status::failure("renderer.vulkan_reset_fence_failed",
@@ -6385,8 +6402,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1,
         };
 
-        record_planned_image_transition_barriers(command_buffer_, swapchain_images_[image_index],
-                                                 clear_range, old_layout, frame_transitions);
         VkPipelineStageFlags source_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
         VkAccessFlags source_access = 0;
         if (old_layout != VK_IMAGE_LAYOUT_UNDEFINED) {
@@ -6634,6 +6649,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
     StagingRingAllocator staging_ring_{32U * 1024U * 1024U};
     std::unordered_map<std::uint64_t, VulkanImageResource> image_resources_;
     VkSampler default_sampler_ = VK_NULL_HANDLE;
+    VkSampler graph_sampler_ = VK_NULL_HANDLE;
     VkSampler default_comparison_sampler_ = VK_NULL_HANDLE;
     std::unordered_map<std::uint64_t, VulkanSamplerResource> sampler_resources_;
     std::unordered_map<std::uint64_t, VulkanShaderModuleResource> shader_modules_;

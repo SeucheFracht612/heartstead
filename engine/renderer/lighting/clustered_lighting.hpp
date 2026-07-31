@@ -72,6 +72,7 @@ class ClusteredLightingSystem {
     [[nodiscard]] rhi::RenderResourceHandle grid_buffer() const noexcept;
     [[nodiscard]] const ClusteredLightingStats& stats() const noexcept;
     [[nodiscard]] std::span<const LocalShadowCandidate> selected_shadow_lights() const noexcept;
+    [[nodiscard]] std::span<const GpuLocalLight> gpu_lights() const noexcept;
 
   private:
     [[nodiscard]] core::Status create_grid_buffer(rhi::RenderExtent extent);

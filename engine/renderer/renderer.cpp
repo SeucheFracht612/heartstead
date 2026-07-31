@@ -764,25 +764,20 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         rhi::RenderDescriptorWrite{
             transparent_material.value(), "object_instances",
             scene_render_system_->instance_buffer(), 0,
-            static_cast<std::size_t>(
-                scene_render_system_->stats().instance_buffer_bytes)},
+            static_cast<std::size_t>(scene_render_system_->stats().instance_buffer_bytes)},
         rhi::RenderDescriptorWrite{
             transparent_material.value(), "skin_matrices",
             scene_render_system_->skin_matrix_buffer(), 0,
-            static_cast<std::size_t>(
-                scene_render_system_->stats().skin_matrix_buffer_bytes)},
+            static_cast<std::size_t>(scene_render_system_->stats().skin_matrix_buffer_bytes)},
         rhi::RenderDescriptorWrite{
-            transparent_material.value(), "morph_deltas",
-            mesh_manager_->morph_delta_buffer(), 0,
+            transparent_material.value(), "morph_deltas", mesh_manager_->morph_delta_buffer(), 0,
             static_cast<std::size_t>(mesh_manager_->stats().morph_arena.capacity_bytes)},
         rhi::RenderDescriptorWrite{
             transparent_material.value(), "morph_weights",
             scene_render_system_->morph_weight_buffer(), 0,
-            static_cast<std::size_t>(
-                scene_render_system_->stats().morph_weight_buffer_bytes)},
+            static_cast<std::size_t>(scene_render_system_->stats().morph_weight_buffer_bytes)},
     };
-    auto transparent_geometry =
-        device_->write_descriptors(transparent_geometry_writes);
+    auto transparent_geometry = device_->write_descriptors(transparent_geometry_writes);
     if (!transparent_geometry) {
         const auto error = transparent_geometry.error();
         (void)shutdown();
@@ -844,8 +839,8 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
             clustered_lighting_->bind(scene_material.value(), "local_lights", "light_grid");
     }
     if (lighting_status) {
-        lighting_status = clustered_lighting_->bind(
-            transparent_material.value(), "local_lights", "light_grid");
+        lighting_status =
+            clustered_lighting_->bind(transparent_material.value(), "local_lights", "light_grid");
     }
     if (!lighting_status) {
         const auto error = lighting_status.error();
@@ -1139,16 +1134,8 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
     }
     if (std::isfinite(delta_seconds) && delta_seconds > 0.0F) {
         environment_.elapsed_seconds =
-            std::fmod(environment_.elapsed_seconds + std::min(delta_seconds, 0.25F),
-                      4'096.0F);
+            std::fmod(environment_.elapsed_seconds + std::min(delta_seconds, 0.25F), 4'096.0F);
     }
-    ChunkDrawList draws;
-    {
-        profiling::ScopedCpuTimingZone extraction_zone(cpu_timings_,
-                                                       profiling::CpuTimingZone::render_extraction);
-        draws = chunk_system_->build_draw_list(camera, std::move(chunk_draw_scratch_));
-    }
-    chunk_draw_scratch_ = std::move(draws.draws);
     RenderCommandLists command_lists;
     auto sky_draw = sky_renderer_->build_draw();
     if (!sky_draw) {
@@ -1162,36 +1149,12 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
         environment_.cloud_density,
         environment_.elapsed_seconds,
     };
-    sky_command.texture_variation_seed =
-        std::bit_cast<std::uint32_t>(environment_.storm_intensity);
+    sky_command.texture_variation_seed = std::bit_cast<std::uint32_t>(environment_.storm_intensity);
     command_lists.sky_draws.push_back(sky_command);
-    command_lists.opaque_terrain_draws = std::move(draw_command_scratch_.opaque_terrain_draws);
-    command_lists.alpha_tested_terrain_draws =
-        std::move(draw_command_scratch_.alpha_tested_terrain_draws);
-    command_lists.transparent_terrain_draws =
-        std::move(draw_command_scratch_.transparent_terrain_draws);
     debug_frame_scratch_.draws = std::move(draw_command_scratch_.debug_draws);
     ui_frame_scratch_.draws = std::move(draw_command_scratch_.ui_draws);
-    command_lists.opaque_terrain_draws.clear();
-    command_lists.alpha_tested_terrain_draws.clear();
-    command_lists.transparent_terrain_draws.clear();
-    for (auto& draw : chunk_draw_scratch_) {
-        if (draw.pipeline == terrain_pipelines_.opaque) {
-            command_lists.opaque_terrain_draws.push_back(draw);
-        } else if (draw.pipeline == terrain_pipelines_.alpha_tested) {
-            command_lists.alpha_tested_terrain_draws.push_back(draw);
-        } else {
-            command_lists.transparent_terrain_draws.push_back(draw);
-        }
-    }
-    auto scene_draws = scene_render_system_->build_draw_commands(scene_, camera, simulation_alpha,
-                                                                 std::move(scene_draw_scratch_));
-    if (!scene_draws) {
-        frame_timing_active_ = false;
-        return core::Result<rhi::RenderFrameStats>::failure(scene_draws.error().code,
-                                                            scene_draws.error().message);
-    }
-    auto lighting_status = clustered_lighting_->update(scene_draws.value().lights, camera);
+    auto scene_lights = scene_.extract_lights(camera);
+    auto lighting_status = clustered_lighting_->update(scene_lights, camera);
     if (!lighting_status) {
         frame_timing_active_ = false;
         return core::Result<rhi::RenderFrameStats>::failure(lighting_status.error().code,
@@ -1205,25 +1168,102 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
          0.0722F * environment_.ambient_color.z) *
             0.30F +
         environment_.sun_intensity * 0.05F;
-    for (const auto& light : scene_draws.value().lights) {
+    const auto camera_frustum = RenderFrustum::from_view_projection(camera.view_projection);
+    for (const auto& light : scene_lights) {
         if (light.kind == RenderLightKind::directional) {
             continue;
         }
+        const auto extent = math::Vec3f{light.radius, light.radius, light.radius};
+        const math::Bounds3f influence_bounds{light.camera_relative_position - extent,
+                                              light.camera_relative_position + extent};
+        if (!camera_frustum.intersects(influence_bounds)) {
+            continue;
+        }
+        const auto camera_delta = light.camera_relative_position - camera.local_position;
+        const auto distance_squared = math::length_squared(camera_delta);
+        const auto attenuation =
+            std::clamp(light.radius * light.radius / std::max(distance_squared, 1.0F), 0.0F, 1.0F);
         scene_luminance +=
             (0.2126F * light.color.x + 0.7152F * light.color.y + 0.0722F * light.color.z) *
-            light.intensity * 0.002F;
+            light.intensity * attenuation * 0.002F;
     }
     frame_builder_->update_exposure_adaptation(scene_luminance, delta_seconds);
+    std::array<RenderLightInstance, local_shadow_map_count> selected_local_shadows;
+    std::size_t selected_local_shadow_count = 0;
+    for (const auto& candidate : clustered_lighting_->selected_shadow_lights()) {
+        const auto found =
+            std::ranges::find_if(scene_lights, [&candidate](const RenderLightInstance& light) {
+                return light.id == candidate.id;
+            });
+        if (found != scene_lights.end() &&
+            selected_local_shadow_count < selected_local_shadows.size()) {
+            selected_local_shadows[selected_local_shadow_count++] = *found;
+        }
+    }
+    auto shadow_status = cascaded_shadows_->update(
+        camera, environment_,
+        std::span{selected_local_shadows.data(), selected_local_shadow_count});
+    if (!shadow_status) {
+        frame_timing_active_ = false;
+        return core::Result<rhi::RenderFrameStats>::failure(shadow_status.error().code,
+                                                            shadow_status.error().message);
+    }
+    const auto& shadow_data = cascaded_shadows_->gpu_data();
+    std::array<math::Mat4f, directional_shadow_cascade_count + local_shadow_map_count>
+        shadow_view_projections;
+    for (std::size_t cascade = 0; cascade < directional_shadow_cascade_count; ++cascade) {
+        shadow_view_projections[cascade] = shadow_data.light_view_projection[cascade];
+    }
+    for (std::size_t slot = 0; slot < selected_local_shadow_count; ++slot) {
+        shadow_view_projections[directional_shadow_cascade_count + slot] =
+            shadow_data.local_light_view_projection[slot];
+    }
+    const auto active_shadow_views =
+        std::span{shadow_view_projections.data(),
+                  directional_shadow_cascade_count + selected_local_shadow_count};
+
+    ChunkDrawList draws;
+    {
+        profiling::ScopedCpuTimingZone extraction_zone(cpu_timings_,
+                                                       profiling::CpuTimingZone::render_extraction);
+        draws = chunk_system_->build_draw_list(camera, std::move(chunk_draw_scratch_),
+                                               active_shadow_views);
+    }
+    chunk_draw_scratch_ = std::move(draws.draws);
+    command_lists.opaque_terrain_draws = std::move(draw_command_scratch_.opaque_terrain_draws);
+    command_lists.alpha_tested_terrain_draws =
+        std::move(draw_command_scratch_.alpha_tested_terrain_draws);
+    command_lists.transparent_terrain_draws =
+        std::move(draw_command_scratch_.transparent_terrain_draws);
+    command_lists.opaque_terrain_draws.clear();
+    command_lists.alpha_tested_terrain_draws.clear();
+    command_lists.transparent_terrain_draws.clear();
+    for (auto& draw : chunk_draw_scratch_) {
+        if (draw.pipeline == terrain_pipelines_.opaque) {
+            command_lists.opaque_terrain_draws.push_back(draw);
+        } else if (draw.pipeline == terrain_pipelines_.alpha_tested) {
+            command_lists.alpha_tested_terrain_draws.push_back(draw);
+        } else {
+            command_lists.transparent_terrain_draws.push_back(draw);
+        }
+    }
+
+    auto scene_draws = scene_render_system_->build_draw_commands(
+        scene_, camera, simulation_alpha, std::move(scene_draw_scratch_), active_shadow_views);
+    if (!scene_draws) {
+        frame_timing_active_ = false;
+        return core::Result<rhi::RenderFrameStats>::failure(scene_draws.error().code,
+                                                            scene_draws.error().message);
+    }
     command_lists.rich_instance_draws = std::move(scene_draws.value().opaque_and_cutout);
     auto& transparent_instances = scene_draws.value().transparent;
     command_lists.transparent_terrain_draws.insert(
         command_lists.transparent_terrain_draws.end(),
         std::make_move_iterator(transparent_instances.begin()),
         std::make_move_iterator(transparent_instances.end()));
-    const auto gust =
-        1.0F + environment_.wind_gust_strength *
-                   std::sin(environment_.elapsed_seconds *
-                            environment_.wind_gust_frequency * 6.28318530718F);
+    const auto gust = 1.0F + environment_.wind_gust_strength *
+                                 std::sin(environment_.elapsed_seconds *
+                                          environment_.wind_gust_frequency * 6.28318530718F);
     const math::Vec3f scene_effect_parameters{
         environment_.wind_velocity.x * gust,
         environment_.wind_velocity.z * gust,
@@ -1242,88 +1282,44 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
             draw.camera_relative_origin = scene_effect_parameters;
         }
     }
-    std::array<RenderLightInstance, local_shadow_map_count> selected_local_shadows;
-    std::size_t selected_local_shadow_count = 0;
-    for (const auto& candidate : clustered_lighting_->selected_shadow_lights()) {
-        const auto found = std::ranges::find_if(
-            scene_draws.value().lights,
-            [&candidate](const RenderLightInstance& light) { return light.id == candidate.id; });
-        if (found != scene_draws.value().lights.end() &&
-            selected_local_shadow_count < selected_local_shadows.size()) {
-            selected_local_shadows[selected_local_shadow_count++] = *found;
+
+    const auto append_shadow_draws = [&](auto& target, const auto& terrain_sources,
+                                         const auto& scene_sources,
+                                         const math::Mat4f& view_projection) {
+        target.reserve(terrain_sources.size() + scene_sources.size());
+        for (const auto& draw : terrain_sources) {
+            auto shadow_draw = draw;
+            shadow_draw.pipeline = draw.pipeline == terrain_pipelines_.alpha_tested
+                                       ? shadow_pipelines_[1]
+                                       : shadow_pipelines_[0];
+            shadow_draw.view_projection_override_enabled = true;
+            shadow_draw.view_projection_override = view_projection;
+            target.push_back(shadow_draw);
         }
-    }
-    auto shadow_status = cascaded_shadows_->update(
-        camera, environment_,
-        std::span{selected_local_shadows.data(), selected_local_shadow_count});
-    if (!shadow_status) {
-        frame_timing_active_ = false;
-        return core::Result<rhi::RenderFrameStats>::failure(shadow_status.error().code,
-                                                            shadow_status.error().message);
-    }
-    const auto& shadow_data = cascaded_shadows_->gpu_data();
-    for (std::size_t cascade = 0; cascade < directional_shadow_cascade_count; ++cascade) {
-        auto& shadow_draws = command_lists.directional_shadow_draws[cascade];
-        shadow_draws.reserve(command_lists.opaque_terrain_draws.size() +
-                             command_lists.alpha_tested_terrain_draws.size() +
-                             command_lists.rich_instance_draws.size());
-        const auto append_shadow = [&](const auto& source, rhi::RenderResourceHandle pipeline) {
-            for (const auto& draw : source) {
-                auto shadow_draw = draw;
-                shadow_draw.pipeline = pipeline;
-                shadow_draw.view_projection_override_enabled = true;
-                shadow_draw.view_projection_override = shadow_data.light_view_projection[cascade];
-                shadow_draws.push_back(shadow_draw);
-            }
-        };
-        append_shadow(command_lists.opaque_terrain_draws, shadow_pipelines_[0]);
-        append_shadow(command_lists.alpha_tested_terrain_draws, shadow_pipelines_[1]);
-        for (const auto& draw : command_lists.rich_instance_draws) {
-            if (!draw.casts_shadow) {
-                continue;
-            }
+        for (const auto& draw : scene_sources) {
             const auto two_sided_or_cutout =
                 draw.pipeline == scene_pipelines_.alpha_tested ||
                 draw.pipeline == scene_pipelines_.opaque_two_sided ||
                 draw.pipeline == scene_pipelines_.alpha_tested_two_sided;
             auto shadow_draw = draw;
             shadow_draw.pipeline = shadow_pipelines_[two_sided_or_cutout ? 3U : 2U];
+            shadow_draw.camera_relative_origin = scene_effect_parameters;
             shadow_draw.view_projection_override_enabled = true;
-            shadow_draw.view_projection_override = shadow_data.light_view_projection[cascade];
-            shadow_draws.push_back(shadow_draw);
+            shadow_draw.view_projection_override = view_projection;
+            target.push_back(shadow_draw);
         }
+    };
+    for (std::size_t cascade = 0; cascade < directional_shadow_cascade_count; ++cascade) {
+        append_shadow_draws(command_lists.directional_shadow_draws[cascade],
+                            draws.shadow_draws[cascade],
+                            scene_draws.value().shadow_casters[cascade],
+                            shadow_data.light_view_projection[cascade]);
     }
     for (std::size_t slot = 0; slot < selected_local_shadow_count; ++slot) {
-        auto& shadow_draws = command_lists.local_shadow_draws[slot];
-        shadow_draws.reserve(command_lists.opaque_terrain_draws.size() +
-                             command_lists.alpha_tested_terrain_draws.size() +
-                             command_lists.rich_instance_draws.size());
-        const auto append_shadow = [&](const auto& source, rhi::RenderResourceHandle pipeline) {
-            for (const auto& draw : source) {
-                auto shadow_draw = draw;
-                shadow_draw.pipeline = pipeline;
-                shadow_draw.view_projection_override_enabled = true;
-                shadow_draw.view_projection_override =
-                    shadow_data.local_light_view_projection[slot];
-                shadow_draws.push_back(shadow_draw);
-            }
-        };
-        append_shadow(command_lists.opaque_terrain_draws, shadow_pipelines_[0]);
-        append_shadow(command_lists.alpha_tested_terrain_draws, shadow_pipelines_[1]);
-        for (const auto& draw : command_lists.rich_instance_draws) {
-            if (!draw.casts_shadow) {
-                continue;
-            }
-            const auto two_sided_or_cutout =
-                draw.pipeline == scene_pipelines_.alpha_tested ||
-                draw.pipeline == scene_pipelines_.opaque_two_sided ||
-                draw.pipeline == scene_pipelines_.alpha_tested_two_sided;
-            auto shadow_draw = draw;
-            shadow_draw.pipeline = shadow_pipelines_[two_sided_or_cutout ? 3U : 2U];
-            shadow_draw.view_projection_override_enabled = true;
-            shadow_draw.view_projection_override = shadow_data.local_light_view_projection[slot];
-            shadow_draws.push_back(shadow_draw);
-        }
+        const auto shadow_view = directional_shadow_cascade_count + slot;
+        append_shadow_draws(command_lists.local_shadow_draws[slot], draws.shadow_draws[shadow_view],
+                            scene_draws.value().shadow_casters[shadow_view],
+                            shadow_data.local_light_view_projection[slot]);
     }
     auto debug_frame =
         debug_renderer_->build_frame(camera, delta_seconds, std::move(debug_frame_scratch_));
@@ -1440,8 +1436,7 @@ core::Status Renderer::resize(rhi::RenderExtent extent) {
     if (!status) {
         return status;
     }
-    status =
-        clustered_lighting_->bind(transparent_material.value(), "local_lights", "light_grid");
+    status = clustered_lighting_->bind(transparent_material.value(), "local_lights", "light_grid");
     if (!status) {
         return status;
     }
@@ -2856,8 +2851,7 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
     const auto vertex_layout =
         hash_vertex_layout(pipeline.vertex_stride, pipeline.vertex_attributes);
     const auto prewarm =
-        [&](std::size_t index, RenderPhase phase,
-            const rhi::RenderPipelineLayoutDesc& phase_layout,
+        [&](std::size_t index, RenderPhase phase, const rhi::RenderPipelineLayoutDesc& phase_layout,
             rhi::RenderGraphicsPipelineDesc desc) -> core::Result<rhi::RenderResourceHandle> {
         GraphicsPipelineKey key;
         key.shader_program = scene_shader_program_;
@@ -2891,8 +2885,8 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
     transparent_desc.debug_name = "transparent_static_instances_pipeline";
     transparent_desc.depth_write_enable = false;
     transparent_desc.blend_mode = rhi::RenderBlendMode::alpha;
-    auto transparent = prewarm(2, RenderPhase::transparent_terrain,
-                               transparent_layout, std::move(transparent_desc));
+    auto transparent = prewarm(2, RenderPhase::transparent_terrain, transparent_layout,
+                               std::move(transparent_desc));
     if (!transparent) {
         return core::Status::failure(transparent.error().code, transparent.error().message);
     }
@@ -2901,8 +2895,8 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
     additive_desc.debug_name = "additive_static_instances_pipeline";
     additive_desc.depth_write_enable = false;
     additive_desc.blend_mode = rhi::RenderBlendMode::additive;
-    auto additive = prewarm(3, RenderPhase::transparent_terrain,
-                            transparent_layout, std::move(additive_desc));
+    auto additive =
+        prewarm(3, RenderPhase::transparent_terrain, transparent_layout, std::move(additive_desc));
     if (!additive) {
         return core::Status::failure(additive.error().code, additive.error().message);
     }
@@ -2911,12 +2905,10 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
     premultiplied_desc.debug_name = "premultiplied_static_instances_pipeline";
     premultiplied_desc.depth_write_enable = false;
     premultiplied_desc.blend_mode = rhi::RenderBlendMode::premultiplied_alpha;
-    auto premultiplied =
-        prewarm(4, RenderPhase::transparent_terrain, transparent_layout,
-                std::move(premultiplied_desc));
+    auto premultiplied = prewarm(4, RenderPhase::transparent_terrain, transparent_layout,
+                                 std::move(premultiplied_desc));
     if (!premultiplied) {
-        return core::Status::failure(premultiplied.error().code,
-                                     premultiplied.error().message);
+        return core::Status::failure(premultiplied.error().code, premultiplied.error().message);
     }
     auto two_sided_desc = pipeline;
     two_sided_desc.debug_name = "opaque_two_sided_static_instances_pipeline";
@@ -2941,9 +2933,8 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
     transparent_two_sided_desc.cull_mode = rhi::RenderCullMode::none;
     transparent_two_sided_desc.depth_write_enable = false;
     transparent_two_sided_desc.blend_mode = rhi::RenderBlendMode::alpha;
-    auto transparent_two_sided =
-        prewarm(7, RenderPhase::transparent_terrain, transparent_layout,
-                std::move(transparent_two_sided_desc));
+    auto transparent_two_sided = prewarm(7, RenderPhase::transparent_terrain, transparent_layout,
+                                         std::move(transparent_two_sided_desc));
     if (!transparent_two_sided) {
         return core::Status::failure(transparent_two_sided.error().code,
                                      transparent_two_sided.error().message);
@@ -2954,33 +2945,34 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
     additive_two_sided_desc.cull_mode = rhi::RenderCullMode::none;
     additive_two_sided_desc.depth_write_enable = false;
     additive_two_sided_desc.blend_mode = rhi::RenderBlendMode::additive;
-    auto additive_two_sided =
-        prewarm(8, RenderPhase::transparent_terrain, transparent_layout,
-                std::move(additive_two_sided_desc));
+    auto additive_two_sided = prewarm(8, RenderPhase::transparent_terrain, transparent_layout,
+                                      std::move(additive_two_sided_desc));
     if (!additive_two_sided) {
         return core::Status::failure(additive_two_sided.error().code,
                                      additive_two_sided.error().message);
     }
     auto premultiplied_two_sided_desc = pipeline;
     premultiplied_two_sided_desc.material_id = transparent_material.value();
-    premultiplied_two_sided_desc.debug_name =
-        "premultiplied_two_sided_static_instances_pipeline";
+    premultiplied_two_sided_desc.debug_name = "premultiplied_two_sided_static_instances_pipeline";
     premultiplied_two_sided_desc.cull_mode = rhi::RenderCullMode::none;
     premultiplied_two_sided_desc.depth_write_enable = false;
-    premultiplied_two_sided_desc.blend_mode =
-        rhi::RenderBlendMode::premultiplied_alpha;
-    auto premultiplied_two_sided =
-        prewarm(9, RenderPhase::transparent_terrain, transparent_layout,
-                std::move(premultiplied_two_sided_desc));
+    premultiplied_two_sided_desc.blend_mode = rhi::RenderBlendMode::premultiplied_alpha;
+    auto premultiplied_two_sided = prewarm(9, RenderPhase::transparent_terrain, transparent_layout,
+                                           std::move(premultiplied_two_sided_desc));
     if (!premultiplied_two_sided) {
         return core::Status::failure(premultiplied_two_sided.error().code,
                                      premultiplied_two_sided.error().message);
     }
-    scene_pipelines_ = {
-        opaque.value(),          alpha.value(),          transparent.value(),
-        additive.value(),        premultiplied.value(),  opaque_two_sided.value(),
-        alpha_two_sided.value(), transparent_two_sided.value(),
-        additive_two_sided.value(), premultiplied_two_sided.value()};
+    scene_pipelines_ = {opaque.value(),
+                        alpha.value(),
+                        transparent.value(),
+                        additive.value(),
+                        premultiplied.value(),
+                        opaque_two_sided.value(),
+                        alpha_two_sided.value(),
+                        transparent_two_sided.value(),
+                        additive_two_sided.value(),
+                        premultiplied_two_sided.value()};
     return bind_scene_surface_resources();
 }
 
@@ -3184,32 +3176,28 @@ core::Status Renderer::bind_scene_surface_resources() {
         core::PrototypeId::parse("base:materials/transparent_instances");
     const auto* texture = surface_texture_array_->texture_view();
     const auto* data_texture = surface_data_texture_array_->texture_view();
-    const auto* fallback_depth =
-        texture_manager_->find(texture_manager_->white_texture());
+    const auto* fallback_depth = texture_manager_->find(texture_manager_->white_texture());
     if (!scene_material || !transparent_material || texture == nullptr ||
-        !texture->image.is_valid() ||
-        data_texture == nullptr || !data_texture->image.is_valid() ||
+        !texture->image.is_valid() || data_texture == nullptr || !data_texture->image.is_valid() ||
         fallback_depth == nullptr || !fallback_depth->image.is_valid()) {
         return core::Status::failure("renderer.scene_surface_resources_missing",
                                      "scene surface texture or material identity is missing");
     }
-    for (const auto& material :
-         {scene_material.value(), transparent_material.value()}) {
+    for (const auto& material : {scene_material.value(), transparent_material.value()}) {
         const std::array texture_writes{
-            rhi::RenderDescriptorWrite{material, "surface_textures", texture->image, 0,
-                                       0, surface_sampler_},
-            rhi::RenderDescriptorWrite{material, "surface_data_textures",
-                                       data_texture->image, 0, 0, surface_sampler_},
-            rhi::RenderDescriptorWrite{material, "scene_depth",
-                                       fallback_depth->image, 0, 0, surface_sampler_},
+            rhi::RenderDescriptorWrite{material, "surface_textures", texture->image, 0, 0,
+                                       surface_sampler_},
+            rhi::RenderDescriptorWrite{material, "surface_data_textures", data_texture->image, 0, 0,
+                                       surface_sampler_},
+            rhi::RenderDescriptorWrite{material, "scene_depth", fallback_depth->image, 0, 0,
+                                       surface_sampler_},
         };
         auto written = device_->write_descriptors(texture_writes);
         if (!written) {
-            return core::Status::failure(written.error().code,
-                                         written.error().message);
+            return core::Status::failure(written.error().code, written.error().message);
         }
-        auto material_status = material_cache_->write_gpu_surface_table_descriptor(
-            material, "surface_materials");
+        auto material_status =
+            material_cache_->write_gpu_surface_table_descriptor(material, "surface_materials");
         if (!material_status) {
             return material_status;
         }
@@ -3462,8 +3450,7 @@ Renderer::create_image_quality_pipelines(std::span<const std::uint32_t> vertex_s
         pipeline.depth_write_enable = false;
         pipeline.color_target_format = post.format;
         if (index == 0U) {
-            pipeline.additional_color_target_formats = {
-                rhi::RenderImageFormat::rg16_sfloat};
+            pipeline.additional_color_target_formats = {rhi::RenderImageFormat::rg16_sfloat};
         }
 
         GraphicsPipelineKey key;

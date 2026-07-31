@@ -110,8 +110,11 @@ for shader in \
   sky.vert sky.frag \
   terrain.vert terrain.frag \
   static_mesh.vert static_mesh.frag \
+  shadow_terrain.frag shadow_static.frag \
   debug_line.vert debug_line.frag \
-  ui.vert ui.frag; do
+  ui.vert ui.frag \
+  tone_map.vert tone_map.frag \
+  ssao.frag ao_composite.frag fxaa.frag bloom.frag; do
   glslangValidator -V --target-env vulkan1.0 \
     "engine/renderer/shaders/builtin/${shader}" \
     -o "engine/renderer/shaders/builtin/${shader}.spv"
@@ -142,8 +145,16 @@ Cook one active asset without requiring unrelated production converters:
   --only base:models/entities/storybook_player.gltf
 ```
 
+Build and exercise the production presentation inspector without a display:
+
+```bash
+cmake --build --preset default-debug --target heartstead_asset_lab
+./build/default-debug/apps/asset_lab/heartstead_asset_lab \
+  --headless --prefab base:visuals/player --preview visual-prefab
+```
+
 See [the asset pipeline guide](../asset_pipeline.md) for source layout, formats, licenses, cooking,
-and runtime lookup.
+and runtime lookup. See [Asset Lab](../asset_lab.md) for preview modes and inspection controls.
 
 ## Troubleshooting
 

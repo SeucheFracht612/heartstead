@@ -101,26 +101,20 @@ core::Status validate_render_object_proxy(const RenderObjectProxy& object) {
             static_cast<std::uint32_t>(object.atlas_columns) * object.atlas_rows ||
         !std::isfinite(object.wind_phase) || !std::isfinite(object.wind_stiffness) ||
         object.wind_stiffness < 0.0F || object.wind_stiffness > 1.0F ||
-        !std::isfinite(object.foliage_transmission) ||
-        object.foliage_transmission < 0.0F || object.foliage_transmission > 4.0F ||
-        !std::isfinite(object.water_wave_height) || object.water_wave_height < 0.0F ||
-        object.water_wave_height > 16.0F || !std::isfinite(object.water_wave_speed) ||
-        object.water_wave_speed < 0.0F || object.water_wave_speed > 16.0F ||
-        !std::isfinite(object.water_optical_depth) || object.water_optical_depth < 0.0F ||
-        object.water_optical_depth > 1'024.0F ||
+        !std::isfinite(object.foliage_transmission) || object.foliage_transmission < 0.0F ||
+        object.foliage_transmission > 4.0F || !std::isfinite(object.water_wave_height) ||
+        object.water_wave_height < 0.0F || object.water_wave_height > 16.0F ||
+        !std::isfinite(object.water_wave_speed) || object.water_wave_speed < 0.0F ||
+        object.water_wave_speed > 16.0F || !std::isfinite(object.water_optical_depth) ||
+        object.water_optical_depth < 0.0F || object.water_optical_depth > 1'024.0F ||
         !std::isfinite(object.water_foam_strength) || object.water_foam_strength < 0.0F ||
-        object.water_foam_strength > 4.0F ||
-        !std::isfinite(object.particle_emissive_intensity) ||
-        object.particle_emissive_intensity < 0.0F ||
-        object.particle_emissive_intensity > 64.0F ||
+        object.water_foam_strength > 4.0F || !std::isfinite(object.particle_emissive_intensity) ||
+        object.particle_emissive_intensity < 0.0F || object.particle_emissive_intensity > 64.0F ||
         !std::isfinite(object.particle_soft_fade_distance) ||
-        object.particle_soft_fade_distance < 0.0F ||
-        object.particle_soft_fade_distance > 64.0F ||
+        object.particle_soft_fade_distance < 0.0F || object.particle_soft_fade_distance > 64.0F ||
         !std::isfinite(object.particle_velocity_stretch) ||
-        object.particle_velocity_stretch < 0.0F ||
-        object.particle_velocity_stretch > 16.0F ||
-        !std::isfinite(object.distance_fade_width) ||
-        object.distance_fade_width < 0.0F ||
+        object.particle_velocity_stretch < 0.0F || object.particle_velocity_stretch > 16.0F ||
+        !std::isfinite(object.distance_fade_width) || object.distance_fade_width < 0.0F ||
         object.morph_weights.size() > 64U ||
         !std::ranges::all_of(object.morph_weights,
                              [](float value) { return std::isfinite(value); })) {
@@ -410,8 +404,9 @@ core::Status RenderScene::apply(std::span<const RenderSceneUpdate> updates) {
     return core::Status::ok();
 }
 
-core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
-                                                    float simulation_alpha) const {
+core::Result<RenderSceneFrame>
+RenderScene::extract(const RenderCamera& camera, float simulation_alpha,
+                     std::span<const math::Mat4f> shadow_view_projections) const {
     if (!std::isfinite(simulation_alpha)) {
         return core::Result<RenderSceneFrame>::failure("render_scene.invalid_simulation_alpha",
                                                        "render interpolation alpha must be finite");
@@ -419,7 +414,18 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
     RenderSceneFrame frame;
     frame.stats = stats();
     const auto frustum = RenderFrustum::from_view_projection(camera.view_projection);
+    if (shadow_view_projections.size() > 64U) {
+        return core::Result<RenderSceneFrame>::failure(
+            "render_scene.too_many_shadow_views",
+            "render scene extraction supports at most 64 simultaneous shadow views");
+    }
+    std::vector<RenderFrustum> shadow_frusta;
+    shadow_frusta.reserve(shadow_view_projections.size());
+    for (const auto& projection : shadow_view_projections) {
+        shadow_frusta.push_back(RenderFrustum::from_view_projection(projection));
+    }
     std::vector<math::Mat4f> transforms(objects_.size());
+    std::vector<math::Vec3f> object_origins(objects_.size());
     std::vector<bool> resolved(objects_.size(), false);
 
     const auto resolve_transform = [&](const auto& self, const RenderObjectProxy& object,
@@ -432,10 +438,11 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
         if (resolved[index]) {
             return core::Result<math::Mat4f>::success(transforms[index]);
         }
-        const auto local =
-            math::transform_matrix(interpolate_render_transform(object, simulation_alpha)) *
-            object.model_transform;
+        const auto local_transform =
+            math::transform_matrix(interpolate_render_transform(object, simulation_alpha));
+        const auto local = local_transform * object.model_transform;
         math::Mat4f model;
+        math::Mat4f object_basis;
         if (object.parent.is_valid()) {
             const auto* parent = find_object(object.parent);
             if (parent == nullptr) {
@@ -446,6 +453,7 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
             if (!parent_transform) {
                 return parent_transform;
             }
+            object_basis = parent_transform.value() * local_transform;
             model = parent_transform.value() * local;
         } else {
             auto relative = world::to_camera_relative(object.anchor, camera.floating_origin);
@@ -453,8 +461,11 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
                 return core::Result<math::Mat4f>::failure(relative.error().code,
                                                           relative.error().message);
             }
-            model = math::translation_matrix(relative.value()) * local;
+            object_basis = math::translation_matrix(relative.value()) * local_transform;
+            model = object_basis * object.model_transform;
         }
+        const auto origin = object_basis * math::Vec4f{0.0F, 0.0F, 0.0F, 1.0F};
+        object_origins[index] = {origin.x, origin.y, origin.z};
         transforms[index] = model;
         resolved[index] = true;
         return core::Result<math::Mat4f>::success(model);
@@ -476,7 +487,10 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
         }
         const auto bounds = math::transform_bounds(transform.value(), object.local_bounds);
         const auto center = (bounds.min + bounds.max) * 0.5F;
-        const auto camera_delta = center - camera.local_position;
+        const auto distance_reference = object.use_object_origin_for_view_distance
+                                            ? object_origins[object.id.index - 1U]
+                                            : center;
+        const auto camera_delta = distance_reference - camera.local_position;
         const auto camera_distance = std::sqrt(math::length_squared(camera_delta));
         if (camera_distance < object.minimum_view_distance ||
             (object.maximum_view_distance != 0.0F &&
@@ -484,28 +498,37 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
             ++frame.stats.culled_objects;
             continue;
         }
-        if (!frustum.intersects(bounds)) {
+        const auto camera_visible = frustum.intersects(bounds);
+        std::uint64_t shadow_visibility_mask = 0;
+        if (any(object.flags & RenderObjectFlags::cast_shadow) &&
+            (object.layer == RenderLayer::opaque || object.layer == RenderLayer::alpha_tested)) {
+            for (std::size_t shadow_view = 0; shadow_view < shadow_frusta.size(); ++shadow_view) {
+                if (shadow_frusta[shadow_view].intersects(bounds)) {
+                    shadow_visibility_mask |= std::uint64_t{1} << shadow_view;
+                }
+            }
+        }
+        if (!camera_visible) {
             ++frame.stats.culled_objects;
+        }
+        if (!camera_visible && shadow_visibility_mask == 0) {
             continue;
         }
         float visibility = 1.0F;
         if (object.distance_fade_width > 0.0F) {
             const auto smoothstep = [](float minimum, float maximum, float value) {
-                const auto normalized =
-                    std::clamp((value - minimum) / std::max(maximum - minimum, 0.0001F),
-                               0.0F, 1.0F);
+                const auto normalized = std::clamp(
+                    (value - minimum) / std::max(maximum - minimum, 0.0001F), 0.0F, 1.0F);
                 return normalized * normalized * (3.0F - 2.0F * normalized);
             };
             if (object.minimum_view_distance > 0.0F) {
-                visibility *=
-                    smoothstep(object.minimum_view_distance,
-                               object.minimum_view_distance + object.distance_fade_width,
-                               camera_distance);
+                visibility *= smoothstep(object.minimum_view_distance,
+                                         object.minimum_view_distance + object.distance_fade_width,
+                                         camera_distance);
             }
             if (object.maximum_view_distance > 0.0F) {
                 visibility *=
-                    1.0F - smoothstep(object.maximum_view_distance -
-                                          object.distance_fade_width,
+                    1.0F - smoothstep(object.maximum_view_distance - object.distance_fade_width,
                                       object.maximum_view_distance, camera_distance);
             }
         }
@@ -532,16 +555,19 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
                                        object.particle_soft_fade_distance,
                                        object.particle_velocity_stretch, 0.0F}
                 : std::array<float, 4>{object.water_wave_height, object.water_wave_speed,
-                                       object.water_optical_depth,
-                                       object.water_foam_strength};
+                                       object.water_optical_depth, object.water_foam_strength};
         instance.visibility = visibility;
-        auto batch =
-            std::ranges::find_if(frame.batches, [&object](const RenderInstanceBatch& value) {
+        instance.camera_visible = camera_visible;
+        instance.shadow_visibility_mask = shadow_visibility_mask;
+        auto batch = std::ranges::find_if(
+            frame.batches,
+            [&object, camera_visible, shadow_visibility_mask](const RenderInstanceBatch& value) {
                 return value.mesh == object.mesh && value.material == object.material &&
                        value.layer == object.layer &&
                        value.two_sided == any(object.flags & RenderObjectFlags::two_sided) &&
-                       value.casts_shadow ==
-                           any(object.flags & RenderObjectFlags::cast_shadow);
+                       value.casts_shadow == any(object.flags & RenderObjectFlags::cast_shadow) &&
+                       value.camera_visible == camera_visible &&
+                       value.shadow_visibility_mask == shadow_visibility_mask;
             });
         if (batch == frame.batches.end()) {
             frame.batches.push_back({object.mesh,
@@ -549,11 +575,13 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
                                      object.layer,
                                      any(object.flags & RenderObjectFlags::two_sided),
                                      any(object.flags & RenderObjectFlags::cast_shadow),
+                                     camera_visible,
+                                     shadow_visibility_mask,
                                      {}});
             batch = std::prev(frame.batches.end());
         }
         batch->instances.push_back(std::move(instance));
-        ++frame.stats.visible_objects;
+        frame.stats.visible_objects += camera_visible ? 1U : 0U;
     }
     std::ranges::sort(frame.batches,
                       [](const RenderInstanceBatch& left, const RenderInstanceBatch& right) {
@@ -573,7 +601,13 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
                       });
     frame.stats.instance_batches = static_cast<std::uint32_t>(frame.batches.size());
 
-    frame.lights.reserve(frame.stats.retained_lights);
+    frame.lights = extract_lights(camera);
+    return core::Result<RenderSceneFrame>::success(std::move(frame));
+}
+
+std::vector<RenderLightInstance> RenderScene::extract_lights(const RenderCamera& camera) const {
+    std::vector<RenderLightInstance> result;
+    result.reserve(stats().retained_lights);
     for (const auto& slot : lights_) {
         if (!slot.occupied) {
             continue;
@@ -582,14 +616,13 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
         if (!position) {
             continue;
         }
-        frame.lights.push_back({slot.proxy.id, slot.proxy.kind, position.value(),
-                                slot.proxy.direction, slot.proxy.color, slot.proxy.intensity,
-                                slot.proxy.radius, slot.proxy.inner_cone_cosine,
-                                slot.proxy.outer_cone_cosine, slot.proxy.gameplay_importance,
-                                slot.proxy.casts_shadow, slot.proxy.light_revision,
-                                slot.proxy.nearby_geometry_revision});
+        result.push_back({slot.proxy.id, slot.proxy.kind, position.value(), slot.proxy.direction,
+                          slot.proxy.color, slot.proxy.intensity, slot.proxy.radius,
+                          slot.proxy.inner_cone_cosine, slot.proxy.outer_cone_cosine,
+                          slot.proxy.gameplay_importance, slot.proxy.casts_shadow,
+                          slot.proxy.light_revision, slot.proxy.nearby_geometry_revision});
     }
-    return core::Result<RenderSceneFrame>::success(std::move(frame));
+    return result;
 }
 
 void RenderScene::clear() noexcept {

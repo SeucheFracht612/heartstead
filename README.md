@@ -17,8 +17,11 @@ The maintained development slice includes:
 - signed 64-bit world coordinates and cubic chunks;
 - editable voxel terrain, asynchronous meshing, lighting, fluids, and large-coordinate rendering;
 - first- and third-person movement backed by Jolt Physics;
-- a Vulkan/X11 native renderer plus a deterministic headless renderer for tests and tools;
-- glTF model cooking and runtime rendering, animation, particles, audio, UI, and debug overlays;
+- a Vulkan 1.3/X11 renderer with dynamic rendering, HDR, PBR lighting, bounded post-processing,
+  directional and local spotlight shadows, plus a deterministic headless backend;
+- glTF Model v5 and role-aware texture cooking, retained model/animation presentation, visual
+  prefabs, particles, audio, UI, debug overlays, and the Asset Lab inspector;
+- profile-driven atmosphere, clouds, fog, weather, water, vegetation, trails, and surface marks;
 - data-driven prototypes, mods, resource packs, and sandboxed Luau scripting;
 - server-authoritative commands, replication, client prediction, and direct numeric-IPv4 UDP;
 - versioned saves, migrations, profiles, discovery, logs, replay, and inspection tools;
@@ -29,7 +32,8 @@ Important current limits:
 - the scene is an engine integration playground rather than the intended survival/settlement
   gameplay loop;
 - the complete native presentation path is currently Linux/X11 with Vulkan;
-- direct-IP multiplayer is for controlled LAN/testing use and provides neither encryption nor account authentication;
+- direct-IP multiplayer is for controlled LAN/testing use and provides neither encryption nor
+  account authentication;
 - the standalone dedicated-server executable currently runs an in-memory world and has no save
   option;
 - some asset and renderer extensions remain intentionally deferred; see the current status and
@@ -53,6 +57,13 @@ Run the interactive local development game:
 
 ```bash
 ./build/default-debug/apps/dev_game/heartstead_dev_game
+```
+
+Inspect a production-cooked visual through Asset Lab:
+
+```bash
+./build/default-debug/apps/asset_lab/heartstead_asset_lab \
+  --prefab base:visuals/player --preview character --lighting overcast
 ```
 
 Run a dedicated server and join it from another process or machine:
@@ -96,6 +107,9 @@ Start at the [documentation index](docs/README.md).
 - [Running Heartstead](docs/dev/running.md) — applications, controls, saves, and multiplayer.
 - [Testing](docs/dev/testing.md) — test presets, sanitizers, smoke tests, and change verification.
 - [Asset pipeline](docs/asset_pipeline.md) — contributor formats, importing, cooking, and limits.
+- [Asset Lab](docs/asset_lab.md) — production asset and presentation inspection.
+- [Environment rendering](docs/architecture/environment_rendering.md) — atmosphere, water,
+  vegetation, weather, and effects.
 - [Architecture overview](docs/architecture/overview.md) — system boundaries and data flow.
 - [Engine specification](docs/architecture/engine_spec.md) — normative long-term contract.
 

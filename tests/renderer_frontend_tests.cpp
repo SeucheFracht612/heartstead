@@ -851,9 +851,9 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(first_frame_result);
     const auto& first_frame = first_frame_result.value().frame;
     assert(first_frame_result.value().renderer.frame_index == first_frame.frame_index);
-    // Sky and terrain, four directional shadow draws, and the graph-owned SSAO, AO composite,
-    // anti-alias, bloom, and tone-map fullscreen draws.
-    assert(first_frame.draw_count == 11);
+    // Sky and terrain, three light-visible directional shadow draws (the chunk is beyond the
+    // nearest cascade), and the graph-owned SSAO, AO composite, anti-alias, bloom, and tone map.
+    assert(first_frame.draw_count == 10);
     auto invalid_frame_input = frame_input;
     invalid_frame_input.simulation_alpha = 2.0F;
     assert(!retained_renderer.render_frame(invalid_frame_input));
@@ -861,7 +861,7 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(first_frame.opaque_terrain_draw_count == 1);
     assert(first_frame.alpha_tested_terrain_draw_count == 0);
     assert(first_frame.transparent_terrain_draw_count == 0);
-    assert(first_frame.indexed_draw_count == 6);
+    assert(first_frame.indexed_draw_count == 5);
     assert(first_frame.pipeline_bind_count == 8);
     assert(first_frame.clear_color.red == environment.fog_color.x);
     assert(first_frame.clear_color.green == environment.fog_color.y);
@@ -891,7 +891,7 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(renderer_stats.resident_chunks == 1);
     assert(renderer_stats.visible_chunks == 1);
     assert(renderer_stats.drawn_chunks == 1);
-    assert(renderer_stats.draw_calls == 11);
+    assert(renderer_stats.draw_calls == 10);
     assert(renderer_stats.pipeline_switches == 8);
     assert(renderer_stats.resident_textures == 10);
     assert(renderer_stats.runtime_materials == 257);
@@ -961,8 +961,8 @@ void test_renderer_frontend_submits_headless_frames() {
         {{12.0F, 48.0F}, "FPS 144", 8.0F, {1.0F, 1.0F, 1.0F, 1.0F}}));
     auto instanced_frame = retained_renderer.render(camera, 0.5F);
     assert(instanced_frame);
-    assert(instanced_frame.value().draw_count == 15);
-    assert(instanced_frame.value().indexed_draw_count == 10);
+    assert(instanced_frame.value().draw_count == 14);
+    assert(instanced_frame.value().indexed_draw_count == 9);
     assert(instanced_frame.value().pipeline_bind_count == 11);
     assert(retained_renderer.scene_stats().scene.visible_objects == 3);
     assert(retained_renderer.scene_stats().submitted_instances == 2);
@@ -992,7 +992,7 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(retained_renderer.release_static_mesh(object_mesh.value()));
     auto terrain_only_frame = retained_renderer.render(camera);
     assert(terrain_only_frame);
-    assert(terrain_only_frame.value().draw_count == 11);
+    assert(terrain_only_frame.value().draw_count == 10);
 
     assets::ModelAsset animated_model;
     animated_model.vertices = {
@@ -1041,7 +1041,7 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(second_animated_object_id);
     auto animated_frame = retained_renderer.render(camera);
     assert(animated_frame);
-    assert(animated_frame.value().draw_count == 12);
+    assert(animated_frame.value().draw_count == 11);
     assert(retained_renderer.scene_stats().submitted_instances == 2);
     assert(retained_renderer.scene_stats().submitted_skin_palettes == 1);
     assert(retained_renderer.scene_stats().submitted_skin_matrices == 1);

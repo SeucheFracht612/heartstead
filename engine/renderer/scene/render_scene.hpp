@@ -146,6 +146,9 @@ struct RenderObjectProxy {
     // Inclusive lower and exclusive upper camera-distance bounds. A zero maximum is unbounded.
     float minimum_view_distance = 0.0F;
     float maximum_view_distance = 0.0F;
+    // Multi-primitive prefab LODs use their shared entity transform origin, rather than each
+    // primitive's authored bounds center, to make the whole chain switch atomically.
+    bool use_object_origin_for_view_distance = false;
 };
 
 enum class RenderLightKind : std::uint8_t {
@@ -215,6 +218,8 @@ struct RenderObjectInstance {
     float foliage_transmission = 0.0F;
     std::array<float, 4> effect_parameters2{};
     float visibility = 1.0F;
+    bool camera_visible = true;
+    std::uint64_t shadow_visibility_mask = 0;
 };
 
 struct RenderInstanceBatch {
@@ -223,6 +228,8 @@ struct RenderInstanceBatch {
     RenderLayer layer = RenderLayer::opaque;
     bool two_sided = false;
     bool casts_shadow = false;
+    bool camera_visible = true;
+    std::uint64_t shadow_visibility_mask = 0;
     std::vector<RenderObjectInstance> instances;
 };
 
@@ -275,8 +282,10 @@ class RenderScene {
     [[nodiscard]] core::Status remove_skin_palette(RenderSkinPaletteId id);
     [[nodiscard]] core::Status apply(std::span<const RenderSceneUpdate> updates);
 
-    [[nodiscard]] core::Result<RenderSceneFrame> extract(const RenderCamera& camera,
-                                                         float simulation_alpha) const;
+    [[nodiscard]] core::Result<RenderSceneFrame>
+    extract(const RenderCamera& camera, float simulation_alpha,
+            std::span<const math::Mat4f> shadow_view_projections = {}) const;
+    [[nodiscard]] std::vector<RenderLightInstance> extract_lights(const RenderCamera& camera) const;
     void clear() noexcept;
 
     [[nodiscard]] const RenderObjectProxy* find_object(RenderObjectId id) const noexcept;

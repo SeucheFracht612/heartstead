@@ -359,7 +359,8 @@ ChunkDrawList ChunkRenderSystem::build_draw_list(const RenderCamera& camera) {
 
 ChunkDrawList
 ChunkRenderSystem::build_draw_list(const RenderCamera& camera,
-                                   std::vector<rhi::RenderDrawCommand> reusable_draw_storage) {
+                                   std::vector<rhi::RenderDrawCommand> reusable_draw_storage,
+                                   std::span<const math::Mat4f> shadow_view_projections) {
     ChunkDrawList result;
     result.draws = std::move(reusable_draw_storage);
     result.draws.clear();
@@ -367,6 +368,14 @@ ChunkRenderSystem::build_draw_list(const RenderCamera& camera,
     visible_chunks_scratch_.reserve(cache_->stats().entry_count);
     result.draws.reserve(cache_->stats().resident_section_count);
     const auto frustum = RenderFrustum::from_view_projection(camera.view_projection);
+    const auto shadow_view_count = std::min<std::size_t>(shadow_view_projections.size(), 64U);
+    std::vector<RenderFrustum> shadow_frusta;
+    shadow_frusta.reserve(shadow_view_count);
+    for (std::size_t shadow_view = 0; shadow_view < shadow_view_count; ++shadow_view) {
+        shadow_frusta.push_back(
+            RenderFrustum::from_view_projection(shadow_view_projections[shadow_view]));
+    }
+    result.shadow_draws.resize(shadow_view_count);
     ++visibility_epoch_;
     if (visibility_epoch_ == 0) {
         ++visibility_epoch_;
@@ -384,15 +393,30 @@ ChunkRenderSystem::build_draw_list(const RenderCamera& camera,
                 continue;
             }
             const auto origin = camera_relative_chunk_origin(entry->identity.coordinate, camera);
-            if (!origin ||
-                !frustum.intersects(translated_bounds(entry->local_bounds, origin.value()))) {
+            if (!origin) {
                 ++result.culled_chunk_count;
                 ++result.frustum_culled_chunk_count;
                 continue;
             }
-            ++result.visible_chunk_count;
+            const auto bounds = translated_bounds(entry->local_bounds, origin.value());
+            const auto camera_visible = frustum.intersects(bounds);
+            std::uint64_t shadow_visibility_mask = 0;
+            for (std::size_t shadow_view = 0; shadow_view < shadow_frusta.size(); ++shadow_view) {
+                if (shadow_frusta[shadow_view].intersects(bounds)) {
+                    shadow_visibility_mask |= std::uint64_t{1} << shadow_view;
+                }
+            }
+            if (!camera_visible) {
+                ++result.culled_chunk_count;
+                ++result.frustum_culled_chunk_count;
+            }
+            if (!camera_visible && shadow_visibility_mask == 0) {
+                continue;
+            }
+            result.visible_chunk_count += camera_visible ? 1U : 0U;
             cache_->mark_visible(entry->identity, visibility_epoch_);
-            visible_chunks_scratch_.push_back({entry, origin.value()});
+            visible_chunks_scratch_.push_back(
+                {entry, origin.value(), camera_visible, shadow_visibility_mask});
         }
     }
 
@@ -403,7 +427,7 @@ ChunkRenderSystem::build_draw_list(const RenderCamera& camera,
             if (!visible.entry->has_drawable_mesh()) {
                 continue;
             }
-            ++result.drawn_chunk_count;
+            result.drawn_chunk_count += visible.camera_visible ? 1U : 0U;
             const auto allocation_first_index = static_cast<std::uint32_t>(
                 visible.entry->mesh.indices.offset /
                 rhi::render_index_type_size(visible.entry->mesh.index_type));
@@ -425,10 +449,24 @@ ChunkRenderSystem::build_draw_list(const RenderCamera& camera,
                     visible.origin +
                     (visible.entry->local_bounds.min + visible.entry->local_bounds.max) * 0.5F;
                 draw.sort_depth = math::length_squared(center - camera.local_position);
-                result.draws.push_back(draw);
+                if (visible.camera_visible) {
+                    result.draws.push_back(draw);
+                }
+                if (section.render_phase == world::MeshingRenderPhase::opaque ||
+                    section.render_phase == world::MeshingRenderPhase::alpha_tested) {
+                    for (std::size_t shadow_view = 0; shadow_view < result.shadow_draws.size();
+                         ++shadow_view) {
+                        if ((visible.shadow_visibility_mask & (std::uint64_t{1} << shadow_view)) !=
+                            0) {
+                            result.shadow_draws[shadow_view].push_back(draw);
+                        }
+                    }
+                }
             }
-            result.vertex_count += visible.entry->mesh.vertex_count;
-            result.index_count += visible.entry->mesh.index_count;
+            if (visible.camera_visible) {
+                result.vertex_count += visible.entry->mesh.vertex_count;
+                result.index_count += visible.entry->mesh.index_count;
+            }
         }
         const auto phase_rank = [this](rhi::RenderResourceHandle pipeline) {
             if (pipeline == terrain_pipelines_.opaque) {

@@ -56,6 +56,7 @@ struct alignas(16) GpuDirectionalShadowData {
     float parameters[4]{};
     float environment_parameters[4]{};
     float camera_position[4]{};
+    float camera_forward[4]{};
     float atmosphere_parameters[4]{};
     float wind_parameters[4]{};
     float weather_parameters[4]{};
@@ -70,7 +71,7 @@ struct alignas(16) GpuDirectionalShadowData {
     std::array<std::array<float, 4>, local_shadow_map_count> local_parameters{};
 };
 
-static_assert(sizeof(GpuDirectionalShadowData) == 640);
+static_assert(sizeof(GpuDirectionalShadowData) == 656);
 
 class CascadedShadowSystem {
   public:
@@ -78,9 +79,9 @@ class CascadedShadowSystem {
     ~CascadedShadowSystem();
 
     [[nodiscard]] core::Status initialize(DirectionalShadowConfig config = {});
-    [[nodiscard]] core::Status update(const RenderCamera& camera,
-                                      const rhi::RenderEnvironmentData& environment,
-                                      std::span<const RenderLightInstance> local_shadow_lights = {});
+    [[nodiscard]] core::Status
+    update(const RenderCamera& camera, const rhi::RenderEnvironmentData& environment,
+           std::span<const RenderLightInstance> local_shadow_lights = {});
     [[nodiscard]] core::Status bind(core::PrototypeId material, std::string_view binding);
     [[nodiscard]] core::Status shutdown();
     void set_debug_view(LightingDebugView view) noexcept;

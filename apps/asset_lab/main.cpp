@@ -288,7 +288,7 @@ int main(int argc, char** argv) {
         mode_config.equipment_socket = options.value().socket;
         mode_config.show_bounds = options.value().show_bounds;
         mode_config.show_skeleton = options.value().show_skeleton;
-        mode_config.use_prefab_preview_settings = !options.value().lighting_explicit;
+        mode_config.lighting_explicit = options.value().lighting_explicit;
 
         heartstead::game::GameApplicationConfig application_config;
         application_config.headless = options.value().headless;

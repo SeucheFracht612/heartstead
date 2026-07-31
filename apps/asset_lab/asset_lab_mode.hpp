@@ -62,6 +62,7 @@ struct AssetLabModeConfig {
     bool show_bounds = false;
     bool show_skeleton = false;
     bool use_prefab_preview_settings = true;
+    bool lighting_explicit = false;
 };
 
 struct AssetLabInspection {
@@ -127,6 +128,8 @@ class AssetLabMode final : public game::IGameApplicationMode {
     std::vector<math::Mat4f> inspected_node_matrices_;
     math::Transform3f equipment_socket_transform_{};
     float preview_camera_distance_ = 4.0F;
+    float preview_yaw_radians_ = 0.0F;
+    float preview_pitch_radians_ = -0.0872665F;
     renderer::RenderObjectId direct_preview_object_;
     renderer::RenderMeshHandle direct_preview_mesh_;
     bool models_initialized_ = false;

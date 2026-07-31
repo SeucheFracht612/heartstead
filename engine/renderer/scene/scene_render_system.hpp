@@ -77,6 +77,7 @@ struct SceneRenderStats {
 struct SceneDrawCommands {
     std::vector<rhi::RenderDrawCommand> opaque_and_cutout;
     std::vector<rhi::RenderDrawCommand> transparent;
+    std::vector<std::vector<rhi::RenderDrawCommand>> shadow_casters;
     std::vector<RenderLightInstance> lights;
     SceneRenderStats stats;
 };
@@ -94,7 +95,8 @@ class SceneRenderSystem {
     [[nodiscard]] core::Status initialize(SceneRenderConfig config = {});
     [[nodiscard]] core::Result<SceneDrawCommands>
     build_draw_commands(const RenderScene& scene, const RenderCamera& camera,
-                        float simulation_alpha, SceneDrawCommands scratch = {});
+                        float simulation_alpha, SceneDrawCommands scratch = {},
+                        std::span<const math::Mat4f> shadow_view_projections = {});
     [[nodiscard]] core::Status set_pipelines(ScenePipelineSet pipelines) noexcept;
     [[nodiscard]] core::Status shutdown();
     [[nodiscard]] const SceneRenderStats& stats() const noexcept;

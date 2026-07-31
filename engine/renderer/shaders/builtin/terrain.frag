@@ -55,6 +55,7 @@ layout(std430, set = 0, binding = 4) readonly buffer DirectionalShadowData {
     vec4 shadow_parameters;
     vec4 environment_parameters;
     vec4 camera_position;
+    vec4 camera_forward;
     vec4 atmosphere_parameters;
     vec4 wind_parameters;
     vec4 weather_parameters;
@@ -133,11 +134,12 @@ vec4 unpack_unorm8(uint packed) {
 }
 
 vec3 stable_periodic_position(vec3 local_position, uint coordinate_key) {
-    uvec3 chunk_coordinate =
+    uvec3 packed_coordinate =
         uvec3(coordinate_key & 0x3ffU,
               (coordinate_key >> 10U) & 0x3ffU,
               (coordinate_key >> 20U) & 0x3ffU);
-    return vec3(chunk_coordinate * 32U) + local_position;
+    ivec3 chunk_coordinate = ivec3((packed_coordinate + 512U) & 0x3ffU) - ivec3(512);
+    return vec3(chunk_coordinate * 32) + local_position;
 }
 
 uint periodic_lattice_hash(ivec3 coordinate, uint salt) {
@@ -363,7 +365,8 @@ float sample_shadow_map(uint cascade, vec3 coordinate) {
 
 float directional_shadow(vec3 normal, vec3 light_direction, out uint cascade) {
     float distance_to_camera =
-        length(fragment_world_position - shadows.camera_position.xyz);
+        max(dot(fragment_world_position - shadows.camera_position.xyz,
+                shadows.camera_forward.xyz), 0.0);
     cascade = distance_to_camera <= shadows.split_distances.x ? 0U :
               distance_to_camera <= shadows.split_distances.y ? 1U :
               distance_to_camera <= shadows.split_distances.z ? 2U : 3U;

@@ -87,6 +87,7 @@ struct ChunkRenderStats {
 
 struct ChunkDrawList {
     std::vector<rhi::RenderDrawCommand> draws;
+    std::vector<std::vector<rhi::RenderDrawCommand>> shadow_draws;
     std::size_t visible_chunk_count = 0;
     std::size_t culled_chunk_count = 0;
     std::size_t distance_culled_chunk_count = 0;
@@ -140,7 +141,8 @@ class ChunkRenderSystem {
     [[nodiscard]] ChunkDrawList build_draw_list(const RenderCamera& camera);
     [[nodiscard]] ChunkDrawList
     build_draw_list(const RenderCamera& camera,
-                    std::vector<rhi::RenderDrawCommand> reusable_draw_storage);
+                    std::vector<rhi::RenderDrawCommand> reusable_draw_storage,
+                    std::span<const math::Mat4f> shadow_view_projections = {});
 
     [[nodiscard]] const ChunkRenderStats& stats() const noexcept;
 
@@ -148,6 +150,8 @@ class ChunkRenderSystem {
     struct VisibleChunk {
         const ChunkGpuEntry* entry = nullptr;
         math::Vec3f origin{};
+        bool camera_visible = true;
+        std::uint64_t shadow_visibility_mask = 0;
     };
 
     struct PendingMesh {

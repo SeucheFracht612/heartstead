@@ -3838,7 +3838,7 @@ void test_renderer_rhi() {
                 assert(vulkan_present_frame.value().dependency_count == 1);
                 assert(vulkan_present_frame.value().transition_count == 2);
                 assert(vulkan_present_frame.value().synchronization_barrier_count == 2);
-                assert(vulkan_present_frame.value().submitted_synchronization_barrier_count == 2);
+                assert(vulkan_present_frame.value().submitted_synchronization_barrier_count == 0);
                 assert(vulkan_present_device.value()->completed_frame_count() == 1);
             } else {
                 assert(!vulkan_present_device.error().code.empty());

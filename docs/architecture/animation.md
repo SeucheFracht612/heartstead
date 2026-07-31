@@ -77,9 +77,10 @@ It is presentation-only and wraps both rigid node matrices and skinned palettes,
 matched to gameplay world-unit proportions without modifying the shared model, animation pose,
 controller transform, or collider.
 
-`RenderObjectFlags::cast_shadow` is retained in visual data, but the current renderer has no
-shadow-map pass. When that pass is added, it must consume the same composed object matrix and skin
-palette as the maintained scene layers.
+`RenderObjectFlags::cast_shadow` controls extraction into the directional-cascade and local
+spotlight shadow passes. Those passes consume the same composed object matrix, morph data, alpha
+cutoff, two-sided material state, and skin palette as visible scene layers, keeping animated and
+cutout geometry aligned with its shadow.
 
 The retained `RenderScene` owns generation-safe skin palettes. A frame uploads each visible palette
 once even when several instances share it, then references the absolute buffered-ring offset from

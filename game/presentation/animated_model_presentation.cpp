@@ -362,6 +362,7 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
                     config_.color[2] * source.color[2], config_.color[3] * source.color[3]};
                 object.minimum_view_distance = config_.minimum_view_distance;
                 object.maximum_view_distance = config_.maximum_view_distance;
+                object.use_object_origin_for_view_distance = true;
                 auto created_object = renderer.create_object(std::move(object));
                 if (!created_object) {
                     rollback_entity(palette_id);
@@ -424,6 +425,7 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
                 config_.color[2] * source.color[2], config_.color[3] * source.color[3]};
             object_update.object.minimum_view_distance = config_.minimum_view_distance;
             object_update.object.maximum_view_distance = config_.maximum_view_distance;
+            object_update.object.use_object_origin_for_view_distance = true;
             updates.push_back(std::move(object_update));
         }
         auto status = renderer.apply_scene_updates(updates);

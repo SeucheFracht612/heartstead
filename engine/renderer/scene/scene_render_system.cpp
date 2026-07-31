@@ -18,10 +18,9 @@ namespace {
 
 bool ScenePipelineSet::is_valid() const noexcept {
     return opaque.is_valid() && alpha_tested.is_valid() && transparent.is_valid() &&
-           additive.is_valid() && premultiplied.is_valid() &&
-           opaque_two_sided.is_valid() && alpha_tested_two_sided.is_valid() &&
-           transparent_two_sided.is_valid() && additive_two_sided.is_valid() &&
-           premultiplied_two_sided.is_valid();
+           additive.is_valid() && premultiplied.is_valid() && opaque_two_sided.is_valid() &&
+           alpha_tested_two_sided.is_valid() && transparent_two_sided.is_valid() &&
+           additive_two_sided.is_valid() && premultiplied_two_sided.is_valid();
 }
 
 rhi::RenderResourceHandle ScenePipelineSet::for_layer(RenderLayer layer,
@@ -156,21 +155,25 @@ core::Status SceneRenderSystem::initialize(SceneRenderConfig config) {
     return core::Status::ok();
 }
 
-core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const RenderScene& scene,
-                                                                       const RenderCamera& camera,
-                                                                       float simulation_alpha,
-                                                                       SceneDrawCommands scratch) {
+core::Result<SceneDrawCommands>
+SceneRenderSystem::build_draw_commands(const RenderScene& scene, const RenderCamera& camera,
+                                       float simulation_alpha, SceneDrawCommands scratch,
+                                       std::span<const math::Mat4f> shadow_view_projections) {
     if (!instance_buffer_.is_valid()) {
         return core::Result<SceneDrawCommands>::failure(
             "scene_render.not_initialized", "scene render system must be initialized first");
     }
-    auto extracted = scene.extract(camera, simulation_alpha);
+    auto extracted = scene.extract(camera, simulation_alpha, shadow_view_projections);
     if (!extracted) {
         return core::Result<SceneDrawCommands>::failure(extracted.error().code,
                                                         extracted.error().message);
     }
     scratch.opaque_and_cutout.clear();
     scratch.transparent.clear();
+    scratch.shadow_casters.resize(shadow_view_projections.size());
+    for (auto& shadow_casters : scratch.shadow_casters) {
+        shadow_casters.clear();
+    }
     scratch.lights = std::move(extracted.value().lights);
     instance_scratch_.clear();
     skin_matrix_scratch_.clear();
@@ -297,8 +300,7 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
             gpu.effect_parameters[1] = instance.wind_stiffness;
             gpu.effect_parameters[2] = instance.foliage_transmission;
             gpu.effect_parameters[3] = instance.visibility;
-            gpu.effect_metadata[0] =
-                static_cast<std::uint32_t>(instance.effect_flags);
+            gpu.effect_metadata[0] = static_cast<std::uint32_t>(instance.effect_flags);
             gpu.effect_metadata[1] = instance.sprite_frame;
             gpu.effect_metadata[2] = instance.atlas_columns;
             gpu.effect_metadata[3] = instance.atlas_rows;
@@ -334,15 +336,22 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
         draw.first_instance = static_cast<std::uint32_t>(first_instance);
         draw.index_type = mesh->index_type;
         draw.casts_shadow = batch.casts_shadow;
-        if (batch.layer == RenderLayer::transparent || batch.layer == RenderLayer::additive ||
-            batch.layer == RenderLayer::premultiplied) {
+        if (batch.camera_visible &&
+            (batch.layer == RenderLayer::transparent || batch.layer == RenderLayer::additive ||
+             batch.layer == RenderLayer::premultiplied)) {
             draw.sort_depth = accepted_sort_depth;
             scratch.transparent.push_back(draw);
-        } else {
+        } else if (batch.camera_visible) {
             scratch.opaque_and_cutout.push_back(draw);
         }
+        for (std::size_t shadow_view = 0; shadow_view < scratch.shadow_casters.size();
+             ++shadow_view) {
+            if ((batch.shadow_visibility_mask & (std::uint64_t{1} << shadow_view)) != 0) {
+                scratch.shadow_casters[shadow_view].push_back(draw);
+            }
+        }
         stats_.submitted_instances += static_cast<std::uint32_t>(accepted);
-        ++stats_.draw_calls;
+        stats_.draw_calls += batch.camera_visible ? 1U : 0U;
     }
     std::ranges::stable_sort(scratch.transparent, [](const auto& left, const auto& right) {
         return left.sort_depth > right.sort_depth;

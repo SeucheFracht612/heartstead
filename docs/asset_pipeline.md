@@ -11,7 +11,7 @@ finished source file
     -> asset catalog and dependency discovery
     -> production cooker
     -> versioned cooked manifest/store
-    -> entity visual, voxel definition, or sound event
+    -> visual, material, vegetation, voxel, particle, or sound definition
     -> renderer or audio system
 ```
 
@@ -27,7 +27,7 @@ finished source file
 | Long ambience or music | `.flac` or PCM `.wav` | Playable through a `sound_event`; set `streaming = true` |
 | Generated development sound | `.tone` | Playable, deterministic mono test/prototype audio |
 | Ogg Vorbis audio | `.ogg` | Validated, production-cooked, and playable through a `sound_event` |
-| Particle effect | `particle` prototype TOML | Procedural colored quads; no authored particle texture path yet |
+| Particle effect | `particle` prototype TOML | Data-driven billboard or mesh effect using configured material/mesh groups, flipbooks, lighting, blending, LOD, and bounded simulation |
 | Font | `.ttf`, `.otf`, `.ttc` | Production-cookable SFNT data, but the game UI still uses its built-in diagnostic font |
 | UI artwork | Keep source, normally export PNG for handoff | No authored UI atlas/skin import path yet |
 
@@ -116,7 +116,8 @@ data definitions.
 Use Blender's glTF 2.0 exporter and choose **glTF Binary (.glb)** when possible.
 
 - Author in game units; the importer performs no project-specific unit conversion.
-- Export meshes and animations, not Blender cameras or lights.
+- Export cameras or punctual lights only when the asset deliberately uses them as retained
+  metadata. Gameplay behavior is not inferred from Blender scene objects.
 - Triangulate the model.
 - Apply or clean transforms that cannot be represented as translation, quaternion rotation, and
   non-zero scale.
@@ -317,9 +318,9 @@ The production cooker recognizes `.png`, `.jpg`, `.jpeg`, and `.ktx2`.
   RGBA8 fallback because that array currently requires CPU-resizable pixels.
 
 Terrain materials can bind standalone production-cooked PNG/JPEG assets. The renderer resamples
-each source image into its 16 x 16 sRGB terrain texture array and generates mipmaps. UI atlas and
-particle materials remain renderer-generated; a standalone texture does not yet make an image
-appear on those consumers.
+each source image into its 16 x 16 sRGB terrain texture array and generates mipmaps. The UI atlas
+remains built in. Particle prototypes select project-configured material groups rather than binding
+an arbitrary standalone logical texture ID directly.
 
 The checked-in `.txt` files below some texture/UI folders are development placeholders, not image
 formats to copy.
@@ -408,8 +409,9 @@ intentionally synthetic effects, not as the preferred final format for recorded 
 
 ## Particles
 
-Base particles are data-driven but currently untextured. A particle prototype controls
-color, size, lifetime, motion, and atlas timing:
+Particles are data-driven billboard or mesh effects. A prototype selects project-configured
+material and mesh groups and controls color, size, lifetime, motion, alignment, shading, blending,
+LOD behavior, optional collision, and flipbook timing:
 
 ```toml
 kind = "particle"
@@ -434,8 +436,9 @@ atlas_frame_count = "4"
 atlas_frames_per_second = "12"
 ```
 
-The atlas fields animate UV frames, but no contributor-authored particle atlas is bound yet.
-Treat `material_group` as a project-assigned renderer group, not a free image reference.
+The atlas fields animate UV frames inside the selected material group. Treat `material_group`
+as a project-assigned renderer group, not a free image reference; adding a new particle atlas still
+requires registering and binding the corresponding project material group.
 
 ## Voxel/block visual data
 
@@ -539,13 +542,15 @@ The development cooker is permissive. A production cook is the authoritative med
   --presentation-assets --inspect
 ```
 
-This reads all `visual_prefab`/legacy `entity_visual` and `sound_event` definitions, selects their
-active model and audio assets, follows transitive glTF dependencies, converts each supported asset
-to its runtime format, writes the cooked store, and reloads the store to verify it.
+This reads `visual_prefab`/legacy `entity_visual`, vegetation-species, `sound_event`, and material
+definitions. It selects declared visual models, vegetation LOD and growth-override models, audio
+assets, and material texture references; follows transitive dependencies; converts supported
+assets; writes the cooked store; and reloads it for verification.
 
-Building `heartstead_dev_game` runs this presentation cook automatically. Runtime audio consumes
-these cooked payloads by logical ID; it does not need the source media after startup. New entity
-visual models and sound-event assets do not require editing the application or a CMake asset list.
+Applications that consume the production presentation store, including `heartstead_dev_game`, the
+renderer benchmark, and Asset Lab, depend on this cook. Runtime systems consume cooked payloads by
+logical ID and do not need source media after startup. Adding a referenced presentation asset does
+not require editing an application-owned CMake asset list.
 
 Use `--entity-visuals` when you intentionally want only the declared model set.
 
@@ -665,7 +670,8 @@ be ignored as glTF permits, so do not rely on them for the model's essential app
 - A mapped animation name is missing or duplicated.
 - A valid sound file has no `sound_event`, or the event is never referenced by presentation data.
 - An `.ogg` file contains Opus or another codec instead of Vorbis.
-- A standalone UI/particle texture was assumed to have a runtime consumer.
+- A standalone UI texture or arbitrary per-particle texture ID was assumed to have a runtime
+  consumer.
 - A terrain material references KTX2 even though runtime terrain currently requires PNG/JPEG.
 
 ## Reference material

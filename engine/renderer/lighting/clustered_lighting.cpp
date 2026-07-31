@@ -157,42 +157,46 @@ core::Status ClusteredLightingSystem::update(std::span<const RenderLightInstance
         gpu.color_intensity[3] = light.intensity;
         gpu.spot_shadow[0] = light.inner_cone_cosine;
         gpu.spot_shadow[1] = light.outer_cone_cosine;
-        gpu.spot_shadow[2] = light.casts_shadow ? 1.0F : 0.0F;
+        // Zero means unshadowed. Only spotlights selected after budget ranking receive a
+        // one-based shadow slot; point lights and rejected spotlights must never alias slot 0.
+        gpu.spot_shadow[2] = 0.0F;
         gpu.spot_shadow[3] = light.gameplay_importance;
         const auto light_index = static_cast<std::uint32_t>(gpu_lights_.size());
         gpu_lights_.push_back(gpu);
 
-        const auto clip = camera.view_projection *
-                          math::Vec4f{light.camera_relative_position.x,
+        const auto view_position =
+            camera.view * math::Vec4f{light.camera_relative_position.x,
                                       light.camera_relative_position.y,
                                       light.camera_relative_position.z, 1.0F};
-        if (clip.w <= 0.0001F) {
+        const auto view_depth = -view_position.z;
+        if (view_depth + light.radius <= camera.near_plane) {
             continue;
         }
-        const auto ndc_x = clip.x / clip.w;
-        const auto ndc_y = clip.y / clip.w;
+        // Project against at least the near plane. This conservatively retains a light whose
+        // center is behind the eye while its influence sphere still intersects visible space.
+        const auto projection_depth = std::max(view_depth, camera.near_plane);
+        const auto ndc_x = camera.projection.at(0, 0) * view_position.x / projection_depth;
+        const auto ndc_y = camera.projection.at(1, 1) * view_position.y / projection_depth;
         const auto projected_radius =
             light.radius * static_cast<float>(extent_.height) /
-            std::max(2.0F * std::tan(camera.vertical_fov_radians * 0.5F) * clip.w, 0.001F);
+            std::max(2.0F * std::tan(camera.vertical_fov_radians * 0.5F) * projection_depth,
+                     0.001F);
         const auto center_x = (ndc_x * 0.5F + 0.5F) * static_cast<float>(extent_.width);
         const auto center_y = (ndc_y * 0.5F + 0.5F) * static_cast<float>(extent_.height);
-        if (center_x + projected_radius < 0.0F ||
-            center_y + projected_radius < 0.0F ||
+        if (center_x + projected_radius < 0.0F || center_y + projected_radius < 0.0F ||
             center_x - projected_radius >= static_cast<float>(extent_.width) ||
             center_y - projected_radius >= static_cast<float>(extent_.height)) {
             continue;
         }
         const auto clamp_tile_x = [tiles_x, this](float pixel) {
-            return std::clamp(static_cast<int>(std::floor(
-                                  pixel / static_cast<float>(config_.tile_size))),
-                              0,
-                              static_cast<int>(tiles_x) - 1);
+            return std::clamp(
+                static_cast<int>(std::floor(pixel / static_cast<float>(config_.tile_size))), 0,
+                static_cast<int>(tiles_x) - 1);
         };
         const auto clamp_tile_y = [tiles_y, this](float pixel) {
-            return std::clamp(static_cast<int>(std::floor(
-                                  pixel / static_cast<float>(config_.tile_size))),
-                              0,
-                              static_cast<int>(tiles_y) - 1);
+            return std::clamp(
+                static_cast<int>(std::floor(pixel / static_cast<float>(config_.tile_size))), 0,
+                static_cast<int>(tiles_y) - 1);
         };
         const auto min_x = clamp_tile_x(center_x - projected_radius);
         const auto max_x = clamp_tile_x(center_x + projected_radius);
@@ -200,9 +204,9 @@ core::Status ClusteredLightingSystem::update(std::span<const RenderLightInstance
         const auto max_y = clamp_tile_y(center_y + projected_radius);
         for (auto y = min_y; y <= max_y; ++y) {
             for (auto x = min_x; x <= max_x; ++x) {
-                const auto base = 4U + (static_cast<std::uint32_t>(y) * tiles_x +
-                                        static_cast<std::uint32_t>(x)) *
-                                           stride;
+                const auto base =
+                    4U + (static_cast<std::uint32_t>(y) * tiles_x + static_cast<std::uint32_t>(x)) *
+                             stride;
                 auto& count = grid_[base];
                 if (count < config_.maximum_lights_per_tile) {
                     grid_[base + 1U + count++] = light_index;
@@ -210,8 +214,7 @@ core::Status ClusteredLightingSystem::update(std::span<const RenderLightInstance
             }
         }
         if (light.casts_shadow && light.kind == RenderLightKind::spot) {
-            const auto revisions =
-                std::pair{light.light_revision, light.nearby_geometry_revision};
+            const auto revisions = std::pair{light.light_revision, light.nearby_geometry_revision};
             const auto observed = observed_shadow_revisions_.find(light.id);
             const auto changed =
                 observed == observed_shadow_revisions_.end() || observed->second != revisions;
@@ -248,8 +251,7 @@ core::Status ClusteredLightingSystem::update(std::span<const RenderLightInstance
         writes[write_count++] = {light_buffer_, 0, std::as_bytes(std::span{gpu_lights_})};
     }
     writes[write_count++] = {grid_buffer_, 0, std::as_bytes(std::span{grid_})};
-    auto upload =
-        device_->upload_buffer_batch(std::span{writes.data(), write_count});
+    auto upload = device_->upload_buffer_batch(std::span{writes.data(), write_count});
     if (!upload) {
         return core::Status::failure(upload.error().code, upload.error().message);
     }
@@ -263,9 +265,9 @@ core::Status ClusteredLightingSystem::bind(core::PrototypeId material,
                                            std::string_view light_binding,
                                            std::string_view grid_binding) {
     const std::array writes{
-        rhi::RenderDescriptorWrite{
-            material, std::string(light_binding), light_buffer_, 0,
-            static_cast<std::size_t>(config_.maximum_lights) * sizeof(GpuLocalLight)},
+        rhi::RenderDescriptorWrite{material, std::string(light_binding), light_buffer_, 0,
+                                   static_cast<std::size_t>(config_.maximum_lights) *
+                                       sizeof(GpuLocalLight)},
         rhi::RenderDescriptorWrite{material, std::string(grid_binding), grid_buffer_, 0,
                                    grid_.size() * sizeof(std::uint32_t)},
     };
@@ -311,6 +313,10 @@ const ClusteredLightingStats& ClusteredLightingSystem::stats() const noexcept {
 std::span<const LocalShadowCandidate>
 ClusteredLightingSystem::selected_shadow_lights() const noexcept {
     return shadow_candidates_;
+}
+
+std::span<const GpuLocalLight> ClusteredLightingSystem::gpu_lights() const noexcept {
+    return gpu_lights_;
 }
 
 } // namespace heartstead::renderer

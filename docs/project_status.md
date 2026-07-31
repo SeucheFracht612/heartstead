@@ -3,8 +3,8 @@
 This page records the maintained implementation status of Heartstead. It is not a roadmap or a
 promise that every architecture target is complete.
 
-**Audit baseline:** repository commit `adc5c347fbdaa32964642b4efce47d29cafd58e7`
-(`fix(build): restore clang warning-as-error build`). Update the baseline when this page is
+**Audit baseline:** repository commit `7ee2cf940ecd3dfdffce48eef2bc0e3be4646260`
+(`docs(rendering): document environmental systems`). Update the baseline when this page is
 re-audited.
 
 ## What works now
@@ -14,7 +14,9 @@ re-audited.
 `heartstead_dev_game` composes an authoritative server and a client in one process for local play.
 It can also run as a remote client against `heartstead_dedicated_server`. The development scene
 exercises voxel editing, movement, camera modes, inventory UI, models, animation, audio, particles,
-day/night presentation, lighting, fluids, saves, networking, and diagnostics.
+profile-driven environment state, lighting, fluids, saves, networking, and diagnostics. The
+selected environment profile is combined with the deterministic solar path, and swimming selects
+the underwater presentation profile.
 
 This is a technical integration slice. It is not yet the intended settlement-survival game loop,
 content progression, or polished player experience.
@@ -28,16 +30,26 @@ pieces, assemblies, cargo, transactions, commands, snapshots, and replay support
 
 ### Presentation and assets
 
-The native renderer supports Vulkan on Linux/X11 and uses camera-relative coordinates, retained
-chunk meshes, rich/static models, materials, transparency, debug geometry, UI, particles, and
-animation. A headless backend validates the same renderer-neutral contracts in tests and tools.
+The native renderer targets Vulkan 1.3 on Linux/X11 and uses dynamic rendering, camera-relative
+coordinates, and a bounded dependency-validated frame graph. The maintained path renders into a
+linear HDR target, applies SSAO, FXAA, bloom, tone mapping, and UI composition, and supports PBR
+sun, point, and spot lighting. Directional shadows use four cascades; a bounded local budget provides
+two spotlight shadow maps. The headless backend validates the same renderer-neutral contracts in
+tests and tools.
+
+The production environment stack includes data-driven atmosphere, clouds, fog, weather, voxel and
+large-body water, vegetation, textured billboard and mesh particles, trails, and surface marks.
+The development game consumes profile-driven environment state; the `starting-biome` renderer
+benchmark composes the broader environment stack into a stable integration workload.
 
 The asset pipeline discovers source assets through mods/resource packs, validates and cooks them,
-and loads versioned runtime payloads. The current model path handles the project's modern glTF
-requirements, including PBR material inputs, rigid-node animation independent of skinning, shared
-node-pose evaluation and transitions, skinning, morph targets, texture transforms, quantization,
-mesh compression extensions, and Basis/KTX2 texture delivery. The detailed supported set and
-remaining contributor-facing limitations live in [the asset pipeline guide](asset_pipeline.md).
+and loads versioned runtime payloads. Model v5 retains the project's supported glTF geometry, PBR
+materials, rigid-node and skinned animation, morph targets, sockets/anchors, LOD metadata, cameras,
+and punctual lights. Standalone texture cooking performs role-aware mip generation and BC5/BC7 delivery with
+documented RGBA8 fallbacks. Visual prefabs provide state selection, external LODs, fallback chains,
+and socket/anchor mapping. `heartstead_asset_lab` inspects those production-cooked paths through
+the same renderer and presentation systems used by gameplay. The exact contributor-facing format
+boundary lives in [the asset pipeline guide](asset_pipeline.md).
 
 ### Multiplayer
 
@@ -78,6 +90,7 @@ The default build defines these applications:
 
 - `heartstead_dev_game`
 - `heartstead_dedicated_server`
+- `heartstead_asset_lab`
 - `heartstead_render_smoke`
 - `heartstead_render_benchmark`
 - `heartstead_audio_benchmark`
@@ -103,9 +116,9 @@ cmake --build --preset default-debug --target help
 - **Networking:** numeric IPv4 only; no DNS discovery, encrypted identity, NAT traversal,
   matchmaking, or public-service hardening.
 - **Dedicated persistence:** the dedicated executable is memory-only.
-- **Renderer:** the current frame graph and material binding model are intentionally bounded rather
-  than a general-purpose render graph. It has no shadow-map pass; `cast_shadow` is currently
-  declarative presentation data.
+- **Renderer:** the current frame graph, resource set, and material binding model are intentionally
+  bounded rather than general-purpose. Local shadowing is budgeted to two spotlight maps; point
+  lights support direct lighting, but their omnidirectional shadow path is not enabled.
 - **Assets:** use the [asset pipeline guide](asset_pipeline.md) as the exact supported-format
   contract; do not infer support from what a third-party glTF exporter can produce.
 - **Compatibility:** schemas and binary payloads are versioned, but the project is pre-release and

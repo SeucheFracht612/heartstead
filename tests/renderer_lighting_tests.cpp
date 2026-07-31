@@ -37,8 +37,7 @@ int main() {
         RenderLightInstance light;
         light.id = {index + 1U, 1U};
         light.kind = index % 2U == 0U ? RenderLightKind::spot : RenderLightKind::point;
-        light.camera_relative_position = {
-            static_cast<float>(index) - 2.0F, 2.0F, -10.0F};
+        light.camera_relative_position = {static_cast<float>(index) - 2.0F, 2.0F, -10.0F};
         light.direction = {0.0F, -1.0F, 0.0F};
         light.color = {1.0F, 0.5F, 0.2F};
         light.intensity = 20.0F + static_cast<float>(index);
@@ -52,8 +51,26 @@ int main() {
     assert(clustered.stats().populated_tiles > 0);
     assert(clustered.stats().selected_shadow_lights == 2);
     assert(clustered.selected_shadow_lights().front().id == lights.back().id);
+    assert(clustered.gpu_lights().size() == lights.size());
+    std::uint32_t assigned_shadow_slots = 0;
+    for (std::size_t index = 0; index < lights.size(); ++index) {
+        const auto slot = clustered.gpu_lights()[index].spot_shadow[2];
+        if (slot > 0.0F) {
+            ++assigned_shadow_slots;
+            assert(lights[index].kind == RenderLightKind::spot);
+            assert(slot == 1.0F || slot == 2.0F);
+        }
+    }
+    assert(assigned_shadow_slots == 2U);
     assert(clustered.resize({640, 360}));
     assert(clustered.update(lights, camera));
+
+    auto near_plane_light = lights.front();
+    near_plane_light.camera_relative_position = camera.local_position - camera.forward() * 0.5F;
+    near_plane_light.radius = 2.0F;
+    near_plane_light.casts_shadow = false;
+    assert(clustered.update(std::span{&near_plane_light, 1}, camera));
+    assert(clustered.stats().populated_tiles > 0U);
 
     CascadedShadowSystem shadows(*device);
     assert(shadows.initialize());

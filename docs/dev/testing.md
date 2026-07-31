@@ -100,6 +100,15 @@ For renderer-only native validation:
 ./build/default-debug/apps/render_smoke/heartstead_render_smoke
 ```
 
+Exercise production asset loading and visual-prefab presentation without a display:
+
+```bash
+./build/default-debug/apps/asset_lab/heartstead_asset_lab \
+  --headless --prefab base:visuals/player --preview visual-prefab
+
+ctest --preset default-debug -R '^smoke\.asset_lab$'
+```
+
 Install `VK_LAYER_KHRONOS_validation` for meaningful Vulkan validation. Absence of the optional
 layer should be reported, not confused with a successful validation run.
 

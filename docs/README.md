@@ -12,6 +12,7 @@ is the map for everything else.
 - [Testing](dev/testing.md) — test presets, sanitizers, smoke tests, and verification expectations.
 - [Asset pipeline](asset_pipeline.md) — source assets, cooking, runtime formats, and contributor
   guidance.
+- [Asset Lab](asset_lab.md) — production-cooked asset and presentation inspection.
 - [Architecture overview](architecture/overview.md) — ownership boundaries and data flow.
 - [Engine specification](architecture/engine_spec.md) — normative long-term engine contract.
 
@@ -80,6 +81,7 @@ data flow, failure behavior, and extension points rather than repeat every class
 
 - [Assets](architecture/assets.md)
 - [Rendering](architecture/rendering.md)
+- [Environment rendering](architecture/environment_rendering.md)
 - [Chunk meshing](architecture/chunk_meshing.md)
 - [Animation](architecture/animation.md)
 - [Particles](architecture/particles.md)
@@ -96,6 +98,15 @@ data flow, failure behavior, and extension points rather than repeat every class
 - [Save binary codec](architecture/save_binary_codec.md)
 - [Save text codec](architecture/save_text_codec.md)
 - [Save migrations](architecture/save_migrations.md)
+
+### Authoring and inspection
+
+- [Asset pipeline](asset_pipeline.md)
+- [Asset conventions](asset_conventions.md)
+- [Asset Lab](asset_lab.md)
+- [Terrain material authoring](terrain_material_authoring.md)
+- [Vegetation authoring](authoring/vegetation.md)
+- [Environment effect authoring](authoring/environment_effects.md)
 
 ### Operations and measurements
 

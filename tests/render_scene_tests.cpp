@@ -279,6 +279,54 @@ void test_camera_distance_lod_ranges() {
     assert(!scene.create_object(invalid_range));
 }
 
+void test_prefab_lod_primitives_share_object_origin_distance() {
+    renderer::RenderScene scene;
+    auto make_lod_primitive = [](float model_offset, float minimum, float maximum) {
+        auto object = make_object(anchored({0, 0, 0}));
+        object.previous_transform.position = {0.0F, 0.0F, -10.0F};
+        object.current_transform = object.previous_transform;
+        object.model_transform = math::translation_matrix({model_offset, 0.0F, 0.0F});
+        object.minimum_view_distance = minimum;
+        object.maximum_view_distance = maximum;
+        object.use_object_origin_for_view_distance = true;
+        return object;
+    };
+    assert(scene.create_object(make_lod_primitive(0.0F, 0.0F, 10.5F)));
+    assert(scene.create_object(make_lod_primitive(6.0F, 0.0F, 10.5F)));
+    assert(scene.create_object(make_lod_primitive(0.0F, 10.5F, 0.0F)));
+    assert(scene.create_object(make_lod_primitive(6.0F, 10.5F, 0.0F)));
+
+    renderer::RenderCamera camera;
+    assert(camera.update_matrices());
+    auto extracted = scene.extract(camera, 1.0F);
+    assert(extracted);
+    assert(extracted.value().stats.visible_objects == 2U);
+    assert(extracted.value().stats.culled_objects == 2U);
+}
+
+void test_light_visible_shadow_casters_survive_camera_culling() {
+    renderer::RenderScene scene;
+    auto caster = make_object(anchored({0, 0, 0}));
+    caster.previous_transform.position = {20.0F, 0.0F, -10.0F};
+    caster.current_transform = caster.previous_transform;
+    caster.flags = renderer::RenderObjectFlags::cast_shadow;
+    assert(scene.create_object(caster));
+
+    renderer::RenderCamera camera;
+    assert(camera.update_matrices());
+    renderer::RenderCamera light_camera;
+    light_camera.local_position.x = 20.0F;
+    assert(light_camera.update_matrices());
+    const std::array shadow_views{light_camera.view_projection};
+    auto extracted = scene.extract(camera, 1.0F, shadow_views);
+    assert(extracted);
+    assert(extracted.value().stats.visible_objects == 0U);
+    assert(extracted.value().stats.culled_objects == 1U);
+    assert(extracted.value().batches.size() == 1U);
+    assert(!extracted.value().batches.front().camera_visible);
+    assert(extracted.value().batches.front().shadow_visibility_mask == 1U);
+}
+
 } // namespace
 
 int main() {
@@ -289,5 +337,7 @@ int main() {
     test_teleport_rotation_light_and_batched_updates();
     test_generation_safe_skin_palettes();
     test_camera_distance_lod_ranges();
+    test_prefab_lod_primitives_share_object_origin_distance();
+    test_light_visible_shadow_casters_survive_camera_culling();
     return 0;
 }

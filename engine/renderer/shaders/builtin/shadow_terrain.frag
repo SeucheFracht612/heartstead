@@ -72,11 +72,12 @@ uint texture_variant_hash(ivec3 cell, uint face) {
 }
 
 vec3 stable_periodic_position(vec3 local_position, uint coordinate_key) {
-    uvec3 chunk_coordinate =
+    uvec3 packed_coordinate =
         uvec3(coordinate_key & 0x3ffU,
               (coordinate_key >> 10U) & 0x3ffU,
               (coordinate_key >> 20U) & 0x3ffU);
-    return vec3(chunk_coordinate * 32U) + local_position;
+    ivec3 chunk_coordinate = ivec3((packed_coordinate + 512U) & 0x3ffU) - ivec3(512);
+    return vec3(chunk_coordinate * 32) + local_position;
 }
 
 vec2 world_mapped_uv(vec3 local_position, vec3 normal) {

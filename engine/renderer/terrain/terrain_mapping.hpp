@@ -6,9 +6,8 @@
 
 namespace heartstead::renderer::terrain {
 
-// Packs signed chunk coordinates modulo 1024. The shader reconstructs a 32768-block-period
-// coordinate from this exact integer key; that period is seamless and independent of camera or
-// floating-origin state.
+// Packs signed chunk coordinates into ten bits per axis. The shader sign-extends each axis before
+// reconstructing its stable position, preserving phase across the -1/0 world-coordinate planes.
 [[nodiscard]] constexpr std::uint32_t
 terrain_coordinate_key(world::ChunkCoord coordinate) noexcept {
     const auto axis = [](std::int64_t value) {
@@ -17,9 +16,9 @@ terrain_coordinate_key(world::ChunkCoord coordinate) noexcept {
     return axis(coordinate.x) | (axis(coordinate.y) << 10U) | (axis(coordinate.z) << 20U);
 }
 
-[[nodiscard]] constexpr std::uint32_t
-stable_terrain_variant_hash(world::ChunkCoord chunk, world::VoxelCoord local,
-                            std::uint32_t face) noexcept {
+[[nodiscard]] constexpr std::uint32_t stable_terrain_variant_hash(world::ChunkCoord chunk,
+                                                                  world::VoxelCoord local,
+                                                                  std::uint32_t face) noexcept {
     const auto periodic_axis = [](std::int64_t chunk_axis, std::uint16_t local_axis) {
         return (static_cast<std::uint32_t>(static_cast<std::uint64_t>(chunk_axis) & 0x3ffU) *
                     world::VoxelChunk::edge_length +

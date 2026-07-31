@@ -142,8 +142,9 @@ authoritative world truth. The renderer exposes backend-neutral resources and co
 backend owns all Vulkan handles and submission details, while the headless backend validates the
 same contracts without claiming GPU work.
 
-See [Rendering](rendering.md), [Animation](animation.md), [Audio](audio.md),
-[Particles](particles.md), and [Game UI](game_ui.md).
+See [Rendering](rendering.md), [Environment rendering](environment_rendering.md),
+[Animation](animation.md), [Audio](audio.md), [Particles](particles.md), and
+[Game UI](game_ui.md).
 
 ## Repository boundaries
 

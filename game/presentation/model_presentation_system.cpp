@@ -298,11 +298,9 @@ core::Status ModelPresentationSystem::initialize(
         }
         for (const auto* state_rule : state_variants) {
             for (const auto& lod : definition.lods) {
-                const auto logical_model =
-                    state_rule != nullptr && !state_rule->model_asset.empty()
-                        ? std::string_view{state_rule->model_asset}
-                        : (definition.lods.size() == 1U ? std::string_view{definition.model_asset}
-                                                        : std::string_view{lod.model_asset});
+                const auto logical_model = state_rule != nullptr && !state_rule->model_asset.empty()
+                                               ? std::string_view{state_rule->model_asset}
+                                               : std::string_view{lod.model_asset};
                 bool using_model_fallback = false;
                 auto model_shared = load_cached_model(logical_model, using_model_fallback);
                 definition_used_fallback = definition_used_fallback || using_model_fallback;

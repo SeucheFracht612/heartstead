@@ -150,6 +150,29 @@ Use `--list-scenes` to enumerate current workloads and add `--vulkan` for a nati
 timestamps. See [Renderer benchmarks](../performance/renderer_benchmarks.md) before comparing
 results.
 
+## Asset Lab
+
+Asset Lab loads the production cooked store and the same renderer, materials, model presentation,
+visual-prefab state mapping, terrain meshing, and particle presentation used by gameplay. Build and
+inspect the base player visual interactively:
+
+```bash
+cmake --build --preset default-debug --target heartstead_asset_lab
+./build/default-debug/apps/asset_lab/heartstead_asset_lab \
+  --prefab base:visuals/player --preview character --lighting overcast
+```
+
+Use the deterministic headless route for import and cooked-payload validation without X11/Vulkan
+presentation:
+
+```bash
+./build/default-debug/apps/asset_lab/heartstead_asset_lab \
+  --headless --prefab base:visuals/player --preview visual-prefab
+```
+
+Run `heartstead_asset_lab --list` for accepted preview, lighting, and debug names, and `--help` for
+the current CLI contract. See [Asset Lab](../asset_lab.md) for the maintained workflow.
+
 ## Other applications, samples, and tools
 
 The default build also provides audio, UI, and scripting benchmarks. Focused samples cover the

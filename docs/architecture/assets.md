@@ -137,8 +137,9 @@ Implemented foundation:
     pipeline
   - accepts `--entity-visuals` to discover every declared entity visual model and cook its
     transitive dependency closure
-  - accepts `--presentation-assets` to cook every declared entity visual model and every active
-    sound-event asset; this is the set staged automatically for `dev_game`
+  - accepts `--presentation-assets` to cook declared visual models, vegetation LOD and growth
+    override models, sound-event assets, and textures referenced by material definitions; this
+    production presentation closure is staged automatically for its consuming applications
   - accepts `--inspect` to print cooked asset store inspection data after a successful cook
   - accepts `--inspect-store <cooked_root> [manifest]` to inspect an existing cooked asset store
   - writes cooked payload files and `build/cooked_assets/asset_manifest.txt` by default
@@ -219,5 +220,5 @@ cooked payload hash, and payload validation still define compatibility.
 
 Other binary media source formats, such as unsupported compressed audio containers, are not
 converted yet and fail through the relevant format validation error. Future model optimization,
-additional PBR material channels, compressed texture/audio conversion, and Slang/HLSL-to-SPIR-V
+additional PBR material channels, additional audio conversion, and Slang/HLSL-to-SPIR-V
 production compilation must keep the same virtual path, override, profile, and manifest rules.

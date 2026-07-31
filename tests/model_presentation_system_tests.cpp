@@ -254,7 +254,8 @@ int main() {
     auto missing_model = *content.visual_definitions.find_for_entity(*animal);
     missing_model.id = *core::PrototypeId::parse("test:visuals/missing_model");
     missing_model.entity_prototype = *core::PrototypeId::parse("test:entities/missing_model");
-    missing_model.model_asset = "test:models/missing.gltf";
+    // A single explicit LOD is authoritative even when the prefab base model remains valid.
+    missing_model.lods[0].model_asset = "test:models/missing.gltf";
     assert(fallback_probes.add(std::move(missing_model)));
     auto missing_animation = *content.visual_definitions.find_for_entity(*player);
     missing_animation.id = *core::PrototypeId::parse("test:visuals/missing_animation");

@@ -584,12 +584,17 @@ core::Status AssetLabMode::initialize(game::GameApplicationServices& services) {
         if (const auto visual_id = core::PrototypeId::parse(config_.selection_id)) {
             if (const auto* definition = config_.content->visual_definitions.find(*visual_id);
                 definition != nullptr) {
-                auto lighting_name = definition->preview.lighting_preset;
-                std::ranges::replace(lighting_name, '_', '-');
-                if (const auto lighting = parse_lighting_preset(lighting_name)) {
-                    config_.lighting = *lighting;
+                if (!config_.lighting_explicit) {
+                    auto lighting_name = definition->preview.lighting_preset;
+                    std::ranges::replace(lighting_name, '_', '-');
+                    if (const auto lighting = parse_lighting_preset(lighting_name)) {
+                        config_.lighting = *lighting;
+                    }
                 }
                 preview_camera_distance_ = definition->preview.camera_distance;
+                constexpr auto degrees_to_radians = std::numbers::pi_v<float> / 180.0F;
+                preview_yaw_radians_ = definition->preview.yaw_degrees * degrees_to_radians;
+                preview_pitch_radians_ = definition->preview.pitch_degrees * degrees_to_radians;
                 if (config_.visual_states.empty()) {
                     for (const auto& [channel, value] : definition->preview.states) {
                         config_.visual_states.push_back({channel, value});
@@ -625,8 +630,8 @@ core::Status AssetLabMode::initialize(game::GameApplicationServices& services) {
         return status;
     }
     camera_.local_position = {0.0F, 1.2F, 0.0F};
-    camera_.yaw_radians = 0.0F;
-    camera_.pitch_radians = -0.0872665F;
+    camera_.yaw_radians = preview_yaw_radians_;
+    camera_.pitch_radians = preview_pitch_radians_;
     status = camera_.set_aspect_ratio(16.0F / 9.0F);
     if (!status) {
         return status;

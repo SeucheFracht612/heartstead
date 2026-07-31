@@ -14,8 +14,8 @@ namespace {
 
 [[nodiscard]] math::Mat4f light_view(math::Vec3f center, math::Vec3f toward_light) noexcept {
     const auto forward = normalized_or(toward_light * -1.0F, {0.0F, -1.0F, 0.0F});
-    const auto up_reference = std::abs(forward.y) > 0.95F ? math::Vec3f{0.0F, 0.0F, 1.0F}
-                                                          : math::Vec3f{0.0F, 1.0F, 0.0F};
+    const auto up_reference =
+        std::abs(forward.y) > 0.95F ? math::Vec3f{0.0F, 0.0F, 1.0F} : math::Vec3f{0.0F, 1.0F, 0.0F};
     const auto right = normalized_or(math::cross(forward, up_reference), {1.0F, 0.0F, 0.0F});
     const auto up = math::cross(right, forward);
     math::Mat4f result = math::Mat4f::identity();
@@ -34,8 +34,7 @@ namespace {
     return result;
 }
 
-[[nodiscard]] math::Mat4f orthographic(float radius, float near_plane,
-                                       float far_plane) noexcept {
+[[nodiscard]] math::Mat4f orthographic(float radius, float near_plane, float far_plane) noexcept {
     math::Mat4f result{};
     result.at(0, 0) = 1.0F / radius;
     // Vulkan's framebuffer coordinates use a downward-positive Y axis.
@@ -49,11 +48,10 @@ namespace {
 } // namespace
 
 core::Status DirectionalShadowConfig::validate() const {
-    if (resolution < 256U || resolution > 8192U ||
-        (resolution & (resolution - 1U)) != 0U || !std::isfinite(distance) ||
-        distance <= 1.0F || !std::isfinite(split_lambda) || split_lambda < 0.0F ||
-        split_lambda > 1.0F || !std::isfinite(constant_bias) || constant_bias < 0.0F ||
-        !std::isfinite(normal_bias) || normal_bias < 0.0F ||
+    if (resolution < 256U || resolution > 8192U || (resolution & (resolution - 1U)) != 0U ||
+        !std::isfinite(distance) || distance <= 1.0F || !std::isfinite(split_lambda) ||
+        split_lambda < 0.0F || split_lambda > 1.0F || !std::isfinite(constant_bias) ||
+        constant_bias < 0.0F || !std::isfinite(normal_bias) || normal_bias < 0.0F ||
         !std::isfinite(fade_fraction) || fade_fraction < 0.0F || fade_fraction > 0.5F) {
         return core::Status::failure(
             "directional_shadows.invalid_config",
@@ -78,9 +76,9 @@ core::Status CascadedShadowSystem::initialize(DirectionalShadowConfig config) {
                                      "directional shadow system cannot be initialized twice");
     }
     config_ = config;
-    auto buffer = device_->create_buffer({rhi::RenderBufferUsage::storage, sizeof(gpu_data_),
-                                          "directional_shadow_data",
-                                          rhi::RenderBufferMemory::host_visible});
+    auto buffer =
+        device_->create_buffer({rhi::RenderBufferUsage::storage, sizeof(gpu_data_),
+                                "directional_shadow_data", rhi::RenderBufferMemory::host_visible});
     if (!buffer) {
         return core::Status::failure(buffer.error().code, buffer.error().message);
     }
@@ -88,10 +86,10 @@ core::Status CascadedShadowSystem::initialize(DirectionalShadowConfig config) {
     return core::Status::ok();
 }
 
-core::Status CascadedShadowSystem::update(const RenderCamera& camera,
-                                          const rhi::RenderEnvironmentData& environment,
-                                          std::span<const RenderLightInstance>
-                                              local_shadow_lights) {
+core::Status
+CascadedShadowSystem::update(const RenderCamera& camera,
+                             const rhi::RenderEnvironmentData& environment,
+                             std::span<const RenderLightInstance> local_shadow_lights) {
     if (!data_buffer_.is_valid()) {
         return core::Status::failure("directional_shadows.not_initialized",
                                      "directional shadow system must be initialized first");
@@ -101,8 +99,7 @@ core::Status CascadedShadowSystem::update(const RenderCamera& camera,
     float previous_split = near_plane;
     for (std::uint32_t cascade = 0; cascade < directional_shadow_cascade_count; ++cascade) {
         const auto fraction =
-            static_cast<float>(cascade + 1U) /
-            static_cast<float>(directional_shadow_cascade_count);
+            static_cast<float>(cascade + 1U) / static_cast<float>(directional_shadow_cascade_count);
         const auto logarithmic = near_plane * std::pow(far_plane / near_plane, fraction);
         const auto uniform = near_plane + (far_plane - near_plane) * fraction;
         const auto split =
@@ -115,8 +112,7 @@ core::Status CascadedShadowSystem::update(const RenderCamera& camera,
         const auto half_width = half_height * camera.aspect_ratio;
         auto radius = std::sqrt(half_depth * half_depth + half_height * half_height +
                                 half_width * half_width);
-        const auto texel_world =
-            (2.0F * radius) / static_cast<float>(config_.resolution);
+        const auto texel_world = (2.0F * radius) / static_cast<float>(config_.resolution);
         radius = std::ceil(radius / texel_world) * texel_world;
         auto center = camera.local_position + camera.forward() * center_distance;
         auto view = light_view(center, environment.sun_direction);
@@ -128,8 +124,8 @@ core::Status CascadedShadowSystem::update(const RenderCamera& camera,
         const auto right = math::Vec3f{view.at(0, 0), view.at(0, 1), view.at(0, 2)};
         const auto up = math::Vec3f{view.at(1, 0), view.at(1, 1), view.at(1, 2)};
         const auto unsnapped = view * math::Vec4f{center.x, center.y, center.z, 1.0F};
-        center = center + right * (light_center.x - unsnapped.x) +
-                 up * (light_center.y - unsnapped.y);
+        center =
+            center + right * (light_center.x - unsnapped.x) + up * (light_center.y - unsnapped.y);
         view = light_view(center, environment.sun_direction);
         gpu_data_.light_view_projection[cascade] =
             orthographic(radius, -radius * 2.0F, radius * 2.0F) * view;
@@ -145,6 +141,10 @@ core::Status CascadedShadowSystem::update(const RenderCamera& camera,
     gpu_data_.camera_position[0] = camera.local_position.x;
     gpu_data_.camera_position[1] = camera.local_position.y;
     gpu_data_.camera_position[2] = camera.local_position.z;
+    const auto camera_forward = camera.forward();
+    gpu_data_.camera_forward[0] = camera_forward.x;
+    gpu_data_.camera_forward[1] = camera_forward.y;
+    gpu_data_.camera_forward[2] = camera_forward.z;
     gpu_data_.atmosphere_parameters[0] = environment.elapsed_seconds;
     gpu_data_.atmosphere_parameters[1] = environment.height_fog_density;
     gpu_data_.atmosphere_parameters[2] = environment.height_fog_falloff;
@@ -199,21 +199,18 @@ core::Status CascadedShadowSystem::update(const RenderCamera& camera,
                 "directional_shadows.invalid_local_shadow_light",
                 "local shadow maps require selected spotlights with a valid range");
         }
-        const auto half_angle =
-            std::acos(std::clamp(light.outer_cone_cosine, -0.99F, 0.99F));
+        const auto half_angle = std::acos(std::clamp(light.outer_cone_cosine, -0.99F, 0.99F));
         const auto field_of_view = std::clamp(half_angle * 2.0F, 0.1F, 3.0F);
         const auto projection =
             math::perspective_projection(field_of_view, 1.0F, camera.near_plane, light.radius);
-        const auto view =
-            light_view(light.camera_relative_position, light.direction * -1.0F);
+        const auto view = light_view(light.camera_relative_position, light.direction * -1.0F);
         gpu_data_.local_light_view_projection[slot] = projection * view;
         gpu_data_.local_parameters[slot][0] = config_.constant_bias * 2.0F;
         gpu_data_.local_parameters[slot][1] = config_.normal_bias * 2.0F;
         gpu_data_.local_parameters[slot][2] = light.radius;
         gpu_data_.local_parameters[slot][3] = 1.0F;
     }
-    const rhi::RenderBufferWrite write{data_buffer_, 0,
-                                       std::as_bytes(std::span{&gpu_data_, 1})};
+    const rhi::RenderBufferWrite write{data_buffer_, 0, std::as_bytes(std::span{&gpu_data_, 1})};
     auto uploaded = device_->upload_buffer_batch(std::span{&write, 1});
     return uploaded ? core::Status::ok()
                     : core::Status::failure(uploaded.error().code, uploaded.error().message);
