@@ -9,9 +9,11 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace heartstead::game {
@@ -25,8 +27,12 @@ struct AnimatedModelPresentationConfig {
     renderer::RenderLayer layer = renderer::RenderLayer::opaque;
     renderer::RenderObjectFlags flags = renderer::RenderObjectFlags::cast_shadow;
     math::Bounds3f animated_bounds{};
+    std::function<bool(const RenderObjectSnapshot&)> object_filter;
+    std::unordered_set<std::string> hidden_model_nodes;
     float model_scale = 1.0F;
     float bounds_padding = 0.25F;
+    float minimum_view_distance = 0.0F;
+    float maximum_view_distance = 0.0F;
     bool ignore_horizontal_root_motion = true;
     std::array<float, 4> color{1.0F, 1.0F, 1.0F, 1.0F};
 

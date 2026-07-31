@@ -91,6 +91,11 @@ core::Status validate_render_object_proxy(const RenderObjectProxy& object) {
         !object.previous_transform.has_non_zero_scale() || !object.current_transform.is_finite() ||
         !object.current_transform.has_non_zero_scale() || !object.model_transform.is_finite() ||
         !object.local_bounds.is_valid() || !finite_color(object.color) ||
+        !std::isfinite(object.minimum_view_distance) ||
+        !std::isfinite(object.maximum_view_distance) || object.minimum_view_distance < 0.0F ||
+        object.maximum_view_distance < 0.0F ||
+        (object.maximum_view_distance != 0.0F &&
+         object.maximum_view_distance <= object.minimum_view_distance) ||
         object.morph_weights.size() > 64U ||
         !std::ranges::all_of(object.morph_weights,
                              [](float value) { return std::isfinite(value); })) {
@@ -445,6 +450,15 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
                                                            transform.error().message);
         }
         const auto bounds = math::transform_bounds(transform.value(), object.local_bounds);
+        const auto center = (bounds.min + bounds.max) * 0.5F;
+        const auto camera_delta = center - camera.local_position;
+        const auto camera_distance = std::sqrt(math::length_squared(camera_delta));
+        if (camera_distance < object.minimum_view_distance ||
+            (object.maximum_view_distance != 0.0F &&
+             camera_distance >= object.maximum_view_distance)) {
+            ++frame.stats.culled_objects;
+            continue;
+        }
         if (!frustum.intersects(bounds)) {
             ++frame.stats.culled_objects;
             continue;

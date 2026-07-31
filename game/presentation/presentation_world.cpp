@@ -5,6 +5,7 @@
 #include <exception>
 #include <limits>
 #include <ranges>
+#include <unordered_set>
 #include <utility>
 
 namespace heartstead::game {
@@ -22,10 +23,18 @@ core::Status validate_presentation_object_update(const PresentationObjectUpdate&
     const auto simulation_tick = update.source_revision == std::numeric_limits<std::uint64_t>::max()
                                      ? update.source_revision
                                      : update.source_revision - 1U;
+    std::unordered_set<std::string> state_channels;
+    const auto valid_states =
+        update.visual_states.size() <= 32U &&
+        std::ranges::all_of(update.visual_states, [&](const entities::VisualStateValue& state) {
+            return !state.channel.empty() && state.channel.size() <= 64U && !state.value.empty() &&
+                   state.value.size() <= 128U && state_channels.insert(state.channel).second;
+        });
     if (!update.source_net_id.is_valid() || !update.visual_prototype.is_valid() ||
         !update.transform.is_finite() || !update.transform.has_non_zero_scale() ||
         !update.local_bounds.is_valid() || !finite_color(update.color) ||
-        update.source_revision == 0 || !update.locomotion.validate(simulation_tick)) {
+        update.source_revision == 0 || !update.locomotion.validate(simulation_tick) ||
+        !valid_states) {
         return core::Status::failure(
             "presentation_world.invalid_object",
             "presentation object requires valid identity, visual, transform, bounds, and revision");
@@ -101,6 +110,7 @@ PresentationWorld::upsert_object(const PresentationObjectUpdate& update) {
         slot->object.visual_prototype = update.visual_prototype;
         slot->object.local_bounds = update.local_bounds;
         slot->object.color = update.color;
+        slot->object.visual_states = update.visual_states;
         slot->object.source_revision = update.source_revision;
         slot->object.visible = update.visible;
         slot->object.teleported = update.teleport;
@@ -122,6 +132,7 @@ PresentationWorld::upsert_object(const PresentationObjectUpdate& update) {
     slot->object.current_locomotion = update.locomotion;
     slot->object.local_bounds = update.local_bounds;
     slot->object.color = update.color;
+    slot->object.visual_states = update.visual_states;
     slot->object.source_revision = update.source_revision;
     slot->object.visible = update.visible;
     slot->object.teleported = update.teleport;

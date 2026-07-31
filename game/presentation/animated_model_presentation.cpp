@@ -129,6 +129,9 @@ core::Status AnimatedModelPresentationConfig::validate() const {
     if (asset_id.empty() || !visual_prototype.is_valid() || !animated_bounds.is_valid() ||
         !std::isfinite(model_scale) || model_scale <= 0.0F || model_scale > 100.0F ||
         !std::isfinite(bounds_padding) || bounds_padding < 0.0F || bounds_padding > 100.0F ||
+        !std::isfinite(minimum_view_distance) || !std::isfinite(maximum_view_distance) ||
+        minimum_view_distance < 0.0F ||
+        (maximum_view_distance != 0.0F && maximum_view_distance <= minimum_view_distance) ||
         !finite_color(color)) {
         return core::Status::failure(
             "animated_model_presentation.invalid_config",
@@ -171,6 +174,11 @@ core::Status AnimatedModelPresentation::initialize(renderer::Renderer& renderer,
     for (std::uint32_t index = 0; index < model.primitives.size(); ++index) {
         const auto& primitive = model.primitives[index];
         if (!primitive.renderable || primitive.lod_level != 0U) {
+            continue;
+        }
+        const auto& node = model.nodes[primitive.node];
+        if (config.hidden_model_nodes.contains(primitive.name) ||
+            config.hidden_model_nodes.contains(node.name)) {
             continue;
         }
         auto mesh = renderer.create_model_primitive(
@@ -230,7 +238,8 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
     std::unordered_set<std::uint64_t> current_entities;
     current_entities.reserve(snapshot.objects.size());
     for (const auto& source : snapshot.objects) {
-        if (!source.visible || source.visual_prototype != config_.visual_prototype) {
+        if (!source.visible || source.visual_prototype != config_.visual_prototype ||
+            (config_.object_filter && !config_.object_filter(source))) {
             continue;
         }
         const auto key = source.source_net_id.value();
@@ -351,6 +360,8 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
                 object.color = {
                     config_.color[0] * source.color[0], config_.color[1] * source.color[1],
                     config_.color[2] * source.color[2], config_.color[3] * source.color[3]};
+                object.minimum_view_distance = config_.minimum_view_distance;
+                object.maximum_view_distance = config_.maximum_view_distance;
                 auto created_object = renderer.create_object(std::move(object));
                 if (!created_object) {
                     rollback_entity(palette_id);
@@ -411,6 +422,8 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
             object_update.object.color = {
                 config_.color[0] * source.color[0], config_.color[1] * source.color[1],
                 config_.color[2] * source.color[2], config_.color[3] * source.color[3]};
+            object_update.object.minimum_view_distance = config_.minimum_view_distance;
+            object_update.object.maximum_view_distance = config_.maximum_view_distance;
             updates.push_back(std::move(object_update));
         }
         auto status = renderer.apply_scene_updates(updates);

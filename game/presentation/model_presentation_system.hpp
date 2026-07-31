@@ -31,6 +31,8 @@ struct PresentationAssetLoadDiagnostic {
 
 struct ModelPresentationSystemStats {
     std::uint32_t definition_count = 0;
+    std::uint32_t presentation_variant_count = 0;
+    std::uint32_t lod_variant_count = 0;
     std::uint32_t loaded_model_count = 0;
     std::uint32_t fallback_entity_count = 0;
     std::uint32_t unresolved_visual_count = 0;
@@ -51,7 +53,8 @@ class ModelPresentationSystem final {
 
     [[nodiscard]] bool is_initialized() const noexcept;
     [[nodiscard]] const ModelPresentationSystemStats& stats() const noexcept;
-    [[nodiscard]] std::span<const PresentationAssetLoadDiagnostic> load_diagnostics() const noexcept;
+    [[nodiscard]] std::span<const PresentationAssetLoadDiagnostic>
+    load_diagnostics() const noexcept;
 
   private:
     struct PresentationEntry {

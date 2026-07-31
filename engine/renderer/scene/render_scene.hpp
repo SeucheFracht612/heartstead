@@ -95,6 +95,9 @@ struct RenderObjectProxy {
     std::array<float, 4> color{1.0F, 1.0F, 1.0F, 1.0F};
     std::vector<float> morph_weights;
     std::uint32_t sprite_frame = 0;
+    // Inclusive lower and exclusive upper camera-distance bounds. A zero maximum is unbounded.
+    float minimum_view_distance = 0.0F;
+    float maximum_view_distance = 0.0F;
 };
 
 enum class RenderLightKind : std::uint8_t {

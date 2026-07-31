@@ -53,10 +53,15 @@ void test_retained_presentation_and_immutable_snapshot_extraction() {
            animation::LocomotionAnimationKind::idle);
     assert(snapshot.objects.front().current_locomotion.kind ==
            animation::LocomotionAnimationKind::walk);
+    second_update.visual_states = {{"powered", "true"}, {"fill_level", "full"}};
+    second_update.source_revision = 3;
+    assert(presentation.upsert_object(second_update));
+    snapshot = presentation.extract(12);
+    assert(snapshot.objects.front().visual_states == second_update.visual_states);
     const auto unchanged_revision = snapshot.presentation_revision;
-    assert(presentation.upsert_object(make_update(source, 2, second_position.value())));
-    assert(presentation.extract(11).presentation_revision == unchanged_revision);
-    assert(!presentation.upsert_object(make_update(source, 1, first_position.value())));
+    assert(presentation.upsert_object(second_update));
+    assert(presentation.extract(12).presentation_revision == unchanged_revision);
+    assert(!presentation.upsert_object(make_update(source, 2, first_position.value())));
 
     assert(presentation.remove_object(source));
     assert(presentation.find_object(source) == nullptr);
@@ -71,6 +76,9 @@ void test_presentation_validation_rejects_unsafe_render_data() {
     auto invalid = make_update({}, 1, world::WorldPosition{});
     assert(!presentation.upsert_object(invalid));
     invalid = make_update(core::NetId::from_value(1), 0, world::WorldPosition{});
+    assert(!presentation.upsert_object(invalid));
+    invalid = make_update(core::NetId::from_value(1), 1, world::WorldPosition{});
+    invalid.visual_states = {{"powered", "true"}, {"powered", "false"}};
     assert(!presentation.upsert_object(invalid));
 }
 

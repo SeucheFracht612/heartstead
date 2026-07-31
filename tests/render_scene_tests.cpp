@@ -252,6 +252,33 @@ void test_generation_safe_skin_palettes() {
     assert(scene.stats().retained_skin_palettes == 0);
 }
 
+void test_camera_distance_lod_ranges() {
+    renderer::RenderScene scene;
+    auto near_lod = make_object(anchored({0, 0, 0}));
+    near_lod.previous_transform.position = {0.0F, 0.0F, -10.0F};
+    near_lod.current_transform = near_lod.previous_transform;
+    near_lod.maximum_view_distance = 15.0F;
+    assert(scene.create_object(near_lod));
+
+    auto far_lod = near_lod;
+    far_lod.minimum_view_distance = 15.0F;
+    far_lod.maximum_view_distance = 0.0F;
+    assert(scene.create_object(far_lod));
+
+    renderer::RenderCamera camera;
+    assert(camera.update_matrices());
+    auto extracted = scene.extract(camera, 1.0F);
+    assert(extracted);
+    assert(extracted.value().stats.retained_objects == 2);
+    assert(extracted.value().stats.visible_objects == 1);
+    assert(extracted.value().stats.culled_objects == 1);
+
+    auto invalid_range = near_lod;
+    invalid_range.minimum_view_distance = 20.0F;
+    invalid_range.maximum_view_distance = 10.0F;
+    assert(!scene.create_object(invalid_range));
+}
+
 } // namespace
 
 int main() {
@@ -261,5 +288,6 @@ int main() {
     test_parent_transforms_batching_culling_and_hidden_objects();
     test_teleport_rotation_light_and_batched_updates();
     test_generation_safe_skin_palettes();
+    test_camera_distance_lod_ranges();
     return 0;
 }

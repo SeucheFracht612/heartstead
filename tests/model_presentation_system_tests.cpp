@@ -70,6 +70,31 @@ int main() {
     const auto* player_visual = content.visual_definitions.find_for_entity(*player);
     assert(player_visual != nullptr);
     assert(player_visual->model_scale == 0.66F);
+    auto stateful_visual = *player_visual;
+    stateful_visual.state_rules.clear();
+    entities::VisualStateRule open_state;
+    open_state.channel = "open";
+    open_state.value = "true";
+    open_state.priority = 10;
+    open_state.animation_clip = "idle";
+    entities::VisualStateRule powered_state;
+    powered_state.channel = "powered";
+    powered_state.value = "true";
+    powered_state.priority = 20;
+    powered_state.animation_clip = "idle";
+    stateful_visual.state_rules = {open_state, powered_state};
+    stateful_visual.lods = {
+        {0U, stateful_visual.model_asset, 0.0F, 8.0F},
+        {1U, stateful_visual.model_asset, 8.0F, 0.0F},
+    };
+    assert(stateful_visual.validate());
+    const std::array visual_states{
+        entities::VisualStateValue{"open", "true"},
+        entities::VisualStateValue{"powered", "true"},
+    };
+    assert(stateful_visual.resolve_state_rule(visual_states) != nullptr);
+    assert(stateful_visual.resolve_state_rule(visual_states)->channel == "powered");
+    assert(stateful_visual.resolve_model(visual_states) == stateful_visual.model_asset);
     assert(content.visual_definitions.find_for_entity(*animal) != nullptr);
     assert(content.visual_definitions.find(*fallback) != nullptr);
 
