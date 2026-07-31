@@ -1,10 +1,12 @@
 #pragma once
 
 #include "engine/assets/cooked_asset_store.hpp"
+#include "engine/assets/image_asset.hpp"
 #include "engine/assets/model_asset.hpp"
 #include "engine/content/content_validation.hpp"
 #include "engine/entities/entity_visual.hpp"
 #include "engine/renderer/lighting/cascaded_shadows.hpp"
+#include "engine/world/world_state.hpp"
 #include "game/application/game_application.hpp"
 #include "game/presentation/model_presentation_system.hpp"
 #include "game/presentation/particle_presentation.hpp"
@@ -59,6 +61,7 @@ struct AssetLabModeConfig {
     std::string equipment_socket;
     bool show_bounds = false;
     bool show_skeleton = false;
+    bool use_prefab_preview_settings = true;
 };
 
 struct AssetLabInspection {
@@ -101,6 +104,12 @@ class AssetLabMode final : public game::IGameApplicationMode {
   private:
     [[nodiscard]] core::Status initialize_model_preview(renderer::Renderer& renderer);
     [[nodiscard]] core::Status initialize_particle_preview(renderer::Renderer& renderer);
+    [[nodiscard]] core::Status initialize_texture_preview(renderer::Renderer& renderer);
+    [[nodiscard]] core::Status initialize_material_preview(renderer::Renderer& renderer);
+    [[nodiscard]] core::Status initialize_terrain_preview(renderer::Renderer& renderer);
+    [[nodiscard]] core::Status initialize_image_quad(renderer::Renderer& renderer,
+                                                     const assets::ImageAsset& image,
+                                                     renderer::MaterialRuntimeDesc material);
 
     AssetLabModeConfig config_;
     std::optional<assets::CookedAssetStore> cooked_assets_;
@@ -108,6 +117,7 @@ class AssetLabMode final : public game::IGameApplicationMode {
     entities::VisualDefinitionRegistry preview_visuals_;
     game::ModelPresentationSystem models_;
     std::optional<renderer::CpuParticleSystem> particles_;
+    std::optional<world::WorldState> terrain_world_;
     game::ParticlePresentation particle_presentation_;
     renderer::RenderCamera camera_;
     game::RenderSnapshot snapshot_;
@@ -115,7 +125,10 @@ class AssetLabMode final : public game::IGameApplicationMode {
     core::PrototypeId equipment_entity_;
     std::optional<assets::ModelAsset> inspected_model_;
     std::vector<math::Mat4f> inspected_node_matrices_;
-    math::Vec3f equipment_offset_{};
+    math::Transform3f equipment_socket_transform_{};
+    float preview_camera_distance_ = 4.0F;
+    renderer::RenderObjectId direct_preview_object_;
+    renderer::RenderMeshHandle direct_preview_mesh_;
     bool models_initialized_ = false;
     bool particles_initialized_ = false;
 };

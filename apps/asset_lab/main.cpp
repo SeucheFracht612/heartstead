@@ -29,10 +29,11 @@ struct Options {
     std::optional<std::uint32_t> lod;
     std::string equipment;
     std::string socket;
-    std::uint64_t frames = 1U;
+    std::optional<std::uint64_t> frames;
     bool headless = false;
     bool show_bounds = false;
     bool show_skeleton = false;
+    bool lighting_explicit = false;
     bool help = false;
     bool list = false;
 };
@@ -102,6 +103,7 @@ struct Options {
                                                           std::string(value.value()));
             }
             options.lighting = *parsed;
+            options.lighting_explicit = true;
         } else if (argument == "--debug") {
             auto value = next();
             if (!value) {
@@ -286,10 +288,17 @@ int main(int argc, char** argv) {
         mode_config.equipment_socket = options.value().socket;
         mode_config.show_bounds = options.value().show_bounds;
         mode_config.show_skeleton = options.value().show_skeleton;
+        mode_config.use_prefab_preview_settings = !options.value().lighting_explicit;
 
         heartstead::game::GameApplicationConfig application_config;
         application_config.headless = options.value().headless;
-        application_config.maximum_frames = options.value().frames;
+        application_config.maximum_frames =
+            options.value().frames.has_value()
+                ? options.value().frames
+                : std::optional<std::uint64_t>{options.value().headless ? 1U : 0U};
+        if (!options.value().headless && !options.value().frames.has_value()) {
+            application_config.maximum_frames.reset();
+        }
         application_config.window = {"Heartstead Asset Lab", 1280, 720, true};
         application_config.shader_root =
             std::filesystem::path{HEARTSTEAD_ASSET_LAB_ASSET_DIR} / "shaders";

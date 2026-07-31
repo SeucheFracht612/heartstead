@@ -3,11 +3,15 @@
 #include "engine/animation/skeletal_animation.hpp"
 #include "engine/assets/model_asset.hpp"
 #include "engine/assets/texture_asset.hpp"
+#include "engine/core/file_io.hpp"
+#include "engine/renderer/materials/material_definition.hpp"
 #include "engine/renderer/particles/particle_system.hpp"
+#include "engine/world/voxels/voxel_surface_state.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <numbers>
 #include <sstream>
 #include <utility>
 
@@ -143,6 +147,79 @@ find_particle(const content::ContentValidationReport& content, const core::Proto
         content.particle_prototypes,
         [&](const renderer::ParticlePrototype& prototype) { return prototype.id == id; });
     return found == content.particle_prototypes.end() ? nullptr : &*found;
+}
+
+[[nodiscard]] core::Result<assets::ImageAsset>
+load_source_image(const content::ContentValidationReport& content, std::string_view logical_id) {
+    const auto* record = content.asset_catalog.find_active(logical_id);
+    if (record == nullptr || record->kind != assets::AssetKind::texture) {
+        return core::Result<assets::ImageAsset>::failure(
+            "asset_lab.missing_texture_source",
+            "texture preview source is absent from the active asset catalog: " +
+                std::string(logical_id));
+    }
+    auto bytes = core::read_binary_file(
+        record->source_path, {.maximum_bytes = assets::default_maximum_asset_source_bytes});
+    if (!bytes) {
+        return core::Result<assets::ImageAsset>::failure(bytes.error().code, bytes.error().message);
+    }
+    if (record->source_path.extension() == ".ktx2") {
+        return assets::decode_ktx2(bytes.value());
+    }
+    return assets::decode_png_or_jpeg(bytes.value());
+}
+
+[[nodiscard]] const renderer::materials::MaterialScalarParameter*
+material_scalar(const renderer::materials::MaterialDefinition& material, std::string_view name) {
+    const auto found = std::ranges::find_if(
+        material.scalars, [name](const auto& value) { return value.name == name; });
+    return found == material.scalars.end() ? nullptr : &*found;
+}
+
+[[nodiscard]] const renderer::materials::MaterialColorParameter*
+material_color(const renderer::materials::MaterialDefinition& material, std::string_view name) {
+    const auto found = std::ranges::find_if(
+        material.colors, [name](const auto& value) { return value.name == name; });
+    return found == material.colors.end() ? nullptr : &*found;
+}
+
+[[nodiscard]] core::Result<math::Transform3f> transform_from_matrix(const math::Mat4f& matrix) {
+    const auto column_length = [&](std::size_t column) {
+        return std::sqrt(matrix.at(0, column) * matrix.at(0, column) +
+                         matrix.at(1, column) * matrix.at(1, column) +
+                         matrix.at(2, column) * matrix.at(2, column));
+    };
+    math::Transform3f transform;
+    transform.position = {matrix.at(0, 3), matrix.at(1, 3), matrix.at(2, 3)};
+    transform.scale = {column_length(0U), column_length(1U), column_length(2U)};
+    if (!transform.has_non_zero_scale()) {
+        return core::Result<math::Transform3f>::failure(
+            "asset_lab.invalid_socket_transform",
+            "equipment socket transform contains a zero scale axis");
+    }
+    const auto r00 = matrix.at(0, 0) / transform.scale.x;
+    const auto r10 = matrix.at(1, 0) / transform.scale.x;
+    const auto r20 = matrix.at(2, 0) / transform.scale.x;
+    const auto r21 = matrix.at(2, 1) / transform.scale.y;
+    const auto r22 = matrix.at(2, 2) / transform.scale.z;
+    const auto rotation_y = std::asin(std::clamp(-r20, -1.0F, 1.0F));
+    const auto cosine_y = std::cos(rotation_y);
+    float rotation_x = 0.0F;
+    float rotation_z = 0.0F;
+    if (std::abs(cosine_y) > 0.00001F) {
+        rotation_x = std::atan2(r21, r22);
+        rotation_z = std::atan2(r10, r00);
+    } else {
+        rotation_x = std::atan2(-matrix.at(1, 2), matrix.at(1, 1));
+    }
+    constexpr auto radians_to_degrees = 180.0F / std::numbers::pi_v<float>;
+    transform.rotation_degrees = {rotation_x * radians_to_degrees, rotation_y * radians_to_degrees,
+                                  rotation_z * radians_to_degrees};
+    if (!transform.is_finite()) {
+        return core::Result<math::Transform3f>::failure("asset_lab.invalid_socket_transform",
+                                                        "equipment socket transform is not finite");
+    }
+    return core::Result<math::Transform3f>::success(transform);
 }
 
 } // namespace
@@ -503,6 +580,28 @@ core::Status AssetLabMode::initialize(game::GameApplicationServices& services) {
         return core::Status::failure(store.error().code, store.error().message);
     }
     cooked_assets_.emplace(std::move(store).value());
+    if (config_.use_prefab_preview_settings) {
+        if (const auto visual_id = core::PrototypeId::parse(config_.selection_id)) {
+            if (const auto* definition = config_.content->visual_definitions.find(*visual_id);
+                definition != nullptr) {
+                auto lighting_name = definition->preview.lighting_preset;
+                std::ranges::replace(lighting_name, '_', '-');
+                if (const auto lighting = parse_lighting_preset(lighting_name)) {
+                    config_.lighting = *lighting;
+                }
+                preview_camera_distance_ = definition->preview.camera_distance;
+                if (config_.visual_states.empty()) {
+                    for (const auto& [channel, value] : definition->preview.states) {
+                        config_.visual_states.push_back({channel, value});
+                    }
+                    std::ranges::sort(config_.visual_states,
+                                      [](const auto& left, const auto& right) {
+                                          return left.channel < right.channel;
+                                      });
+                }
+            }
+        }
+    }
     auto inspected = inspect_asset_lab_selection(config_, *cooked_assets_);
     if (!inspected) {
         return core::Status::failure(inspected.error().code, inspected.error().message);
@@ -532,8 +631,19 @@ core::Status AssetLabMode::initialize(game::GameApplicationServices& services) {
     if (!status) {
         return status;
     }
-    return config_.preview == PreviewKind::particle ? initialize_particle_preview(*active_renderer)
-                                                    : initialize_model_preview(*active_renderer);
+    if (config_.preview == PreviewKind::particle) {
+        return initialize_particle_preview(*active_renderer);
+    }
+    if (config_.preview == PreviewKind::texture) {
+        return initialize_texture_preview(*active_renderer);
+    }
+    if (config_.preview == PreviewKind::terrain_material) {
+        return initialize_terrain_preview(*active_renderer);
+    }
+    if (config_.preview == PreviewKind::material) {
+        return initialize_material_preview(*active_renderer);
+    }
+    return initialize_model_preview(*active_renderer);
 }
 
 core::Status AssetLabMode::initialize_model_preview(renderer::Renderer& active_renderer) {
@@ -605,9 +715,15 @@ core::Status AssetLabMode::initialize_model_preview(renderer::Renderer& active_r
             return core::Status::failure("asset_lab.missing_socket",
                                          "equipment preview socket disappeared after inspection");
         }
-        const auto& socket_matrix = inspected_node_matrices_[socket->node];
-        equipment_offset_ = {socket_matrix.at(0, 3), socket_matrix.at(1, 3),
-                             socket_matrix.at(2, 3)};
+        const auto socket_matrix = math::scale_matrix({selected->model_scale, selected->model_scale,
+                                                       selected->model_scale}) *
+                                   inspected_node_matrices_[socket->node];
+        auto socket_transform = transform_from_matrix(socket_matrix);
+        if (!socket_transform) {
+            return core::Status::failure(socket_transform.error().code,
+                                         socket_transform.error().message);
+        }
+        equipment_socket_transform_ = socket_transform.value();
         auto equipment_visual = *fallback;
         equipment_visual.id = *core::PrototypeId::parse("asset_lab:visuals/equipment");
         equipment_visual.entity_prototype =
@@ -639,7 +755,8 @@ core::Status AssetLabMode::initialize_model_preview(renderer::Renderer& active_r
     object.id = game::PresentationObjectId::from_parts(1U, 1U);
     object.source_net_id = core::NetId::from_value(1U);
     object.visual_prototype = preview_entity_;
-    object.current_transform.position = world::WorldPosition{0.0, 0.0, -4.0};
+    object.current_transform.position =
+        world::WorldPosition{0.0, 0.0, -static_cast<double>(preview_camera_distance_)};
     object.previous_transform = object.current_transform;
     object.visual_states = config_.visual_states;
     object.source_revision = 1U;
@@ -649,9 +766,19 @@ core::Status AssetLabMode::initialize_model_preview(renderer::Renderer& active_r
         equipment.id = game::PresentationObjectId::from_parts(2U, 1U);
         equipment.source_net_id = core::NetId::from_value(2U);
         equipment.visual_prototype = equipment_entity_;
-        equipment.current_transform.position = world::WorldPosition{
-            static_cast<double>(equipment_offset_.x), static_cast<double>(equipment_offset_.y),
-            -4.0 + static_cast<double>(equipment_offset_.z)};
+        equipment.current_transform.position =
+            world::WorldPosition{static_cast<double>(equipment_socket_transform_.position.x),
+                                 static_cast<double>(equipment_socket_transform_.position.y),
+                                 -static_cast<double>(preview_camera_distance_) +
+                                     static_cast<double>(equipment_socket_transform_.position.z)};
+        equipment.current_transform.rotation_degrees = {
+            static_cast<double>(equipment_socket_transform_.rotation_degrees.x),
+            static_cast<double>(equipment_socket_transform_.rotation_degrees.y),
+            static_cast<double>(equipment_socket_transform_.rotation_degrees.z)};
+        equipment.current_transform.scale = {
+            static_cast<double>(equipment_socket_transform_.scale.x),
+            static_cast<double>(equipment_socket_transform_.scale.y),
+            static_cast<double>(equipment_socket_transform_.scale.z)};
         equipment.previous_transform = equipment.current_transform;
         equipment.source_revision = 1U;
         snapshot_.objects.push_back(std::move(equipment));
@@ -662,6 +789,173 @@ core::Status AssetLabMode::initialize_model_preview(renderer::Renderer& active_r
         return core::Status::failure(synchronized.error().code, synchronized.error().message);
     }
     return core::Status::ok();
+}
+
+core::Status AssetLabMode::initialize_image_quad(renderer::Renderer& active_renderer,
+                                                 const assets::ImageAsset& image,
+                                                 renderer::MaterialRuntimeDesc material) {
+    auto texture = active_renderer.create_surface_texture("asset_lab:" + config_.selection_id,
+                                                          image.width, image.height, image.rgba8);
+    if (!texture) {
+        return core::Status::failure(texture.error().code, texture.error().message);
+    }
+    material.domain = renderer::MaterialRuntimeDomain::surface;
+    material.surface_texture = texture.value();
+    material.base_color_texture.texture = texture.value();
+    material.metallic_roughness_texture.texture = 1U;
+    material.normal_texture.texture = 2U;
+    material.occlusion_texture.texture = 1U;
+    material.emissive_texture.texture = 3U;
+    auto runtime_material = active_renderer.create_surface_material(std::move(material));
+    if (!runtime_material) {
+        return core::Status::failure(runtime_material.error().code,
+                                     runtime_material.error().message);
+    }
+
+    constexpr std::array<renderer::GpuStaticMeshVertex, 4> vertices{{
+        {{-1.0F, -1.0F, 0.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 1.0F}},
+        {{1.0F, -1.0F, 0.0F}, {0.0F, 0.0F, 1.0F}, {1.0F, 1.0F}},
+        {{1.0F, 1.0F, 0.0F}, {0.0F, 0.0F, 1.0F}, {1.0F, 0.0F}},
+        {{-1.0F, 1.0F, 0.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 0.0F}},
+    }};
+    constexpr std::array<std::uint32_t, 6> indices{0U, 1U, 2U, 0U, 2U, 3U};
+    auto mesh = active_renderer.create_static_mesh(
+        {"asset_lab:preview_quad", vertices, indices, {{-1.0F, -1.0F, 0.0F}, {1.0F, 1.0F, 0.0F}}});
+    if (!mesh) {
+        return core::Status::failure(mesh.error().code, mesh.error().message);
+    }
+    direct_preview_mesh_ = mesh.value();
+    renderer::RenderObjectProxy object;
+    object.anchor = world::WorldPosition{0.0, 0.0, 0.0};
+    object.previous_transform.position = {0.0F, 1.2F, -preview_camera_distance_};
+    object.current_transform = object.previous_transform;
+    const auto aspect = static_cast<float>(image.width) / static_cast<float>(image.height);
+    object.previous_transform.scale.x = std::clamp(aspect, 0.25F, 4.0F);
+    object.current_transform.scale = object.previous_transform.scale;
+    object.mesh = direct_preview_mesh_;
+    object.material = runtime_material.value();
+    object.local_bounds = {{-1.0F, -1.0F, 0.0F}, {1.0F, 1.0F, 0.0F}};
+    object.flags = renderer::RenderObjectFlags::two_sided;
+    auto created = active_renderer.create_object(std::move(object));
+    if (!created) {
+        return core::Status::failure(created.error().code, created.error().message);
+    }
+    direct_preview_object_ = created.value();
+    return core::Status::ok();
+}
+
+core::Status AssetLabMode::initialize_texture_preview(renderer::Renderer& active_renderer) {
+    auto image = load_source_image(*config_.content, config_.selection_id);
+    if (!image) {
+        return core::Status::failure(image.error().code, image.error().message);
+    }
+    renderer::MaterialRuntimeDesc material;
+    material.id = *core::PrototypeId::parse("asset_lab:materials/texture_preview");
+    material.flags = renderer::VoxelMaterialFlags::unlit | renderer::VoxelMaterialFlags::two_sided;
+    material.roughness = 1.0F;
+    material.metallic = 0.0F;
+    return initialize_image_quad(active_renderer, image.value(), std::move(material));
+}
+
+core::Status AssetLabMode::initialize_material_preview(renderer::Renderer& active_renderer) {
+    const auto* definition = config_.content->material_registry.find(config_.selection_id);
+    if (definition == nullptr) {
+        return core::Status::failure("asset_lab.missing_material",
+                                     "selected material is absent from the registry");
+    }
+    if (definition->domain == renderer::materials::MaterialDomain::terrain ||
+        definition->domain == renderer::materials::MaterialDomain::foliage ||
+        definition->domain == renderer::materials::MaterialDomain::water) {
+        return initialize_terrain_preview(active_renderer);
+    }
+    assets::ImageAsset image;
+    image.width = 1U;
+    image.height = 1U;
+    image.rgba8 = {255U, 255U, 255U, 255U};
+    if (const auto albedo = std::ranges::find_if(definition->textures,
+                                                 [](const auto& binding) {
+                                                     return binding.name == "albedo" ||
+                                                            binding.name == "base_color";
+                                                 });
+        albedo != definition->textures.end()) {
+        auto loaded = load_source_image(*config_.content, albedo->texture.to_string());
+        if (!loaded) {
+            return core::Status::failure(loaded.error().code, loaded.error().message);
+        }
+        image = std::move(loaded).value();
+    }
+    renderer::MaterialRuntimeDesc material;
+    material.id = *core::PrototypeId::parse("asset_lab:materials/material_preview");
+    if (const auto* tint = material_color(*definition, "tint"); tint != nullptr) {
+        material.base_color = {tint->value.red, tint->value.green, tint->value.blue,
+                               tint->value.alpha};
+    }
+    if (const auto* value = material_scalar(*definition, "roughness"); value != nullptr) {
+        material.roughness = value->value;
+    }
+    if (const auto* value = material_scalar(*definition, "metallic"); value != nullptr) {
+        material.metallic = value->value;
+    }
+    if (const auto* value = material_scalar(*definition, "normal_scale"); value != nullptr) {
+        material.normal_scale = value->value;
+    }
+    if (definition->double_sided) {
+        material.flags = material.flags | renderer::VoxelMaterialFlags::two_sided;
+    }
+    return initialize_image_quad(active_renderer, image, std::move(material));
+}
+
+core::Status AssetLabMode::initialize_terrain_preview(renderer::Renderer& active_renderer) {
+    const auto slash = config_.selection_id.find_last_of('/');
+    const auto token =
+        slash == std::string::npos ? config_.selection_id : config_.selection_id.substr(slash + 1U);
+    const auto definitions = config_.content->voxel_palette.definitions();
+    const auto voxel =
+        std::ranges::find_if(definitions, [&](const world::VoxelDefinition* candidate) {
+            return candidate != nullptr && candidate->terrain_material == token;
+        });
+    if (voxel == definitions.end()) {
+        return core::Status::failure(
+            "asset_lab.material_has_no_voxel",
+            "terrain material preview requires a voxel using material token '" + token + "'");
+    }
+    terrain_world_.emplace();
+    world::VoxelChunk chunk({0, 0, 0});
+    std::vector<world::VoxelCell> cells(world::VoxelChunk::total_cells, world::VoxelCell::air());
+    constexpr auto edge = static_cast<std::size_t>(world::VoxelChunk::edge_length);
+    for (std::uint16_t z = 0; z < world::VoxelChunk::edge_length; ++z) {
+        for (std::uint16_t y = 0; y < 5U; ++y) {
+            for (std::uint16_t x = 0; x < world::VoxelChunk::edge_length; ++x) {
+                const auto index = static_cast<std::size_t>(z) * edge * edge +
+                                   static_cast<std::size_t>(y) * edge + x;
+                std::uint16_t state_bits = 0U;
+                if (y == 4U) {
+                    const auto state_index =
+                        static_cast<std::uint8_t>(((x / 8U) + (z / 8U) * 4U) % 9U);
+                    state_bits = world::encode_voxel_surface_states(
+                        {static_cast<std::uint16_t>(1U << state_index), 7U});
+                }
+                cells[index] = {(*voxel)->type, 255U, state_bits, 0U};
+            }
+        }
+    }
+    auto status = chunk.load_generated_cells(std::move(cells));
+    if (!status) {
+        return status;
+    }
+    status = terrain_world_->chunks().insert_generated(std::move(chunk),
+                                                       terrain_world_->dirty_regions());
+    if (!status) {
+        return status;
+    }
+    camera_.floating_origin.block = {16, 0, 48};
+    camera_.local_position = {0.0F, 13.0F, 0.0F};
+    camera_.pitch_radians = -0.32F;
+    status = camera_.update_matrices();
+    if (!status) {
+        return status;
+    }
+    return active_renderer.synchronize_chunks(*terrain_world_, camera_);
 }
 
 core::Status AssetLabMode::initialize_particle_preview(renderer::Renderer& active_renderer) {
@@ -726,6 +1020,13 @@ AssetLabMode::update(game::GameApplicationServices& services,
                 synchronized.error().code, synchronized.error().message);
         }
     }
+    if (terrain_world_.has_value()) {
+        auto status = active_renderer->synchronize_chunks(*terrain_world_, camera_);
+        if (!status) {
+            return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
+                                                                           status.error().message);
+        }
+    }
     if (particles_initialized_) {
         auto status = particles_->update(frame.delta_seconds());
         if (!status) {
@@ -742,8 +1043,8 @@ AssetLabMode::update(game::GameApplicationServices& services,
     if ((config_.show_bounds || config_.debug_view == LightingDebugView::bounds) &&
         active_renderer->debug_renderer() != nullptr && inspected_model_.has_value()) {
         auto status = active_renderer->debug_renderer()->submit_aabb(
-            world::WorldPosition{0.0, 0.0, -4.0}, inspected_model_->bounds,
-            {0.1F, 0.9F, 1.0F, 1.0F}, 0.05F);
+            world::WorldPosition{0.0, 0.0, -static_cast<double>(preview_camera_distance_)},
+            inspected_model_->bounds, {0.1F, 0.9F, 1.0F, 1.0F}, 0.05F);
         if (!status) {
             return core::Result<game::GameApplicationFrameOutput>::failure(status.error().code,
                                                                            status.error().message);
@@ -761,10 +1062,12 @@ AssetLabMode::update(game::GameApplicationServices& services,
             renderer::DebugLineDesc line;
             line.start = world::WorldPosition{static_cast<double>(parent_matrix.at(0, 3)),
                                               static_cast<double>(parent_matrix.at(1, 3)),
-                                              -4.0 + static_cast<double>(parent_matrix.at(2, 3))};
+                                              -static_cast<double>(preview_camera_distance_) +
+                                                  static_cast<double>(parent_matrix.at(2, 3))};
             line.end = world::WorldPosition{static_cast<double>(child_matrix.at(0, 3)),
                                             static_cast<double>(child_matrix.at(1, 3)),
-                                            -4.0 + static_cast<double>(child_matrix.at(2, 3))};
+                                            -static_cast<double>(preview_camera_distance_) +
+                                                static_cast<double>(child_matrix.at(2, 3))};
             line.color = {1.0F, 0.45F, 0.1F, 1.0F};
             line.lifetime_seconds = 0.05F;
             auto status = active_renderer->debug_renderer()->submit_line(std::move(line));
@@ -791,11 +1094,30 @@ core::Status AssetLabMode::shutdown(game::GameApplicationServices& services) {
                 status = model_status;
             }
         }
+        if (direct_preview_object_.is_valid()) {
+            renderer::RenderSceneUpdate removal;
+            removal.kind = renderer::RenderSceneUpdateKind::remove_object;
+            removal.object_id = direct_preview_object_;
+            const auto remove_status = active_renderer->apply_scene_updates(
+                std::span<const renderer::RenderSceneUpdate>(&removal, 1U));
+            if (!remove_status && status) {
+                status = remove_status;
+            }
+        }
+        if (direct_preview_mesh_.is_valid()) {
+            const auto release_status = active_renderer->release_static_mesh(direct_preview_mesh_);
+            if (!release_status && status) {
+                status = release_status;
+            }
+        }
     }
     particles_.reset();
+    terrain_world_.reset();
     inspected_model_.reset();
     inspected_node_matrices_.clear();
     cooked_assets_.reset();
+    direct_preview_object_ = {};
+    direct_preview_mesh_ = {};
     particles_initialized_ = false;
     models_initialized_ = false;
     return status;
