@@ -263,7 +263,7 @@ class Renderer {
     TerrainPipelineSet terrain_pipelines_{};
     std::array<GraphicsPipelineKey, 4> terrain_pipeline_keys_{};
     ScenePipelineSet scene_pipelines_{};
-    std::array<GraphicsPipelineKey, 6> scene_pipeline_keys_{};
+    std::array<GraphicsPipelineKey, 10> scene_pipeline_keys_{};
     std::array<rhi::RenderResourceHandle, 4> shadow_pipelines_{};
     std::array<GraphicsPipelineKey, 4> shadow_pipeline_keys_{};
     DebugPipelineSet debug_pipelines_{};

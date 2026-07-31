@@ -18,21 +18,29 @@ struct alignas(16) GpuObjectInstance {
     float color[4]{1.0F, 1.0F, 1.0F, 1.0F};
     std::uint32_t metadata[4]{};
     std::uint32_t morph_metadata[4]{};
+    float effect_parameters[4]{};
+    std::uint32_t effect_metadata[4]{};
 };
 
-static_assert(sizeof(GpuObjectInstance) == 112);
+static_assert(sizeof(GpuObjectInstance) == 144);
 static_assert(offsetof(GpuObjectInstance, camera_relative_transform) == 0);
 static_assert(offsetof(GpuObjectInstance, color) == 64);
 static_assert(offsetof(GpuObjectInstance, metadata) == 80);
 static_assert(offsetof(GpuObjectInstance, morph_metadata) == 96);
+static_assert(offsetof(GpuObjectInstance, effect_parameters) == 112);
+static_assert(offsetof(GpuObjectInstance, effect_metadata) == 128);
 
 struct ScenePipelineSet {
     rhi::RenderResourceHandle opaque;
     rhi::RenderResourceHandle alpha_tested;
     rhi::RenderResourceHandle transparent;
+    rhi::RenderResourceHandle additive;
+    rhi::RenderResourceHandle premultiplied;
     rhi::RenderResourceHandle opaque_two_sided;
     rhi::RenderResourceHandle alpha_tested_two_sided;
     rhi::RenderResourceHandle transparent_two_sided;
+    rhi::RenderResourceHandle additive_two_sided;
+    rhi::RenderResourceHandle premultiplied_two_sided;
 
     [[nodiscard]] bool is_valid() const noexcept;
     [[nodiscard]] rhi::RenderResourceHandle for_layer(RenderLayer layer,

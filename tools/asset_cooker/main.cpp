@@ -217,6 +217,16 @@ int main(int argc, char** argv) {
                 only_logical_ids.push_back(visual.model_asset);
             }
             if (include_presentation_assets) {
+                for (const auto& species : content_report.vegetation_species.species()) {
+                    for (const auto& lod : species.lods) {
+                        only_logical_ids.push_back(lod.model_asset);
+                    }
+                    for (const auto& growth : species.growth_states) {
+                        if (!growth.model_override.empty()) {
+                            only_logical_ids.push_back(growth.model_override);
+                        }
+                    }
+                }
                 for (const auto& event : content_report.sound_events.definitions()) {
                     only_logical_ids.push_back(event.asset_id);
                 }

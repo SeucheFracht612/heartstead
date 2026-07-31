@@ -16,7 +16,7 @@ namespace {
 
 [[nodiscard]] bool finite_color(const std::array<float, 4>& color) noexcept {
     return std::ranges::all_of(
-        color, [](float value) { return std::isfinite(value) && value >= 0.0F && value <= 1.0F; });
+        color, [](float value) { return std::isfinite(value) && value >= 0.0F && value <= 4.0F; });
 }
 
 [[nodiscard]] float lerp(float left, float right, float alpha) noexcept {
@@ -96,6 +96,15 @@ core::Status validate_render_object_proxy(const RenderObjectProxy& object) {
         object.maximum_view_distance < 0.0F ||
         (object.maximum_view_distance != 0.0F &&
          object.maximum_view_distance <= object.minimum_view_distance) ||
+        object.atlas_columns == 0U || object.atlas_rows == 0U ||
+        object.sprite_frame >=
+            static_cast<std::uint32_t>(object.atlas_columns) * object.atlas_rows ||
+        !std::isfinite(object.wind_phase) || !std::isfinite(object.wind_stiffness) ||
+        object.wind_stiffness < 0.0F || object.wind_stiffness > 1.0F ||
+        !std::isfinite(object.foliage_transmission) ||
+        object.foliage_transmission < 0.0F || object.foliage_transmission > 4.0F ||
+        !std::isfinite(object.distance_fade_width) ||
+        object.distance_fade_width < 0.0F ||
         object.morph_weights.size() > 64U ||
         !std::ranges::all_of(object.morph_weights,
                              [](float value) { return std::isfinite(value); })) {
@@ -463,27 +472,59 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
             ++frame.stats.culled_objects;
             continue;
         }
-        RenderObjectInstance instance{object.id,
-                                      object.mesh,
-                                      object.material,
-                                      object.skin_palette,
-                                      object.layer,
-                                      transform.value(),
-                                      bounds,
-                                      object.color,
-                                      object.morph_weights,
-                                      object.sprite_frame};
+        float visibility = 1.0F;
+        if (object.distance_fade_width > 0.0F) {
+            const auto smoothstep = [](float minimum, float maximum, float value) {
+                const auto normalized =
+                    std::clamp((value - minimum) / std::max(maximum - minimum, 0.0001F),
+                               0.0F, 1.0F);
+                return normalized * normalized * (3.0F - 2.0F * normalized);
+            };
+            if (object.minimum_view_distance > 0.0F) {
+                visibility *=
+                    smoothstep(object.minimum_view_distance,
+                               object.minimum_view_distance + object.distance_fade_width,
+                               camera_distance);
+            }
+            if (object.maximum_view_distance > 0.0F) {
+                visibility *=
+                    1.0F - smoothstep(object.maximum_view_distance -
+                                          object.distance_fade_width,
+                                      object.maximum_view_distance, camera_distance);
+            }
+        }
+        RenderObjectInstance instance;
+        instance.id = object.id;
+        instance.mesh = object.mesh;
+        instance.material = object.material;
+        instance.skin_palette = object.skin_palette;
+        instance.layer = object.layer;
+        instance.camera_relative_transform = transform.value();
+        instance.camera_relative_bounds = bounds;
+        instance.color = object.color;
+        instance.morph_weights = object.morph_weights;
+        instance.sprite_frame = object.sprite_frame;
+        instance.atlas_columns = object.atlas_columns;
+        instance.atlas_rows = object.atlas_rows;
+        instance.effect_flags = object.effect_flags;
+        instance.wind_phase = object.wind_phase;
+        instance.wind_stiffness = object.wind_stiffness;
+        instance.foliage_transmission = object.foliage_transmission;
+        instance.visibility = visibility;
         auto batch =
             std::ranges::find_if(frame.batches, [&object](const RenderInstanceBatch& value) {
                 return value.mesh == object.mesh && value.material == object.material &&
                        value.layer == object.layer &&
-                       value.two_sided == any(object.flags & RenderObjectFlags::two_sided);
+                       value.two_sided == any(object.flags & RenderObjectFlags::two_sided) &&
+                       value.casts_shadow ==
+                           any(object.flags & RenderObjectFlags::cast_shadow);
             });
         if (batch == frame.batches.end()) {
             frame.batches.push_back({object.mesh,
                                      object.material,
                                      object.layer,
                                      any(object.flags & RenderObjectFlags::two_sided),
+                                     any(object.flags & RenderObjectFlags::cast_shadow),
                                      {}});
             batch = std::prev(frame.batches.end());
         }
@@ -500,6 +541,9 @@ core::Result<RenderSceneFrame> RenderScene::extract(const RenderCamera& camera,
                           }
                           if (left.two_sided != right.two_sided) {
                               return left.two_sided < right.two_sided;
+                          }
+                          if (left.casts_shadow != right.casts_shadow) {
+                              return left.casts_shadow > right.casts_shadow;
                           }
                           return left.mesh < right.mesh;
                       });

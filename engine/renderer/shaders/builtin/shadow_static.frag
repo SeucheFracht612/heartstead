@@ -5,6 +5,8 @@ layout(location = 4) in vec2 fragment_uv1;
 layout(location = 5) in vec4 fragment_color;
 layout(location = 6) flat in uint fragment_layer;
 layout(location = 7) flat in uint fragment_material;
+layout(location = 9) in vec4 fragment_effect_parameters;
+layout(location = 10) flat in uvec4 fragment_effect_metadata;
 
 layout(set = 0, binding = 2) uniform sampler2DArray surface_textures;
 
@@ -26,6 +28,7 @@ layout(std430, set = 0, binding = 3) readonly buffer SurfaceMaterials {
 } surface_materials;
 
 const uint MATERIAL_ALPHA_TESTED = 1U;
+const uint EFFECT_VEGETATION = 1U;
 
 vec2 binding_uv(GpuTextureBinding binding) {
     vec2 uv = binding.metadata.z == 0U ? fragment_uv0 : fragment_uv1;
@@ -41,6 +44,18 @@ void main() {
     // are densely allocated and never use the unsigned sentinel.
     if (fragment_layer == 0xffffffffU) {
         discard;
+    }
+    if ((fragment_effect_metadata.x & EFFECT_VEGETATION) != 0U &&
+        fragment_effect_parameters.w < 1.0) {
+        uint dither_hash =
+            uint(gl_FragCoord.x) * 0x1f123bb5U ^
+            uint(gl_FragCoord.y) * 0x5f356495U ^
+            fragment_effect_metadata.y * 0x9e3779b9U;
+        dither_hash ^= dither_hash >> 16U;
+        if (float(dither_hash & 0xffffU) / 65535.0 >
+            fragment_effect_parameters.w) {
+            discard;
+        }
     }
     GpuSurfaceMaterial material = surface_materials.materials[fragment_material];
     if ((material.flags_and_padding.x & MATERIAL_ALPHA_TESTED) == 0U) {

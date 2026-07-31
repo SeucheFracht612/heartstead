@@ -139,6 +139,8 @@ target_sources(
     renderer/shaders/spirv_loader.cpp
     renderer/terrain/gpu_chunk_vertex.cpp
     renderer/ui/ui_renderer.cpp
+    renderer/vegetation/vegetation_renderer.cpp
+    renderer/vegetation/vegetation_species.cpp
     renderer/vulkan/vulkan_backend.cpp
     renderer/vulkan/vulkan_common.cpp
     renderer/vulkan/vulkan_frame_resources.cpp
@@ -258,6 +260,8 @@ target_sources(
       ui/ui_skin_prototype.hpp
       items/item_stack.hpp
       items/item_prototype.hpp
+      renderer/vegetation/vegetation_species.hpp
+      renderer/vegetation/vegetation_renderer.hpp
       jobs/job_system.hpp
       jobs/thread_pool/thread_pool_backend.hpp
       math/matrix.hpp

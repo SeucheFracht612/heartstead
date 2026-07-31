@@ -14,6 +14,8 @@ struct GpuObjectInstance {
     vec4 color;
     uvec4 metadata;
     uvec4 morph_metadata;
+    vec4 effect_parameters;
+    uvec4 effect_metadata;
 };
 
 struct GpuMorphDelta {
@@ -55,12 +57,41 @@ layout(location = 5) out vec4 fragment_color;
 layout(location = 6) flat out uint fragment_layer;
 layout(location = 7) flat out uint fragment_material;
 layout(location = 8) out vec4 fragment_skin_weights;
+layout(location = 9) out vec4 fragment_effect_parameters;
+layout(location = 10) flat out uvec4 fragment_effect_metadata;
+
+const uint EFFECT_VEGETATION = 1U;
 
 void main() {
     GpuObjectInstance instance = object_instances.instances[gl_InstanceIndex];
     vec3 local_position = in_position;
     vec3 local_normal = in_normal.xyz;
     vec3 local_tangent = in_tangent.xyz;
+    if ((instance.effect_metadata.x & EFFECT_VEGETATION) != 0U) {
+        vec2 wind = frame.unused_origin.xy;
+        float wind_speed = length(wind);
+        if (wind_speed > 0.0001) {
+            vec2 wind_direction = wind / wind_speed;
+            vec2 anchor = instance.camera_relative_transform[3].xz;
+            float height_weight =
+                1.0 - exp(-max(local_position.y, 0.0) * 0.85);
+            float spatial_phase =
+                dot(anchor, vec2(0.071, 0.053)) +
+                instance.effect_parameters.x;
+            float primary =
+                sin(frame.unused_origin.z * (0.9 + wind_speed * 0.08) +
+                    spatial_phase);
+            float detail =
+                sin(frame.unused_origin.z * 2.3 +
+                    spatial_phase * 2.17) *
+                0.28;
+            float flexibility =
+                1.0 - clamp(instance.effect_parameters.y, 0.0, 1.0);
+            local_position.xz +=
+                wind_direction * (primary + detail) * wind_speed *
+                flexibility * height_weight * 0.075;
+        }
+    }
     uint vertex_count = instance.morph_metadata.w & 0x00ffffffU;
     uint morph_count = instance.morph_metadata.w >> 24U;
     if (morph_count > 0U) {
@@ -96,10 +127,18 @@ void main() {
     fragment_tangent =
         vec4(normalize(normal_matrix * local_tangent), in_tangent.w);
     fragment_world_position = world_position.xyz;
-    fragment_uv0 = in_uv0;
-    fragment_uv1 = in_uv1;
+    uvec2 atlas = max(instance.effect_metadata.zw, uvec2(1U));
+    uint frame_count = atlas.x * atlas.y;
+    uint sprite_frame =
+        min(instance.effect_metadata.y, max(frame_count, 1U) - 1U);
+    vec2 atlas_cell =
+        vec2(sprite_frame % atlas.x, sprite_frame / atlas.x);
+    fragment_uv0 = (in_uv0 + atlas_cell) / vec2(atlas);
+    fragment_uv1 = (in_uv1 + atlas_cell) / vec2(atlas);
     fragment_color = instance.color * in_color;
     fragment_layer = instance.metadata.x;
     fragment_material = instance.metadata.w;
     fragment_skin_weights = in_weights;
+    fragment_effect_parameters = instance.effect_parameters;
+    fragment_effect_metadata = instance.effect_metadata;
 }

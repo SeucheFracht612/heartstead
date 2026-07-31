@@ -53,6 +53,20 @@ target_link_libraries(heartstead_renderer_lighting_tests PRIVATE Heartstead::Eng
 heartstead_configure_test_target(heartstead_renderer_lighting_tests)
 heartstead_register_unit_test(heartstead_renderer_lighting_tests)
 
+add_executable(heartstead_vegetation_renderer_tests vegetation_renderer_tests.cpp)
+target_link_libraries(heartstead_vegetation_renderer_tests PRIVATE Heartstead::Engine)
+target_compile_definitions(
+  heartstead_vegetation_renderer_tests
+  PRIVATE
+    HEARTSTEAD_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    HEARTSTEAD_TEST_COOKED_ASSET_DIR="${CMAKE_BINARY_DIR}/apps/dev_game/assets/cooked"
+)
+if(TARGET heartstead_dev_game_model_assets)
+  add_dependencies(heartstead_vegetation_renderer_tests heartstead_dev_game_model_assets)
+endif()
+heartstead_configure_test_target(heartstead_vegetation_renderer_tests)
+heartstead_register_unit_test(heartstead_vegetation_renderer_tests)
+
 add_executable(heartstead_game_runtime_tests game_runtime_tests.cpp)
 target_link_libraries(heartstead_game_runtime_tests PRIVATE Heartstead::GameRuntime)
 target_compile_definitions(

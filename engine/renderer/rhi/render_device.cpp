@@ -1523,6 +1523,8 @@ core::Status validate_render_graphics_pipeline_shape(const RenderGraphicsPipelin
     switch (desc.blend_mode) {
     case RenderBlendMode::disabled:
     case RenderBlendMode::alpha:
+    case RenderBlendMode::additive:
+    case RenderBlendMode::premultiplied_alpha:
         break;
     }
     if (desc.color_write_enable && is_depth_format(desc.color_target_format)) {
@@ -1939,6 +1941,10 @@ std::string_view render_blend_mode_name(RenderBlendMode value) noexcept {
         return "disabled";
     case RenderBlendMode::alpha:
         return "alpha";
+    case RenderBlendMode::additive:
+        return "additive";
+    case RenderBlendMode::premultiplied_alpha:
+        return "premultiplied_alpha";
     }
     return "unknown";
 }

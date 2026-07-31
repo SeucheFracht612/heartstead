@@ -38,6 +38,21 @@ large-coordinate coordinate system. The environment profile exposes a large-wate
 future geometric ocean rings; ordinary voxel oceans already retain stable horizons because their
 vertices remain chunk-local and camera-relative.
 
+## Vegetation
+
+`VegetationRenderer` loads the validated species registry from the production cooked store and
+turns deterministic patches into retained scene objects. Matching plant primitives are emitted by
+`SceneRenderSystem` as one hardware-instanced draw rather than one draw per plant.
+
+Each GPU instance carries its stable wind phase, species stiffness, foliage transmission, atlas
+frame, and dither visibility. The shared environment wind vector drives foliage and its shadow
+vertex program with the same time and phase, preventing detached shadows. LODs overlap through
+stable dithered transitions, may reduce density deterministically, and stop casting beyond the
+species' shadow LOD. Frustum/distance culling happens in the retained scene; callers may also
+submit conservative camera-relative occluder bounds for patch-level visibility rejection.
+
+See [vegetation authoring](../authoring/vegetation.md) for the data format.
+
 ## Runtime integration
 
 The development game combines the selected profile with the deterministic day/night solar path.

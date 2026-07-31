@@ -269,7 +269,7 @@ make_static_mesh_shader_program(std::span<const std::uint32_t> vertex_spirv,
     shader_program.interface.push_constant_ranges.push_back(
         {rhi::RenderShaderStageFlags::vertex | rhi::RenderShaderStageFlags::fragment, 0,
          sizeof(rhi::ChunkPushConstants)});
-    shader_program.dependencies = {"gpu_static_mesh_vertex_v3", "gpu_object_instance_v2",
+    shader_program.dependencies = {"gpu_static_mesh_vertex_v3", "gpu_object_instance_v3",
                                    "gpu_surface_material_v2", "gpu_morph_delta_v1",
                                    "chunk_push_constants_v2"};
     return shader_program;
@@ -294,7 +294,7 @@ make_static_shadow_shader_program(std::span<const std::uint32_t> vertex_spirv,
     program.id = "static_shadow";
     program.stages[1].source_name = "shadow_static.frag.spv";
     program.interface.descriptors.resize(7);
-    program.dependencies = {"gpu_static_mesh_vertex_v3", "gpu_object_instance_v2",
+    program.dependencies = {"gpu_static_mesh_vertex_v3", "gpu_object_instance_v3",
                             "gpu_surface_material_v2",   "gpu_morph_delta_v1",
                             "chunk_push_constants_v2",   "depth_only_v1"};
     return program;
@@ -1163,6 +1163,28 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
         command_lists.transparent_terrain_draws.end(),
         std::make_move_iterator(transparent_instances.begin()),
         std::make_move_iterator(transparent_instances.end()));
+    const auto gust =
+        1.0F + environment_.wind_gust_strength *
+                   std::sin(environment_.elapsed_seconds *
+                            environment_.wind_gust_frequency * 6.28318530718F);
+    const math::Vec3f scene_effect_parameters{
+        environment_.wind_velocity.x * gust,
+        environment_.wind_velocity.z * gust,
+        environment_.elapsed_seconds,
+    };
+    for (auto& draw : command_lists.rich_instance_draws) {
+        draw.camera_relative_origin = scene_effect_parameters;
+    }
+    for (auto& draw : command_lists.transparent_terrain_draws) {
+        if (draw.pipeline == scene_pipelines_.transparent ||
+            draw.pipeline == scene_pipelines_.transparent_two_sided ||
+            draw.pipeline == scene_pipelines_.additive ||
+            draw.pipeline == scene_pipelines_.additive_two_sided ||
+            draw.pipeline == scene_pipelines_.premultiplied ||
+            draw.pipeline == scene_pipelines_.premultiplied_two_sided) {
+            draw.camera_relative_origin = scene_effect_parameters;
+        }
+    }
     std::array<RenderLightInstance, local_shadow_map_count> selected_local_shadows;
     std::size_t selected_local_shadow_count = 0;
     for (const auto& candidate : clustered_lighting_->selected_shadow_lights()) {
@@ -1200,6 +1222,9 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
         append_shadow(command_lists.opaque_terrain_draws, shadow_pipelines_[0]);
         append_shadow(command_lists.alpha_tested_terrain_draws, shadow_pipelines_[1]);
         for (const auto& draw : command_lists.rich_instance_draws) {
+            if (!draw.casts_shadow) {
+                continue;
+            }
             const auto two_sided_or_cutout =
                 draw.pipeline == scene_pipelines_.alpha_tested ||
                 draw.pipeline == scene_pipelines_.opaque_two_sided ||
@@ -1229,6 +1254,9 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
         append_shadow(command_lists.opaque_terrain_draws, shadow_pipelines_[0]);
         append_shadow(command_lists.alpha_tested_terrain_draws, shadow_pipelines_[1]);
         for (const auto& draw : command_lists.rich_instance_draws) {
+            if (!draw.casts_shadow) {
+                continue;
+            }
             const auto two_sided_or_cutout =
                 draw.pipeline == scene_pipelines_.alpha_tested ||
                 draw.pipeline == scene_pipelines_.opaque_two_sided ||
@@ -1400,7 +1428,7 @@ core::Status Renderer::reload_static_mesh_shaders(std::span<const std::uint32_t>
     if (!status) {
         return status;
     }
-    std::array<rhi::RenderResourceHandle, 6> rebuilt{};
+    std::array<rhi::RenderResourceHandle, 10> rebuilt{};
     for (std::size_t index = 0; index < scene_pipeline_keys_.size(); ++index) {
         auto pipeline = pipeline_cache_->find(scene_pipeline_keys_[index]);
         if (!pipeline) {
@@ -1408,7 +1436,8 @@ core::Status Renderer::reload_static_mesh_shaders(std::span<const std::uint32_t>
         }
         rebuilt[index] = pipeline.value();
     }
-    scene_pipelines_ = {rebuilt[0], rebuilt[1], rebuilt[2], rebuilt[3], rebuilt[4], rebuilt[5]};
+    scene_pipelines_ = {rebuilt[0], rebuilt[1], rebuilt[2], rebuilt[3], rebuilt[4],
+                        rebuilt[5], rebuilt[6], rebuilt[7], rebuilt[8], rebuilt[9]};
     return scene_render_system_->set_pipelines(scene_pipelines_);
 }
 
@@ -2791,10 +2820,28 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
     if (!transparent) {
         return core::Status::failure(transparent.error().code, transparent.error().message);
     }
+    auto additive_desc = pipeline;
+    additive_desc.debug_name = "additive_static_instances_pipeline";
+    additive_desc.depth_write_enable = false;
+    additive_desc.blend_mode = rhi::RenderBlendMode::additive;
+    auto additive = prewarm(3, RenderPhase::transparent_terrain, std::move(additive_desc));
+    if (!additive) {
+        return core::Status::failure(additive.error().code, additive.error().message);
+    }
+    auto premultiplied_desc = pipeline;
+    premultiplied_desc.debug_name = "premultiplied_static_instances_pipeline";
+    premultiplied_desc.depth_write_enable = false;
+    premultiplied_desc.blend_mode = rhi::RenderBlendMode::premultiplied_alpha;
+    auto premultiplied =
+        prewarm(4, RenderPhase::transparent_terrain, std::move(premultiplied_desc));
+    if (!premultiplied) {
+        return core::Status::failure(premultiplied.error().code,
+                                     premultiplied.error().message);
+    }
     auto two_sided_desc = pipeline;
     two_sided_desc.debug_name = "opaque_two_sided_static_instances_pipeline";
     two_sided_desc.cull_mode = rhi::RenderCullMode::none;
-    auto opaque_two_sided = prewarm(3, RenderPhase::static_instances, std::move(two_sided_desc));
+    auto opaque_two_sided = prewarm(5, RenderPhase::static_instances, std::move(two_sided_desc));
     if (!opaque_two_sided) {
         return core::Status::failure(opaque_two_sided.error().code,
                                      opaque_two_sided.error().message);
@@ -2803,7 +2850,7 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
     alpha_two_sided_desc.debug_name = "alpha_tested_two_sided_static_instances_pipeline";
     alpha_two_sided_desc.cull_mode = rhi::RenderCullMode::none;
     auto alpha_two_sided =
-        prewarm(4, RenderPhase::static_instances, std::move(alpha_two_sided_desc));
+        prewarm(6, RenderPhase::static_instances, std::move(alpha_two_sided_desc));
     if (!alpha_two_sided) {
         return core::Status::failure(alpha_two_sided.error().code, alpha_two_sided.error().message);
     }
@@ -2813,14 +2860,41 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
     transparent_two_sided_desc.depth_write_enable = false;
     transparent_two_sided_desc.blend_mode = rhi::RenderBlendMode::alpha;
     auto transparent_two_sided =
-        prewarm(5, RenderPhase::transparent_terrain, std::move(transparent_two_sided_desc));
+        prewarm(7, RenderPhase::transparent_terrain, std::move(transparent_two_sided_desc));
     if (!transparent_two_sided) {
         return core::Status::failure(transparent_two_sided.error().code,
                                      transparent_two_sided.error().message);
     }
-    scene_pipelines_ = {opaque.value(),          alpha.value(),
-                        transparent.value(),     opaque_two_sided.value(),
-                        alpha_two_sided.value(), transparent_two_sided.value()};
+    auto additive_two_sided_desc = pipeline;
+    additive_two_sided_desc.debug_name = "additive_two_sided_static_instances_pipeline";
+    additive_two_sided_desc.cull_mode = rhi::RenderCullMode::none;
+    additive_two_sided_desc.depth_write_enable = false;
+    additive_two_sided_desc.blend_mode = rhi::RenderBlendMode::additive;
+    auto additive_two_sided =
+        prewarm(8, RenderPhase::transparent_terrain, std::move(additive_two_sided_desc));
+    if (!additive_two_sided) {
+        return core::Status::failure(additive_two_sided.error().code,
+                                     additive_two_sided.error().message);
+    }
+    auto premultiplied_two_sided_desc = pipeline;
+    premultiplied_two_sided_desc.debug_name =
+        "premultiplied_two_sided_static_instances_pipeline";
+    premultiplied_two_sided_desc.cull_mode = rhi::RenderCullMode::none;
+    premultiplied_two_sided_desc.depth_write_enable = false;
+    premultiplied_two_sided_desc.blend_mode =
+        rhi::RenderBlendMode::premultiplied_alpha;
+    auto premultiplied_two_sided =
+        prewarm(9, RenderPhase::transparent_terrain,
+                std::move(premultiplied_two_sided_desc));
+    if (!premultiplied_two_sided) {
+        return core::Status::failure(premultiplied_two_sided.error().code,
+                                     premultiplied_two_sided.error().message);
+    }
+    scene_pipelines_ = {
+        opaque.value(),          alpha.value(),          transparent.value(),
+        additive.value(),        premultiplied.value(),  opaque_two_sided.value(),
+        alpha_two_sided.value(), transparent_two_sided.value(),
+        additive_two_sided.value(), premultiplied_two_sided.value()};
     return bind_scene_surface_resources();
 }
 

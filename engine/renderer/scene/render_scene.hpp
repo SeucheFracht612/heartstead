@@ -51,6 +51,8 @@ enum class RenderLayer : std::uint8_t {
     opaque,
     alpha_tested,
     transparent,
+    additive,
+    premultiplied,
 };
 
 enum class RenderObjectFlags : std::uint32_t {
@@ -60,6 +62,32 @@ enum class RenderObjectFlags : std::uint32_t {
     two_sided = 1U << 2U,
     cast_shadow = 1U << 3U,
 };
+
+enum class RenderEffectFlags : std::uint32_t {
+    none = 0,
+    vegetation = 1U << 0U,
+    foliage_transmission = 1U << 1U,
+    billboard = 1U << 2U,
+    particle = 1U << 3U,
+    velocity_aligned = 1U << 4U,
+    soft_particle = 1U << 5U,
+};
+
+[[nodiscard]] constexpr RenderEffectFlags operator|(RenderEffectFlags left,
+                                                    RenderEffectFlags right) noexcept {
+    return static_cast<RenderEffectFlags>(static_cast<std::uint32_t>(left) |
+                                          static_cast<std::uint32_t>(right));
+}
+
+[[nodiscard]] constexpr RenderEffectFlags operator&(RenderEffectFlags left,
+                                                    RenderEffectFlags right) noexcept {
+    return static_cast<RenderEffectFlags>(static_cast<std::uint32_t>(left) &
+                                          static_cast<std::uint32_t>(right));
+}
+
+[[nodiscard]] constexpr bool any(RenderEffectFlags flags) noexcept {
+    return flags != RenderEffectFlags::none;
+}
 
 [[nodiscard]] constexpr RenderObjectFlags operator|(RenderObjectFlags left,
                                                     RenderObjectFlags right) noexcept {
@@ -95,6 +123,15 @@ struct RenderObjectProxy {
     std::array<float, 4> color{1.0F, 1.0F, 1.0F, 1.0F};
     std::vector<float> morph_weights;
     std::uint32_t sprite_frame = 0;
+    std::uint16_t atlas_columns = 1;
+    std::uint16_t atlas_rows = 1;
+    RenderEffectFlags effect_flags = RenderEffectFlags::none;
+    float wind_phase = 0.0F;
+    // Zero bends freely; one is rigid.
+    float wind_stiffness = 1.0F;
+    float foliage_transmission = 0.0F;
+    // Smooth visibility width at minimum/maximum view-distance boundaries. Zero is a hard cut.
+    float distance_fade_width = 0.0F;
     // Inclusive lower and exclusive upper camera-distance bounds. A zero maximum is unbounded.
     float minimum_view_distance = 0.0F;
     float maximum_view_distance = 0.0F;
@@ -159,6 +196,13 @@ struct RenderObjectInstance {
     std::array<float, 4> color{};
     std::vector<float> morph_weights;
     std::uint32_t sprite_frame = 0;
+    std::uint16_t atlas_columns = 1;
+    std::uint16_t atlas_rows = 1;
+    RenderEffectFlags effect_flags = RenderEffectFlags::none;
+    float wind_phase = 0.0F;
+    float wind_stiffness = 1.0F;
+    float foliage_transmission = 0.0F;
+    float visibility = 1.0F;
 };
 
 struct RenderInstanceBatch {
@@ -166,6 +210,7 @@ struct RenderInstanceBatch {
     MaterialRuntimeHandle material;
     RenderLayer layer = RenderLayer::opaque;
     bool two_sided = false;
+    bool casts_shadow = false;
     std::vector<RenderObjectInstance> instances;
 };
 

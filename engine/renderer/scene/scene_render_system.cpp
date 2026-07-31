@@ -18,8 +18,10 @@ namespace {
 
 bool ScenePipelineSet::is_valid() const noexcept {
     return opaque.is_valid() && alpha_tested.is_valid() && transparent.is_valid() &&
+           additive.is_valid() && premultiplied.is_valid() &&
            opaque_two_sided.is_valid() && alpha_tested_two_sided.is_valid() &&
-           transparent_two_sided.is_valid();
+           transparent_two_sided.is_valid() && additive_two_sided.is_valid() &&
+           premultiplied_two_sided.is_valid();
 }
 
 rhi::RenderResourceHandle ScenePipelineSet::for_layer(RenderLayer layer,
@@ -31,6 +33,10 @@ rhi::RenderResourceHandle ScenePipelineSet::for_layer(RenderLayer layer,
         return two_sided ? alpha_tested_two_sided : alpha_tested;
     case RenderLayer::transparent:
         return two_sided ? transparent_two_sided : transparent;
+    case RenderLayer::additive:
+        return two_sided ? additive_two_sided : additive;
+    case RenderLayer::premultiplied:
+        return two_sided ? premultiplied_two_sided : premultiplied;
     }
     return {};
 }
@@ -197,7 +203,8 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
             stats_.dropped_instances += static_cast<std::uint32_t>(batch.instances.size());
             continue;
         }
-        if (batch.layer == RenderLayer::transparent) {
+        if (batch.layer == RenderLayer::transparent || batch.layer == RenderLayer::additive ||
+            batch.layer == RenderLayer::premultiplied) {
             std::ranges::stable_sort(batch.instances, [](const RenderObjectInstance& left,
                                                          const RenderObjectInstance& right) {
                 return bounds_depth_squared(left.camera_relative_bounds) >
@@ -286,6 +293,15 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
             gpu.morph_metadata[2] = static_cast<std::uint32_t>(segment_morph_weight_offset +
                                                                morph_weight_scratch_.size());
             gpu.morph_metadata[3] = (mesh->morph_target_count << 24U) | mesh->vertex_count;
+            gpu.effect_parameters[0] = instance.wind_phase;
+            gpu.effect_parameters[1] = instance.wind_stiffness;
+            gpu.effect_parameters[2] = instance.foliage_transmission;
+            gpu.effect_parameters[3] = instance.visibility;
+            gpu.effect_metadata[0] =
+                static_cast<std::uint32_t>(instance.effect_flags);
+            gpu.effect_metadata[1] = instance.sprite_frame;
+            gpu.effect_metadata[2] = instance.atlas_columns;
+            gpu.effect_metadata[3] = instance.atlas_rows;
             morph_weight_scratch_.insert(morph_weight_scratch_.end(),
                                          instance.morph_weights.begin(),
                                          instance.morph_weights.end());
@@ -316,7 +332,9 @@ core::Result<SceneDrawCommands> SceneRenderSystem::build_draw_commands(const Ren
         draw.instance_count = static_cast<std::uint32_t>(accepted);
         draw.first_instance = static_cast<std::uint32_t>(first_instance);
         draw.index_type = mesh->index_type;
-        if (batch.layer == RenderLayer::transparent) {
+        draw.casts_shadow = batch.casts_shadow;
+        if (batch.layer == RenderLayer::transparent || batch.layer == RenderLayer::additive ||
+            batch.layer == RenderLayer::premultiplied) {
             draw.sort_depth = accepted_sort_depth;
             scratch.transparent.push_back(draw);
         } else {

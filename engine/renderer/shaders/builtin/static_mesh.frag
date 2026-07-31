@@ -9,6 +9,8 @@ layout(location = 5) in vec4 fragment_color;
 layout(location = 6) flat in uint fragment_layer;
 layout(location = 7) flat in uint fragment_material;
 layout(location = 8) in vec4 fragment_skin_weights;
+layout(location = 9) in vec4 fragment_effect_parameters;
+layout(location = 10) flat in uvec4 fragment_effect_metadata;
 
 layout(set = 0, binding = 2) uniform sampler2DArray surface_textures;
 layout(set = 0, binding = 4) uniform sampler2DArray surface_data_textures;
@@ -87,6 +89,8 @@ const uint LAYER_TRANSPARENT = 2U;
 const uint MATERIAL_ALPHA_TESTED = 1U;
 const uint MATERIAL_TWO_SIDED = 8U;
 const uint MATERIAL_UNLIT = 32U;
+const uint EFFECT_VEGETATION = 1U;
+const uint EFFECT_FOLIAGE_TRANSMISSION = 2U;
 const float PI = 3.14159265358979323846;
 
 vec3 evaluate_light(vec3 albedo, float metallic, float roughness, vec3 normal,
@@ -346,6 +350,18 @@ void main() {
         sample_binding(surface_textures, material.textures[0]) *
         material.base_color * fragment_color;
     const uint material_flags = material.flags_and_padding.x;
+    if ((fragment_effect_metadata.x & EFFECT_VEGETATION) != 0U &&
+        fragment_effect_parameters.w < 1.0) {
+        uint dither_hash =
+            uint(gl_FragCoord.x) * 0x1f123bb5U ^
+            uint(gl_FragCoord.y) * 0x5f356495U ^
+            fragment_effect_metadata.y * 0x9e3779b9U;
+        dither_hash ^= dither_hash >> 16U;
+        float threshold = float(dither_hash & 0xffffU) / 65535.0;
+        if (threshold > fragment_effect_parameters.w) {
+            discard;
+        }
+    }
     if ((material_flags & MATERIAL_ALPHA_TESTED) != 0U &&
         base_color.a < material.roughness_normal_occlusion_alpha.w) {
         discard;
@@ -419,6 +435,13 @@ void main() {
                 evaluate_local_lights(base_color.rgb, metallic, roughness, normal,
                                       view_direction) +
                 emissive;
+        if ((fragment_effect_metadata.x & EFFECT_FOLIAGE_TRANSMISSION) != 0U) {
+            float backlight =
+                pow(max(dot(-normal, light_direction), 0.0), 1.5);
+            color += base_color.rgb *
+                     frame.sun_direction_intensity.w * backlight *
+                     fragment_effect_parameters.z * 0.32;
+        }
         uint debug_view = uint(shadows.shadow_parameters.w + 0.5);
         if (debug_view == 1U) {
             color = base_color.rgb;

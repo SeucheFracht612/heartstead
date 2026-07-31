@@ -328,6 +328,8 @@ void CpuParticleSystem::spawn(const ParticleEmitEvent& event, std::uint32_t& spa
         particle.start_color = prototype->start_color;
         particle.end_color = prototype->end_color;
         particle.material_group = prototype->material_group;
+        particle.atlas_columns = prototype->atlas_columns;
+        particle.atlas_rows = prototype->atlas_rows;
         particle.atlas_frame_count = prototype->atlas_frame_count;
         particle.atlas_frames_per_second = prototype->atlas_frames_per_second;
         particles_.push_back(std::move(particle));

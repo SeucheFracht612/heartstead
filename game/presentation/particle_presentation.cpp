@@ -139,6 +139,10 @@ ParticlePresentation::synchronize(renderer::Renderer& renderer,
         object.flags = renderer::RenderObjectFlags::two_sided;
         object.color = particle.color();
         object.sprite_frame = particle.atlas_frame();
+        object.atlas_columns = particle.atlas_columns;
+        object.atlas_rows = particle.atlas_rows;
+        object.effect_flags = renderer::RenderEffectFlags::particle |
+                              renderer::RenderEffectFlags::billboard;
         if (found == retained_.end()) {
             auto created = renderer.create_object(std::move(object));
             if (!created) {

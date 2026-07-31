@@ -174,6 +174,9 @@ struct RenderDrawCommand {
     RenderIndexType index_type = RenderIndexType::uint32;
     // Renderer-side stable ordering metadata. Backends deliberately ignore this value.
     float sort_depth = 0.0F;
+    // Retained scene batches use this to exclude non-shadow-casting effects from shadow passes.
+    // Backends deliberately ignore it outside renderer pass construction.
+    bool casts_shadow = true;
     bool scissor_enabled = false;
     RenderScissorRect scissor{};
     std::uint32_t texture_variation_seed = 0;

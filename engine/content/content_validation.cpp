@@ -9,6 +9,7 @@
 #include "engine/renderer/environment/environment_profile.hpp"
 #include "engine/renderer/materials/material_prototype_loader.hpp"
 #include "engine/renderer/particles/particle_prototype.hpp"
+#include "engine/renderer/vegetation/vegetation_species.hpp"
 #include "engine/rooms/room_descriptor_prototype.hpp"
 #include "engine/scenarios/scenario_prototype.hpp"
 #include "engine/ui/ui_skin_prototype.hpp"
@@ -186,6 +187,16 @@ ContentValidation::validate(const std::filesystem::path& mods_root,
                   environment_profiles.error().message);
     } else {
         report.environment_profiles = std::move(environment_profiles).value();
+    }
+
+    auto vegetation_species =
+        renderer::vegetation_species_registry_from_prototypes(report.registry,
+                                                              report.asset_catalog);
+    if (!vegetation_species) {
+        add_error(report, mods_root, vegetation_species.error().code,
+                  vegetation_species.error().message);
+    } else {
+        report.vegetation_species = std::move(vegetation_species).value();
     }
 
     const auto ui_panel_prototypes =

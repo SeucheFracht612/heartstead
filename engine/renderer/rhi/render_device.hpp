@@ -418,6 +418,8 @@ enum class RenderFrontFace : std::uint8_t {
 enum class RenderBlendMode : std::uint8_t {
     disabled,
     alpha,
+    additive,
+    premultiplied_alpha,
 };
 
 struct RenderVertexAttributeDesc {

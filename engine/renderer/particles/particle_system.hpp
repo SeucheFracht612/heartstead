@@ -83,6 +83,8 @@ struct ParticleState {
     std::array<float, 4> start_color{};
     std::array<float, 4> end_color{};
     std::uint8_t material_group = 0;
+    std::uint16_t atlas_columns = 1;
+    std::uint16_t atlas_rows = 1;
     std::uint16_t atlas_frame_count = 1;
     float atlas_frames_per_second = 0.0F;
 
