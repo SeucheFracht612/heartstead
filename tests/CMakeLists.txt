@@ -355,6 +355,8 @@ heartstead_add_foundation_test(heartstead_entity_motion_visual_state_tests entit
 heartstead_add_foundation_test(heartstead_animation_interaction_tests animation_interaction_tests.cpp)
 heartstead_add_foundation_test(heartstead_voxel_light_tests voxel_light_tests.cpp)
 heartstead_add_foundation_test(heartstead_voxel_fluid_tests voxel_fluid_tests.cpp)
+heartstead_add_foundation_test(heartstead_voxel_storage_experiment_tests
+                               voxel_storage_experiment_tests.cpp)
 heartstead_add_foundation_test(heartstead_chunk_light_system_tests
                                chunk_light_system_tests.cpp)
 heartstead_add_foundation_test(heartstead_day_night_environment_tests
