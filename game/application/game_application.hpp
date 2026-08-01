@@ -52,6 +52,18 @@ struct GameApplicationFrameOutput {
     std::optional<renderer::RenderFrameInput> render;
 };
 
+struct ApplicationWindowResizeDecision {
+    renderer::rhi::RenderExtent extent{};
+    bool minimized = false;
+    bool resize_renderer = false;
+};
+
+// Native minimize events commonly report a zero framebuffer. The renderer must retain its last
+// committed nonzero extent until a valid restore/resize arrives.
+[[nodiscard]] ApplicationWindowResizeDecision
+resolve_application_window_resize(renderer::rhi::RenderExtent current,
+                                  renderer::rhi::RenderExtent requested) noexcept;
+
 struct GameApplicationRunReport {
     std::uint64_t frame_count = 0;
     bool headless = false;

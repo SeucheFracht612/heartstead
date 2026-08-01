@@ -169,6 +169,17 @@ float GameApplicationFrame::delta_seconds() const noexcept {
     return static_cast<float>(delta_microseconds) / 1'000'000.0F;
 }
 
+ApplicationWindowResizeDecision
+resolve_application_window_resize(renderer::rhi::RenderExtent current,
+                                  renderer::rhi::RenderExtent requested) noexcept {
+    if (!requested.is_valid()) {
+        return {current, true, false};
+    }
+    return {requested,
+            false,
+            requested.width != current.width || requested.height != current.height};
+}
+
 GameApplicationServices::GameApplicationServices(GameApplication& application) noexcept
     : application_(&application) {}
 
@@ -460,16 +471,20 @@ core::Status GameApplication::pump_platform_events() {
         if (event->kind == platform::PlatformEventKind::window_resized &&
             event->window_id == window_) {
             const renderer::rhi::RenderExtent requested_extent{event->width, event->height};
-            if (!requested_extent.is_valid()) {
-                minimized_ = true;
+            const auto decision =
+                resolve_application_window_resize(extent_, requested_extent);
+            if (decision.minimized) {
+                minimized_ = decision.minimized;
                 continue;
             }
-            auto status = renderer_.resize(requested_extent);
-            if (!status) {
-                return status;
+            if (decision.resize_renderer) {
+                auto status = renderer_.resize(decision.extent);
+                if (!status) {
+                    return status;
+                }
             }
-            extent_ = requested_extent;
-            minimized_ = false;
+            extent_ = decision.extent;
+            minimized_ = decision.minimized;
         }
     }
     return core::Status::ok();

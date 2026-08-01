@@ -166,6 +166,26 @@ void test_headless_startup_recovery_needs_no_game_runtime() {
     assert(report.value().mode_summary == "startup recovery: diagnostics=1 frames=2");
 }
 
+void test_native_minimize_preserves_committed_extent() {
+    const renderer::rhi::RenderExtent committed{1280, 720};
+    const auto minimized = game::resolve_application_window_resize(committed, {0, 0});
+    assert(minimized.minimized);
+    assert(!minimized.resize_renderer);
+    assert(minimized.extent.width == committed.width);
+    assert(minimized.extent.height == committed.height);
+
+    const auto unchanged_restore =
+        game::resolve_application_window_resize(minimized.extent, committed);
+    assert(!unchanged_restore.minimized);
+    assert(!unchanged_restore.resize_renderer);
+
+    const auto resized = game::resolve_application_window_resize(committed, {1920, 1080});
+    assert(!resized.minimized);
+    assert(resized.resize_renderer);
+    assert(resized.extent.width == 1920);
+    assert(resized.extent.height == 1080);
+}
+
 } // namespace
 
 int main() {
@@ -175,5 +195,6 @@ int main() {
     test_zero_application_workers_are_rejected();
     test_zero_frame_delta_limit_is_rejected();
     test_headless_startup_recovery_needs_no_game_runtime();
+    test_native_minimize_preserves_committed_extent();
     return 0;
 }
