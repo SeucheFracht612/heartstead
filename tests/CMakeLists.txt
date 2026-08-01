@@ -359,6 +359,8 @@ heartstead_add_foundation_test(heartstead_voxel_storage_experiment_tests
                                voxel_storage_experiment_tests.cpp)
 heartstead_add_foundation_test(heartstead_voxel_storage_benchmark_tests
                                voxel_storage_benchmark_tests.cpp)
+heartstead_add_foundation_test(heartstead_voxel_meshing_benchmark_tests
+                               voxel_meshing_benchmark_tests.cpp)
 heartstead_add_foundation_test(heartstead_chunk_light_system_tests
                                chunk_light_system_tests.cpp)
 heartstead_add_foundation_test(heartstead_day_night_environment_tests

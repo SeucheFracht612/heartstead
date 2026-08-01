@@ -1,0 +1,3 @@
+add_executable(heartstead_voxel_meshing_benchmark main.cpp)
+target_link_libraries(heartstead_voxel_meshing_benchmark PRIVATE Heartstead::Engine)
+heartstead_configure_target(heartstead_voxel_meshing_benchmark)

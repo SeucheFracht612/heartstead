@@ -216,6 +216,7 @@ target_sources(
     world/meshing/chunk_mesher.cpp
     world/meshing/chunk_mesh_snapshot.cpp
     world/meshing/greedy_chunk_mesher.cpp
+    world/meshing/voxel_meshing_benchmark.cpp
     world/missing_prototype.cpp
     world/operations/world_operation.cpp
     world/replication_delta.cpp
@@ -455,6 +456,7 @@ target_sources(
       world/meshing/chunk_mesher.hpp
       world/meshing/chunk_mesh_snapshot.hpp
       world/meshing/greedy_chunk_mesher.hpp
+      world/meshing/voxel_meshing_benchmark.hpp
       world/missing_prototype.hpp
       world/operations/world_operation.hpp
       world/replication_delta.hpp
