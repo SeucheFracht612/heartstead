@@ -309,6 +309,35 @@ void test_nine_slice_tooltip_paint_and_batching() {
     assert(renderer.shutdown());
 }
 
+void test_dpi_scale_applies_consistently_and_stays_inside_viewport() {
+    ui::WidgetTree tree;
+    auto root = root_desc("dpi.root");
+    assert(tree.add(root));
+
+    ui::WidgetDesc panel;
+    panel.id = ui::widget_id("dpi.panel");
+    panel.parent = root.id;
+    panel.layout.width = ui::UiSize::pixels(300.0F);
+    panel.layout.height = ui::UiSize::pixels(220.0F);
+    panel.layout.horizontal_alignment = ui::UiAlignment::center;
+    panel.layout.vertical_alignment = ui::UiAlignment::center;
+    assert(tree.add(panel));
+
+    assert(tree.layout({800.0F, 600.0F}, 1.5F));
+    auto rect = tree.rect(panel.id);
+    assert(rect);
+    assert(rect->width == 450.0F);
+    assert(rect->height == 330.0F);
+    assert(rect->x == 175.0F);
+    assert(rect->y == 135.0F);
+
+    assert(tree.layout({320.0F, 200.0F}, 1.5F));
+    rect = tree.rect(panel.id);
+    assert(rect);
+    assert(rect->x == 0.0F && rect->y == 0.0F);
+    assert(rect->width == 320.0F && rect->height == 200.0F);
+}
+
 void test_scroll_area_and_platform_navigation_adapter() {
     ui::WidgetTree tree;
     auto root = root_desc("scroll.root");
@@ -387,6 +416,7 @@ int main() {
     test_capture_focus_text_and_gameplay_consumption();
     test_drag_drop_and_slider();
     test_nine_slice_tooltip_paint_and_batching();
+    test_dpi_scale_applies_consistently_and_stays_inside_viewport();
     test_scroll_area_and_platform_navigation_adapter();
     test_two_thousand_widget_layout_budget_probe();
     return 0;

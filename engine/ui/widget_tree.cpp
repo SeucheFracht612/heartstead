@@ -45,6 +45,13 @@ namespace {
     return clamp_size(value, minimum, maximum);
 }
 
+[[nodiscard]] float resolve_scaled_size(UiSize size, float available, float measured,
+                                        float minimum, float maximum, float dpi_scale) noexcept {
+    const auto logical = resolve_size(size, available, measured, minimum, maximum);
+    return size.mode == UiSizeMode::fill ? logical
+                                        : std::min(available, logical * dpi_scale);
+}
+
 [[nodiscard]] UiRect aligned_rect(UiRect available, float width, float height,
                                   UiAlignment horizontal, UiAlignment vertical) noexcept {
     width = horizontal == UiAlignment::stretch ? available.width : std::min(width, available.width);
@@ -564,12 +571,12 @@ void WidgetTree::layout_node(Node& current, UiRect bounds, UiRect inherited_clip
                             current.scroll_offset_y,
                         cell_width, cell_height};
             const auto measured = measure(*child);
-            const auto width =
-                resolve_size(child->desc.layout.width, slot.width, measured.x,
-                             child->desc.layout.minimum_width, child->desc.layout.maximum_width);
-            const auto height =
-                resolve_size(child->desc.layout.height, slot.height, measured.y,
-                             child->desc.layout.minimum_height, child->desc.layout.maximum_height);
+            const auto width = resolve_scaled_size(
+                child->desc.layout.width, slot.width, measured.x,
+                child->desc.layout.minimum_width, child->desc.layout.maximum_width, dpi_scale_);
+            const auto height = resolve_scaled_size(
+                child->desc.layout.height, slot.height, measured.y,
+                child->desc.layout.minimum_height, child->desc.layout.maximum_height, dpi_scale_);
             layout_node(*child,
                         aligned_rect(slot, width, height, child->desc.layout.horizontal_alignment,
                                      child->desc.layout.vertical_alignment),
@@ -585,12 +592,12 @@ void WidgetTree::layout_node(Node& current, UiRect bounds, UiRect inherited_clip
             continue;
         }
         const auto measured = measure(*child);
-        const auto width =
-            resolve_size(child->desc.layout.width, content.width, measured.x,
-                         child->desc.layout.minimum_width, child->desc.layout.maximum_width);
-        const auto height =
-            resolve_size(child->desc.layout.height, content.height, measured.y,
-                         child->desc.layout.minimum_height, child->desc.layout.maximum_height);
+        const auto width = resolve_scaled_size(
+            child->desc.layout.width, content.width, measured.x,
+            child->desc.layout.minimum_width, child->desc.layout.maximum_width, dpi_scale_);
+        const auto height = resolve_scaled_size(
+            child->desc.layout.height, content.height, measured.y,
+            child->desc.layout.minimum_height, child->desc.layout.maximum_height, dpi_scale_);
         layout_node(*child,
                     aligned_rect(content, width, height, child->desc.layout.horizontal_alignment,
                                  child->desc.layout.vertical_alignment),
@@ -616,12 +623,12 @@ core::Status WidgetTree::layout(math::Vec2f viewport_pixels, float dpi_scale) {
             continue;
         }
         const auto measured = measure(*root);
-        const auto width =
-            resolve_size(root->desc.layout.width, viewport.width, measured.x,
-                         root->desc.layout.minimum_width, root->desc.layout.maximum_width);
-        const auto height =
-            resolve_size(root->desc.layout.height, viewport.height, measured.y,
-                         root->desc.layout.minimum_height, root->desc.layout.maximum_height);
+        const auto width = resolve_scaled_size(
+            root->desc.layout.width, viewport.width, measured.x, root->desc.layout.minimum_width,
+            root->desc.layout.maximum_width, dpi_scale_);
+        const auto height = resolve_scaled_size(
+            root->desc.layout.height, viewport.height, measured.y,
+            root->desc.layout.minimum_height, root->desc.layout.maximum_height, dpi_scale_);
         layout_node(*root,
                     aligned_rect(viewport, width, height, root->desc.layout.horizontal_alignment,
                                  root->desc.layout.vertical_alignment),

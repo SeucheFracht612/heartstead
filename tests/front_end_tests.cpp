@@ -157,6 +157,24 @@ void test_application_settings_round_trip() {
     assert(!loaded);
     assert(loaded.error().code == "application_settings.incomplete");
 
+    assert(store.save(settings));
+    {
+        std::ifstream camera_input(store.path(), std::ios::binary);
+        serialized.assign(std::istreambuf_iterator<char>(camera_input),
+                          std::istreambuf_iterator<char>());
+    }
+    const auto camera = serialized.find("first_person_camera|true\n");
+    assert(camera != std::string::npos);
+    serialized.erase(camera, std::string("first_person_camera|true\n").size());
+    {
+        std::ofstream output(store.path(), std::ios::binary | std::ios::trunc);
+        output << serialized;
+        assert(output);
+    }
+    loaded = store.load();
+    assert(!loaded);
+    assert(loaded.error().code == "application_settings.incomplete");
+
     {
         std::ofstream output(store.path(), std::ios::binary | std::ios::trunc);
         output << "heartstead.application_settings.v1\n"
@@ -170,6 +188,14 @@ void test_application_settings_round_trip() {
     assert(!loaded.value().windowed);
     assert(loaded.value().window_width == 1280);
     assert(loaded.value().vsync);
+}
+
+void test_ui_scale_adapts_to_window_capacity() {
+    assert(game::effective_application_ui_scale(1280, 720, 2.0F) == 2.0F);
+    assert(game::effective_application_ui_scale(640, 360, 2.0F) == 1.0F);
+    assert(game::effective_application_ui_scale(800, 450, 1.5F) == 1.25F);
+    assert(game::effective_application_ui_scale(320, 180, 2.0F) == 0.75F);
+    assert(game::effective_application_ui_scale(1920, 1080, 0.8F) == 0.8F);
 }
 
 void test_save_world_management() {
@@ -311,6 +337,7 @@ void test_runtime_diagnostics_are_explicit() {
 int main() {
     test_main_menu_navigation();
     test_application_settings_round_trip();
+    test_ui_scale_adapts_to_window_capacity();
     test_save_world_management();
     test_world_creation_input_helpers();
     test_command_line_launch_contract();

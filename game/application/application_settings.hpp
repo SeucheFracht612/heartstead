@@ -48,5 +48,8 @@ class ApplicationSettingsStore final {
 };
 
 [[nodiscard]] std::filesystem::path default_application_data_root();
+[[nodiscard]] float effective_application_ui_scale(std::uint32_t viewport_width,
+                                                   std::uint32_t viewport_height,
+                                                   float requested_scale) noexcept;
 
 } // namespace heartstead::game

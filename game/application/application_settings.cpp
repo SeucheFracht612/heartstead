@@ -297,11 +297,12 @@ core::Result<ApplicationSettings> ApplicationSettingsStore::load() const {
     }
     if (!legacy_schema) {
         constexpr std::array required_fields{
-            "window_width",      "window_height",          "windowed",           "vsync",
-            "rendering_quality", "master_volume",          "music_volume",       "effects_volume",
-            "mouse_sensitivity", "controller_sensitivity", "controller_enabled", "ui_scale",
-            "ui_contrast",       "ui_saturation",          "color_vision",       "reduced_motion",
-            "last_world_slot",
+            "window_width",       "window_height",          "windowed",
+            "vsync",              "first_person_camera",    "rendering_quality",
+            "master_volume",      "music_volume",           "effects_volume",
+            "mouse_sensitivity",  "controller_sensitivity", "controller_enabled",
+            "ui_scale",           "ui_contrast",             "ui_saturation",
+            "color_vision",       "reduced_motion",          "last_world_slot",
         };
         const auto missing = std::ranges::find_if(required_fields, [&seen](std::string_view field) {
             return !seen.contains(std::string(field));
@@ -399,6 +400,21 @@ std::filesystem::path default_application_data_root() {
     }
 #endif
     return std::filesystem::current_path() / ".heartstead";
+}
+
+float effective_application_ui_scale(std::uint32_t viewport_width,
+                                     std::uint32_t viewport_height,
+                                     float requested_scale) noexcept {
+    if (!std::isfinite(requested_scale)) {
+        requested_scale = 1.0F;
+    }
+    constexpr auto minimum_scale = 0.75F;
+    constexpr auto maximum_scale = 2.0F;
+    const auto horizontal_capacity = static_cast<float>(viewport_width) / 640.0F;
+    const auto vertical_capacity = static_cast<float>(viewport_height) / 360.0F;
+    const auto available_scale =
+        std::clamp(std::min(horizontal_capacity, vertical_capacity), minimum_scale, maximum_scale);
+    return std::clamp(std::min(requested_scale, available_scale), minimum_scale, maximum_scale);
 }
 
 } // namespace heartstead::game

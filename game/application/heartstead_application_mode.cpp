@@ -747,7 +747,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                                       0.0F, 1.0F))) ||
                 !(status = add(slider(mouse_sensitivity_id, "Mouse sensitivity",
                                       settings.mouse_sensitivity, 0.1F, 10.0F))) ||
-                !(status = add(slider(ui_scale_id, "UI scale", settings.ui_scale, 0.75F, 2.0F))) ||
+                !(status = add(slider(ui_scale_id, "UI scale (adapts to smaller windows)",
+                                      settings.ui_scale, 0.75F, 2.0F))) ||
                 !(status =
                       add(slider(contrast_id, "UI contrast", settings.ui_contrast, 0.5F, 2.0F))) ||
                 !(status = add(slider(saturation_id, "UI saturation", settings.ui_saturation, 0.0F,
@@ -1842,9 +1843,11 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             state == ApplicationState::session_unloading || state == ApplicationState::shutdown) {
             return core::Status::ok();
         }
+        const auto ui_scale = effective_application_ui_scale(
+            current_frame.extent.width, current_frame.extent.height, settings.ui_scale);
         auto status = widgets.layout({static_cast<float>(current_frame.extent.width),
                                       static_cast<float>(current_frame.extent.height)},
-                                     settings.ui_scale);
+                                     ui_scale);
         if (!status) {
             return status;
         }
@@ -2242,8 +2245,10 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         }
         auto* ui_renderer = services->renderer()->ui_renderer();
         auto status = core::Status::ok();
+        const auto ui_scale = effective_application_ui_scale(
+            current_frame.extent.width, current_frame.extent.height, settings.ui_scale);
         if (states.state() == ApplicationState::in_game && game_ui != nullptr) {
-            auto painted = game_ui->paint(*ui_renderer, current_frame.extent, settings.ui_scale);
+            auto painted = game_ui->paint(*ui_renderer, current_frame.extent, ui_scale);
             if (!painted) {
                 core::log(core::LogLevel::warning,
                           "In-game UI painting disabled: " + painted.error().message);
@@ -2257,7 +2262,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         } else if (states.state() != ApplicationState::in_game) {
             status = widgets.layout({static_cast<float>(current_frame.extent.width),
                                      static_cast<float>(current_frame.extent.height)},
-                                    settings.ui_scale);
+                                    ui_scale);
             if (!status) {
                 return status;
             }
