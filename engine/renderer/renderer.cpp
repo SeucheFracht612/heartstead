@@ -736,24 +736,10 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         return core::Status::failure(error.code, error.message);
     }
     if (!desc.tone_map_vertex_spirv.empty() && !desc.tone_map_fragment_spirv.empty()) {
-        const auto ssao_fragment =
-            desc.ssao_fragment_spirv.empty()
-                ? std::span<const std::uint32_t>{desc.tone_map_fragment_spirv}
-                : std::span<const std::uint32_t>{desc.ssao_fragment_spirv};
-        const auto ao_fragment =
-            desc.ao_composite_fragment_spirv.empty()
-                ? std::span<const std::uint32_t>{desc.tone_map_fragment_spirv}
-                : std::span<const std::uint32_t>{desc.ao_composite_fragment_spirv};
-        const auto fxaa_fragment =
-            desc.fxaa_fragment_spirv.empty()
-                ? std::span<const std::uint32_t>{desc.tone_map_fragment_spirv}
-                : std::span<const std::uint32_t>{desc.fxaa_fragment_spirv};
-        const auto bloom_fragment =
-            desc.bloom_fragment_spirv.empty()
-                ? std::span<const std::uint32_t>{desc.tone_map_fragment_spirv}
-                : std::span<const std::uint32_t>{desc.bloom_fragment_spirv};
         pipeline_status = create_image_quality_pipelines(
-            desc.tone_map_vertex_spirv, ssao_fragment, ao_fragment, fxaa_fragment, bloom_fragment);
+            desc.tone_map_vertex_spirv, desc.ssao_fragment_spirv,
+            desc.ao_composite_fragment_spirv, desc.fxaa_fragment_spirv,
+            desc.bloom_fragment_spirv);
         if (!pipeline_status) {
             const auto error = pipeline_status.error();
             (void)shutdown();
@@ -982,11 +968,17 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
     frame_builder_->set_image_quality_pipelines(
         image_quality_pipelines_[0], image_quality_pipelines_[1], image_quality_pipelines_[2],
         image_quality_pipelines_[3]);
+    const auto ambient_occlusion_available = image_quality_pipelines_[0].is_valid() &&
+                                             image_quality_pipelines_[1].is_valid();
+    const auto anti_aliasing_available = image_quality_pipelines_[2].is_valid();
+    const auto bloom_available = image_quality_pipelines_[3].is_valid();
     auto image_quality_status = frame_builder_->set_image_quality_settings(
         {.render_scale = quality_settings_.render_scale,
-         .ambient_occlusion = quality_settings_.ambient_occlusion_quality != 0U,
-         .anti_aliasing = quality_settings_.anti_aliasing != RendererAntiAliasing::off,
-         .bloom = quality_settings_.bloom});
+         .ambient_occlusion = quality_settings_.ambient_occlusion_quality != 0U &&
+                              ambient_occlusion_available,
+         .anti_aliasing = quality_settings_.anti_aliasing != RendererAntiAliasing::off &&
+                          anti_aliasing_available,
+         .bloom = quality_settings_.bloom && bloom_available});
     if (!image_quality_status) {
         const auto error = image_quality_status.error();
         (void)shutdown();
@@ -2292,6 +2284,11 @@ const SceneRenderStats& Renderer::scene_stats() const noexcept {
 const ClusteredLightingStats& Renderer::lighting_stats() const noexcept {
     static const ClusteredLightingStats empty;
     return clustered_lighting_ == nullptr ? empty : clustered_lighting_->stats();
+}
+
+FrameImageQualitySettings Renderer::image_quality_settings() const noexcept {
+    return frame_builder_ == nullptr ? FrameImageQualitySettings{}
+                                     : frame_builder_->image_quality_settings();
 }
 
 RendererFallbackResources Renderer::fallback_resources() const noexcept {
@@ -3941,6 +3938,11 @@ Renderer::create_image_quality_pipelines(std::span<const std::uint32_t> vertex_s
     }};
     for (std::size_t index = 0; index < posts.size(); ++index) {
         auto& post = posts[index];
+        if (post.fragment.empty()) {
+            core::log(core::LogLevel::warning,
+                      std::string(post.name) + " post-processing disabled: shader unavailable");
+            continue;
+        }
         const auto material = core::PrototypeId::parse("base:materials/" + std::string(post.name));
         if (!material) {
             return core::Status::failure("renderer.invalid_post_material",
@@ -3949,9 +3951,11 @@ Renderer::create_image_quality_pipelines(std::span<const std::uint32_t> vertex_s
         auto shader = shader_manager_->create_program(
             make_post_shader_program(post.name, vertex_spirv, post.fragment, post.descriptors));
         if (!shader) {
-            return core::Status::failure(shader.error().code, shader.error().message);
+            core::log(core::LogLevel::warning,
+                      std::string(post.name) + " post-processing disabled: " +
+                          shader.error().message);
+            continue;
         }
-        image_quality_shader_programs_[index] = shader.value();
         rhi::RenderPipelineLayoutDesc layout;
         layout.material_id = material.value();
         layout.shader_template = {"base", "shaders/" + std::string(post.name) + ".frag"};
@@ -3989,8 +3993,12 @@ Renderer::create_image_quality_pipelines(std::span<const std::uint32_t> vertex_s
         image_quality_pipeline_keys_[index] = key;
         auto created = pipeline_cache_->prewarm(key, layout, std::move(pipeline));
         if (!created) {
-            return core::Status::failure(created.error().code, created.error().message);
+            core::log(core::LogLevel::warning,
+                      std::string(post.name) + " post-processing disabled: " +
+                          created.error().message);
+            continue;
         }
+        image_quality_shader_programs_[index] = shader.value();
         image_quality_pipelines_[index] = created.value();
     }
     return core::Status::ok();

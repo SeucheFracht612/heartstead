@@ -94,15 +94,20 @@ int main(int argc, char** argv) {
             auto loaded = heartstead::assets::CookedAssetStore::load(
                 application_root / HEARTSTEAD_GAME_COOKED_ASSET_DIR);
             if (!loaded) {
-                return fail(loaded.error());
+                std::cerr << loaded.error().code << ": " << loaded.error().message
+                          << " (using fallback presentation assets)\n";
+            } else {
+                cooked_assets.emplace(std::move(loaded).value());
+                auto terrain = heartstead::renderer::materials::load_terrain_material_assets(
+                    content_report.voxel_palette, content_report.material_registry,
+                    *cooked_assets);
+                if (!terrain) {
+                    std::cerr << terrain.error().code << ": " << terrain.error().message
+                              << " (using fallback terrain materials)\n";
+                } else {
+                    terrain_assets = std::move(terrain).value();
+                }
             }
-            cooked_assets.emplace(std::move(loaded).value());
-            auto terrain = heartstead::renderer::materials::load_terrain_material_assets(
-                content_report.voxel_palette, content_report.material_registry, *cooked_assets);
-            if (!terrain) {
-                return fail(terrain.error());
-            }
-            terrain_assets = std::move(terrain).value();
         }
 
         heartstead::game::GameApplicationConfig application_config;

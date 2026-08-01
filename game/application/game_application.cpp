@@ -1,6 +1,7 @@
 #include "game/application/game_application.hpp"
 
 #include "engine/core/file_io.hpp"
+#include "engine/core/logging.hpp"
 #include "engine/renderer/shaders/spirv_loader.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
 
@@ -82,34 +83,47 @@ load_application_shaders(const std::filesystem::path& root) {
         renderer::shaders::load_spirv_file(paths[17]),
         renderer::shaders::load_spirv_file(paths[18]),
     };
+    constexpr std::array required{
+        true,  true,  true,  false, true,  true,  true,  false, false, true,
+        true,  true,  true,  true,  true,  false, false, false, false,
+    };
     for (std::size_t index = 0; index < loaded.size(); ++index) {
-        if (!loaded[index]) {
+        if (!loaded[index] && required[index]) {
             return core::Result<ApplicationShaderSet>::failure(
                 loaded[index].error().code,
                 "failed to load " + paths[index].string() + ": " + loaded[index].error().message);
         }
+        if (!loaded[index]) {
+            core::log(core::LogLevel::warning,
+                      "optional renderer feature disabled because " + paths[index].string() +
+                          " could not be loaded: " + loaded[index].error().message);
+        }
     }
 
+    const auto take = [&loaded](std::size_t index) {
+        return loaded[index] ? std::move(loaded[index]).value() : std::vector<std::uint32_t>{};
+    };
+
     ApplicationShaderSet result;
-    result.sky_vertex = std::move(loaded[0]).value();
-    result.sky_fragment = std::move(loaded[1]).value();
-    result.terrain_vertex = std::move(loaded[2]).value();
-    result.far_terrain_vertex = std::move(loaded[3]).value();
-    result.terrain_fragment = std::move(loaded[4]).value();
-    result.static_vertex = std::move(loaded[5]).value();
-    result.static_fragment = std::move(loaded[6]).value();
-    result.shadow_terrain_fragment = std::move(loaded[7]).value();
-    result.shadow_static_fragment = std::move(loaded[8]).value();
-    result.debug_vertex = std::move(loaded[9]).value();
-    result.debug_fragment = std::move(loaded[10]).value();
-    result.ui_vertex = std::move(loaded[11]).value();
-    result.ui_fragment = std::move(loaded[12]).value();
-    result.tone_map_vertex = std::move(loaded[13]).value();
-    result.tone_map_fragment = std::move(loaded[14]).value();
-    result.ssao_fragment = std::move(loaded[15]).value();
-    result.ao_composite_fragment = std::move(loaded[16]).value();
-    result.fxaa_fragment = std::move(loaded[17]).value();
-    result.bloom_fragment = std::move(loaded[18]).value();
+    result.sky_vertex = take(0);
+    result.sky_fragment = take(1);
+    result.terrain_vertex = take(2);
+    result.far_terrain_vertex = take(3);
+    result.terrain_fragment = take(4);
+    result.static_vertex = take(5);
+    result.static_fragment = take(6);
+    result.shadow_terrain_fragment = take(7);
+    result.shadow_static_fragment = take(8);
+    result.debug_vertex = take(9);
+    result.debug_fragment = take(10);
+    result.ui_vertex = take(11);
+    result.ui_fragment = take(12);
+    result.tone_map_vertex = take(13);
+    result.tone_map_fragment = take(14);
+    result.ssao_fragment = take(15);
+    result.ao_composite_fragment = take(16);
+    result.fxaa_fragment = take(17);
+    result.bloom_fragment = take(18);
     return core::Result<ApplicationShaderSet>::success(std::move(result));
 }
 

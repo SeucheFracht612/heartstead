@@ -220,6 +220,7 @@ class Renderer {
     [[nodiscard]] const RendererStats& stats() const noexcept;
     [[nodiscard]] const SceneRenderStats& scene_stats() const noexcept;
     [[nodiscard]] const ClusteredLightingStats& lighting_stats() const noexcept;
+    [[nodiscard]] FrameImageQualitySettings image_quality_settings() const noexcept;
     [[nodiscard]] RendererFallbackResources fallback_resources() const noexcept;
     [[nodiscard]] RenderMeshHandle fallback_mesh() const noexcept;
     [[nodiscard]] MaterialRuntimeHandle fallback_material() const noexcept;
