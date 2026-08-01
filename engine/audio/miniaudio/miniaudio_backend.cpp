@@ -1,6 +1,7 @@
 #include "engine/audio/miniaudio/miniaudio_backend.hpp"
 
 #include "engine/audio/procedural_tone.hpp"
+#include "engine/core/logging.hpp"
 
 #if HEARTSTEAD_HAS_MINIAUDIO
 #include <miniaudio.h>
@@ -567,6 +568,16 @@ class MiniaudioSystem final : public IAudioSystem {
             return;
         }
         suppress_device_notification_.store(true, std::memory_order_release);
+        if (ma_device_is_started(&device_)) {
+            const auto stop_result = ma_device_stop(&device_);
+            if (stop_result != MA_SUCCESS) {
+                core::log(core::LogLevel::warning,
+                          miniaudio_error("audio.device_stop_failed",
+                                          "miniaudio could not stop its output device cleanly",
+                                          stop_result)
+                              .message);
+            }
+        }
         ma_device_uninit(&device_);
         device_initialized_ = false;
         suppress_device_notification_.store(false, std::memory_order_release);
