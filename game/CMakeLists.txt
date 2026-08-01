@@ -27,6 +27,8 @@ target_sources(
     runtime/runtime_session.cpp
     runtime/server_runtime.cpp
     runtime/script_host_commands.cpp
+    scenarios/developer_world_registry.cpp
+    scenarios/scenario_setup.cpp
     testing/headless_session.cpp
     ui/game_ui.cpp
   PUBLIC
@@ -57,6 +59,8 @@ target_sources(
       runtime/runtime_session.hpp
       runtime/server_runtime.hpp
       runtime/script_host_commands.hpp
+      scenarios/developer_world_registry.hpp
+      scenarios/scenario_setup.hpp
       testing/headless_session.hpp
       ui/game_ui.hpp
 )

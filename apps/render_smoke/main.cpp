@@ -4,6 +4,7 @@
 #include "engine/platform/platform.hpp"
 #include "engine/renderer/renderer.hpp"
 #include "engine/renderer/shaders/spirv_loader.hpp"
+#include "engine/scenarios/scenario_fixture.hpp"
 #include "engine/world/world_state.hpp"
 
 #include <algorithm>
@@ -19,37 +20,6 @@
 namespace {
 
 using namespace heartstead;
-
-constexpr world::ChunkCoord test_world_center{1'000'000'000, 0, -1'000'000'000};
-
-[[nodiscard]] core::Status populate_test_world(world::WorldState& state) {
-    constexpr auto edge = static_cast<std::int64_t>(world::VoxelChunk::edge_length);
-    for (std::int64_t chunk_z = -1; chunk_z <= 1; ++chunk_z) {
-        for (std::int64_t chunk_x = -1; chunk_x <= 1; ++chunk_x) {
-            const world::ChunkCoord coord{test_world_center.x + chunk_x, test_world_center.y,
-                                          test_world_center.z + chunk_z};
-            auto& chunk = state.chunks().get_or_create(coord);
-            for (std::uint16_t z = 0; z < world::VoxelChunk::edge_length; ++z) {
-                for (std::uint16_t x = 0; x < world::VoxelChunk::edge_length; ++x) {
-                    const auto terrain_x = static_cast<float>(chunk_x * edge + x);
-                    const auto terrain_z = static_cast<float>(chunk_z * edge + z);
-                    const auto wave =
-                        3.0F * std::sin(terrain_x * 0.12F) + 2.0F * std::cos(terrain_z * 0.15F);
-                    const auto height = static_cast<std::uint16_t>(
-                        std::clamp(7 + static_cast<int>(std::lround(wave)), 2, 14));
-                    for (std::uint16_t y = 0; y <= height; ++y) {
-                        const std::uint16_t type = y == height ? 1 : (y + 3 >= height ? 2 : 3);
-                        auto status = chunk.set({x, y, z}, world::VoxelCell{type, 255, 0, 0});
-                        if (!status) {
-                            return status;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return core::Status::ok();
-}
 
 [[nodiscard]] int fail(std::string_view message) {
     core::log(core::LogLevel::error, message);
@@ -145,9 +115,9 @@ int main(int argc, char** argv) {
                                            : sky_fragment_spirv.error().message));
         }
         if (!vertex_spirv || !far_vertex_spirv) {
-            return fail("Vertex shader loading failed visibly: " +
-                        (!vertex_spirv ? vertex_spirv.error().message
-                                       : far_vertex_spirv.error().message));
+            return fail(
+                "Vertex shader loading failed visibly: " +
+                (!vertex_spirv ? vertex_spirv.error().message : far_vertex_spirv.error().message));
         }
         if (!fragment_spirv) {
             return fail("Fragment shader loading failed visibly: " +
@@ -186,8 +156,7 @@ int main(int argc, char** argv) {
 
         renderer::RendererInitDesc renderer_init;
         auto ui_font = core::read_binary_file(
-            std::filesystem::path{HEARTSTEAD_RENDER_SMOKE_ASSET_DIR} /
-            "fonts/heartstead-ui.ttf");
+            std::filesystem::path{HEARTSTEAD_RENDER_SMOKE_ASSET_DIR} / "fonts/heartstead-ui.ttf");
         if (!ui_font) {
             return fail(ui_font.error().message);
         }
@@ -247,11 +216,12 @@ int main(int argc, char** argv) {
         }
 
         world::WorldState world;
-        auto populate_status = populate_test_world(world);
+        auto populate_status = scenarios::populate_renderer_proof_fixture(world);
         if (!populate_status) {
             return fail(populate_status.error().message);
         }
-        auto center_origin = world::chunk_local_to_block(test_world_center, {0, 0, 0});
+        auto center_origin =
+            world::chunk_local_to_block(scenarios::renderer_proof_center, {0, 0, 0});
         if (!center_origin) {
             return fail(center_origin.error().message);
         }

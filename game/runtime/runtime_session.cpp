@@ -239,6 +239,11 @@ core::Status RuntimeSession::initialize() {
     if (!scenario) {
         return core::Status::failure(scenario.error().code, scenario.error().message);
     }
+    if (request_.player_spawn.has_value()) {
+        scenario.value().spawn_position = request_.player_spawn->position;
+        scenario.value().spawn_yaw_degrees = request_.player_spawn->yaw_degrees;
+        scenario.value().spawn_pitch_degrees = request_.player_spawn->pitch_degrees;
+    }
     if (request_.initial_snapshot.has_value()) {
         const auto saved_scenario = std::ranges::find_if(
             request_.initial_snapshot->mod_states, [](const save::ModStateSaveRecord& record) {

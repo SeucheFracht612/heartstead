@@ -176,6 +176,7 @@ target_sources(
     save/save_slot.cpp
     save/save_text_codec.cpp
     scenarios/scenario.cpp
+    scenarios/scenario_fixture.cpp
     scenarios/scenario_prototype.cpp
     scripting/luau/luau_backend.cpp
     scripting/script_host_event.cpp
@@ -404,6 +405,7 @@ target_sources(
       save/save_slot.hpp
       save/save_text_codec.hpp
       scenarios/scenario.hpp
+      scenarios/scenario_fixture.hpp
       scenarios/scenario_prototype.hpp
       scripting/luau/luau_backend.hpp
       scripting/script_host_event.hpp

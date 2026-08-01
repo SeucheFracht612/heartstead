@@ -10,6 +10,7 @@
 #include "game/features/animals/wandering_animal_module.hpp"
 #include "game/foundation/foundation_world.hpp"
 #include "game/runtime/game_runtime.hpp"
+#include "game/scenarios/developer_world_registry.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -269,20 +270,19 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                     return SessionLoadResult::failure(metadata.error().code,
                                                       metadata.error().message);
                 }
-                SessionLaunchRequest request;
+                auto developer_worlds =
+                    DeveloperWorldRegistry::create(content_report->scenario_definitions);
+                if (!developer_worlds) {
+                    return SessionLoadResult::failure(developer_worlds.error().code,
+                                                      developer_worlds.error().message);
+                }
+                auto launch = developer_worlds.value().make_launch_request(
+                    "base:scenarios/foundation_slice", std::move(metadata).value(), headless);
+                if (!launch) {
+                    return SessionLoadResult::failure(launch.error().code, launch.error().message);
+                }
+                auto request = std::move(launch).value();
                 request.ownership_generation = generation;
-                request.mode = SessionMode::local_single_player;
-                request.world_source = WorldSourceKind::developer_scenario;
-                request.persistence = PersistencePolicy::ephemeral;
-                request.world_name = "Development World";
-                request.metadata = std::move(metadata).value();
-                request.seed = foundation::world_seed;
-                request.scenario_id = foundation::scenario_id;
-                request.runtime.create_renderer = !headless;
-                request.runtime.create_audio = !headless;
-                request.runtime.headless = headless;
-                request.runtime.physics_backend =
-                    headless ? physics::PhysicsBackend::headless : physics::PhysicsBackend::jolt;
                 request.runtime.gameplay_modules.push_back(
                     std::make_shared<animals::WanderingAnimalModule>());
                 if (stop_token.stop_requested()) {

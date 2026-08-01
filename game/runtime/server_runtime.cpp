@@ -12,6 +12,7 @@
 #include "game/features/interaction/voxel_commands.hpp"
 #include "game/features/interaction/voxel_interaction_module.hpp"
 #include "game/foundation/foundation_world.hpp"
+#include "game/scenarios/scenario_setup.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -924,6 +925,9 @@ core::Status ServerRuntime::validate_voxel_placement(world::BlockCoord position,
 }
 
 world::WorldPosition ServerRuntime::scenario_spawn_position() const noexcept {
+    if (desc_.scenario.spawn_position.has_value()) {
+        return *desc_.scenario.spawn_position;
+    }
     switch (desc_.scenario.spawn_mode) {
     case scenarios::ScenarioSpawnMode::homestead:
         return foundation::spawn_position();
@@ -993,10 +997,9 @@ core::Status ServerRuntime::initialize_new_world_scenario() {
     for (const auto& placement : desc_.scenario.scene_entities) {
         const auto* prototype = desc_.prototypes->find(placement.prototype_id);
         if (prototype == nullptr) {
-            return core::Status::failure(
-                "server_runtime.scene_entity_missing",
-                "scenario scene entity prototype is not loaded: " +
-                    placement.prototype_id.value());
+            return core::Status::failure("server_runtime.scene_entity_missing",
+                                         "scenario scene entity prototype is not loaded: " +
+                                             placement.prototype_id.value());
         }
         auto definition = entities::entity_definition_from_prototype(*prototype);
         if (!definition) {
@@ -1027,7 +1030,25 @@ core::Status ServerRuntime::initialize_new_world_scenario() {
             return status;
         }
     }
-    return ensure_spawn_area();
+    status = ensure_spawn_area();
+    if (!status) {
+        return status;
+    }
+    if (!desc_.scenario.setup_hook.empty()) {
+        status = default_scenario_setup_registry().apply(desc_.scenario.setup_hook, world_,
+                                                         *desc_.voxel_palette);
+        if (!status) {
+            return status;
+        }
+    }
+    if (desc_.scenario.initial_world_time != 0) {
+        status = world_.advance_world_time(desc_.scenario.initial_world_time);
+        if (!status) {
+            return status;
+        }
+    }
+    return world_.mod_states().insert(
+        {"engine", "scenario.weather", desc_.scenario.initial_weather});
 }
 
 core::Status ServerRuntime::grant_starting_inventory(core::SaveId owner_id) {
@@ -1519,8 +1540,8 @@ core::Status ServerRuntime::send_initial_chunks(core::NetId client_id) {
         if (!sequence) {
             return core::Status::failure(sequence.error().code, sequence.error().message);
         }
-        auto message = entities::make_entity_motion_snapshot_message(
-            snapshot, sequence.value(), current_time_ms_);
+        auto message = entities::make_entity_motion_snapshot_message(snapshot, sequence.value(),
+                                                                     current_time_ms_);
         message.channel = net::TransportChannel::reliable;
         status = host_.send_replication_message(client_id, std::move(message));
         if (!status) {

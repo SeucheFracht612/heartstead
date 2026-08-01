@@ -162,6 +162,9 @@ When adding a gameplay feature:
 Avoid adding a new top-level runtime or bypass path for one feature. Extend the existing server,
 client, command, snapshot, and presentation owners.
 
+Interactive development fixtures use the same boundary. See
+[Developer worlds and scenario authoring](developer_worlds.md).
+
 ## Persistence
 
 A normal unbounded local native `heartstead_dev_game` run opens
