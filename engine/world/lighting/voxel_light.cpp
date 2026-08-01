@@ -1,5 +1,6 @@
 #include "engine/world/lighting/voxel_light.hpp"
 
+#include "engine/profiling/profiler.hpp"
 #include "engine/world/chunks/chunk_database.hpp"
 
 #include <algorithm>
@@ -307,6 +308,7 @@ core::Status ChunkLightPatch::validate() const {
 
 core::Result<VoxelLightSolveResult> solve_voxel_light(const VoxelLightSnapshot& snapshot,
                                                       const VoxelLightBlockTable& blocks) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("voxel_light.solve");
     auto status = snapshot.validate();
     if (!status) {
         return core::Result<VoxelLightSolveResult>::failure(status.error().code,

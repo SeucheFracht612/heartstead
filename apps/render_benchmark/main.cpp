@@ -3,6 +3,7 @@
 #include "engine/core/logging.hpp"
 #include "engine/core/process_entry.hpp"
 #include "engine/platform/platform.hpp"
+#include "engine/profiling/runtime_metadata.hpp"
 #include "engine/renderer/benchmark/benchmark_scene.hpp"
 #include "engine/renderer/benchmark/benchmark_statistics.hpp"
 #include "engine/renderer/environment/weather_effects.hpp"
@@ -50,6 +51,8 @@ struct Options {
     std::uint32_t frame_cap = 0;
     std::uint32_t width = 1280;
     std::uint32_t height = 720;
+    renderer::benchmark::BenchmarkBudgetProfile budget_profile =
+        renderer::benchmark::BenchmarkBudgetProfile::none;
     OutputFormat format = OutputFormat::json;
     std::filesystem::path output;
     std::filesystem::path capture_output;
@@ -302,6 +305,7 @@ void print_usage(std::ostream& output) {
               "  --capture PATH     Write the final displayed frame as PNG plus metadata\n"
               "  --compare PATH     Compare the final frame against a baseline PNG\n"
               "  --format json|csv  Result serialization format\n"
+              "  --budget PROFILE   Gate none, compatibility, minimum, mainstream, or high-end\n"
               "  --reference-mesher Use the correctness-reference terrain mesher\n"
               "  --no-validation    Do not request Vulkan validation\n"
               "  --list-scenes      Print scene names\n"
@@ -469,6 +473,19 @@ template <typename Integer>
                 return core::Result<Options>::failure("renderer.benchmark_invalid_format",
                                                       "--format must be json or csv");
             }
+        } else if (argument == "--budget") {
+            auto value = next_value();
+            if (!value) {
+                return core::Result<Options>::failure(value.error().code, value.error().message);
+            }
+            const auto profile =
+                renderer::benchmark::parse_benchmark_budget_profile(value.value());
+            if (!profile) {
+                return core::Result<Options>::failure(
+                    "renderer.benchmark_invalid_budget",
+                    "--budget must be none, compatibility, minimum, mainstream, or high-end");
+            }
+            options.budget_profile = *profile;
         } else {
             return core::Result<Options>::failure("renderer.benchmark_unknown_option",
                                                   "unknown option: " + std::string(argument));
@@ -1153,6 +1170,27 @@ int main(int argc, char** argv) {
         benchmark_metadata.measured_frames = options.measured_frames;
         benchmark_metadata.frame_cap = options.frame_cap;
         benchmark_metadata.validation_requested = options.validation;
+        benchmark_metadata.budget_profile = options.budget_profile;
+        const auto runtime_metadata = profiling::query_runtime_metadata();
+        benchmark_metadata.engine_version = runtime_metadata.engine_version;
+        benchmark_metadata.git_commit = runtime_metadata.git_commit;
+        benchmark_metadata.build_configuration = runtime_metadata.build_configuration;
+        benchmark_metadata.compiler = runtime_metadata.compiler;
+        benchmark_metadata.platform = runtime_metadata.platform;
+        benchmark_metadata.architecture = runtime_metadata.architecture;
+        benchmark_metadata.operating_system = runtime_metadata.operating_system;
+        benchmark_metadata.cpu_model = runtime_metadata.cpu_model;
+        benchmark_metadata.logical_cpu_count = runtime_metadata.logical_cpu_count;
+        benchmark_metadata.git_dirty = runtime_metadata.git_dirty;
+        benchmark_metadata.tracy_enabled = runtime_metadata.tracy_enabled;
+        const auto device_info = active_renderer.device()->info();
+        benchmark_metadata.gpu_name = device_info.device_name;
+        benchmark_metadata.gpu_driver = device_info.driver_name;
+        benchmark_metadata.gpu_driver_info = device_info.driver_info;
+        benchmark_metadata.gpu_vendor_id = device_info.vendor_id;
+        benchmark_metadata.gpu_device_id = device_info.device_id;
+        benchmark_metadata.graphics_api_version = device_info.api_version;
+        benchmark_metadata.graphics_driver_version = device_info.driver_version;
         renderer::benchmark::BenchmarkRecorder recorder(std::move(benchmark_metadata));
         core::log(
             core::LogLevel::info,
@@ -1362,9 +1400,18 @@ int main(int argc, char** argv) {
         if (!status) {
             return fail(status.error().message);
         }
-        core::log(core::LogLevel::info,
-                  renderer::benchmark::format_benchmark_summary(recorder.summarize()));
+        const auto summary = recorder.summarize();
+        core::log(core::LogLevel::info, renderer::benchmark::format_benchmark_summary(summary));
         core::log(core::LogLevel::info, "Wrote benchmark results to " + options.output.string());
+        if (summary.budget.evaluated && !summary.budget.passed) {
+            for (const auto& violation : summary.budget.violations) {
+                core::log(core::LogLevel::error,
+                          "Benchmark budget violation " + violation.metric + ": actual=" +
+                              std::to_string(violation.actual) +
+                              " limit=" + std::to_string(violation.limit));
+            }
+            return 2;
+        }
         return 0;
     });
 }

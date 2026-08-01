@@ -325,6 +325,7 @@ create_native_surface(VkInstance instance, const platform::NativeWindowHandle& h
 struct SelectedPhysicalDevice {
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties properties{};
+    VkPhysicalDeviceDriverProperties driver_properties{};
     bool sampler_anisotropy = false;
     bool multi_draw_indirect = false;
     bool draw_indirect_count = false;
@@ -557,7 +558,13 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
 
         SelectedPhysicalDevice selected;
         selected.physical_device = physical_device;
-        vkGetPhysicalDeviceProperties(physical_device, &selected.properties);
+        selected.driver_properties.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+        VkPhysicalDeviceProperties2 properties{};
+        properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        properties.pNext = &selected.driver_properties;
+        vkGetPhysicalDeviceProperties2(physical_device, &properties);
+        selected.properties = properties.properties;
         VkPhysicalDeviceVulkan12Features features_12{};
         features_12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
         VkPhysicalDeviceFeatures2 device_features{};
@@ -1354,6 +1361,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
           validation_enabled_(instance.validation_enabled),
           debug_utils_enabled_(instance.debug_utils_enabled),
           physical_device_(selected.physical_device), properties_(selected.properties),
+          driver_properties_(selected.driver_properties),
           sampler_anisotropy_(selected.sampler_anisotropy),
           multi_draw_indirect_(selected.multi_draw_indirect),
           draw_indirect_count_(selected.draw_indirect_count),
@@ -1459,6 +1467,19 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
 
     [[nodiscard]] std::string_view backend_name() const noexcept override {
         return rhi::render_backend_name(rhi::RenderBackend::vulkan);
+    }
+
+    [[nodiscard]] rhi::RenderDeviceInfo info() const noexcept override {
+        return {
+            rhi::RenderBackend::vulkan,
+            properties_.deviceName,
+            driver_properties_.driverName,
+            driver_properties_.driverInfo,
+            properties_.vendorID,
+            properties_.deviceID,
+            properties_.apiVersion,
+            properties_.driverVersion,
+        };
     }
 
     [[nodiscard]] rhi::RenderDeviceCapabilities capabilities() const noexcept override {
@@ -6865,6 +6886,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
     bool debug_utils_enabled_ = false;
     VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties properties_{};
+    VkPhysicalDeviceDriverProperties driver_properties_{};
     bool sampler_anisotropy_ = false;
     bool multi_draw_indirect_ = false;
     bool draw_indirect_count_ = false;

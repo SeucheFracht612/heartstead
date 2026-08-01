@@ -1,5 +1,6 @@
 #include "engine/world/streaming/chunk_streamer.hpp"
 
+#include "engine/profiling/profiler.hpp"
 #include "engine/world/chunks/chunk_edit_delta_codec.hpp"
 
 #include <algorithm>
@@ -109,6 +110,7 @@ core::Result<ChunkStreamLoadReport>
 ChunkStreamer::load_chunk(WorldState& state, ChunkCoord coord,
                           const TerrainGenerationConfig& generation, const RegionGraph& regions,
                           const VoxelPalette& palette, const IChunkEditDeltaSource* saved_deltas) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("streaming.load_chunk");
     ChunkStreamLoadReport report;
     report.coord = coord;
 
@@ -414,6 +416,7 @@ core::Result<ChunkStreamMaintenanceReport> ChunkStreamer::maintain_interest(
     WorldState& state, const std::vector<simulation::SimulationViewer>& viewers,
     const ChunkStreamInterestPolicy& policy, const IChunkEditDeltaSink* save_sink,
     const IChunkReplicationDeltaSink* replication_sink) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("streaming.maintain_interest");
     auto interest = plan_interest(state, viewers, policy);
     if (!interest) {
         return core::Result<ChunkStreamMaintenanceReport>::failure(interest.error().code,
@@ -459,6 +462,7 @@ core::Result<ChunkStreamMaintenanceReport> ChunkStreamer::maintain_loaded_intere
     const RegionGraph& regions, const VoxelPalette& palette,
     const IChunkEditDeltaSource* saved_deltas, const IChunkEditDeltaSink* save_sink,
     const IChunkReplicationDeltaSink* replication_sink) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("streaming.maintain_loaded_interest");
     auto interest = plan_interest(state, viewers, policy);
     if (!interest) {
         return core::Result<ChunkStreamMaintenanceReport>::failure(interest.error().code,

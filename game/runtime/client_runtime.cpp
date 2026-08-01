@@ -1,6 +1,7 @@
 #include "game/runtime/client_runtime.hpp"
 
 #include "engine/core/logging.hpp"
+#include "engine/profiling/profiler.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -40,6 +41,8 @@ core::Status ClientRuntime::receive(std::span<const net::TransportEnvelope> mess
 
 core::Result<ClientRuntimeStats>
 ClientRuntime::synchronize(std::uint64_t render_tick, std::size_t maximum_chunk_snapshot_slices) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("client.synchronize");
+    HEARTSTEAD_PROFILE_ZONE_VALUE(render_tick);
     std::uint32_t reconciled_input_count = 0;
     std::uint32_t acknowledged_input_count = 0;
     std::uint32_t hard_correction_count = 0;

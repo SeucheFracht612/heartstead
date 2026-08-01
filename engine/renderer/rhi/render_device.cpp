@@ -62,6 +62,11 @@ class HeadlessRenderDevice final : public IRenderDevice {
         return render_backend_name(RenderBackend::headless);
     }
 
+    [[nodiscard]] RenderDeviceInfo info() const noexcept override {
+        return {RenderBackend::headless, "Heartstead headless device", "Heartstead",
+                "deterministic"};
+    }
+
     [[nodiscard]] RenderDeviceCapabilities capabilities() const noexcept override {
         RenderDeviceCapabilities result;
         result.backend = RenderBackend::headless;
@@ -981,6 +986,10 @@ class OwnerThreadRenderDevice final : public IRenderDevice {
 
     [[nodiscard]] std::string_view backend_name() const noexcept override {
         return implementation_->backend_name();
+    }
+
+    [[nodiscard]] RenderDeviceInfo info() const noexcept override {
+        return implementation_->info();
     }
 
     [[nodiscard]] RenderDeviceCapabilities capabilities() const noexcept override {

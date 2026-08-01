@@ -1,5 +1,6 @@
 #include "engine/world/meshing/chunk_mesher.hpp"
 
+#include "engine/profiling/profiler.hpp"
 #include "engine/world/chunks/chunk_database.hpp"
 #include "engine/world/fluids/fluid_state.hpp"
 #include "engine/world/meshing/chunk_mesh_snapshot.hpp"
@@ -1103,6 +1104,7 @@ core::Result<ChunkMesh> build_snapshot_surface_mesh(const ChunkNeighborhoodSnaps
 core::Result<ChunkMesh>
 ChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborhood,
                                 const BlockRenderTableSnapshot& render_table) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("chunk_mesh.reference");
     return build_snapshot_surface_mesh(neighborhood, render_table, false);
 }
 

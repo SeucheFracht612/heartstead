@@ -2,6 +2,7 @@
 
 #include "engine/core/hash.hpp"
 #include "engine/net/command_payload.hpp"
+#include "engine/profiling/profiler.hpp"
 #include "engine/scenarios/scenario_fixture.hpp"
 #include "engine/scenarios/scenario_prototype.hpp"
 #include "engine/world/world_snapshot.hpp"
@@ -514,6 +515,7 @@ core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& pr
 }
 
 core::Result<RuntimeFrameStats> RuntimeSession::run_frame(RuntimeFrameInput input) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("runtime.frame");
     if (fault_.has_value()) {
         return core::Result<RuntimeFrameStats>::failure("runtime_session.faulted",
                                                         "runtime session cannot continue after '" +

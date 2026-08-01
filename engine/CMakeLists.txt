@@ -98,6 +98,7 @@ target_sources(
     player_profiles/map_discovery.cpp
     player_profiles/player_profile.cpp
     profiling/cpu_timing.cpp
+    profiling/runtime_metadata.cpp
     processes/process.cpp
     processes/process_environment.cpp
     processes/process_prototype.cpp
@@ -335,6 +336,8 @@ target_sources(
       player_profiles/map_discovery.hpp
       player_profiles/player_profile.hpp
       profiling/cpu_timing.hpp
+      profiling/profiler.hpp
+      profiling/runtime_metadata.hpp
       processes/process.hpp
       processes/process_environment.hpp
       processes/process_prototype.hpp
@@ -468,11 +471,25 @@ target_sources(
 
 target_include_directories(heartstead_engine PUBLIC ${PROJECT_SOURCE_DIR})
 target_include_directories(heartstead_engine SYSTEM PRIVATE ${Stb_INCLUDE_DIR})
+target_compile_definitions(
+  heartstead_engine
+  PRIVATE
+    HEARTSTEAD_BUILD_CONFIGURATION="${CMAKE_BUILD_TYPE}"
+    HEARTSTEAD_BUILD_VERSION="${PROJECT_VERSION}"
+    HEARTSTEAD_BUILD_GIT_COMMIT="${HEARTSTEAD_GIT_COMMIT}"
+    HEARTSTEAD_BUILD_GIT_DIRTY=${HEARTSTEAD_GIT_DIRTY}
+)
 target_link_libraries(
   heartstead_engine
   PUBLIC Threads::Threads
   PRIVATE draco::draco fastgltf::fastgltf KTX::ktx meshoptimizer::meshoptimizer
 )
+if(HEARTSTEAD_ENABLE_TRACY)
+  target_link_libraries(heartstead_engine PUBLIC Tracy::TracyClient)
+  target_compile_definitions(heartstead_engine PUBLIC HEARTSTEAD_HAS_TRACY=1)
+else()
+  target_compile_definitions(heartstead_engine PUBLIC HEARTSTEAD_HAS_TRACY=0)
+endif()
 if(HEARTSTEAD_ENABLE_MINIAUDIO)
   target_sources(heartstead_engine PRIVATE audio/miniaudio/miniaudio_implementation.cpp)
   target_include_directories(heartstead_engine SYSTEM PRIVATE ${MINIAUDIO_INCLUDE_DIRS})

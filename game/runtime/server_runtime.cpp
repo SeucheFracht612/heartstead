@@ -4,6 +4,7 @@
 #include "engine/entities/entity_prototype.hpp"
 #include "engine/items/item_prototype.hpp"
 #include "engine/movement/movement_prediction.hpp"
+#include "engine/profiling/profiler.hpp"
 #include "engine/simulation/fire_prototype.hpp"
 #include "engine/world/chunks/chunk_edit_delta_codec.hpp"
 #include "engine/world/chunks/chunk_replication.hpp"
@@ -684,6 +685,8 @@ core::Status ServerRuntime::stop() {
 
 core::Result<ServerRuntimeTickStats>
 ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int64_t now_ms) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("server.tick");
+    HEARTSTEAD_PROFILE_ZONE_VALUE(tick);
     if (!is_running()) {
         return core::Result<ServerRuntimeTickStats>::failure(
             "server_runtime.not_running", "server runtime must be started before ticking");

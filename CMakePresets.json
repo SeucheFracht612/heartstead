@@ -37,6 +37,17 @@
       }
     },
     {
+      "name": "profiling-release",
+      "displayName": "Release with Tracy Profiling",
+      "inherits": "default-release",
+      "binaryDir": "${sourceDir}/build/profiling-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "HEARTSTEAD_ENABLE_TRACY": "ON",
+        "VCPKG_MANIFEST_FEATURES": "profiling"
+      }
+    },
+    {
       "name": "linux-clang-debug",
       "displayName": "Linux Clang Debug",
       "inherits": "default-debug",
@@ -107,6 +118,10 @@
       "configurePreset": "default-release"
     },
     {
+      "name": "profiling-release",
+      "configurePreset": "profiling-release"
+    },
+    {
       "name": "linux-clang-debug",
       "configurePreset": "linux-clang-debug"
     },
@@ -149,6 +164,13 @@
     {
       "name": "default-release",
       "configurePreset": "default-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "profiling-release",
+      "configurePreset": "profiling-release",
       "output": {
         "outputOnFailure": true
       }

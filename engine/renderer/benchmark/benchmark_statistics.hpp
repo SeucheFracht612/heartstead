@@ -6,11 +6,44 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace heartstead::renderer::benchmark {
+
+enum class BenchmarkBudgetProfile : std::uint8_t {
+    none,
+    compatibility,
+    minimum,
+    mainstream,
+    high_end,
+};
+
+struct BenchmarkBudget {
+    double frame_interval_ms = 0.0;
+    double maximum_p95_frame_ms = 0.0;
+    double maximum_p99_frame_ms = 0.0;
+    double maximum_frame_ms = 0.0;
+    double maximum_mean_gpu_ms = 0.0;
+    std::uint64_t maximum_upload_bytes_per_frame = 0;
+};
+
+struct BenchmarkBudgetViolation {
+    std::string metric;
+    double actual = 0.0;
+    double limit = 0.0;
+};
+
+struct BenchmarkBudgetEvaluation {
+    BenchmarkBudgetProfile profile = BenchmarkBudgetProfile::none;
+    std::optional<BenchmarkBudget> limits;
+    bool evaluated = false;
+    bool passed = true;
+    bool gpu_evaluated = false;
+    std::vector<BenchmarkBudgetViolation> violations;
+};
 
 struct BenchmarkRunMetadata {
     std::string scene;
@@ -24,6 +57,25 @@ struct BenchmarkRunMetadata {
     std::uint64_t measured_frames = 0;
     std::uint32_t frame_cap = 0;
     bool validation_requested = false;
+    BenchmarkBudgetProfile budget_profile = BenchmarkBudgetProfile::none;
+    std::string engine_version;
+    std::string git_commit;
+    std::string build_configuration;
+    std::string compiler;
+    std::string platform;
+    std::string architecture;
+    std::string operating_system;
+    std::string cpu_model;
+    std::uint32_t logical_cpu_count = 0;
+    bool git_dirty = false;
+    bool tracy_enabled = false;
+    std::string gpu_name;
+    std::string gpu_driver;
+    std::string gpu_driver_info;
+    std::uint32_t gpu_vendor_id = 0;
+    std::uint32_t gpu_device_id = 0;
+    std::uint32_t graphics_api_version = 0;
+    std::uint32_t graphics_driver_version = 0;
 };
 
 struct BenchmarkSummary {
@@ -87,6 +139,8 @@ struct BenchmarkSummary {
     std::uint32_t maximum_particle_material_groups = 0;
     std::uint64_t final_particle_dropped = 0;
     std::uint64_t total_uploaded_bytes = 0;
+    std::uint64_t maximum_uploaded_bytes = 0;
+    BenchmarkBudgetEvaluation budget;
     RendererStats slowest_frame{};
 };
 
@@ -112,5 +166,13 @@ class BenchmarkRecorder {
 };
 
 [[nodiscard]] std::string format_benchmark_summary(const BenchmarkSummary& summary);
+[[nodiscard]] std::string_view
+benchmark_budget_profile_name(BenchmarkBudgetProfile profile) noexcept;
+[[nodiscard]] std::optional<BenchmarkBudgetProfile>
+parse_benchmark_budget_profile(std::string_view name) noexcept;
+[[nodiscard]] std::optional<BenchmarkBudget>
+benchmark_budget(BenchmarkBudgetProfile profile) noexcept;
+[[nodiscard]] BenchmarkBudgetEvaluation evaluate_benchmark_budget(const BenchmarkSummary& summary,
+                                                                  BenchmarkBudgetProfile profile);
 
 } // namespace heartstead::renderer::benchmark

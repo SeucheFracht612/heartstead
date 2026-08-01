@@ -13,6 +13,17 @@ cmake --preset default-release
 cmake --build --preset default-release --target heartstead_render_benchmark
 ```
 
+Build the optimized, symbolized Tracy client instrumentation when collecting a hierarchical trace:
+
+```bash
+cmake --preset profiling-release
+cmake --build --preset profiling-release --target heartstead_render_benchmark
+```
+
+The profiling preset enables the optional vcpkg `profiling` feature and links Tracy in on-demand
+mode. Start a compatible Tracy profiler and then launch the binary when a live capture is needed.
+Ordinary presets compile the permanent profiling call sites to no-ops.
+
 Run headlessly:
 
 ```bash
@@ -32,6 +43,19 @@ Run the native Vulkan backend and export CSV:
 Use `--list-scenes` and `--help` rather than relying on an old copied option list. Add
 `--reference-mesher` to compare the readable correctness mesher against the optimized greedy path.
 The runner is uncapped unless `--frame-cap` is explicitly supplied.
+
+Enforce a starting hardware tier in automation:
+
+```bash
+./build/default-release/apps/render_benchmark/heartstead_render_benchmark \
+  --scene mountains --warmup 120 --frames 1000 --radius 2 \
+  --budget minimum --output build/benchmarks/mountains-minimum.json
+```
+
+`--budget compatibility|minimum|mainstream|high-end` evaluates median, P95, P99, maximum frame,
+maximum upload bytes, and mean GPU time when GPU timestamps exist. Results are written before a
+failing gate exits with status 2. `none` is the default so exploratory runs do not silently become
+release gates.
 
 ## Workloads
 
@@ -71,9 +95,16 @@ Vulkan timestamps are asynchronous. Every GPU result carries the source frame an
 do not align a delayed GPU sample with the CPU frame that happened to receive it. The headless
 backend reports GPU timing unavailable while preserving the same CPU/counter schema.
 
-JSON and CSV carry a versioned schema and complete run configuration: scene, seed, backend, mesher,
-resolution, radius, warm-up and measured frames, frame cap, and validation request. Keep the raw
-output with any conclusion.
+JSON and CSV schema v2 carry scene/run configuration plus engine version, Git commit and tracked
+dirty state, build configuration, compiler, platform, architecture, OS, CPU model/logical CPUs,
+Tracy state, GPU, driver information, and numeric Vulkan API/driver versions. Budget evaluation and
+violations are retained with the raw frames. Keep the raw output with any conclusion.
+
+The first permanent trace surface includes runtime/client/server frames, renderer synchronization,
+extraction, visibility, draw construction, command construction/submission, chunk snapshots,
+meshing, upload preparation/copy, worker jobs with name and ID, voxel lighting, collision cooking,
+and chunk streaming. Tracy plots expose general job backlog and chunk mesh/upload queue depth.
+Extend this same hierarchy when adding pipeline stages rather than creating one-off timer systems.
 
 ## Comparison procedure
 

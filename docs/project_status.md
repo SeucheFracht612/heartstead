@@ -51,6 +51,16 @@ large-body water, vegetation, textured billboard and mesh particles, trails, and
 The development game consumes profile-driven environment state; the `starting-biome` renderer
 benchmark composes the broader environment stack into a stable integration workload.
 
+### Performance and profiling
+
+The deterministic renderer benchmark retains raw frames and percentile summaries. Schema v2 adds
+source/build/machine/GPU provenance and optional compatibility, minimum, mainstream, and high-end
+absolute gates. An optimized `profiling-release` preset links on-demand Tracy instrumentation across
+the main runtime, renderer, worker, chunk, lighting, collision, and streaming boundaries; normal
+builds compile those call sites to no-ops. The broader storage, job/backpressure, asynchronous I/O,
+and scale work remains staged in the
+[voxel optimization roadmap](performance/voxel_optimization_roadmap.md).
+
 The retained UI path uses a packaged Noto Sans font rendered from a deterministic SDF atlas,
 strict UTF-8 decoding, DPI-scaled widgets, hierarchical clipping/scissors, nine-slice panels,
 atlased icons, inventory previews, accessibility color transforms, and exposure-independent final

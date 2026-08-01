@@ -1,11 +1,13 @@
 #include "engine/renderer/benchmark/benchmark_statistics.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <numeric>
 #include <sstream>
+#include <utility>
 
 namespace heartstead::renderer::benchmark {
 
@@ -102,8 +104,100 @@ namespace {
 
 } // namespace
 
+std::string_view benchmark_budget_profile_name(BenchmarkBudgetProfile profile) noexcept {
+    switch (profile) {
+    case BenchmarkBudgetProfile::none:
+        return "none";
+    case BenchmarkBudgetProfile::compatibility:
+        return "compatibility";
+    case BenchmarkBudgetProfile::minimum:
+        return "minimum";
+    case BenchmarkBudgetProfile::mainstream:
+        return "mainstream";
+    case BenchmarkBudgetProfile::high_end:
+        return "high-end";
+    }
+    return "unknown";
+}
+
+std::optional<BenchmarkBudgetProfile>
+parse_benchmark_budget_profile(std::string_view name) noexcept {
+    constexpr std::array profiles{
+        BenchmarkBudgetProfile::none,
+        BenchmarkBudgetProfile::compatibility,
+        BenchmarkBudgetProfile::minimum,
+        BenchmarkBudgetProfile::mainstream,
+        BenchmarkBudgetProfile::high_end,
+    };
+    const auto found = std::ranges::find_if(profiles, [name](BenchmarkBudgetProfile profile) {
+        return benchmark_budget_profile_name(profile) == name;
+    });
+    return found == profiles.end() ? std::nullopt
+                                   : std::optional<BenchmarkBudgetProfile>{*found};
+}
+
+std::optional<BenchmarkBudget> benchmark_budget(BenchmarkBudgetProfile profile) noexcept {
+    const auto make_budget = [](double refresh_hz, double gpu_ms,
+                                std::uint64_t upload_bytes) {
+        const auto interval = 1'000.0 / refresh_hz;
+        return BenchmarkBudget{
+            interval,
+            interval * 1.25,
+            interval * 1.50,
+            interval * 3.00,
+            gpu_ms,
+            upload_bytes,
+        };
+    };
+    switch (profile) {
+    case BenchmarkBudgetProfile::none:
+        return std::nullopt;
+    case BenchmarkBudgetProfile::compatibility:
+        return make_budget(30.0, 28.0, 2U * 1024U * 1024U);
+    case BenchmarkBudgetProfile::minimum:
+        return make_budget(60.0, 13.5, 2U * 1024U * 1024U);
+    case BenchmarkBudgetProfile::mainstream:
+        return make_budget(90.0, 9.0, 4U * 1024U * 1024U);
+    case BenchmarkBudgetProfile::high_end:
+        return make_budget(120.0, 6.7, 4U * 1024U * 1024U);
+    }
+    return std::nullopt;
+}
+
+BenchmarkBudgetEvaluation evaluate_benchmark_budget(const BenchmarkSummary& summary,
+                                                    BenchmarkBudgetProfile profile) {
+    BenchmarkBudgetEvaluation evaluation;
+    evaluation.profile = profile;
+    const auto limits = benchmark_budget(profile);
+    evaluation.limits = limits;
+    if (!limits.has_value() || summary.sample_count == 0) {
+        return evaluation;
+    }
+    evaluation.evaluated = true;
+    const auto check = [&evaluation](std::string metric, double actual, double limit) {
+        if (!std::isfinite(actual) || actual > limit) {
+            evaluation.violations.push_back({std::move(metric), actual, limit});
+        }
+    };
+    check("median_frame_ms", summary.median_frame_ms, limits->frame_interval_ms);
+    check("p95_frame_ms", summary.p95_frame_ms, limits->maximum_p95_frame_ms);
+    check("p99_frame_ms", summary.p99_frame_ms, limits->maximum_p99_frame_ms);
+    check("maximum_frame_ms", summary.maximum_frame_ms, limits->maximum_frame_ms);
+    check("maximum_uploaded_bytes", static_cast<double>(summary.maximum_uploaded_bytes),
+          static_cast<double>(limits->maximum_upload_bytes_per_frame));
+    if (summary.gpu_sample_count != 0) {
+        evaluation.gpu_evaluated = true;
+        check("mean_gpu_frame_ms", summary.mean_gpu_frame_ms, limits->maximum_mean_gpu_ms);
+    }
+    evaluation.passed = evaluation.violations.empty();
+    return evaluation;
+}
+
 BenchmarkRecorder::BenchmarkRecorder(std::string scene, std::uint64_t seed)
-    : BenchmarkRecorder(BenchmarkRunMetadata{.scene = std::move(scene), .seed = seed}) {}
+    : metadata_{} {
+    metadata_.scene = std::move(scene);
+    metadata_.seed = seed;
+}
 
 BenchmarkRecorder::BenchmarkRecorder(BenchmarkRunMetadata metadata)
     : metadata_(std::move(metadata)) {}
@@ -130,6 +224,7 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
     summary.seed = metadata_.seed;
     summary.sample_count = samples_.size();
     if (samples_.empty()) {
+        summary.budget = evaluate_benchmark_budget(summary, metadata_.budget_profile);
         return summary;
     }
 
@@ -190,6 +285,8 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
         upload_total += sample.upload_ms;
         gpu_wait_total += sample.gpu_wait_ms;
         summary.total_uploaded_bytes += sample.uploaded_bytes_this_frame;
+        summary.maximum_uploaded_bytes =
+            std::max(summary.maximum_uploaded_bytes, sample.uploaded_bytes_this_frame);
         summary.maximum_voxel_relight_backlog_cells = std::max(
             summary.maximum_voxel_relight_backlog_cells, sample.voxel_relight_backlog_cells);
         summary.maximum_voxel_relight_visited_cells = std::max(
@@ -293,6 +390,7 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
         summary.mean_gpu_upload_ms =
             gpu_upload_total / static_cast<double>(summary.gpu_upload_sample_count);
     }
+    summary.budget = evaluate_benchmark_budget(summary, metadata_.budget_profile);
     return summary;
 }
 
@@ -300,9 +398,33 @@ std::string BenchmarkRecorder::to_json() const {
     const auto summary = summarize();
     std::ostringstream output;
     output << std::fixed << std::setprecision(6);
-    output << "{\n  \"schema\": \"heartstead.renderer_benchmark.v1\",\n"
+    output << "{\n  \"schema\": \"heartstead.renderer_benchmark.v2\",\n"
            << "  \"scene\": \"" << json_escape(metadata_.scene) << "\",\n"
            << "  \"seed\": " << metadata_.seed << ",\n"
+           << "  \"provenance\": {\n"
+           << "    \"engine_version\": \"" << json_escape(metadata_.engine_version) << "\",\n"
+           << "    \"git_commit\": \"" << json_escape(metadata_.git_commit) << "\",\n"
+           << "    \"git_dirty\": " << (metadata_.git_dirty ? "true" : "false") << ",\n"
+           << "    \"build_configuration\": \""
+           << json_escape(metadata_.build_configuration) << "\",\n"
+           << "    \"compiler\": \"" << json_escape(metadata_.compiler) << "\",\n"
+           << "    \"platform\": \"" << json_escape(metadata_.platform) << "\",\n"
+           << "    \"architecture\": \"" << json_escape(metadata_.architecture) << "\",\n"
+           << "    \"operating_system\": \"" << json_escape(metadata_.operating_system)
+           << "\",\n"
+           << "    \"cpu_model\": \"" << json_escape(metadata_.cpu_model) << "\",\n"
+           << "    \"logical_cpu_count\": " << metadata_.logical_cpu_count << ",\n"
+           << "    \"tracy_enabled\": " << (metadata_.tracy_enabled ? "true" : "false")
+           << ",\n"
+           << "    \"gpu_name\": \"" << json_escape(metadata_.gpu_name) << "\",\n"
+           << "    \"gpu_driver\": \"" << json_escape(metadata_.gpu_driver) << "\",\n"
+           << "    \"gpu_driver_info\": \"" << json_escape(metadata_.gpu_driver_info)
+           << "\",\n"
+           << "    \"gpu_vendor_id\": " << metadata_.gpu_vendor_id << ",\n"
+           << "    \"gpu_device_id\": " << metadata_.gpu_device_id << ",\n"
+           << "    \"graphics_api_version\": " << metadata_.graphics_api_version << ",\n"
+           << "    \"graphics_driver_version\": " << metadata_.graphics_driver_version << "\n"
+           << "  },\n"
            << "  \"run\": {\n"
            << "    \"backend\": \"" << json_escape(metadata_.backend) << "\",\n"
            << "    \"mesher\": \"" << json_escape(metadata_.mesher) << "\",\n"
@@ -312,6 +434,8 @@ std::string BenchmarkRecorder::to_json() const {
            << "    \"warmup_frames\": " << metadata_.warmup_frames << ",\n"
            << "    \"measured_frames\": " << metadata_.measured_frames << ",\n"
            << "    \"frame_cap\": " << metadata_.frame_cap << ",\n"
+           << "    \"budget_profile\": \""
+           << benchmark_budget_profile_name(metadata_.budget_profile) << "\",\n"
            << "    \"validation_requested\": "
            << (metadata_.validation_requested ? "true" : "false") << "\n"
            << "  },\n"
@@ -396,6 +520,32 @@ std::string BenchmarkRecorder::to_json() const {
            << summary.maximum_particle_material_groups << ",\n"
            << "    \"final_particle_dropped\": " << summary.final_particle_dropped << ",\n"
            << "    \"total_uploaded_bytes\": " << summary.total_uploaded_bytes << ",\n"
+           << "    \"maximum_uploaded_bytes\": " << summary.maximum_uploaded_bytes << ",\n"
+           << "    \"budget\": {\"profile\": \""
+           << benchmark_budget_profile_name(summary.budget.profile) << "\", \"evaluated\": "
+           << (summary.budget.evaluated ? "true" : "false") << ", \"passed\": "
+           << (summary.budget.passed ? "true" : "false") << ", \"gpu_evaluated\": "
+           << (summary.budget.gpu_evaluated ? "true" : "false") << ", \"limits\": ";
+    if (summary.budget.limits.has_value()) {
+        const auto& limits = *summary.budget.limits;
+        output << "{\"frame_interval_ms\": " << limits.frame_interval_ms
+               << ", \"maximum_p95_frame_ms\": " << limits.maximum_p95_frame_ms
+               << ", \"maximum_p99_frame_ms\": " << limits.maximum_p99_frame_ms
+               << ", \"maximum_frame_ms\": " << limits.maximum_frame_ms
+               << ", \"maximum_mean_gpu_ms\": " << limits.maximum_mean_gpu_ms
+               << ", \"maximum_upload_bytes_per_frame\": "
+               << limits.maximum_upload_bytes_per_frame << '}';
+    } else {
+        output << "null";
+    }
+    output << ", \"violations\": [";
+    for (std::size_t index = 0; index < summary.budget.violations.size(); ++index) {
+        const auto& violation = summary.budget.violations[index];
+        output << "{\"metric\": \"" << json_escape(violation.metric) << "\", \"actual\": "
+               << violation.actual << ", \"limit\": " << violation.limit << "}"
+               << (index + 1 == summary.budget.violations.size() ? "" : ", ");
+    }
+    output << "]},\n"
            << "    \"slowest_frame\": {\"frame\": " << summary.slowest_frame.frame_index
            << ", \"cpu_frame_ms\": " << summary.slowest_frame.cpu_frame_ms
            << ", \"extraction_ms\": " << summary.slowest_frame.render_extraction_ms
@@ -535,8 +685,16 @@ std::string BenchmarkRecorder::to_csv() const {
     const auto summary = summarize();
     std::ostringstream output;
     output << std::fixed << std::setprecision(6);
-    output << "scene,seed,backend,mesher,initial_width,initial_height,chunk_radius,warmup_frames,"
-              "measured_frames,frame_cap,validation_requested,median_frame_ms,p95_frame_ms,"
+    output << "schema,scene,seed,engine_version,git_commit,git_dirty,build_configuration,compiler,"
+              "platform,"
+              "architecture,operating_system,cpu_model,logical_cpu_count,tracy_enabled,gpu_name,"
+              "gpu_driver,gpu_driver_info,gpu_vendor_id,gpu_device_id,graphics_api_version,"
+              "graphics_driver_version,backend,mesher,initial_width,initial_height,chunk_radius,"
+              "warmup_frames,measured_frames,frame_cap,budget_profile,budget_frame_interval_ms,"
+              "budget_maximum_p95_frame_ms,budget_maximum_p99_frame_ms,"
+              "budget_maximum_frame_ms,budget_maximum_mean_gpu_ms,"
+              "budget_maximum_upload_bytes_per_frame,budget_evaluated,budget_passed,"
+              "budget_violation_count,validation_requested,median_frame_ms,p95_frame_ms,"
               "p99_frame_ms,one_percent_low_fps,point_one_percent_low_fps,maximum_frame_ms,"
               "frame,submission_serial,completed_submission_serial,cpu_frame_ms,"
               "gpu_valid,gpu_timing_frame,gpu_latency_frames,gpu_frame_ms,gpu_upload_valid,"
@@ -568,12 +726,30 @@ std::string BenchmarkRecorder::to_csv() const {
               "device_local_memory_usage_bytes,"
               "gpu_arena_capacity_bytes,gpu_arena_used_bytes,gpu_arena_free_bytes,"
               "gpu_arena_fragmentation,pending_upload_bytes,uploaded_bytes\n";
+    const auto limits = summary.budget.limits.value_or(BenchmarkBudget{});
     for (const auto& sample : samples_) {
-        output << csv_escape(metadata_.scene) << ',' << metadata_.seed << ','
+        output << csv_escape("heartstead.renderer_benchmark.v2") << ','
+               << csv_escape(metadata_.scene) << ',' << metadata_.seed << ','
+               << csv_escape(metadata_.engine_version) << ',' << csv_escape(metadata_.git_commit)
+               << ',' << (metadata_.git_dirty ? 1 : 0) << ','
+               << csv_escape(metadata_.build_configuration) << ',' << csv_escape(metadata_.compiler)
+               << ',' << csv_escape(metadata_.platform) << ',' << csv_escape(metadata_.architecture)
+               << ',' << csv_escape(metadata_.operating_system) << ','
+               << csv_escape(metadata_.cpu_model) << ',' << metadata_.logical_cpu_count << ','
+               << (metadata_.tracy_enabled ? 1 : 0) << ',' << csv_escape(metadata_.gpu_name) << ','
+               << csv_escape(metadata_.gpu_driver) << ',' << csv_escape(metadata_.gpu_driver_info)
+               << ',' << metadata_.gpu_vendor_id << ',' << metadata_.gpu_device_id << ','
+               << metadata_.graphics_api_version << ',' << metadata_.graphics_driver_version << ','
                << csv_escape(metadata_.backend) << ',' << csv_escape(metadata_.mesher) << ','
                << metadata_.initial_width << ',' << metadata_.initial_height << ','
                << metadata_.chunk_radius << ',' << metadata_.warmup_frames << ','
                << metadata_.measured_frames << ',' << metadata_.frame_cap << ','
+               << csv_escape(benchmark_budget_profile_name(metadata_.budget_profile)) << ','
+               << limits.frame_interval_ms << ',' << limits.maximum_p95_frame_ms << ','
+               << limits.maximum_p99_frame_ms << ',' << limits.maximum_frame_ms << ','
+               << limits.maximum_mean_gpu_ms << ',' << limits.maximum_upload_bytes_per_frame << ','
+               << (summary.budget.evaluated ? 1 : 0) << ',' << (summary.budget.passed ? 1 : 0) << ','
+               << summary.budget.violations.size() << ','
                << (metadata_.validation_requested ? 1 : 0) << ',' << summary.median_frame_ms << ','
                << summary.p95_frame_ms << ',' << summary.p99_frame_ms << ','
                << summary.one_percent_low_fps << ',' << summary.point_one_percent_low_fps << ','
@@ -690,6 +866,11 @@ std::string format_benchmark_summary(const BenchmarkSummary& summary) {
            << "ms mesh=" << summary.mean_meshing_ms << "ms upload=" << summary.mean_upload_ms
            << "ms wait=" << summary.mean_gpu_wait_ms
            << "ms slowest_frame=" << summary.slowest_frame.frame_index;
+    if (summary.budget.evaluated) {
+        output << " budget=" << benchmark_budget_profile_name(summary.budget.profile) << ':'
+               << (summary.budget.passed ? "pass" : "fail")
+               << " violations=" << summary.budget.violations.size();
+    }
     return output.str();
 }
 

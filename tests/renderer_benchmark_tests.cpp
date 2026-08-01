@@ -1,11 +1,16 @@
+#include "engine/profiling/runtime_metadata.hpp"
 #include "engine/renderer/benchmark/benchmark_scene.hpp"
 #include "engine/renderer/benchmark/benchmark_statistics.hpp"
+#include "engine/renderer/rhi/render_device.hpp"
 #include "engine/world/fluids/chunk_fluid_system.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <limits>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -21,6 +26,18 @@ void test_benchmark_statistics() {
     metadata.chunk_radius = 16;
     metadata.warmup_frames = 120;
     metadata.measured_frames = 4;
+    metadata.engine_version = "0.1.0";
+    metadata.git_commit = "0123456789ab";
+    metadata.build_configuration = "release";
+    metadata.compiler = "Test Compiler";
+    metadata.platform = "test-platform";
+    metadata.architecture = "test-architecture";
+    metadata.operating_system = "Test OS";
+    metadata.cpu_model = "Test CPU";
+    metadata.logical_cpu_count = 8;
+    metadata.gpu_name = "Test GPU";
+    metadata.gpu_driver = "Test Driver";
+    metadata.gpu_driver_info = "1.2.3";
     benchmark::BenchmarkRecorder recorder(metadata);
     constexpr std::array frame_times{1.0, 2.0, 3.0, 100.0};
     for (std::size_t index = 0; index < frame_times.size(); ++index) {
@@ -80,6 +97,9 @@ void test_benchmark_statistics() {
     assert(std::abs(summary.point_one_percent_low_fps - 10.0) < 0.0001);
     assert(summary.maximum_frame_ms == 100.0);
     assert(summary.total_uploaded_bytes == 64);
+    assert(summary.maximum_uploaded_bytes == 16);
+    assert(!summary.budget.evaluated);
+    assert(!summary.budget.limits);
     assert(std::abs(summary.median_voxel_relight_solve_ms - 0.375) < 0.0001);
     assert(std::abs(summary.p95_voxel_relight_solve_ms - 0.7125) < 0.0001);
     assert(std::abs(summary.median_voxel_relight_apply_ms - 0.15) < 0.0001);
@@ -101,8 +121,12 @@ void test_benchmark_statistics() {
     assert(std::abs(summary.mean_chunk_synchronization_ms - 3.0) < 0.0001);
     assert(std::abs(summary.mean_command_recording_ms - 0.1875) < 0.0001);
     assert(recorder.metadata().initial_width == 1920);
-    assert(recorder.to_json().find("\"schema\": \"heartstead.renderer_benchmark.v1\"") !=
+    assert(recorder.to_json().find("\"schema\": \"heartstead.renderer_benchmark.v2\"") !=
            std::string::npos);
+    assert(recorder.to_json().find("\"git_commit\": \"0123456789ab\"") != std::string::npos);
+    assert(recorder.to_json().find("\"gpu_name\": \"Test GPU\"") != std::string::npos);
+    assert(recorder.to_json().find("\"budget_profile\": \"none\"") != std::string::npos);
+    assert(recorder.to_json().find("\"limits\": null") != std::string::npos);
     assert(recorder.to_json().find("\"warmup_frames\": 120") != std::string::npos);
     assert(recorder.to_json().find("\"p99_frame_ms\": 97.090000") != std::string::npos);
     assert(recorder.to_json().find("\"frames\": [") != std::string::npos);
@@ -115,18 +139,121 @@ void test_benchmark_statistics() {
            std::string::npos);
     assert(recorder.to_json().find("\"voxel_fluid_processed_cells\": 6000") != std::string::npos);
     assert(recorder.to_json().find("\"slowest_frame\": {\"frame\": 3") != std::string::npos);
-    assert(
-        recorder.to_csv().find(
-            "scene,seed,backend,mesher,initial_width,initial_height,chunk_radius,warmup_frames") ==
-        0);
+    assert(recorder.to_csv().find("schema,scene,seed,engine_version,git_commit,git_dirty,build_"
+                                  "configuration,compiler,platform") == 0);
+    assert(recorder.to_csv().find("budget_frame_interval_ms") != std::string::npos);
+    assert(recorder.to_csv().find("\"Test GPU\",\"Test Driver\",\"1.2.3\"") != std::string::npos);
     assert(recorder.to_csv().find("\"headless\",\"greedy\",1920,1080,16,120,4") !=
            std::string::npos);
+    const auto csv = recorder.to_csv();
+    const auto header_end = csv.find('\n');
+    const auto row_end = csv.find('\n', header_end + 1);
+    assert(header_end != std::string::npos);
+    assert(row_end != std::string::npos);
+    assert(std::ranges::count(csv.substr(0, header_end), ',') ==
+           std::ranges::count(csv.substr(header_end + 1, row_end - header_end - 1), ','));
     assert(benchmark::format_benchmark_summary(summary).find("0.1%low=10.000fps") !=
            std::string::npos);
     assert(benchmark::format_benchmark_summary(summary).find("relight=0.375/0.71") !=
            std::string::npos);
     assert(benchmark::format_benchmark_summary(summary).find("fluid=0.750/1.425") !=
            std::string::npos);
+}
+
+void test_benchmark_budget_profiles() {
+    using namespace heartstead::renderer::benchmark;
+
+    assert(parse_benchmark_budget_profile("none") == BenchmarkBudgetProfile::none);
+    assert(parse_benchmark_budget_profile("compatibility") ==
+           BenchmarkBudgetProfile::compatibility);
+    assert(parse_benchmark_budget_profile("minimum") == BenchmarkBudgetProfile::minimum);
+    assert(parse_benchmark_budget_profile("mainstream") == BenchmarkBudgetProfile::mainstream);
+    assert(parse_benchmark_budget_profile("high-end") == BenchmarkBudgetProfile::high_end);
+    assert(!parse_benchmark_budget_profile("high_end"));
+    assert(!benchmark_budget(BenchmarkBudgetProfile::none));
+
+    const auto minimum = benchmark_budget(BenchmarkBudgetProfile::minimum);
+    assert(minimum);
+    assert(std::abs(minimum->frame_interval_ms - (1'000.0 / 60.0)) < 0.0001);
+    assert(std::abs(minimum->maximum_p99_frame_ms - 25.0) < 0.0001);
+    assert(minimum->maximum_upload_bytes_per_frame == 2U * 1024U * 1024U);
+
+    BenchmarkSummary passing;
+    passing.sample_count = 100;
+    passing.gpu_sample_count = 100;
+    passing.median_frame_ms = 16.0;
+    passing.p95_frame_ms = 20.0;
+    passing.p99_frame_ms = 24.0;
+    passing.maximum_frame_ms = 49.0;
+    passing.mean_gpu_frame_ms = 13.0;
+    passing.maximum_uploaded_bytes = 2U * 1024U * 1024U;
+    const auto pass = evaluate_benchmark_budget(passing, BenchmarkBudgetProfile::minimum);
+    assert(pass.evaluated);
+    assert(pass.limits);
+    assert(std::abs(pass.limits->maximum_p99_frame_ms - 25.0) < 0.0001);
+    assert(pass.gpu_evaluated);
+    assert(pass.passed);
+    assert(pass.violations.empty());
+
+    BenchmarkSummary failing = passing;
+    failing.median_frame_ms = 17.0;
+    failing.p95_frame_ms = 21.0;
+    failing.p99_frame_ms = 26.0;
+    failing.maximum_frame_ms = 51.0;
+    failing.mean_gpu_frame_ms = 14.0;
+    failing.maximum_uploaded_bytes = 2U * 1024U * 1024U + 1U;
+    const auto fail = evaluate_benchmark_budget(failing, BenchmarkBudgetProfile::minimum);
+    assert(fail.evaluated);
+    assert(!fail.passed);
+    assert(fail.violations.size() == 6);
+
+    BenchmarkSummary invalid = passing;
+    invalid.p95_frame_ms = std::numeric_limits<double>::quiet_NaN();
+    const auto invalid_result =
+        evaluate_benchmark_budget(invalid, BenchmarkBudgetProfile::minimum);
+    assert(!invalid_result.passed);
+    assert(invalid_result.violations.size() == 1);
+    assert(invalid_result.violations.front().metric == "p95_frame_ms");
+
+    BenchmarkRunMetadata gated_metadata;
+    gated_metadata.scene = "gated";
+    gated_metadata.budget_profile = BenchmarkBudgetProfile::minimum;
+    BenchmarkRecorder gated(std::move(gated_metadata));
+    heartstead::renderer::RendererStats gated_frame;
+    gated_frame.cpu_frame_ms = 10.0;
+    gated_frame.gpu_timing_valid = true;
+    gated_frame.gpu_frame_ms = 10.0;
+    gated_frame.uploaded_bytes_this_frame = 1'024;
+    gated.record(gated_frame);
+    assert(gated.summarize().budget.passed);
+    assert(gated.to_json().find("\"maximum_p99_frame_ms\": 25.000000") !=
+           std::string::npos);
+
+    BenchmarkSummary empty;
+    const auto unevaluated = evaluate_benchmark_budget(empty, BenchmarkBudgetProfile::minimum);
+    assert(!unevaluated.evaluated);
+    assert(unevaluated.limits);
+    assert(unevaluated.passed);
+}
+
+void test_runtime_and_render_device_metadata() {
+    const auto runtime = heartstead::profiling::query_runtime_metadata();
+    assert(!runtime.engine_version.empty());
+    assert(!runtime.git_commit.empty());
+    assert(!runtime.build_configuration.empty());
+    assert(!runtime.compiler.empty());
+    assert(!runtime.platform.empty());
+    assert(!runtime.architecture.empty());
+    assert(!runtime.operating_system.empty());
+    assert(!runtime.cpu_model.empty());
+    assert(runtime.logical_cpu_count > 0);
+
+    auto device = heartstead::renderer::rhi::create_render_device({});
+    assert(device);
+    const auto information = device.value()->info();
+    assert(information.backend == heartstead::renderer::rhi::RenderBackend::headless);
+    assert(information.device_name == "Heartstead headless device");
+    assert(information.driver_name == "Heartstead");
 }
 
 void test_low_fps_windows_are_distinct() {
@@ -287,6 +414,8 @@ void test_dynamic_scene_schedules() {
 
 int main() {
     test_benchmark_statistics();
+    test_benchmark_budget_profiles();
+    test_runtime_and_render_device_metadata();
     test_low_fps_windows_are_distinct();
     test_all_deterministic_scenes_construct();
     test_scene_content_is_reproducible();

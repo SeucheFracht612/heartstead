@@ -79,6 +79,28 @@ ctest --preset linux-clang-tsan
 ASan/UBSan and TSan are intentionally separate builds. Sanitizer presets disable Vulkan so reports
 focus on project-owned code.
 
+## Profiling and performance gates
+
+Use an optimized instrumented build for hierarchical Tracy captures:
+
+```bash
+cmake --preset profiling-release
+cmake --build --preset profiling-release
+ctest --preset profiling-release
+```
+
+Use a declared benchmark tier for an absolute automation gate. The runner writes its raw result
+before returning status 2 on a failed evaluated gate:
+
+```bash
+./build/profiling-release/apps/render_benchmark/heartstead_render_benchmark \
+  --headless --scene mountains --warmup 120 --frames 1000 --radius 2 \
+  --budget minimum --output build/benchmarks/mountains-minimum.json
+```
+
+Headless runs cannot evaluate the GPU portion. Performance sign-off also requires repeated native
+runs on the declared reference hardware; see [Renderer benchmarks](../performance/renderer_benchmarks.md).
+
 ## Runtime smoke checks
 
 Exercise the complete local runtime without presentation:

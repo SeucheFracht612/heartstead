@@ -27,6 +27,20 @@
       "default-features": false
     }
   ],
+  "features": {
+    "profiling": {
+      "description": "Opt-in Tracy client instrumentation for profile builds",
+      "dependencies": [
+        {
+          "name": "tracy",
+          "default-features": false,
+          "features": [
+            "on-demand"
+          ]
+        }
+      ]
+    }
+  },
   "overrides": [
     {
       "name": "joltphysics",

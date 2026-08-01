@@ -1,5 +1,7 @@
 #include "engine/jobs/thread_pool/thread_pool_backend.hpp"
 
+#include "engine/profiling/profiler.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -126,6 +128,7 @@ class ThreadPoolJobSystem final : public IJobSystem {
             ++pending_count_;
         }
 
+        HEARTSTEAD_PROFILE_PLOT("jobs.pending", pending_count_.load());
         jobs_ready_.notify_one();
         return id;
     }
@@ -171,6 +174,7 @@ class ThreadPoolJobSystem final : public IJobSystem {
     }
 
     void worker_loop() {
+        HEARTSTEAD_PROFILE_THREAD_NAME("Heartstead job worker");
         while (true) {
             QueuedJob job;
             {
@@ -188,6 +192,10 @@ class ThreadPoolJobSystem final : public IJobSystem {
             result.name = job.name;
             result.priority = job.priority;
             result.state = JobState::running;
+
+            HEARTSTEAD_PROFILE_ZONE_NAMED("jobs.execute");
+            HEARTSTEAD_PROFILE_ZONE_TEXT(job.name.data(), job.name.size());
+            HEARTSTEAD_PROFILE_ZONE_VALUE(job.id.value());
 
             try {
                 const JobContext context{job.id, job.name, job.priority, false};
@@ -222,6 +230,7 @@ class ThreadPoolJobSystem final : public IJobSystem {
             });
             if (stopping_.load() && completed_results_.size() >= desc_.max_completed_results) {
                 --pending_count_;
+                HEARTSTEAD_PROFILE_PLOT("jobs.pending", pending_count_.load());
                 return;
             }
 
@@ -229,6 +238,7 @@ class ThreadPoolJobSystem final : public IJobSystem {
             completed_results_.push_back(std::move(result));
             --pending_count_;
             ++completed_count_;
+            HEARTSTEAD_PROFILE_PLOT("jobs.pending", pending_count_.load());
         }
     }
 

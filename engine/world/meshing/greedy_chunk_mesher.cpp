@@ -1,5 +1,7 @@
 #include "engine/world/meshing/greedy_chunk_mesher.hpp"
 
+#include "engine/profiling/profiler.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -378,6 +380,7 @@ core::Result<ChunkMesh>
 GreedyChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborhood,
                                       const BlockRenderTableSnapshot& render_table,
                                       ChunkMesh reusable_mesh) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("chunk_mesh.greedy");
     auto status = neighborhood.validate();
     if (!status) {
         return core::Result<ChunkMesh>::failure(status.error().code, status.error().message);

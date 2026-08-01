@@ -1,6 +1,7 @@
 #include "engine/renderer/chunks/chunk_render_system.hpp"
 
 #include "engine/core/logging.hpp"
+#include "engine/profiling/profiler.hpp"
 #include "engine/renderer/terrain/terrain_mapping.hpp"
 #include "engine/world/blocks/block_model.hpp"
 
@@ -382,6 +383,7 @@ ChunkRenderSystem::build_draw_list(const RenderCamera& camera,
         ++visibility_epoch_;
     }
     {
+        HEARTSTEAD_PROFILE_ZONE_NAMED("chunks.visibility_culling");
         profiling::ScopedCpuTimingZone culling_zone(timings_,
                                                     profiling::CpuTimingZone::visibility_culling);
         std::unordered_set<VisibilityKey> current_keys;
@@ -473,6 +475,7 @@ ChunkRenderSystem::build_draw_list(const RenderCamera& camera,
     }
 
     {
+        HEARTSTEAD_PROFILE_ZONE_NAMED("chunks.draw_list_construction");
         profiling::ScopedCpuTimingZone draw_zone(timings_,
                                                  profiling::CpuTimingZone::draw_list_construction);
         for (const auto& visible : visible_chunks_scratch_) {
@@ -811,6 +814,7 @@ core::Status ChunkRenderSystem::process_completed_meshes(world::WorldState& worl
             return upload.identity == result.identity;
         });
         {
+            HEARTSTEAD_PROFILE_ZONE_NAMED("chunks.upload_preparation");
             profiling::ScopedCpuTimingZone preparation_zone(
                 timings_, profiling::CpuTimingZone::upload_preparation);
             auto built_mesh = std::move(*result.mesh);
@@ -883,6 +887,7 @@ core::Status ChunkRenderSystem::schedule_mesh_jobs(world::WorldState& world,
 
         auto storage = mesh_scheduler_->acquire_snapshot_cells(snapshot_cells);
         auto snapshot = [&]() {
+            HEARTSTEAD_PROFILE_ZONE_NAMED("chunks.snapshot");
             profiling::ScopedCpuTimingZone preparation_zone(
                 timings_, profiling::CpuTimingZone::chunk_snapshot);
             return world::build_chunk_neighborhood_snapshot(world.chunks(), pending.identity,
@@ -990,6 +995,7 @@ core::Status ChunkRenderSystem::process_upload_queue(world::WorldState& world,
                             pending.mesh.sections});
     }
     auto upload = [&]() {
+        HEARTSTEAD_PROFILE_ZONE_NAMED("chunks.upload");
         profiling::ScopedCpuTimingZone upload_zone(timings_, profiling::CpuTimingZone::upload);
         return cache_->replace_meshes(requests);
     }();
@@ -1324,6 +1330,11 @@ void ChunkRenderSystem::refresh_queue_stats() noexcept {
     for (const auto* entry : cache_->entries()) {
         stats_.residency_suppressed_chunk_count += entry->residency_suppressed ? 1U : 0U;
     }
+    HEARTSTEAD_PROFILE_PLOT("chunks.mesh_pending", stats_.pending_mesh_count);
+    HEARTSTEAD_PROFILE_PLOT("chunks.mesh_in_flight", stats_.in_flight_mesh_count);
+    HEARTSTEAD_PROFILE_PLOT("chunks.upload_pending", stats_.pending_upload_count);
+    HEARTSTEAD_PROFILE_PLOT("chunks.upload_pending_bytes", stats_.pending_upload_bytes);
+    HEARTSTEAD_PROFILE_PLOT("chunks.resident", stats_.cache.resident_chunk_count);
 }
 
 void ChunkRenderSystem::refresh_timing_stats() noexcept {

@@ -692,6 +692,17 @@ struct RendererBackendInfo {
     std::string_view status;
 };
 
+struct RenderDeviceInfo {
+    RenderBackend backend = RenderBackend::headless;
+    std::string_view device_name;
+    std::string_view driver_name;
+    std::string_view driver_info;
+    std::uint32_t vendor_id = 0;
+    std::uint32_t device_id = 0;
+    std::uint32_t api_version = 0;
+    std::uint32_t driver_version = 0;
+};
+
 struct RenderDeviceCapabilities {
     RenderBackend backend = RenderBackend::headless;
     RenderExtent max_extent{};
@@ -749,6 +760,7 @@ class IRenderDevice {
 
     [[nodiscard]] virtual RenderBackend backend() const noexcept = 0;
     [[nodiscard]] virtual std::string_view backend_name() const noexcept = 0;
+    [[nodiscard]] virtual RenderDeviceInfo info() const noexcept = 0;
     [[nodiscard]] virtual RenderDeviceCapabilities capabilities() const noexcept = 0;
     [[nodiscard]] virtual RenderExtent current_extent() const noexcept = 0;
     [[nodiscard]] virtual std::uint64_t completed_frame_count() const noexcept = 0;

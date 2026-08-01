@@ -126,6 +126,8 @@ Start at the [documentation index](docs/README.md).
 - [Build instructions](docs/dev/build_instructions.md) — dependencies, presets, and configuration.
 - [Running Heartstead](docs/dev/running.md) — applications, controls, saves, and multiplayer.
 - [Testing](docs/dev/testing.md) — test presets, sanitizers, smoke tests, and change verification.
+- [Voxel optimization roadmap](docs/performance/voxel_optimization_roadmap.md) — measured staged
+  work from profiling through storage, streaming, scale, and trace-gated GPU techniques.
 - [Asset pipeline](docs/asset_pipeline.md) — contributor formats, importing, cooking, and limits.
 - [Asset Lab](docs/asset_lab.md) — production asset and presentation inspection.
 - [Environment rendering](docs/architecture/environment_rendering.md) — atmosphere, water,

@@ -2,6 +2,7 @@
 
 #include "engine/core/hash.hpp"
 #include "engine/core/logging.hpp"
+#include "engine/profiling/profiler.hpp"
 #include "engine/renderer/terrain/gpu_chunk_vertex.hpp"
 
 #include <algorithm>
@@ -1284,6 +1285,7 @@ core::Status Renderer::clear_session_resources() {
 }
 
 core::Status Renderer::synchronize_chunks(world::WorldState& world, const RenderCamera& camera) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("renderer.chunk_synchronization");
     if (chunk_system_ == nullptr) {
         return core::Status::failure("renderer.not_initialized",
                                      "renderer must be initialized before chunk synchronization");
@@ -1393,6 +1395,7 @@ core::Status Renderer::process_world_render_updates(std::span<const ChunkRenderU
 
 core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
                                                      float simulation_alpha, float delta_seconds) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("renderer.render");
     if (device_ == nullptr || chunk_system_ == nullptr || scene_render_system_ == nullptr ||
         clustered_lighting_ == nullptr || cascaded_shadows_ == nullptr ||
         sky_renderer_ == nullptr || debug_renderer_ == nullptr || ui_renderer_ == nullptr ||
@@ -1497,6 +1500,7 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
 
     ChunkDrawList draws;
     {
+        HEARTSTEAD_PROFILE_ZONE_NAMED("renderer.render_extraction");
         profiling::ScopedCpuTimingZone extraction_zone(cpu_timings_,
                                                        profiling::CpuTimingZone::render_extraction);
         draws = chunk_system_->build_draw_list(camera, std::move(chunk_draw_scratch_),
@@ -1618,6 +1622,7 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
     }
     command_lists.ui_draws = std::move(ui_frame.value().draws);
     auto frame = [&]() {
+        HEARTSTEAD_PROFILE_ZONE_NAMED("renderer.command_build");
         profiling::ScopedCpuTimingZone command_zone(cpu_timings_,
                                                     profiling::CpuTimingZone::command_build);
         return frame_builder_->build(camera, std::move(command_lists), environment_);
@@ -1637,7 +1642,10 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
             return resource.lifetime == rhi::RenderResourceLifetime::external;
         }));
     stats_.render_graph_history_resources = 0;
-    auto executed = device_->execute_frame(frame.value());
+    auto executed = [&]() {
+        HEARTSTEAD_PROFILE_ZONE_NAMED("renderer.command_recording_and_submission");
+        return device_->execute_frame(frame.value());
+    }();
     draw_command_scratch_ = {};
     for (auto& pass : frame.value().pass_commands) {
         switch (pass.pass_index) {
@@ -1679,6 +1687,8 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
 }
 
 core::Result<RenderFrameResult> Renderer::render_frame(const RenderFrameInput& input) {
+    HEARTSTEAD_PROFILE_FRAME();
+    HEARTSTEAD_PROFILE_ZONE_NAMED("renderer.frame");
     if (!std::isfinite(input.simulation_alpha) || input.simulation_alpha < 0.0F ||
         input.simulation_alpha > 1.0F || !std::isfinite(input.delta_seconds) ||
         input.delta_seconds < 0.0F) {

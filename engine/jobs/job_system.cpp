@@ -1,6 +1,7 @@
 #include "engine/jobs/job_system.hpp"
 
 #include "engine/jobs/thread_pool/thread_pool_backend.hpp"
+#include "engine/profiling/profiler.hpp"
 
 #include <exception>
 #include <limits>
@@ -46,6 +47,7 @@ class ImmediateJobSystem final : public IJobSystem {
     }
 
     [[nodiscard]] core::Result<JobId> submit(JobDesc desc) override {
+        HEARTSTEAD_PROFILE_ZONE_NAMED("jobs.immediate.execute");
         auto status = validate_job_desc(desc);
         if (!status) {
             return core::Result<JobId>::failure(status.error().code, status.error().message);

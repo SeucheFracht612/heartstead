@@ -50,6 +50,7 @@ cmake --build --preset default-debug --target help
 | `default-debug` | Host-default compiler, debug build, normal development features. |
 | `default-debug-werror` | Host-default compiler with warnings treated as errors. |
 | `default-release` | Optimized build for benchmarks and release-like checks. |
+| `profiling-release` | Optimized build with on-demand Tracy instrumentation and symbols. |
 | `linux-clang-debug` | Explicit Clang debug configuration. |
 | `linux-clang-debug-werror` | Explicit Clang with warnings as errors. |
 | `linux-gcc-debug` | Explicit GCC debug configuration. |
@@ -80,6 +81,17 @@ ctest --preset linux-clang-tsan
 
 ASan/UBSan and TSan are separate configurations and must not be combined. The sanitizer presets
 turn Vulkan off so they focus on Heartstead-owned code rather than graphics-driver internals.
+
+Collect an instrumented performance trace with the dedicated preset:
+
+```bash
+cmake --preset profiling-release
+cmake --build --preset profiling-release
+ctest --preset profiling-release
+```
+
+This preset selects the optional vcpkg `profiling` manifest feature. Normal builds do not install or
+link Tracy and compile the same profiling call sites to no-ops.
 
 ## CMake options
 

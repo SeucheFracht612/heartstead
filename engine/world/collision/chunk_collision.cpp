@@ -1,5 +1,7 @@
 #include "engine/world/collision/chunk_collision.hpp"
 
+#include "engine/profiling/profiler.hpp"
+
 #include <algorithm>
 #include <limits>
 #include <utility>
@@ -174,6 +176,7 @@ build_chunk_collision_snapshot(const ChunkDatabase& chunks, ChunkIdentity identi
 core::Result<ChunkCollisionShape>
 cook_chunk_collision(const ChunkCollisionSnapshot& snapshot,
                      const ChunkCollisionTableSnapshot& collision_table) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("chunk_collision.cook");
     auto snapshot_status = snapshot.validate();
     auto table_status = collision_table.validate();
     if (!snapshot_status || !table_status ||
