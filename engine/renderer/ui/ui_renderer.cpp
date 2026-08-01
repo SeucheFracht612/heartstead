@@ -383,6 +383,10 @@ core::Status UiRenderer::resize(rhi::RenderExtent extent) {
     if (!status) {
         return status;
     }
+    // Geometry was authored in pixels for the previous framebuffer.  Discard it even though the
+    // normal frame path also clears after upload; this keeps an asynchronous native resize from
+    // carrying old scissors into the new extent.
+    clear_pending_frame();
     extent_ = extent;
     return core::Status::ok();
 }

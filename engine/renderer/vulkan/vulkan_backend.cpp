@@ -5419,6 +5419,26 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 "renderer.vulkan_present_unavailable",
                 "Vulkan frame requests presentation without a native window surface");
         }
+        const auto skipped_for_surface_resize = [&]() {
+            rhi::RenderFrameStats stats;
+            stats.backend = backend();
+            stats.frame_index = next_frame_index_;
+            stats.submission_serial = last_submission_serial_;
+            stats.completed_submission_serial = completed_submission_serial_;
+            stats.extent = swapchain_extent_;
+            stats.clear_color = frame.plan.first_clear_color();
+            stats.presented = false;
+            stats.render_pass_count = execution_plan.value().ordered_passes.size();
+            stats.present_pass_count = execution_plan.value().present_pass_count;
+            stats.resource_use_count = execution_plan.value().resource_uses.size();
+            stats.dependency_count = execution_plan.value().dependencies.size();
+            stats.transition_count = execution_plan.value().transitions.size();
+            return core::Result<rhi::RenderFrameStats>::success(std::move(stats));
+        };
+        const auto surface_extent_matches_plan = [&]() {
+            return swapchain_extent_.width == frame.plan.extent.width &&
+                   swapchain_extent_.height == frame.plan.extent.height;
+        };
         if (desc_.initial_extent.width != frame.plan.extent.width ||
             desc_.initial_extent.height != frame.plan.extent.height) {
             const auto wait_started = Clock::now();
@@ -5462,6 +5482,13 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 return core::Result<rhi::RenderFrameStats>::failure(status.error().code,
                                                                     status.error().message);
             }
+            // Window-system resize and ConfigureNotify delivery are asynchronous.  Never record a
+            // plan built for the old application extent into newly recreated swapchain images;
+            // the next platform event will resize the renderer frontends and build a matching
+            // frame.
+            if (!surface_extent_matches_plan()) {
+                return skipped_for_surface_resize();
+            }
             // A finite timeout keeps the native event loop responsive when a compositor stops
             // releasing images for an occluded or minimized FIFO swapchain.
             constexpr std::uint64_t acquire_timeout_nanoseconds = 50'000'000;
@@ -5486,6 +5513,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 if (!status) {
                     return core::Result<rhi::RenderFrameStats>::failure(status.error().code,
                                                                         status.error().message);
+                }
+                if (!surface_extent_matches_plan()) {
+                    return skipped_for_surface_resize();
                 }
                 wait_started = Clock::now();
                 acquire_result = vkAcquireNextImageKHR(

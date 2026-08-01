@@ -1680,8 +1680,13 @@ core::Status Renderer::resize(rhi::RenderExtent extent) {
     if (!status) {
         return status;
     }
-    const auto previous_extent = device_->current_extent();
-    if (extent.width == previous_extent.width && extent.height == previous_extent.height) {
+    // The native backend may recreate an out-of-date swapchain before the platform resize event
+    // reaches the application.  The frame builder is the renderer's committed logical extent;
+    // using the device extent here would incorrectly skip resizing every frontend subsystem.
+    const auto previous_extent = frame_builder_->extent();
+    const auto device_extent = device_->current_extent();
+    if (extent.width == previous_extent.width && extent.height == previous_extent.height &&
+        extent.width == device_extent.width && extent.height == device_extent.height) {
         return core::Status::ok();
     }
 
@@ -1712,9 +1717,11 @@ core::Status Renderer::resize(rhi::RenderExtent extent) {
         return core::Status::failure(code, std::move(message));
     };
 
-    status = device_->resize(extent);
-    if (!status) {
-        return fail_and_rollback(status);
+    if (extent.width != device_extent.width || extent.height != device_extent.height) {
+        status = device_->resize(extent);
+        if (!status) {
+            return fail_and_rollback(status);
+        }
     }
     status = frame_builder_->resize(extent);
     if (!status) {

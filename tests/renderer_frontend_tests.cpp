@@ -1118,6 +1118,21 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(resized_frame.value().extent.height == 400);
     assert(resized_frame.value().draw_count == 7);
 
+    // A native swapchain can observe the compositor resize before the application receives its
+    // window event.  Completing the same resize must still update the frame builder and UI rather
+    // than returning early merely because the device already has the requested extent.
+    assert(retained_renderer.device()->resize({960, 540}));
+    assert(retained_renderer.resize({960, 540}));
+    renderer::UiQuadDesc full_extent_ui;
+    full_extent_ui.maximum_pixels = {960.0F, 540.0F};
+    full_extent_ui.scissor_enabled = true;
+    full_extent_ui.scissor = {0, 0, 960, 540};
+    assert(retained_renderer.ui_renderer()->submit_quad(full_extent_ui));
+    auto asynchronously_resized_frame = retained_renderer.render(camera);
+    assert(asynchronously_resized_frame);
+    assert(asynchronously_resized_frame.value().extent.width == 960);
+    assert(asynchronously_resized_frame.value().extent.height == 540);
+
     assert(world.chunks().erase(identity.coordinate));
     renderer::ChunkRenderUpdate eviction_update;
     eviction_update.kind = renderer::ChunkRenderUpdateKind::evicted;
