@@ -1001,7 +1001,7 @@ class X11NativePlatform final : public IPlatform {
         const auto root = RootWindow(display_, screen_);
         const auto native_window =
             XCreateSimpleWindow(display_, root, 0, 0, desc.width, desc.height, 0,
-                                BlackPixel(display_, screen_), WhitePixel(display_, screen_));
+                                BlackPixel(display_, screen_), BlackPixel(display_, screen_));
         if (native_window == 0) {
             (void)logical_.close_window(id.value());
             return core::Result<WindowId>::failure("platform.native_window_failed",

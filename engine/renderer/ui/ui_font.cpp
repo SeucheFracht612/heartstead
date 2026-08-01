@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <future>
+#include <thread>
 #include <utility>
 
 namespace heartstead::renderer {
@@ -143,37 +145,65 @@ core::Result<UiFont> UiFont::build(std::span<const std::uint8_t> sfnt_bytes,
     result.ascent_pixels_ = static_cast<float>(ascent) * scale;
     result.line_height_pixels_ = static_cast<float>(ascent - descent + line_gap) * scale;
 
+    const auto codepoints = production_codepoints();
+    std::vector<PendingGlyph> rasterized(codepoints.size());
+    const auto rasterize_range = [&](std::size_t first, std::size_t last) {
+        for (auto index = first; index < last; ++index) {
+            const auto codepoint = codepoints[index];
+            if (stbtt_FindGlyphIndex(&info, static_cast<int>(codepoint)) == 0 &&
+                codepoint != 0xfffdU) {
+                continue;
+            }
+            auto& item = rasterized[index];
+            item.glyph.codepoint = codepoint;
+            int advance = 0;
+            int bearing = 0;
+            stbtt_GetCodepointHMetrics(&info, static_cast<int>(codepoint), &advance, &bearing);
+            item.glyph.advance = static_cast<float>(advance) * scale;
+            int width = 0;
+            int height = 0;
+            int x_offset = 0;
+            int y_offset = 0;
+            auto* sdf = stbtt_GetCodepointSDF(
+                &info, scale, static_cast<int>(codepoint),
+                static_cast<int>(config.glyph_padding), 128U, 32.0F, &width, &height, &x_offset,
+                &y_offset);
+            if (sdf != nullptr && width > 0 && height > 0) {
+                item.width = static_cast<std::uint32_t>(width);
+                item.height = static_cast<std::uint32_t>(height);
+                item.sdf.assign(sdf, sdf + static_cast<std::ptrdiff_t>(width * height));
+                stbtt_FreeSDF(sdf, info.userdata);
+                item.glyph.plane_minimum = {static_cast<float>(x_offset),
+                                            static_cast<float>(y_offset)};
+                item.glyph.plane_maximum = {static_cast<float>(x_offset + width),
+                                            static_cast<float>(y_offset + height)};
+                item.glyph.drawable = true;
+            }
+        }
+    };
+    const auto hardware_workers = std::max(1U, std::thread::hardware_concurrency());
+    const auto worker_count =
+        std::min<std::size_t>({8U, static_cast<std::size_t>(hardware_workers), codepoints.size()});
+    const auto items_per_worker = (codepoints.size() + worker_count - 1U) / worker_count;
+    std::vector<std::future<void>> workers;
+    workers.reserve(worker_count);
+    for (std::size_t worker = 0; worker < worker_count; ++worker) {
+        const auto first = worker * items_per_worker;
+        const auto last = std::min(codepoints.size(), first + items_per_worker);
+        if (first == last) {
+            break;
+        }
+        workers.push_back(std::async(std::launch::async, rasterize_range, first, last));
+    }
+    for (auto& worker : workers) {
+        worker.get();
+    }
     std::vector<PendingGlyph> pending;
-    pending.reserve(1'100);
-    for (const auto codepoint : production_codepoints()) {
-        if (stbtt_FindGlyphIndex(&info, static_cast<int>(codepoint)) == 0 && codepoint != 0xfffdU) {
-            continue;
+    pending.reserve(rasterized.size());
+    for (auto& item : rasterized) {
+        if (item.glyph.codepoint != 0U) {
+            pending.push_back(std::move(item));
         }
-        PendingGlyph item;
-        item.glyph.codepoint = codepoint;
-        int advance = 0;
-        int bearing = 0;
-        stbtt_GetCodepointHMetrics(&info, static_cast<int>(codepoint), &advance, &bearing);
-        item.glyph.advance = static_cast<float>(advance) * scale;
-        int width = 0;
-        int height = 0;
-        int x_offset = 0;
-        int y_offset = 0;
-        auto* sdf = stbtt_GetCodepointSDF(
-            &info, scale, static_cast<int>(codepoint), static_cast<int>(config.glyph_padding),
-            128U, 32.0F, &width, &height, &x_offset, &y_offset);
-        if (sdf != nullptr && width > 0 && height > 0) {
-            item.width = static_cast<std::uint32_t>(width);
-            item.height = static_cast<std::uint32_t>(height);
-            item.sdf.assign(sdf, sdf + static_cast<std::ptrdiff_t>(width * height));
-            stbtt_FreeSDF(sdf, info.userdata);
-            item.glyph.plane_minimum = {static_cast<float>(x_offset),
-                                        static_cast<float>(y_offset)};
-            item.glyph.plane_maximum = {static_cast<float>(x_offset + width),
-                                        static_cast<float>(y_offset + height)};
-            item.glyph.drawable = true;
-        }
-        pending.push_back(std::move(item));
     }
     if (pending.empty()) {
         return core::Result<UiFont>::failure("ui_font.no_glyphs",
