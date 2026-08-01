@@ -55,6 +55,10 @@ struct ChunkRenderStats {
     std::uint64_t total_failed_mesh_count = 0;
     std::uint64_t total_failed_upload_count = 0;
     std::uint64_t total_stale_mesh_result_count = 0;
+    std::uint64_t total_completed_mesh_job_count = 0;
+    std::uint64_t total_built_mesh_count = 0;
+    std::uint64_t total_published_mesh_count = 0;
+    double mesh_builds_per_publication = 0.0;
     std::size_t in_flight_mesh_count = 0;
     std::size_t snapshot_cells_copied = 0;
     std::size_t pooled_cpu_mesh_buffers = 0;
@@ -171,6 +175,7 @@ class ChunkRenderSystem {
 
     struct PendingUpload {
         world::ChunkIdentity identity;
+        world::ChunkStageTicket stage_ticket;
         std::uint64_t content_revision = 0;
         std::uint64_t render_table_revision = 0;
         std::vector<world::ChunkDependencyRevision> dependency_revisions;

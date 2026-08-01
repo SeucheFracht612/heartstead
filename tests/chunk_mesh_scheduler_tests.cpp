@@ -38,6 +38,8 @@ make_request(ChunkMeshScheduler& scheduler, const heartstead::world::ChunkDataba
 
     ChunkMeshRequest request;
     request.identity = identity;
+    request.stage_ticket =
+        chunks.find(identity.coordinate)->stage_ticket(heartstead::world::ChunkStage::mesh);
     request.center_revision = snapshot.value().center_revision;
     request.block_render_table_revision = render_table->revision;
     request.neighborhood = std::move(snapshot).value();

@@ -210,8 +210,10 @@ core::Status ChunkMeshScheduler::submit(ChunkMeshRequest request) {
         shared_state_->release_cells(std::move(request.neighborhood.cells));
         return snapshot_status;
     }
-    if (!request.identity.is_valid() || request.identity != request.neighborhood.center_identity ||
-        request.center_revision == 0 ||
+    if (!request.identity.is_valid() || !request.stage_ticket.is_valid() ||
+        request.stage_ticket.identity != request.identity ||
+        request.stage_ticket.stage != world::ChunkStage::mesh ||
+        request.identity != request.neighborhood.center_identity || request.center_revision == 0 ||
         request.center_revision != request.neighborhood.center_revision ||
         request.render_table == nullptr || request.block_render_table_revision == 0 ||
         request.block_render_table_revision != request.render_table->revision) {
@@ -231,6 +233,7 @@ core::Status ChunkMeshScheduler::submit(ChunkMeshRequest request) {
     }
 
     const auto identity = request.identity;
+    const auto stage_revision = request.stage_ticket.revision;
     const auto center_revision = request.center_revision;
     const auto table_revision = request.block_render_table_revision;
     const auto priority = request.priority;
@@ -248,6 +251,7 @@ core::Status ChunkMeshScheduler::submit(ChunkMeshRequest request) {
                 shared_state](const jobs::JobContext&) mutable {
         ChunkMeshResult result;
         result.identity = request.identity;
+        result.stage_ticket = request.stage_ticket;
         result.center_revision = request.center_revision;
         result.block_render_table_revision = request.block_render_table_revision;
         result.priority = request.priority;
@@ -299,8 +303,8 @@ core::Status ChunkMeshScheduler::submit(ChunkMeshRequest request) {
         // never handed to a worker, so no active record is installed.
         return core::Status::failure(submitted.error().code, submitted.error().message);
     }
-    active_jobs_.emplace(identity, ActiveJob{submitted.value(), center_revision, table_revision,
-                                             std::move(cancellation)});
+    active_jobs_.emplace(identity, ActiveJob{submitted.value(), stage_revision, center_revision,
+                                             table_revision, std::move(cancellation)});
     ++stats_.submitted_jobs;
     refresh_stats();
     return core::Status::ok();
@@ -314,6 +318,7 @@ std::vector<ChunkMeshResult> ChunkMeshScheduler::drain_completed(std::size_t max
     for (const auto& result : results) {
         const auto active = active_jobs_.find(result.identity);
         if (active != active_jobs_.end() &&
+            active->second.stage_revision == result.stage_ticket.revision &&
             active->second.center_revision == result.center_revision &&
             active->second.render_table_revision == result.block_render_table_revision) {
             active_jobs_.erase(active);
@@ -369,6 +374,12 @@ ChunkMeshScheduler::in_flight_revision(world::ChunkIdentity identity) const noex
         return std::nullopt;
     }
     return active->second.center_revision;
+}
+
+std::optional<std::uint64_t>
+ChunkMeshScheduler::in_flight_stage_revision(world::ChunkIdentity identity) const noexcept {
+    const auto found = active_jobs_.find(identity);
+    return found == active_jobs_.end() ? std::nullopt : std::optional(found->second.stage_revision);
 }
 
 bool ChunkMeshScheduler::has_capacity() const noexcept {

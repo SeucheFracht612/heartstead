@@ -54,15 +54,20 @@ Implemented foundation:
   - snapshot buffers are reused by `ChunkMeshScheduler` and snapshot copying is bounded per frame
 
 - Asynchronous result contract
-  - every request and result carries `ChunkIdentity`, center revision, dependency revisions,
-    block-render-table revision, and scheduling priority
+  - every request and result carries `ChunkIdentity`, an exact mesh-stage ticket, center revision,
+    dependency revisions, block-render-table revision, and scheduling priority
   - a fixed worker pool coalesces duplicate chunk work, limits concurrency, and observes
     cancellation before meshing begins
   - completed meshes cross a mutex-protected typed mailbox and are drained only on the renderer
     owner thread
   - center edits, neighbor edits, unload/reload generation changes, and render-table changes reject
-    old results before upload; the newest revision is requeued
-  - dirty state is cleared only after a validated replacement is resident
+    old results before upload; the newest request epoch is requeued
+  - the owner advances the ledger through running and CPU-ready states, then publishes resident only
+    after the GPU cache accepts the same ticket; dirty state is cleared at that final boundary
+  - an older generation's completion cannot enqueue duplicate work when the current generation is
+    already running or upload-ready
+  - completed jobs, built meshes, published meshes, stale results, and the cumulative
+    builds-per-publication amplification ratio are retained and plotted for regression analysis
 
 - Terrain mapping and material stability
   - full, partial, authored-box, authored-triangle, greedy, cutout, transparent, and emissive

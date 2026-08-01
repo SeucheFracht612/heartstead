@@ -26,6 +26,7 @@ struct MeshPriority {
 
 struct ChunkMeshRequest {
     world::ChunkIdentity identity{};
+    world::ChunkStageTicket stage_ticket{};
     std::uint64_t center_revision = 0;
     std::uint64_t block_render_table_revision = 0;
     world::ChunkNeighborhoodSnapshot neighborhood;
@@ -41,6 +42,7 @@ enum class ChunkMeshResultState {
 
 struct ChunkMeshResult {
     world::ChunkIdentity identity{};
+    world::ChunkStageTicket stage_ticket{};
     std::uint64_t center_revision = 0;
     std::uint64_t block_render_table_revision = 0;
     std::vector<world::ChunkDependencyRevision> dependency_revisions;
@@ -107,6 +109,8 @@ class ChunkMeshScheduler {
     [[nodiscard]] bool has_in_flight(world::ChunkIdentity identity) const noexcept;
     [[nodiscard]] std::optional<std::uint64_t>
     in_flight_revision(world::ChunkIdentity identity) const noexcept;
+    [[nodiscard]] std::optional<std::uint64_t>
+    in_flight_stage_revision(world::ChunkIdentity identity) const noexcept;
     [[nodiscard]] bool has_capacity() const noexcept;
     [[nodiscard]] const ChunkMeshSchedulerStats& stats() noexcept;
 
@@ -114,6 +118,7 @@ class ChunkMeshScheduler {
     struct SharedState;
     struct ActiveJob {
         jobs::JobId job_id{};
+        std::uint64_t stage_revision = 0;
         std::uint64_t center_revision = 0;
         std::uint64_t render_table_revision = 0;
         std::shared_ptr<std::atomic_bool> cancellation;

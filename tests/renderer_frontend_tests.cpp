@@ -561,6 +561,11 @@ void test_chunk_render_system_retains_rebuilds_and_culls() {
     assert(chunks.stats().pooled_cpu_mesh_index_capacity > 0);
     assert(chunks.stats().pooled_gpu_vertex_buffers > 0);
     assert(chunks.stats().pooled_gpu_vertex_capacity > 0);
+    assert(world.chunks()
+               .find(origin_coord)
+               ->stages()
+               .record(world::ChunkStage::mesh)
+               .resident_is_current());
 
     auto draws = chunks.build_draw_list(camera);
     assert(draws.visible_chunk_count == 2);
@@ -596,6 +601,11 @@ void test_chunk_render_system_retains_rebuilds_and_culls() {
     assert(world.chunks().set(origin_coord, {31, 8, 31}, world::VoxelCell{2, 220},
                               world.dirty_regions()));
     assert(chunks.synchronize(world, camera));
+    const auto& rebuilding_mesh =
+        world.chunks().find(origin_coord)->stages().record(world::ChunkStage::mesh);
+    assert(rebuilding_mesh.state == world::ChunkStageState::running);
+    assert(rebuilding_mesh.has_resident_output());
+    assert(!rebuilding_mesh.resident_is_current());
     assert(chunks.build_draw_list(camera).draws.size() == 3);
     assert(cache.find(origin_identity)->mesh.vertices == old_origin_vertex);
     synchronize_until([&] {
@@ -609,6 +619,18 @@ void test_chunk_render_system_retains_rebuilds_and_culls() {
     assert(cache.find(neighbor_identity)->resident_content_revision == neighbor_revision);
     assert(!world.chunks().find(origin_coord)->dirty().contains(world::ChunkDirtyFlag::mesh));
     assert(!world.chunks().find(neighbor_coord)->dirty().contains(world::ChunkDirtyFlag::mesh));
+    assert(world.chunks()
+               .find(origin_coord)
+               ->stages()
+               .record(world::ChunkStage::mesh)
+               .resident_is_current());
+    assert(world.chunks()
+               .find(neighbor_coord)
+               ->stages()
+               .record(world::ChunkStage::mesh)
+               .resident_is_current());
+    assert(chunks.stats().total_published_mesh_count > 0);
+    assert(chunks.stats().mesh_builds_per_publication <= 1.1);
     assert(device.value()->live_resource_count() == baseline_resources + 2);
 
     const auto intermediate_revision_before = world.chunks().find(origin_coord)->content_revision();
@@ -617,6 +639,8 @@ void test_chunk_render_system_retains_rebuilds_and_culls() {
     const auto intermediate_revision = world.chunks().find(origin_coord)->content_revision();
     assert(intermediate_revision > intermediate_revision_before);
     assert(chunks.synchronize(world, camera)); // Queues the intermediate revision.
+    const auto intermediate_ticket =
+        world.chunks().find(origin_coord)->stage_ticket(world::ChunkStage::mesh);
     assert(cache.find(origin_identity)->resident_content_revision != intermediate_revision);
     assert(world.chunks().set(origin_coord, {30, 8, 31}, world::VoxelCell{2, 220},
                               world.dirty_regions()));
@@ -629,6 +653,11 @@ void test_chunk_render_system_retains_rebuilds_and_culls() {
         return entry->resident_content_revision == newest_revision &&
                !world.chunks().find(origin_coord)->dirty().contains(world::ChunkDirtyFlag::mesh);
     });
+    const auto& current_mesh =
+        world.chunks().find(origin_coord)->stages().record(world::ChunkStage::mesh);
+    assert(!world.chunks().find(origin_coord)->stage_ticket_is_current(intermediate_ticket));
+    assert(current_mesh.resident_is_current());
+    assert(current_mesh.stale_results + current_mesh.cancelled_results > 0);
 
     const world::ChunkCoord empty_coord{far, 3, -far};
     auto& empty = world.chunks().get_or_create(empty_coord);
@@ -664,6 +693,7 @@ void test_chunk_render_system_retains_rebuilds_and_culls() {
         return entry != nullptr && entry->state == renderer::ChunkGpuState::resident &&
                entry->resident_content_revision == reloaded.content_revision();
     });
+    assert(reloaded.stages().record(world::ChunkStage::mesh).resident_is_current());
     assert(!cache.contains(empty_identity));
 
     assert(cache.clear());

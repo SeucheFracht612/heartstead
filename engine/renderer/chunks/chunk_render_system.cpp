@@ -645,12 +645,17 @@ core::Status ChunkRenderSystem::reconcile_loaded_chunks(world::WorldState& world
             });
         const bool newest_revision_awaits_upload =
             queued_upload != pending_uploads_.end() &&
+            chunk->stage_ticket_is_current(queued_upload->stage_ticket) &&
             queued_upload->content_revision == chunk->content_revision() &&
             queued_upload->render_table_revision == render_table_->revision;
         const auto in_flight_revision = mesh_scheduler_->in_flight_revision(identity);
+        const auto in_flight_stage_revision = mesh_scheduler_->in_flight_stage_revision(identity);
         const bool newest_revision_in_flight =
-            in_flight_revision.has_value() && *in_flight_revision == chunk->content_revision();
-        if (in_flight_revision.has_value() && *in_flight_revision != chunk->content_revision()) {
+            in_flight_revision.has_value() && in_flight_stage_revision.has_value() &&
+            *in_flight_revision == chunk->content_revision() &&
+            *in_flight_stage_revision ==
+                chunk->stages().requested_revision(world::ChunkStage::mesh);
+        if (in_flight_revision.has_value() && !newest_revision_in_flight) {
             mesh_scheduler_->cancel(identity);
         }
         const bool stale_revision =
@@ -711,6 +716,10 @@ core::Status ChunkRenderSystem::refresh_render_table(world::WorldState& world,
         std::make_shared<const world::BlockRenderTableSnapshot>(std::move(rebuilt).value());
     for (const auto identity : world.chunks().identities()) {
         if (within_mesh_distance(identity.coordinate, camera)) {
+            auto* chunk = world.chunks().find(identity.coordinate);
+            if (chunk != nullptr && chunk->identity() == identity) {
+                static_cast<void>(chunk->request_stage(world::ChunkStage::mesh));
+            }
             enqueue_mesh(identity, true);
         }
     }
@@ -725,6 +734,7 @@ bool ChunkRenderSystem::mesh_result_is_current(const ChunkMeshResult& result,
     }
     const auto* chunk = world.chunks().find(result.identity.coordinate);
     if (chunk == nullptr || chunk->identity() != result.identity ||
+        !chunk->stage_ticket_is_current(result.stage_ticket) ||
         chunk->content_revision() != result.center_revision ||
         !world::dependency_revisions_match(world.chunks(), result.dependency_revisions)) {
         return false;
@@ -749,6 +759,7 @@ bool ChunkRenderSystem::pending_upload_is_current(const PendingUpload& upload,
     }
     const auto* chunk = world.chunks().find(upload.identity.coordinate);
     return chunk != nullptr && chunk->identity() == upload.identity &&
+           chunk->stage_ticket_is_current(upload.stage_ticket) &&
            chunk->content_revision() == upload.content_revision &&
            world::dependency_revisions_match(world.chunks(), upload.dependency_revisions);
 }
@@ -759,19 +770,44 @@ core::Status ChunkRenderSystem::process_completed_meshes(world::WorldState& worl
         const auto* chunk = world.chunks().find(coordinate);
         if (chunk != nullptr && cache_->contains(chunk->identity()) &&
             within_mesh_distance(coordinate, camera)) {
+            const auto& mesh_stage = chunk->stages().record(world::ChunkStage::mesh);
+            if (mesh_stage.state == world::ChunkStageState::running ||
+                mesh_stage.state == world::ChunkStageState::ready) {
+                return;
+            }
+            const auto* entry = cache_->find(chunk->identity());
+            if (mesh_stage.resident_is_current() && entry != nullptr &&
+                entry->state == ChunkGpuState::resident &&
+                entry->resident_content_revision == chunk->content_revision() &&
+                entry->resident_render_table_revision == render_table_->revision) {
+                return;
+            }
             enqueue_mesh(chunk->identity(), true);
         }
     };
     auto results = mesh_scheduler_->drain_completed(config_.max_completed_mesh_results_per_frame);
     for (auto& result : results) {
+        ++stats_.total_completed_mesh_job_count;
         stats_.meshing_ms += result.meshing_ms;
         if (result.state == ChunkMeshResultState::cancelled) {
+            if (auto* chunk = world.chunks().find(result.identity.coordinate);
+                chunk != nullptr && chunk->identity() == result.identity) {
+                static_cast<void>(chunk->note_stage_cancelled(result.stage_ticket));
+            }
             ++stats_.cancelled_mesh_count;
             requeue_latest(result.identity.coordinate);
             continue;
         }
         ++stats_.meshed_chunk_count;
         if (result.state == ChunkMeshResultState::failed || !result.mesh.has_value()) {
+            if (auto* chunk = world.chunks().find(result.identity.coordinate);
+                chunk != nullptr && chunk->identity() == result.identity &&
+                chunk->stage_ticket_is_current(result.stage_ticket)) {
+                auto retry = chunk->retry_stage(result.stage_ticket);
+                if (!retry) {
+                    return retry;
+                }
+            }
             ++stats_.failed_mesh_count;
             ++stats_.total_failed_mesh_count;
             cache_->mark_failed(result.identity);
@@ -780,11 +816,16 @@ core::Status ChunkRenderSystem::process_completed_meshes(world::WorldState& worl
                                                    result.error_code + ": " + result.error_message);
             continue;
         }
+        ++stats_.total_built_mesh_count;
         const auto* result_entry = cache_->find(result.identity);
         if ((result_entry != nullptr && result_entry->residency_suppressed &&
              !should_restore_suppressed_residency(*result_entry, camera)) ||
             !within_mesh_distance(result.identity.coordinate, camera) ||
             !mesh_result_is_current(result, world)) {
+            if (auto* chunk = world.chunks().find(result.identity.coordinate);
+                chunk != nullptr && chunk->identity() == result.identity) {
+                static_cast<void>(chunk->note_stage_stale(result.stage_ticket));
+            }
             ++stats_.stale_mesh_result_count;
             ++stats_.total_stale_mesh_result_count;
             if (result.mesh.has_value()) {
@@ -796,6 +837,7 @@ core::Status ChunkRenderSystem::process_completed_meshes(world::WorldState& worl
         const auto duplicate_upload =
             std::ranges::find_if(pending_uploads_, [&result](const PendingUpload& upload) {
                 return upload.identity == result.identity &&
+                       upload.stage_ticket == result.stage_ticket &&
                        upload.content_revision == result.center_revision &&
                        upload.render_table_revision == result.block_render_table_revision &&
                        std::ranges::equal(upload.dependency_revisions, result.dependency_revisions);
@@ -803,6 +845,17 @@ core::Status ChunkRenderSystem::process_completed_meshes(world::WorldState& worl
         if (duplicate_upload != pending_uploads_.end()) {
             mesh_scheduler_->recycle_mesh(std::move(*result.mesh));
             continue;
+        }
+
+        auto* chunk = world.chunks().find(result.identity.coordinate);
+        if (chunk == nullptr || chunk->identity() != result.identity) {
+            mesh_scheduler_->recycle_mesh(std::move(*result.mesh));
+            continue;
+        }
+        auto stage_status = chunk->mark_stage_ready(result.stage_ticket);
+        if (!stage_status) {
+            mesh_scheduler_->recycle_mesh(std::move(*result.mesh));
+            return stage_status;
         }
 
         for (auto& upload : pending_uploads_) {
@@ -820,6 +873,7 @@ core::Status ChunkRenderSystem::process_completed_meshes(world::WorldState& worl
             auto built_mesh = std::move(*result.mesh);
             PendingUpload upload;
             upload.identity = result.identity;
+            upload.stage_ticket = result.stage_ticket;
             upload.content_revision = result.center_revision;
             upload.render_table_revision = result.block_render_table_revision;
             upload.dependency_revisions = std::move(result.dependency_revisions);
@@ -858,11 +912,26 @@ core::Status ChunkRenderSystem::schedule_mesh_jobs(world::WorldState& world,
         }
         if (mesh_scheduler_->has_in_flight(pending.identity)) {
             const auto active_revision = mesh_scheduler_->in_flight_revision(pending.identity);
-            if (active_revision.has_value() && *active_revision != chunk->content_revision()) {
+            const auto active_stage_revision =
+                mesh_scheduler_->in_flight_stage_revision(pending.identity);
+            if ((active_revision.has_value() && *active_revision != chunk->content_revision()) ||
+                (active_stage_revision.has_value() &&
+                 *active_stage_revision !=
+                     chunk->stages().requested_revision(world::ChunkStage::mesh))) {
                 mesh_scheduler_->cancel(pending.identity);
             }
             pending_meshes_.push_back(pending);
             continue;
+        }
+
+        auto stage_ticket = chunk->stage_ticket(world::ChunkStage::mesh);
+        if (chunk->stages().record(world::ChunkStage::mesh).state !=
+            world::ChunkStageState::requested) {
+            stage_ticket = chunk->request_stage(world::ChunkStage::mesh);
+        }
+        if (!stage_ticket.is_valid()) {
+            return core::Status::failure("renderer.invalid_chunk_mesh_stage_ticket",
+                                         "chunk mesh work requires a valid stage ticket");
         }
 
         const auto halo = world::required_chunk_halo(chunk->cells(), *render_table_);
@@ -913,6 +982,7 @@ core::Status ChunkRenderSystem::schedule_mesh_jobs(world::WorldState& world,
                                 : default_chunk_bounds();
         ChunkMeshRequest request;
         request.identity = pending.identity;
+        request.stage_ticket = stage_ticket;
         request.center_revision = snapshot.value().center_revision;
         request.block_render_table_revision = render_table_->revision;
         request.neighborhood = std::move(snapshot).value();
@@ -934,6 +1004,11 @@ core::Status ChunkRenderSystem::schedule_mesh_jobs(world::WorldState& world,
                 first_failure = submit_status;
             }
             continue;
+        }
+        auto stage_status = chunk->mark_stage_running(stage_ticket);
+        if (!stage_status) {
+            mesh_scheduler_->cancel(pending.identity);
+            return stage_status;
         }
         ++stats_.scheduled_mesh_count;
     }
@@ -962,6 +1037,10 @@ core::Status ChunkRenderSystem::process_upload_queue(world::WorldState& world,
         pending_uploads_.erase(pending_uploads_.begin());
         ++attempted;
         if (!pending_upload_is_current(pending, world)) {
+            if (auto* chunk = world.chunks().find(pending.identity.coordinate);
+                chunk != nullptr && chunk->identity() == pending.identity) {
+                static_cast<void>(chunk->note_stage_stale(pending.stage_ticket));
+            }
             const auto* newest = world.chunks().find(pending.identity.coordinate);
             if (newest != nullptr && cache_->contains(newest->identity())) {
                 enqueue_mesh(newest->identity(), true);
@@ -970,12 +1049,20 @@ core::Status ChunkRenderSystem::process_upload_queue(world::WorldState& world,
             continue;
         }
         if (!within_mesh_distance(pending.identity.coordinate, camera)) {
+            if (auto* chunk = world.chunks().find(pending.identity.coordinate);
+                chunk != nullptr && chunk->identity() == pending.identity) {
+                static_cast<void>(chunk->note_stage_cancelled(pending.stage_ticket));
+            }
             recycle_upload_storage(pending);
             continue;
         }
         const auto* pending_entry = cache_->find(pending.identity);
         if (pending_entry != nullptr && pending_entry->residency_suppressed &&
             !should_restore_suppressed_residency(*pending_entry, camera)) {
+            if (auto* chunk = world.chunks().find(pending.identity.coordinate);
+                chunk != nullptr && chunk->identity() == pending.identity) {
+                static_cast<void>(chunk->note_stage_cancelled(pending.stage_ticket));
+            }
             recycle_upload_storage(pending);
             continue;
         }
@@ -1016,7 +1103,12 @@ core::Status ChunkRenderSystem::process_upload_queue(world::WorldState& world,
         stats_.uploaded_bytes += upload.value().uploads[index].uploaded_bytes;
         auto* chunk = world.chunks().find(pending.identity.coordinate);
         if (chunk != nullptr && pending_upload_is_current(pending, world)) {
+            auto stage_status = chunk->publish_stage(pending.stage_ticket);
+            if (!stage_status) {
+                return stage_status;
+            }
             chunk->clear_dirty(world::ChunkDirtyFlag::mesh);
+            ++stats_.total_published_mesh_count;
         } else {
             const auto* newest = world.chunks().find(pending.identity.coordinate);
             if (newest != nullptr && cache_->contains(newest->identity())) {
@@ -1319,6 +1411,11 @@ void ChunkRenderSystem::refresh_queue_stats() noexcept {
     for (const auto& vertices : gpu_vertex_pool_) {
         stats_.pooled_gpu_vertex_capacity += vertices.capacity();
     }
+    stats_.mesh_builds_per_publication =
+        stats_.total_published_mesh_count == 0
+            ? 0.0
+            : static_cast<double>(stats_.total_built_mesh_count) /
+                  static_cast<double>(stats_.total_published_mesh_count);
     stats_.pending_mesh_count = pending_meshes_.size() + stats_.in_flight_mesh_count;
     stats_.pending_upload_count = pending_uploads_.size();
     stats_.pending_upload_bytes = 0;
@@ -1332,6 +1429,10 @@ void ChunkRenderSystem::refresh_queue_stats() noexcept {
     }
     HEARTSTEAD_PROFILE_PLOT("chunks.mesh_pending", stats_.pending_mesh_count);
     HEARTSTEAD_PROFILE_PLOT("chunks.mesh_in_flight", stats_.in_flight_mesh_count);
+    HEARTSTEAD_PROFILE_PLOT("chunks.mesh_built_total", stats_.total_built_mesh_count);
+    HEARTSTEAD_PROFILE_PLOT("chunks.mesh_published_total", stats_.total_published_mesh_count);
+    HEARTSTEAD_PROFILE_PLOT("chunks.mesh_builds_per_publication",
+                            stats_.mesh_builds_per_publication);
     HEARTSTEAD_PROFILE_PLOT("chunks.upload_pending", stats_.pending_upload_count);
     HEARTSTEAD_PROFILE_PLOT("chunks.upload_pending_bytes", stats_.pending_upload_bytes);
     HEARTSTEAD_PROFILE_PLOT("chunks.resident", stats_.cache.resident_chunk_count);
