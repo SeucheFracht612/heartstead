@@ -62,6 +62,24 @@ constexpr std::uint16_t maximum_experiment_edge = 32;
     return width == 0 ? 0 : (cell_count * width + 63U) / 64U;
 }
 
+[[nodiscard]] bool is_valid_policy(ExperimentalBlockStoragePolicy policy) noexcept {
+    switch (policy) {
+    case ExperimentalBlockStoragePolicy::adaptive:
+    case ExperimentalBlockStoragePolicy::palette_only:
+        return true;
+    }
+    return false;
+}
+
+[[nodiscard]] bool should_use_dense_blocks(std::size_t cell_count,
+                                           std::size_t palette_size) noexcept {
+    const auto width = required_index_bits(palette_size);
+    const auto packed_payload = palette_size * sizeof(ExperimentalBlockValue) +
+                                packed_word_count(cell_count, width) * sizeof(std::uint64_t);
+    const auto dense_payload = cell_count * sizeof(ExperimentalBlockValue);
+    return packed_payload > dense_payload;
+}
+
 [[nodiscard]] std::uint64_t width_mask(std::uint8_t width) noexcept {
     return width == 0 ? 0 : (std::uint64_t{1} << width) - 1U;
 }
@@ -362,18 +380,21 @@ VoxelSectionStorageStats SplitVoxelSectionExperiment::stats() const noexcept {
 
 core::Result<PalettePackedVoxelSectionExperiment>
 PalettePackedVoxelSectionExperiment::encode(std::span<const VoxelCell> cells,
-                                            std::uint16_t edge_length) {
+                                            std::uint16_t edge_length,
+                                            ExperimentalBlockStoragePolicy policy) {
     const auto count = checked_cell_count(edge_length);
-    if (!count || cells.size() != count.value()) {
+    if (!count || cells.size() != count.value() || !is_valid_policy(policy)) {
         return core::Result<PalettePackedVoxelSectionExperiment>::failure(
             "voxel_storage.invalid_palette_input",
-            "palette-packed voxel section input does not match its edge length");
+            "palette-packed voxel section input or storage policy is invalid");
     }
     PalettePackedVoxelSectionExperiment result;
     result.edge_length_ = edge_length;
     result.cell_count_ = cells.size();
+    result.block_storage_policy_ = policy;
     std::unordered_map<std::uint32_t, std::uint32_t> palette_lookup;
     palette_lookup.reserve(cells.size());
+    bool use_dense_blocks = false;
     for (const auto cell : cells) {
         const ExperimentalBlockValue block{cell.type, cell.state_bits};
         const auto [entry, inserted] = palette_lookup.try_emplace(
@@ -381,10 +402,24 @@ PalettePackedVoxelSectionExperiment::encode(std::span<const VoxelCell> cells,
         static_cast<void>(entry);
         if (inserted) {
             result.palette_.push_back(block);
+            if (policy == ExperimentalBlockStoragePolicy::adaptive &&
+                should_use_dense_blocks(cells.size(), result.palette_.size())) {
+                use_dense_blocks = true;
+                break;
+            }
         }
     }
-    result.bits_per_index_ = required_index_bits(result.palette_.size());
-    result.packed_indices_.resize(packed_word_count(cells.size(), result.bits_per_index_));
+    if (use_dense_blocks) {
+        result.dense_blocks_.reserve(cells.size());
+        for (const auto cell : cells) {
+            result.dense_blocks_.push_back({cell.type, cell.state_bits});
+        }
+        std::vector<ExperimentalBlockValue>{}.swap(result.palette_);
+        std::unordered_map<std::uint32_t, std::uint32_t>{}.swap(palette_lookup);
+    } else {
+        result.bits_per_index_ = required_index_bits(result.palette_.size());
+        result.packed_indices_.resize(packed_word_count(cells.size(), result.bits_per_index_));
+    }
     result.uniform_light_ = cells.front().light;
     result.light_is_uniform_ = std::ranges::all_of(
         cells, [&result](VoxelCell cell) { return cell.light == result.uniform_light_; });
@@ -392,13 +427,14 @@ PalettePackedVoxelSectionExperiment::encode(std::span<const VoxelCell> cells,
         result.lights_.reserve(cells.size());
     }
     for (std::size_t index = 0; index < cells.size(); ++index) {
-        const ExperimentalBlockValue block{cells[index].type, cells[index].state_bits};
-        const auto found = palette_lookup.find(block_key(block));
-        if (found == palette_lookup.end()) {
-            std::terminate();
+        if (!use_dense_blocks) {
+            const ExperimentalBlockValue block{cells[index].type, cells[index].state_bits};
+            const auto found = palette_lookup.find(block_key(block));
+            if (found == palette_lookup.end()) {
+                std::terminate();
+            }
+            result.set_packed_index(index, found->second);
         }
-        const auto palette_index = found->second;
-        result.set_packed_index(index, palette_index);
         if (!result.light_is_uniform_) {
             result.lights_.push_back(cells[index].light);
         }
@@ -412,9 +448,19 @@ PalettePackedVoxelSectionExperiment::encode(std::span<const VoxelCell> cells,
 
 core::Status PalettePackedVoxelSectionExperiment::validate() const {
     const auto count = checked_cell_count(edge_length_);
-    if (!count || cell_count_ != count.value() || palette_.empty() ||
-        bits_per_index_ != required_index_bits(palette_.size()) ||
-        packed_indices_.size() != packed_word_count(cell_count_, bits_per_index_) ||
+    const bool uses_dense_blocks = !dense_blocks_.empty();
+    const bool dense_channels_invalid =
+        uses_dense_blocks && (block_storage_policy_ != ExperimentalBlockStoragePolicy::adaptive ||
+                              dense_blocks_.size() != cell_count_ || !palette_.empty() ||
+                              !packed_indices_.empty() || bits_per_index_ != 0);
+    const bool packed_channels_invalid =
+        !uses_dense_blocks &&
+        (palette_.empty() || bits_per_index_ != required_index_bits(palette_.size()) ||
+         packed_indices_.size() != packed_word_count(cell_count_, bits_per_index_) ||
+         (block_storage_policy_ == ExperimentalBlockStoragePolicy::adaptive &&
+          should_use_dense_blocks(cell_count_, palette_.size())));
+    if (!count || cell_count_ != count.value() || !is_valid_policy(block_storage_policy_) ||
+        dense_channels_invalid || packed_channels_invalid ||
         (!light_is_uniform_ && lights_.size() != cell_count_) ||
         (light_is_uniform_ && !lights_.empty()) ||
         metadata_indices_.size() != metadata_handles_.size()) {
@@ -422,10 +468,13 @@ core::Status PalettePackedVoxelSectionExperiment::validate() const {
             "voxel_storage.invalid_palette_section",
             "palette-packed voxel section channels or metadata are inconsistent");
     }
-    for (std::size_t index = 0; index < cell_count_; ++index) {
-        if (packed_index(index) >= palette_.size()) {
-            return core::Status::failure("voxel_storage.invalid_palette_index",
-                                         "palette-packed voxel section contains an invalid index");
+    if (!uses_dense_blocks) {
+        for (std::size_t index = 0; index < cell_count_; ++index) {
+            if (packed_index(index) >= palette_.size()) {
+                return core::Status::failure(
+                    "voxel_storage.invalid_palette_index",
+                    "palette-packed voxel section contains an invalid index");
+            }
         }
     }
     std::uint32_t previous = 0;
@@ -447,7 +496,7 @@ VoxelCell PalettePackedVoxelSectionExperiment::cell(std::size_t index) const noe
     if (index >= cell_count_) {
         std::terminate();
     }
-    const auto block = palette_[packed_index(index)];
+    const auto block = dense_blocks_.empty() ? palette_[packed_index(index)] : dense_blocks_[index];
     const auto light = light_is_uniform_ ? uniform_light_ : lights_[index];
     std::uint32_t metadata = 0;
     const auto found =
@@ -462,7 +511,7 @@ std::uint16_t PalettePackedVoxelSectionExperiment::block_type(std::size_t index)
     if (index >= cell_count_) {
         std::terminate();
     }
-    return palette_[packed_index(index)].type;
+    return dense_blocks_.empty() ? palette_[packed_index(index)].type : dense_blocks_[index].type;
 }
 
 core::Status PalettePackedVoxelSectionExperiment::set(std::size_t index, VoxelCell value) {
@@ -470,8 +519,7 @@ core::Status PalettePackedVoxelSectionExperiment::set(std::size_t index, VoxelCe
         return core::Status::failure("voxel_storage.palette_index_out_of_bounds",
                                      "palette-packed voxel edit index is outside the section");
     }
-    const auto palette_index = find_or_append_block({value.type, value.state_bits});
-    set_packed_index(index, palette_index);
+    set_block(index, {value.type, value.state_bits});
     set_light(index, value.light);
     set_metadata(index, value.metadata_handle);
     return core::Status::ok();
@@ -489,7 +537,7 @@ std::vector<VoxelCell> PalettePackedVoxelSectionExperiment::decode() const {
 std::uint64_t PalettePackedVoxelSectionExperiment::scan_type_checksum() const noexcept {
     std::uint64_t result = 0;
     for (std::size_t index = 0; index < cell_count_; ++index) {
-        result = (result * 1'099'511'628'211ULL) ^ palette_[packed_index(index)].type;
+        result = (result * 1'099'511'628'211ULL) ^ block_type(index);
     }
     return result;
 }
@@ -499,15 +547,19 @@ VoxelSectionStorageStats PalettePackedVoxelSectionExperiment::stats() const noex
     result.cell_count = cell_count_;
     result.palette_size = palette_.size();
     result.bits_per_index = bits_per_index_;
+    result.dense_blocks = !dense_blocks_.empty();
     result.packed_index_bytes = packed_indices_.size() * sizeof(packed_indices_.front());
     result.light_bytes = light_is_uniform_ ? sizeof(uniform_light_) : lights_.size();
     result.metadata_entry_count = metadata_indices_.size();
     result.uniform_light = light_is_uniform_;
-    result.payload_bytes = palette_.size() * sizeof(palette_.front()) + result.packed_index_bytes +
+    result.payload_bytes = dense_blocks_.size() * sizeof(dense_blocks_.front()) +
+                           palette_.size() * sizeof(palette_.front()) + result.packed_index_bytes +
                            result.light_bytes +
                            metadata_indices_.size() * sizeof(metadata_indices_.front()) +
                            metadata_handles_.size() * sizeof(metadata_handles_.front());
-    result.allocated_bytes = sizeof(*this) + palette_.capacity() * sizeof(palette_.front()) +
+    result.allocated_bytes = sizeof(*this) +
+                             dense_blocks_.capacity() * sizeof(dense_blocks_.front()) +
+                             palette_.capacity() * sizeof(palette_.front()) +
                              packed_indices_.capacity() * sizeof(packed_indices_.front()) +
                              lights_.capacity() * sizeof(lights_.front()) +
                              metadata_indices_.capacity() * sizeof(metadata_indices_.front()) +
@@ -533,18 +585,39 @@ void PalettePackedVoxelSectionExperiment::repack_indices(std::uint8_t new_width)
     bits_per_index_ = new_width;
 }
 
-std::uint32_t
-PalettePackedVoxelSectionExperiment::find_or_append_block(ExperimentalBlockValue block) {
+void PalettePackedVoxelSectionExperiment::set_block(std::size_t index,
+                                                    ExperimentalBlockValue block) {
+    if (!dense_blocks_.empty()) {
+        dense_blocks_[index] = block;
+        return;
+    }
     const auto found = std::ranges::find(palette_, block);
     if (found != palette_.end()) {
-        return static_cast<std::uint32_t>(found - palette_.begin());
+        set_packed_index(index, static_cast<std::uint32_t>(found - palette_.begin()));
+        return;
+    }
+    if (block_storage_policy_ == ExperimentalBlockStoragePolicy::adaptive &&
+        should_use_dense_blocks(cell_count_, palette_.size() + 1U)) {
+        promote_blocks_to_dense();
+        dense_blocks_[index] = block;
+        return;
     }
     palette_.push_back(block);
     const auto required_width = required_index_bits(palette_.size());
     if (required_width != bits_per_index_) {
         repack_indices(required_width);
     }
-    return static_cast<std::uint32_t>(palette_.size() - 1U);
+    set_packed_index(index, static_cast<std::uint32_t>(palette_.size() - 1U));
+}
+
+void PalettePackedVoxelSectionExperiment::promote_blocks_to_dense() {
+    dense_blocks_.resize(cell_count_);
+    for (std::size_t index = 0; index < cell_count_; ++index) {
+        dense_blocks_[index] = palette_[packed_index(index)];
+    }
+    std::vector<ExperimentalBlockValue>{}.swap(palette_);
+    std::vector<std::uint64_t>{}.swap(packed_indices_);
+    bits_per_index_ = 0;
 }
 
 void PalettePackedVoxelSectionExperiment::set_light(std::size_t index, std::uint8_t light) {

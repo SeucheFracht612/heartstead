@@ -80,6 +80,7 @@ void test_small_benchmark_retains_raw_samples_and_memory() {
     assert(json.contains("\"benchmark\": \"voxel_storage\""));
     assert(json.contains("\"raw_samples\""));
     assert(json.contains("\"summaries\""));
+    assert(json.contains("\"dense_blocks\""));
     assert(json.contains("\"allocated_plus_face_masks_bytes_per_visible_face\""));
 
     const std::filesystem::path output_path{"voxel_storage_benchmark_test_output.json"};

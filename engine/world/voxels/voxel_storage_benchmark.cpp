@@ -671,6 +671,8 @@ std::string VoxelStorageBenchmarkReport::to_json() const {
                    << static_cast<unsigned>(layout.storage.bits_per_index)
                    << ",\n          \"uniform_light\": "
                    << (layout.storage.uniform_light ? "true" : "false")
+                   << ",\n          \"dense_blocks\": "
+                   << (layout.storage.dense_blocks ? "true" : "false")
                    << ",\n          \"allocated_bytes_per_non_air\": ";
             write_ratio(output, layout.storage.allocated_bytes,
                         measurement.corpus_stats.non_air_count);

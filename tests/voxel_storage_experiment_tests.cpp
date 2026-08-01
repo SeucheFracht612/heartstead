@@ -66,7 +66,14 @@ void test_corpora_are_deterministic_and_round_trip() {
             assert(packed.value().scan_type_checksum() == dense_type_checksum(corpus.cells));
             const auto packed_stats = packed.value().stats();
             assert(packed_stats.cell_count == expected_count);
-            assert(packed_stats.palette_size == corpus_stats.unique_block_value_count);
+            if (packed_stats.dense_blocks) {
+                assert(kind == benchmark::VoxelCorpusKind::high_entropy);
+                assert(packed_stats.palette_size == 0);
+                assert(packed_stats.packed_index_bytes == 0);
+                assert(packed_stats.bits_per_index == 0);
+            } else {
+                assert(packed_stats.palette_size == corpus_stats.unique_block_value_count);
+            }
             assert(packed_stats.metadata_entry_count == corpus_stats.metadata_cell_count);
             assert(packed_stats.allocated_bytes >= packed_stats.payload_bytes);
 
@@ -182,6 +189,64 @@ void test_packed_indices_cross_machine_word_boundaries() {
     assert(packed.value().decode() == source);
 }
 
+void test_adaptive_block_storage_falls_back_to_split_dense() {
+    for (const auto edge : {std::uint16_t{16}, std::uint16_t{32}}) {
+        auto generated = benchmark::generate_voxel_storage_corpus(
+            {benchmark::VoxelCorpusKind::high_entropy, edge, 32, 0x5eedULL});
+        assert(generated);
+
+        auto adaptive =
+            benchmark::PalettePackedVoxelSectionExperiment::encode(generated.value().cells, edge);
+        auto palette_only = benchmark::PalettePackedVoxelSectionExperiment::encode(
+            generated.value().cells, edge, benchmark::ExperimentalBlockStoragePolicy::palette_only);
+        assert(adaptive);
+        assert(palette_only);
+        assert(adaptive.value().validate());
+        assert(palette_only.value().validate());
+        assert(adaptive.value().stats().dense_blocks);
+        assert(!palette_only.value().stats().dense_blocks);
+        assert(adaptive.value().stats().palette_size == 0);
+        assert(palette_only.value().stats().palette_size ==
+               generated.value().stats().unique_block_value_count);
+        assert(adaptive.value().stats().payload_bytes < palette_only.value().stats().payload_bytes);
+        assert(adaptive.value().decode() == generated.value().cells);
+        assert(palette_only.value().decode() == generated.value().cells);
+    }
+}
+
+void test_edits_promote_oversized_palette_to_split_dense() {
+    constexpr std::uint16_t edge = 4;
+    std::vector<world::VoxelCell> oracle(static_cast<std::size_t>(edge) * edge * edge);
+    auto adaptive = benchmark::PalettePackedVoxelSectionExperiment::encode(oracle, edge);
+    assert(adaptive);
+
+    for (std::uint16_t unique = 1; unique <= 51; ++unique) {
+        const world::VoxelCell value{unique, static_cast<std::uint8_t>(unique), unique,
+                                     unique == 1 ? 99U : 0U};
+        const auto index = static_cast<std::size_t>(unique - 1U);
+        oracle[index] = value;
+        assert(adaptive.value().set(index, value));
+    }
+    assert(!adaptive.value().stats().dense_blocks);
+    assert(adaptive.value().stats().palette_size == 52);
+
+    const world::VoxelCell crossing_value{52, 77, 52, 1234};
+    oracle[51] = crossing_value;
+    assert(adaptive.value().set(51, crossing_value));
+    assert(adaptive.value().stats().dense_blocks);
+    assert(adaptive.value().stats().palette_size == 0);
+    assert(adaptive.value().stats().packed_index_bytes == 0);
+    assert(adaptive.value().stats().bits_per_index == 0);
+    assert(adaptive.value().validate());
+    assert(adaptive.value().decode() == oracle);
+
+    const world::VoxelCell post_promotion{60'000, 201, 65'000, 0};
+    oracle.back() = post_promotion;
+    assert(adaptive.value().set(oracle.size() - 1U, post_promotion));
+    assert(adaptive.value().validate());
+    assert(adaptive.value().decode() == oracle);
+}
+
 void test_every_supported_palette_width_round_trips() {
     constexpr std::uint16_t edge = 32;
     constexpr std::array<std::size_t, 17> palette_sizes{
@@ -193,7 +258,8 @@ void test_every_supported_palette_width_round_trips() {
             source[index] =
                 world::VoxelCell{static_cast<std::uint16_t>((index % palette_size) + 1U), 0, 0, 0};
         }
-        auto packed = benchmark::PalettePackedVoxelSectionExperiment::encode(source, edge);
+        auto packed = benchmark::PalettePackedVoxelSectionExperiment::encode(
+            source, edge, benchmark::ExperimentalBlockStoragePolicy::palette_only);
         assert(packed);
         const auto expected_width =
             palette_size == 1 ? std::uint8_t{0}
@@ -264,6 +330,8 @@ void test_invalid_inputs_fail_closed() {
     assert(!benchmark::PalettePackedVoxelSectionExperiment::encode(one_cell, 2));
     assert(!benchmark::SplitVoxelSectionExperiment::encode(one_cell, 0));
     assert(!benchmark::PalettePackedVoxelSectionExperiment::encode(one_cell, 0));
+    assert(!benchmark::PalettePackedVoxelSectionExperiment::encode(
+        one_cell, 1, static_cast<benchmark::ExperimentalBlockStoragePolicy>(255)));
 }
 
 } // namespace
@@ -273,6 +341,8 @@ int main() {
     test_corpus_statistics_describe_content();
     test_palette_growth_repacking_and_channel_promotion();
     test_packed_indices_cross_machine_word_boundaries();
+    test_adaptive_block_storage_falls_back_to_split_dense();
+    test_edits_promote_oversized_palette_to_split_dense();
     test_every_supported_palette_width_round_trips();
     test_mixed_edits_match_a_dense_oracle();
     test_invalid_inputs_fail_closed();

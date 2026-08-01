@@ -69,6 +69,12 @@ struct VoxelSectionStorageStats {
     std::size_t metadata_entry_count = 0;
     std::uint8_t bits_per_index = 0;
     bool uniform_light = false;
+    bool dense_blocks = false;
+};
+
+enum class ExperimentalBlockStoragePolicy : std::uint8_t {
+    adaptive,
+    palette_only,
 };
 
 class SplitVoxelSectionExperiment {
@@ -95,7 +101,8 @@ class SplitVoxelSectionExperiment {
 class PalettePackedVoxelSectionExperiment {
   public:
     [[nodiscard]] static core::Result<PalettePackedVoxelSectionExperiment>
-    encode(std::span<const VoxelCell> cells, std::uint16_t edge_length);
+    encode(std::span<const VoxelCell> cells, std::uint16_t edge_length,
+           ExperimentalBlockStoragePolicy policy = ExperimentalBlockStoragePolicy::adaptive);
 
     [[nodiscard]] core::Status validate() const;
     [[nodiscard]] VoxelCell cell(std::size_t index) const noexcept;
@@ -109,12 +116,14 @@ class PalettePackedVoxelSectionExperiment {
     [[nodiscard]] std::uint32_t packed_index(std::size_t index) const noexcept;
     void set_packed_index(std::size_t index, std::uint32_t value) noexcept;
     void repack_indices(std::uint8_t new_width);
-    [[nodiscard]] std::uint32_t find_or_append_block(ExperimentalBlockValue block);
+    void set_block(std::size_t index, ExperimentalBlockValue block);
+    void promote_blocks_to_dense();
     void set_light(std::size_t index, std::uint8_t light);
     void set_metadata(std::size_t index, std::uint32_t handle);
 
     std::uint16_t edge_length_ = 0;
     std::size_t cell_count_ = 0;
+    std::vector<ExperimentalBlockValue> dense_blocks_;
     std::vector<ExperimentalBlockValue> palette_;
     std::vector<std::uint64_t> packed_indices_;
     std::vector<std::uint8_t> lights_;
@@ -123,6 +132,7 @@ class PalettePackedVoxelSectionExperiment {
     std::uint8_t bits_per_index_ = 0;
     std::uint8_t uniform_light_ = 0;
     bool light_is_uniform_ = true;
+    ExperimentalBlockStoragePolicy block_storage_policy_ = ExperimentalBlockStoragePolicy::adaptive;
 };
 
 } // namespace heartstead::world::benchmark
