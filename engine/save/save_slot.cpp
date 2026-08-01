@@ -433,6 +433,81 @@ core::Status FileSaveSlotCatalog::write_metadata(const SaveSlotMetadata& metadat
                              encode_metadata(metadata));
 }
 
+core::Status FileSaveSlotCatalog::rename_slot(std::string_view slot_id,
+                                              std::string display_name) const {
+    auto metadata = read_metadata(slot_id);
+    if (!metadata) {
+        return core::Status::failure(metadata.error().code, metadata.error().message);
+    }
+    metadata.value().display_name = std::move(display_name);
+    return write_metadata(metadata.value());
+}
+
+core::Status FileSaveSlotCatalog::duplicate_slot(std::string_view source_slot_id,
+                                                 std::string_view destination_slot_id,
+                                                 std::string display_name,
+                                                 std::uint64_t saved_at_ms) const {
+    auto status = validate_slot_id(destination_slot_id);
+    if (!status) {
+        return status;
+    }
+    if (source_slot_id == destination_slot_id) {
+        return core::Status::failure("save_slot.duplicate_same_id",
+                                     "duplicate save slot requires a new slot id");
+    }
+    std::error_code error;
+    if (std::filesystem::exists(slot_path(root_, destination_slot_id), error)) {
+        return core::Status::failure("save_slot.destination_exists",
+                                     "duplicate save slot destination already exists");
+    }
+    if (error) {
+        return filesystem_failure("save_slot.path_check_failed", error);
+    }
+    auto source = database(source_slot_id);
+    if (!source) {
+        return core::Status::failure(source.error().code, source.error().message);
+    }
+    auto snapshot = source.value().read_snapshot();
+    if (!snapshot) {
+        return core::Status::failure(snapshot.error().code, snapshot.error().message);
+    }
+    status = create_slot(destination_slot_id);
+    if (!status) {
+        return status;
+    }
+    SaveSlotMetadata metadata{.slot_id = std::string(destination_slot_id),
+                              .display_name = std::move(display_name),
+                              .created_at_ms = saved_at_ms,
+                              .last_saved_at_ms = saved_at_ms};
+    status = write_metadata(metadata);
+    if (status) {
+        status = write_snapshot(destination_slot_id, snapshot.value(), saved_at_ms);
+    }
+    if (!status) {
+        (void)delete_slot(destination_slot_id);
+    }
+    return status;
+}
+
+core::Status FileSaveSlotCatalog::delete_slot(std::string_view slot_id) const {
+    auto status = validate_slot_id(slot_id);
+    if (!status) {
+        return status;
+    }
+    status = require_slot_directory(root_, slot_id);
+    if (!status) {
+        return status;
+    }
+    const auto target = slot_path(root_, slot_id);
+    if (target.empty() || target == root_ || target.parent_path() != root_) {
+        return core::Status::failure("save_slot.unsafe_delete_target",
+                                     "refusing to delete an unsafe save slot path");
+    }
+    std::error_code error;
+    std::filesystem::remove_all(target, error);
+    return error ? filesystem_failure("save_slot.delete_failed", error) : core::Status::ok();
+}
+
 core::Result<SaveSlotMetadata> FileSaveSlotCatalog::read_metadata(std::string_view slot_id) const {
     auto status = validate_slot_id(slot_id);
     if (!status) {
@@ -512,18 +587,29 @@ core::Result<std::vector<SaveSlotSummary>> FileSaveSlotCatalog::list_slots() con
         }
 
         auto metadata = read_metadata(slot_id);
-        if (!metadata) {
-            return core::Result<std::vector<SaveSlotSummary>>::failure(metadata.error().code,
-                                                                       metadata.error().message);
-        }
         FileSaveDatabase database(entry.path());
         auto stats = database.stats();
-        if (!stats) {
-            return core::Result<std::vector<SaveSlotSummary>>::failure(stats.error().code,
-                                                                       stats.error().message);
+        SaveSlotSummary summary;
+        summary.slot_id = slot_id;
+        summary.path = entry.path();
+        summary.metadata = metadata ? std::move(metadata).value() : default_metadata(slot_id);
+        if (!metadata) {
+            summary.validation_error = metadata.error();
         }
-        summaries.push_back(
-            {slot_id, entry.path(), std::move(metadata).value(), std::move(stats).value()});
+        if (stats) {
+            summary.database_stats = std::move(stats).value();
+        } else if (!summary.validation_error.has_value()) {
+            summary.validation_error = stats.error();
+        }
+        if (!summary.validation_error.has_value() && summary.database_stats.has_snapshot) {
+            auto snapshot = database.read_snapshot();
+            if (snapshot) {
+                summary.snapshot_metadata = std::move(snapshot).value().metadata;
+            } else {
+                summary.validation_error = snapshot.error();
+            }
+        }
+        summaries.push_back(std::move(summary));
     }
     if (error) {
         return core::Result<std::vector<SaveSlotSummary>>::failure("save_slot.list_failed",

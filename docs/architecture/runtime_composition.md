@@ -8,7 +8,7 @@ redefine gameplay semantics.
 
 | Composition | Roles | Transport | Presentation | Persistence |
 | --- | --- | --- | --- | --- |
-| Player-facing Heartstead application | menu or server + client | in-memory | native X11/Vulkan | temporary developer world in the first shell stage |
+| Player-facing Heartstead application | menu, server + client, or remote client | in-memory or POSIX UDP | native X11/Vulkan | persistent saves or scenario policy |
 | Interactive local development game | server + client | in-memory | native X11/Vulkan | default or explicit local save |
 | Bounded/headless development run | server + client | in-memory | headless or bounded native | only with explicit `--save` |
 | Remote development client | client only | POSIX UDP to numeric IPv4 | native or bounded/headless | none; server owns truth |
@@ -166,6 +166,14 @@ Interactive development fixtures use the same boundary. See
 [Developer worlds and scenario authoring](developer_worlds.md).
 
 ## Persistence
+
+The player-facing application discovers versioned slots beneath its application-data `saves/`
+directory. New local worlds and compatible loaded worlds are saved only by the authoritative local
+session. A remote client and an ephemeral developer world never own a save. The menu can rename a
+slot's display name, make a full snapshot-backed duplicate, delete after explicit confirmation,
+copy the path, and refresh discovery. Invalid metadata or snapshots appear as disabled entries
+instead of aborting the whole catalog scan. Newer, older, missing-content, or hash-incompatible
+saves are shown but not silently modified.
 
 A normal unbounded local native `heartstead_dev_game` run opens
 `saves/foundation_slice_0_1` unless overridden. Bounded/headless runs persist only with an explicit

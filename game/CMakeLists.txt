@@ -5,8 +5,10 @@ target_sources(
   heartstead_game
   PRIVATE
     application/application_state.cpp
+    application/application_settings.cpp
     application/game_application.cpp
     application/heartstead_application_mode.cpp
+    application/main_menu.cpp
     foundation/foundation_world.cpp
     features/interaction/voxel_raycast.cpp
     features/interaction/voxel_commands.cpp
@@ -36,8 +38,10 @@ target_sources(
     BASE_DIRS ${PROJECT_SOURCE_DIR}
     FILES
       application/application_state.hpp
+      application/application_settings.hpp
       application/game_application.hpp
       application/heartstead_application_mode.hpp
+      application/main_menu.hpp
       foundation/foundation_world.hpp
       features/interaction/voxel_raycast.hpp
       features/interaction/voxel_commands.hpp

@@ -50,9 +50,15 @@ performs unloading. Exit is the seam for state-specific cleanup. Platform pollin
 audio, UI construction, rendering, and presentation continue in the outer application frame while
 the state machine selects which session work is legal.
 
-## Loading and menu behavior
+## Front end and loading behavior
 
-Selecting **Start Development World** starts `GameRuntime` construction on a background operation.
+The root menu exposes Continue, New World, Load World, Multiplayer, Developer Worlds, Options, and
+Quit. Continue is disabled with an explanation when no compatible recent save exists. Menu
+navigation is modeled separately from rendering, including the delete-confirmation parent, so
+focus/back transition behavior is regression tested.
+
+Every session action creates a `SessionLaunchRequest` and starts `GameRuntime` construction on a
+background operation.
 The foreground continues polling window/input events, updating audio, routing the retained widget
 tree, painting the loading screen, and presenting frames. Completion is observed without blocking
 a frame and then applied through the transition API. Cancellation requests cooperative stop,
@@ -60,7 +66,7 @@ retains the outstanding operation until completion, and unloads any late result.
 and session carries a monotonically increasing ownership generation, so a stale result cannot
 replace the current session.
 
-The temporary world uses the normal local composition:
+Local worlds use the normal authoritative composition:
 
 ```text
 heartstead
@@ -75,7 +81,9 @@ heartstead
 
 The menu does not have a `WorldState`. Renderer cleanup is registered with the session and runs as
 part of its explicit reverse-order teardown before the runtime is destroyed. The full teardown and
-launch descriptor are documented in [Runtime composition](runtime_composition.md).
+launch descriptor are documented in [Runtime composition](runtime_composition.md). Save discovery,
+world operations, menu capabilities, and application settings are documented in
+[Game front end](game_front_end.md).
 
 ## Build and launch
 

@@ -67,6 +67,7 @@ class GameApplicationServices {
     install_audio_system(std::unique_ptr<audio::IAudioSystem> audio_system);
 
     [[nodiscard]] core::Status set_cursor_capture(bool captured);
+    [[nodiscard]] core::Status set_clipboard_text(std::string text);
     void request_quit() noexcept;
     [[nodiscard]] bool headless() const noexcept;
 

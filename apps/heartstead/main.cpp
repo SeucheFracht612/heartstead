@@ -2,6 +2,7 @@
 #include "engine/content/content_validation.hpp"
 #include "engine/core/process_entry.hpp"
 #include "engine/renderer/materials/terrain_material_assets.hpp"
+#include "game/application/application_settings.hpp"
 #include "game/application/game_application.hpp"
 #include "game/application/heartstead_application_mode.hpp"
 
@@ -91,6 +92,17 @@ int main(int argc, char** argv) {
         }
 
         const auto source_root = std::filesystem::path{HEARTSTEAD_SOURCE_ROOT};
+        const auto user_data_root = heartstead::game::default_application_data_root();
+        heartstead::game::ApplicationSettings application_settings;
+        const heartstead::game::ApplicationSettingsStore settings_store(user_data_root /
+                                                                        "settings.txt");
+        auto loaded_settings = settings_store.load();
+        if (loaded_settings) {
+            application_settings = std::move(loaded_settings).value();
+        } else {
+            std::cerr << loaded_settings.error().code << ": " << loaded_settings.error().message
+                      << " (using defaults)\n";
+        }
         const auto content_report = heartstead::content::ContentValidation::validate(source_root);
         if (content_report.has_errors()) {
             return fail({"heartstead.content_validation_failed",
@@ -117,16 +129,20 @@ int main(int argc, char** argv) {
         heartstead::game::GameApplicationConfig application_config;
         application_config.headless = options.headless;
         application_config.maximum_frames = options.maximum_frames;
-        application_config.window = {"Heartstead", 1280, 720, true};
+        application_config.window = {"Heartstead", application_settings.window_width,
+                                     application_settings.window_height, true};
         application_config.shader_root =
             std::filesystem::path{HEARTSTEAD_GAME_ASSET_DIR} / "shaders";
         application_config.voxel_palette = &content_report.voxel_palette;
         application_config.terrain_material_assets = std::move(terrain_assets);
+        application_config.renderer_quality = application_settings.rendering_quality;
 
         heartstead::game::HeartsteadApplicationModeConfig mode_config;
         mode_config.content_report = &content_report;
         mode_config.cooked_assets = cooked_assets.has_value() ? &*cooked_assets : nullptr;
         mode_config.cooked_asset_root = HEARTSTEAD_GAME_COOKED_ASSET_DIR;
+        mode_config.user_data_root = user_data_root;
+        mode_config.initial_settings = application_settings;
         mode_config.headless = options.headless;
 
         heartstead::game::GameApplication application(std::move(application_config));

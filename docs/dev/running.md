@@ -12,9 +12,16 @@ cmake --build --preset default-debug --target heartstead
 ./build/default-debug/apps/heartstead/heartstead
 ```
 
-The application starts at the main menu. The current **Start Development World** entry creates a
-temporary local authoritative server and local client. `Escape` opens the pause menu; returning to
-the main menu unloads the session without closing the application.
+The application starts at the main menu. Use **New World** for a generated persistent local world,
+**Load World** to load or host a save, **Multiplayer** for a direct-address connection, or
+**Developer Worlds** for disposable and fixture-backed scenarios. Every local launch creates an
+authoritative local server plus a local client. `Escape` opens the pause menu; returning to the
+main menu saves a persistent local world and unloads the session without closing the application.
+
+Application data defaults to the platform user-data directory. Set `HEARTSTEAD_DATA_ROOT` to an
+explicit directory for isolated development runs; it contains `settings.txt` and the `saves/`
+catalog. The Options screen persists display, rendering, audio, input, UI-scale, and available
+accessibility settings outside any world.
 
 Supported shell options in this stage are `--headless`, `--frames N`, and `--native-frames N`.
 Run `heartstead --help` for the exact syntax. The broader world/save/connect command line is added
@@ -168,9 +175,9 @@ Use `--list-scenes` to enumerate current workloads and add `--vulkan` for a nati
 timestamps. See [Renderer benchmarks](../performance/renderer_benchmarks.md) before comparing
 results.
 
-The development game currently selects the High renderer preset. Preset selection is an
-application configuration API rather than a command-line or in-game setting. Use the automated
-quality-policy test to compare the four resolved profiles.
+The player-facing application exposes the renderer preset in Options and applies it on the next
+process start. The compatibility development game continues to select High directly. Use the
+automated quality-policy test to compare the four resolved profiles.
 
 ## Asset Lab
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "game/application/application_settings.hpp"
 #include "game/application/game_application.hpp"
 
 #include <filesystem>
@@ -19,6 +20,8 @@ struct HeartsteadApplicationModeConfig {
     const content::ContentValidationReport* content_report = nullptr;
     const assets::CookedAssetStore* cooked_assets = nullptr;
     std::filesystem::path cooked_asset_root;
+    std::filesystem::path user_data_root;
+    ApplicationSettings initial_settings;
     bool headless = false;
 };
 

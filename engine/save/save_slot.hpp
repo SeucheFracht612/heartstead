@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -25,6 +26,8 @@ struct SaveSlotSummary {
     std::filesystem::path path;
     SaveSlotMetadata metadata;
     SaveDatabaseStats database_stats;
+    std::optional<SaveMetadata> snapshot_metadata;
+    std::optional<core::Error> validation_error;
 };
 
 struct SaveSlotCatalogSummary {
@@ -44,6 +47,13 @@ class FileSaveSlotCatalog {
                                               const SaveSnapshot& snapshot,
                                               std::uint64_t saved_at_ms) const;
     [[nodiscard]] core::Status write_metadata(const SaveSlotMetadata& metadata) const;
+    [[nodiscard]] core::Status rename_slot(std::string_view slot_id,
+                                           std::string display_name) const;
+    [[nodiscard]] core::Status duplicate_slot(std::string_view source_slot_id,
+                                              std::string_view destination_slot_id,
+                                              std::string display_name,
+                                              std::uint64_t saved_at_ms) const;
+    [[nodiscard]] core::Status delete_slot(std::string_view slot_id) const;
     [[nodiscard]] core::Result<SaveSlotMetadata> read_metadata(std::string_view slot_id) const;
     [[nodiscard]] core::Result<std::vector<SaveSlotSummary>> list_slots() const;
     [[nodiscard]] core::Result<SaveSlotCatalogSummary> summary() const;

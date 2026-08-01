@@ -14,6 +14,8 @@ is the map for everything else.
   guidance.
 - [Asset Lab](asset_lab.md) — production-cooked asset and presentation inspection.
 - [Architecture overview](architecture/overview.md) — ownership boundaries and data flow.
+- [Game executable](architecture/game_executable.md) — application lifetime and states.
+- [Game front end](architecture/game_front_end.md) — menu, saves, and settings.
 - [Engine specification](architecture/engine_spec.md) — normative long-term engine contract.
 
 ## Document types
@@ -39,6 +41,8 @@ data flow, failure behavior, and extension points rather than repeat every class
 **Runtime and infrastructure**
 
 - [Architecture overview](architecture/overview.md)
+- [Game executable](architecture/game_executable.md)
+- [Game front end](architecture/game_front_end.md)
 - [Runtime composition](architecture/runtime_composition.md)
 - [Platform](architecture/platform.md)
 - [Physics](architecture/physics.md)

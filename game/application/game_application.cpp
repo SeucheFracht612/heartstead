@@ -204,6 +204,14 @@ core::Status GameApplicationServices::set_cursor_capture(bool captured) {
     return application_->platform_->set_cursor_capture(application_->window_, captured);
 }
 
+core::Status GameApplicationServices::set_clipboard_text(std::string text) {
+    if (application_ == nullptr || application_->platform_ == nullptr) {
+        return core::Status::failure("game_application.platform_unavailable",
+                                     "application platform is not initialized");
+    }
+    return application_->platform_->set_clipboard_text(std::move(text));
+}
+
 void GameApplicationServices::request_quit() noexcept {
     if (application_ != nullptr && application_->platform_ != nullptr) {
         application_->platform_->request_quit();

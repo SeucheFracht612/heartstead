@@ -122,6 +122,11 @@ target_compile_definitions(
 heartstead_configure_test_target(heartstead_developer_world_tests)
 heartstead_register_unit_test(heartstead_developer_world_tests)
 
+add_executable(heartstead_front_end_tests front_end_tests.cpp)
+target_link_libraries(heartstead_front_end_tests PRIVATE Heartstead::GameRuntime)
+heartstead_configure_test_target(heartstead_front_end_tests)
+heartstead_register_unit_test(heartstead_front_end_tests)
+
 if(TARGET heartstead_dev_game)
   add_test(
     NAME heartstead_dev_game_save_smoke

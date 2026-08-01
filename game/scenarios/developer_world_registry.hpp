@@ -14,6 +14,7 @@ namespace heartstead::game {
 
 class DeveloperWorldRegistry final {
   public:
+    DeveloperWorldRegistry() = default;
     [[nodiscard]] static core::Result<DeveloperWorldRegistry>
     create(std::span<const scenarios::ScenarioDefinition> definitions);
 

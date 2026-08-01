@@ -5,19 +5,28 @@
 #include "engine/content/content_validation.hpp"
 #include "engine/input/input_action.hpp"
 #include "engine/movement/player_camera.hpp"
+#include "engine/save/save_compatibility.hpp"
+#include "engine/save/save_slot.hpp"
 #include "engine/ui/widget_tree.hpp"
 #include "game/application/application_state.hpp"
+#include "game/application/main_menu.hpp"
 #include "game/features/animals/wandering_animal_module.hpp"
 #include "game/foundation/foundation_world.hpp"
 #include "game/runtime/game_runtime.hpp"
 #include "game/scenarios/developer_world_registry.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
+#include <charconv>
 #include <chrono>
+#include <ctime>
 #include <future>
+#include <iomanip>
 #include <memory>
 #include <optional>
 #include <ranges>
+#include <sstream>
 #include <stop_token>
 #include <string>
 #include <utility>
@@ -28,12 +37,48 @@ namespace {
 
 const auto root_id = ui::widget_id("heartstead.shell.root");
 const auto panel_id = ui::widget_id("heartstead.shell.panel");
-const auto start_id = ui::widget_id("heartstead.menu.start");
+const auto continue_id = ui::widget_id("heartstead.menu.continue");
+const auto new_world_id = ui::widget_id("heartstead.menu.new_world");
+const auto load_world_id = ui::widget_id("heartstead.menu.load_world");
+const auto multiplayer_id = ui::widget_id("heartstead.menu.multiplayer");
+const auto developer_worlds_id = ui::widget_id("heartstead.menu.developer_worlds");
+const auto options_id = ui::widget_id("heartstead.menu.options");
 const auto quit_id = ui::widget_id("heartstead.menu.quit");
 const auto resume_id = ui::widget_id("heartstead.pause.resume");
 const auto return_id = ui::widget_id("heartstead.pause.return");
 const auto cancel_id = ui::widget_id("heartstead.loading.cancel");
 const auto back_id = ui::widget_id("heartstead.error.back");
+const auto menu_back_id = ui::widget_id("heartstead.menu.back");
+const auto world_name_id = ui::widget_id("heartstead.new_world.name");
+const auto world_seed_id = ui::widget_id("heartstead.new_world.seed");
+const auto create_world_id = ui::widget_id("heartstead.new_world.create");
+const auto load_selected_id = ui::widget_id("heartstead.load_world.load");
+const auto host_selected_id = ui::widget_id("heartstead.load_world.host");
+const auto rename_selected_id = ui::widget_id("heartstead.load_world.rename");
+const auto duplicate_selected_id = ui::widget_id("heartstead.load_world.duplicate");
+const auto delete_selected_id = ui::widget_id("heartstead.load_world.delete");
+const auto refresh_worlds_id = ui::widget_id("heartstead.load_world.refresh");
+const auto copy_save_path_id = ui::widget_id("heartstead.load_world.copy_path");
+const auto address_id = ui::widget_id("heartstead.multiplayer.address");
+const auto join_id = ui::widget_id("heartstead.multiplayer.join");
+const auto developer_launch_id = ui::widget_id("heartstead.developer.launch");
+const auto developer_search_id = ui::widget_id("heartstead.developer.search");
+const auto developer_category_id = ui::widget_id("heartstead.developer.category");
+const auto delete_confirm_id = ui::widget_id("heartstead.delete.confirm");
+const auto delete_cancel_id = ui::widget_id("heartstead.delete.cancel");
+const auto master_volume_id = ui::widget_id("heartstead.options.master_volume");
+const auto music_volume_id = ui::widget_id("heartstead.options.music_volume");
+const auto effects_volume_id = ui::widget_id("heartstead.options.effects_volume");
+const auto mouse_sensitivity_id = ui::widget_id("heartstead.options.mouse_sensitivity");
+const auto controller_sensitivity_id = ui::widget_id("heartstead.options.controller_sensitivity");
+const auto ui_scale_id = ui::widget_id("heartstead.options.ui_scale");
+const auto contrast_id = ui::widget_id("heartstead.options.contrast");
+const auto saturation_id = ui::widget_id("heartstead.options.saturation");
+const auto quality_id = ui::widget_id("heartstead.options.quality");
+const auto windowed_id = ui::widget_id("heartstead.options.windowed");
+const auto color_vision_id = ui::widget_id("heartstead.options.color_vision");
+const auto controller_id = ui::widget_id("heartstead.options.controller");
+const auto reduced_motion_id = ui::widget_id("heartstead.options.reduced_motion");
 
 [[nodiscard]] ui::WidgetDesc root_widget() {
     ui::WidgetDesc root;
@@ -51,7 +96,7 @@ const auto back_id = ui::widget_id("heartstead.error.back");
     ui::WidgetDesc panel;
     panel.id = panel_id;
     panel.parent = root_id;
-    panel.kind = ui::WidgetKind::panel;
+    panel.kind = ui::WidgetKind::scroll_area;
     panel.nine_slice = "carved_panel";
     panel.layout.mode = ui::UiLayoutMode::column;
     panel.layout.width = ui::UiSize::pixels(520.0F);
@@ -80,7 +125,8 @@ const auto back_id = ui::widget_id("heartstead.error.back");
     return result;
 }
 
-[[nodiscard]] ui::WidgetDesc button(ui::WidgetId id, std::string text, std::string tooltip = {}) {
+[[nodiscard]] ui::WidgetDesc button(ui::WidgetId id, std::string text, std::string tooltip = {},
+                                    bool enabled = true) {
     ui::WidgetDesc result;
     result.id = id;
     result.parent = panel_id;
@@ -92,15 +138,175 @@ const auto back_id = ui::widget_id("heartstead.error.back");
     result.text = std::move(text);
     result.tooltip = std::move(tooltip);
     result.glyph_size_pixels = 16.0F;
-    result.focusable = true;
-    result.pointer_events = true;
+    result.enabled = enabled;
+    result.focusable = enabled;
+    result.pointer_events = enabled;
     result.color = {0.42F, 0.23F, 0.075F, 1.0F};
     return result;
+}
+
+[[nodiscard]] ui::WidgetDesc text_input(ui::WidgetId id, std::string text,
+                                        std::string accessibility_label) {
+    auto result = button(id, std::move(text));
+    result.kind = ui::WidgetKind::text_input;
+    result.accessibility_label = std::move(accessibility_label);
+    return result;
+}
+
+[[nodiscard]] ui::WidgetDesc slider(ui::WidgetId id, std::string accessibility_label, float value,
+                                    float minimum, float maximum) {
+    auto result = button(id, std::move(accessibility_label));
+    result.kind = ui::WidgetKind::slider;
+    result.value = value;
+    result.minimum_value = minimum;
+    result.maximum_value = maximum;
+    return result;
+}
+
+[[nodiscard]] ui::WidgetDesc toggle(ui::WidgetId id, std::string text, bool checked) {
+    auto result = button(id, std::move(text));
+    result.kind = ui::WidgetKind::toggle;
+    result.checked = checked;
+    return result;
+}
+
+[[nodiscard]] std::string safe_slot_id(std::string_view display_name) {
+    std::string result;
+    bool separator = false;
+    for (const auto character : display_name) {
+        const auto byte = static_cast<unsigned char>(character);
+        if (std::isalnum(byte)) {
+            result.push_back(static_cast<char>(std::tolower(byte)));
+            separator = false;
+        } else if (!result.empty() && !separator) {
+            result.push_back('_');
+            separator = true;
+        }
+    }
+    while (!result.empty() && result.back() == '_') {
+        result.pop_back();
+    }
+    return result;
+}
+
+[[nodiscard]] std::string timestamp_text(std::uint64_t milliseconds) {
+    if (milliseconds == 0) {
+        return "unknown";
+    }
+    const auto seconds = static_cast<std::time_t>(milliseconds / 1000U);
+    std::tm utc{};
+#if defined(_WIN32)
+    if (gmtime_s(&utc, &seconds) != 0) {
+#else
+    if (gmtime_r(&seconds, &utc) == nullptr) {
+#endif
+        return "unknown";
+    }
+    std::ostringstream output;
+    output << std::put_time(&utc, "%Y-%m-%d %H:%M UTC");
+    return output.str();
+}
+
+[[nodiscard]] std::string required_mods_text(const save::SaveMetadata& metadata) {
+    if (metadata.enabled_mods.empty()) {
+        return "none";
+    }
+    std::string result;
+    for (const auto& mod : metadata.enabled_mods) {
+        if (!result.empty()) {
+            result += ", ";
+        }
+        result += mod.id + " " + mod.version;
+    }
+    return result;
+}
+
+[[nodiscard]] core::Result<net::TransportEndpoint> parse_endpoint(std::string_view text) {
+    const auto separator = text.rfind(':');
+    if (separator == std::string_view::npos || separator == 0 || separator + 1 >= text.size()) {
+        return core::Result<net::TransportEndpoint>::failure("heartstead.invalid_server_address",
+                                                             "server address uses host:port");
+    }
+    std::uint16_t port = 0;
+    const auto port_text = text.substr(separator + 1);
+    const auto [end, error] =
+        std::from_chars(port_text.data(), port_text.data() + port_text.size(), port);
+    if (error != std::errc{} || end != port_text.data() + port_text.size() || port == 0) {
+        return core::Result<net::TransportEndpoint>::failure(
+            "heartstead.invalid_server_port", "server port must be between 1 and 65535");
+    }
+    net::TransportEndpoint endpoint{std::string(text.substr(0, separator)), port};
+    auto status = net::validate_transport_endpoint(endpoint);
+    return !status ? core::Result<net::TransportEndpoint>::failure(status.error().code,
+                                                                   status.error().message)
+                   : core::Result<net::TransportEndpoint>::success(std::move(endpoint));
 }
 
 [[nodiscard]] bool key_pressed(const platform::WindowInputSnapshot& input,
                                platform::KeyCode key) noexcept {
     return std::ranges::find(input.pressed_keys, key) != input.pressed_keys.end();
+}
+
+[[nodiscard]] std::optional<scenarios::ScenarioCategory>
+next_scenario_category(std::optional<scenarios::ScenarioCategory> category) noexcept {
+    constexpr std::array categories{
+        scenarios::ScenarioCategory::gameplay,    scenarios::ScenarioCategory::rendering,
+        scenarios::ScenarioCategory::world,       scenarios::ScenarioCategory::movement,
+        scenarios::ScenarioCategory::physics,     scenarios::ScenarioCategory::networking,
+        scenarios::ScenarioCategory::performance, scenarios::ScenarioCategory::audio,
+        scenarios::ScenarioCategory::ui,
+    };
+    if (!category.has_value()) {
+        return categories.front();
+    }
+    const auto found = std::ranges::find(categories, *category);
+    return found == categories.end() || std::next(found) == categories.end()
+               ? std::nullopt
+               : std::optional{*std::next(found)};
+}
+
+[[nodiscard]] renderer::RendererQualityPreset
+next_quality(renderer::RendererQualityPreset quality) noexcept {
+    switch (quality) {
+    case renderer::RendererQualityPreset::low:
+        return renderer::RendererQualityPreset::medium;
+    case renderer::RendererQualityPreset::medium:
+        return renderer::RendererQualityPreset::high;
+    case renderer::RendererQualityPreset::high:
+        return renderer::RendererQualityPreset::ultra;
+    case renderer::RendererQualityPreset::ultra:
+        return renderer::RendererQualityPreset::low;
+    }
+    return renderer::RendererQualityPreset::high;
+}
+
+[[nodiscard]] std::string_view color_vision_name(renderer::UiColorVisionMode mode) noexcept {
+    switch (mode) {
+    case renderer::UiColorVisionMode::none:
+        return "none";
+    case renderer::UiColorVisionMode::protanopia:
+        return "protanopia";
+    case renderer::UiColorVisionMode::deuteranopia:
+        return "deuteranopia";
+    case renderer::UiColorVisionMode::tritanopia:
+        return "tritanopia";
+    }
+    return "none";
+}
+
+[[nodiscard]] renderer::UiColorVisionMode
+next_color_vision(renderer::UiColorVisionMode mode) noexcept {
+    switch (mode) {
+    case renderer::UiColorVisionMode::none:
+        return renderer::UiColorVisionMode::protanopia;
+    case renderer::UiColorVisionMode::protanopia:
+        return renderer::UiColorVisionMode::deuteranopia;
+    case renderer::UiColorVisionMode::deuteranopia:
+        return renderer::UiColorVisionMode::tritanopia;
+    case renderer::UiColorVisionMode::tritanopia:
+        return renderer::UiColorVisionMode::none;
+    }
+    return renderer::UiColorVisionMode::none;
 }
 
 [[nodiscard]] renderer::RenderCamera camera_from_frame(const movement::PlayerCameraFrame& frame) {
@@ -117,6 +323,10 @@ const auto back_id = ui::widget_id("heartstead.error.back");
 
 struct LoadedSession {
     std::uint64_t generation = 0;
+    SessionMode mode = SessionMode::local_single_player;
+    PersistencePolicy persistence = PersistencePolicy::ephemeral;
+    std::string save_slot_id;
+    std::string world_name;
     GameRuntime runtime;
 };
 
@@ -128,7 +338,9 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     explicit Impl(HeartsteadApplicationModeConfig initial_config)
         : config(std::move(initial_config)), states(this),
           widgets(config.content_report == nullptr ? ui::UiSkin::storybook_default()
-                                                   : config.content_report->ui_skin) {}
+                                                   : config.content_report->ui_skin),
+          settings(config.initial_settings), settings_store(config.user_data_root / "settings.txt"),
+          save_catalog(config.user_data_root / "saves") {}
 
     HeartsteadApplicationModeConfig config;
     ApplicationStateMachine states;
@@ -139,14 +351,339 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     std::future<SessionLoadResult> loading;
     std::stop_source loading_stop;
     ui::WidgetTree widgets;
+    ApplicationSettings settings;
+    ApplicationSettingsStore settings_store;
+    save::FileSaveSlotCatalog save_catalog;
+    DeveloperWorldRegistry developer_worlds;
+    std::vector<save::SaveSlotSummary> save_entries;
+    MainMenuNavigation menu_navigation;
+    std::optional<std::size_t> selected_save;
+    std::optional<std::size_t> selected_developer_world;
+    std::optional<scenarios::ScenarioCategory> developer_category;
+    std::optional<std::string> pending_delete_slot;
+    std::optional<SessionLaunchRequest> pending_launch;
+    std::string pending_save_slot;
+    std::string active_save_slot;
+    SessionMode active_session_mode = SessionMode::local_single_player;
+    PersistencePolicy active_persistence = PersistencePolicy::ephemeral;
+    std::string new_world_name = "New Homestead";
+    std::string new_world_seed = std::to_string(foundation::world_seed);
+    std::string server_address = "127.0.0.1:7777";
+    std::string developer_search;
+    std::string menu_message;
     movement::PlayerCameraRig camera_rig;
     std::optional<RuntimeFrameStats> runtime_stats;
     std::uint64_t frame_count = 0;
     std::uint64_t completed_session_count = 0;
     std::uint64_t next_session_generation = 1;
     std::uint64_t loading_generation = 0;
+    SessionMode loading_mode = SessionMode::local_single_player;
     bool initialized = false;
     std::optional<core::Error> display_error;
+
+    [[nodiscard]] bool save_is_compatible(const save::SaveSlotSummary& entry) const {
+        if (entry.validation_error.has_value() || !entry.snapshot_metadata.has_value()) {
+            return false;
+        }
+        if (entry.snapshot_metadata->schema_version != save::current_save_schema_version) {
+            return false;
+        }
+        return !save::SaveCompatibilityChecker::compare(entry.snapshot_metadata.value(),
+                                                        config.content_report->mod_fingerprints)
+                    .has_errors();
+    }
+
+    [[nodiscard]] core::Status refresh_saves() {
+        auto listed = save_catalog.list_slots();
+        if (!listed) {
+            return core::Status::failure(listed.error().code, listed.error().message);
+        }
+        save_entries = std::move(listed).value();
+        selected_save.reset();
+        return core::Status::ok();
+    }
+
+    [[nodiscard]] std::optional<std::size_t> continue_index() const {
+        if (!settings.last_world_slot.empty()) {
+            for (std::size_t index = 0; index < save_entries.size(); ++index) {
+                if (save_entries[index].slot_id == settings.last_world_slot &&
+                    save_is_compatible(save_entries[index])) {
+                    return index;
+                }
+            }
+        }
+        std::optional<std::size_t> newest;
+        for (std::size_t index = 0; index < save_entries.size(); ++index) {
+            if (!save_is_compatible(save_entries[index])) {
+                continue;
+            }
+            if (!newest.has_value() || save_entries[index].metadata.last_saved_at_ms >
+                                           save_entries[*newest].metadata.last_saved_at_ms) {
+                newest = index;
+            }
+        }
+        return newest;
+    }
+
+    [[nodiscard]] core::Status persist_settings() {
+        auto status = settings_store.save(settings);
+        if (!status) {
+            menu_message = status.error().code + ": " + status.error().message;
+        }
+        return status;
+    }
+
+    [[nodiscard]] core::Status apply_settings() {
+        if (services != nullptr && services->audio() != nullptr) {
+            auto status =
+                services->audio()->set_bus_gain(audio::AudioBus::master, settings.master_volume);
+            if (!status)
+                return status;
+            status = services->audio()->set_bus_gain(audio::AudioBus::music, settings.music_volume);
+            if (!status)
+                return status;
+            status = services->audio()->set_bus_gain(audio::AudioBus::sfx, settings.effects_volume);
+            if (!status)
+                return status;
+            status =
+                services->audio()->set_bus_gain(audio::AudioBus::ambient, settings.effects_volume);
+            if (!status)
+                return status;
+        }
+        if (services != nullptr && services->renderer() != nullptr &&
+            services->renderer()->ui_renderer() != nullptr) {
+            return services->renderer()->ui_renderer()->set_accessibility_settings(
+                {settings.ui_contrast, settings.ui_saturation, settings.color_vision_mode});
+        }
+        return core::Status::ok();
+    }
+
+    [[nodiscard]] core::Status show_menu(MainMenuScreen screen) {
+        auto status = menu_navigation.open(screen);
+        if (!status) {
+            return status;
+        }
+        menu_message.clear();
+        return rebuild_ui(ApplicationState::main_menu);
+    }
+
+    [[nodiscard]] core::Status build_menu_ui() {
+        const auto add = [this](ui::WidgetDesc widget) { return widgets.add(std::move(widget)); };
+        auto status = core::Status::ok();
+        const auto add_title = [&](std::string_view id, std::string title) {
+            return add(label(id, std::move(title), 30.0F));
+        };
+        const auto menu_screen = menu_navigation.screen();
+        if (menu_screen == MainMenuScreen::root) {
+            const auto recent = continue_index();
+            const auto continue_text =
+                recent.has_value() ? "Continue — " + save_entries[*recent].metadata.display_name
+                                   : "Continue — no compatible world";
+            if (!(status = add_title("heartstead.menu.title", "HEARTSTEAD")) ||
+                !(status = add(button(continue_id, continue_text,
+                                      recent.has_value() ? "Continue the most recently played world"
+                                                         : "No compatible recent world exists",
+                                      recent.has_value()))) ||
+                !(status = add(button(new_world_id, "New World"))) ||
+                !(status = add(button(load_world_id, "Load World"))) ||
+                !(status = add(button(multiplayer_id, "Multiplayer"))) ||
+                !(status = add(button(developer_worlds_id, "Developer Worlds"))) ||
+                !(status = add(button(options_id, "Options"))) ||
+                !(status = add(button(quit_id, "Quit")))) {
+                return status;
+            }
+            widgets.set_focus(recent.has_value() ? continue_id : new_world_id);
+        } else if (menu_screen == MainMenuScreen::new_world) {
+            if (!(status = add_title("heartstead.new.title", "New World")) ||
+                !(status = add(text_input(world_name_id, new_world_name, "World name"))) ||
+                !(status = add(text_input(world_seed_id, new_world_seed, "World seed"))) ||
+                !(status = add(label("heartstead.new.preset", "Generator: temperate_valley"))) ||
+                !(status = add(button(create_world_id, "Create World"))) ||
+                !(status = add(button(menu_back_id, "Back")))) {
+                return status;
+            }
+            widgets.set_focus(world_name_id);
+        } else if (menu_screen == MainMenuScreen::load_world) {
+            if (!(status = add_title("heartstead.load.title", "Load World")))
+                return status;
+            if (save_entries.empty()) {
+                if (!(status = add(label("heartstead.load.empty", "No saved worlds found."))))
+                    return status;
+            }
+            for (std::size_t index = 0; index < save_entries.size(); ++index) {
+                const auto& entry = save_entries[index];
+                const auto compatible = save_is_compatible(entry);
+                const auto suffix = entry.validation_error.has_value()
+                                        ? " — corrupt: " + entry.validation_error->code
+                                    : compatible ? " — compatible"
+                                                 : " — incompatible or missing content";
+                const auto id = ui::widget_id("heartstead.save." + entry.slot_id);
+                if (!(status = add(
+                          button(id, entry.metadata.display_name + suffix, entry.path.string()))))
+                    return status;
+            }
+            const auto has_selection = selected_save.has_value();
+            const auto loadable = has_selection && save_is_compatible(save_entries[*selected_save]);
+            if (has_selection) {
+                const auto& entry = save_entries[*selected_save];
+                if (!(status =
+                          add(label("heartstead.load.selected_dates",
+                                    "Created: " + timestamp_text(entry.metadata.created_at_ms) +
+                                        " | Last played: " +
+                                        timestamp_text(entry.metadata.last_saved_at_ms)))) ||
+                    !(status = add(label("heartstead.load.selected_path",
+                                         "Save path: " + entry.path.string()))) ||
+                    !(status = add(label("heartstead.load.selected_thumbnail",
+                                         "Thumbnail: default world placeholder"))))
+                    return status;
+                if (entry.snapshot_metadata.has_value()) {
+                    const auto& metadata = *entry.snapshot_metadata;
+                    const auto migration =
+                        metadata.schema_version < save::current_save_schema_version
+                            ? "required (not performed automatically)"
+                        : metadata.schema_version > save::current_save_schema_version
+                            ? "save is newer than this build"
+                            : "not required";
+                    if (!(status = add(label("heartstead.load.selected_version",
+                                             "Game: " + metadata.game_version + " | Save schema: " +
+                                                 std::to_string(metadata.schema_version) +
+                                                 " | Migration: " + migration))) ||
+                        !(status =
+                              add(label("heartstead.load.selected_generator",
+                                        "Generator version: not recorded by this save format"))) ||
+                        !(status = add(label("heartstead.load.selected_mods",
+                                             "Required mods: " + required_mods_text(metadata)))))
+                        return status;
+                    const auto compatibility = save::SaveCompatibilityChecker::compare(
+                        metadata, config.content_report->mod_fingerprints);
+                    for (std::size_t issue = 0; issue < compatibility.issues.size() && issue < 3;
+                         ++issue) {
+                        if (!(status = add(
+                                  label("heartstead.load.compatibility." + std::to_string(issue),
+                                        compatibility.issues[issue].message))))
+                            return status;
+                    }
+                } else if (entry.validation_error.has_value() &&
+                           !(status = add(
+                                 label("heartstead.load.selected_error",
+                                       "Validation failed: " + entry.validation_error->message)))) {
+                    return status;
+                }
+            }
+            if (!(status = add(button(load_selected_id, "Load Selected", "", loadable))) ||
+                !(status = add(button(host_selected_id, "Host Selected", "", loadable))) ||
+                !(status = add(button(rename_selected_id, "Rename Selected", "", has_selection))) ||
+                !(status =
+                      add(button(duplicate_selected_id, "Duplicate Selected", "", loadable))) ||
+                !(status = add(button(delete_selected_id, "Delete Selected", "", has_selection))) ||
+                !(status =
+                      add(button(copy_save_path_id, "Copy Save Location", "", has_selection))) ||
+                !(status = add(button(refresh_worlds_id, "Refresh"))) ||
+                !(status = add(button(menu_back_id, "Back"))))
+                return status;
+            widgets.set_focus(save_entries.empty() ? refresh_worlds_id
+                                                   : ui::widget_id("heartstead.save." +
+                                                                   save_entries.front().slot_id));
+        } else if (menu_screen == MainMenuScreen::multiplayer) {
+            if (!(status = add_title("heartstead.multiplayer.title", "Multiplayer")) ||
+                !(status = add(text_input(address_id, server_address, "Server address"))) ||
+                !(status = add(button(join_id, "Join by Address"))) ||
+                !(status = add(label("heartstead.multiplayer.recent", "Recent servers"))))
+                return status;
+            for (std::size_t index = 0; index < settings.recent_servers.size(); ++index) {
+                if (!(status = add(
+                          button(ui::widget_id("heartstead.recent_server." + std::to_string(index)),
+                                 settings.recent_servers[index]))))
+                    return status;
+            }
+            if (!(status = add(button(ui::widget_id("heartstead.multiplayer.host_hint"),
+                                      "Host via Load World",
+                                      "Select Host Selected in the Load World browser", false))) ||
+                !(status = add(button(menu_back_id, "Back"))))
+                return status;
+            widgets.set_focus(address_id);
+        } else if (menu_screen == MainMenuScreen::developer_worlds) {
+            if (!(status = add_title("heartstead.developer.title", "Developer Worlds")) ||
+                !(status = add(text_input(developer_search_id, developer_search, "Search"))) ||
+                !(status =
+                      add(button(developer_category_id,
+                                 "Category: " + std::string(developer_category.has_value()
+                                                                ? scenarios::scenario_category_name(
+                                                                      *developer_category)
+                                                                : std::string_view{"all"})))))
+                return status;
+            const auto entries = developer_worlds.filter(developer_category, developer_search);
+            if (entries.empty() &&
+                !(status = add(label("heartstead.developer.empty", "No scenarios match."))))
+                return status;
+            for (const auto* entry : entries) {
+                const auto text =
+                    entry->display_name + " — " +
+                    std::string(scenarios::scenario_category_name(entry->category)) + " — " +
+                    std::string(scenarios::scenario_persistence_policy_name(entry->persistence));
+                if (!(status = add(button(
+                          ui::widget_id("heartstead.developer." + entry->prototype_id.value()),
+                          text, entry->description))))
+                    return status;
+            }
+            const auto selected = selected_developer_world.has_value();
+            if (!(status = add(button(developer_launch_id, "Launch Selected", "", selected))) ||
+                !(status = add(button(menu_back_id, "Back"))))
+                return status;
+            widgets.set_focus(developer_search_id);
+        } else if (menu_screen == MainMenuScreen::options) {
+            if (!(status = add_title("heartstead.options.title", "Options")) ||
+                !(status = add(label("heartstead.options.display",
+                                     "Display: " + std::to_string(settings.window_width) + "x" +
+                                         std::to_string(settings.window_height) +
+                                         " (display changes apply on restart)"))) ||
+                !(status = add(button(quality_id,
+                                      "Rendering quality: " +
+                                          std::string(renderer::renderer_quality_preset_name(
+                                              settings.rendering_quality)),
+                                      "Applies on restart"))) ||
+                !(status = add(toggle(windowed_id, "Windowed mode (restart required)",
+                                      settings.windowed))) ||
+                !(status = add(slider(master_volume_id, "Master volume", settings.master_volume,
+                                      0.0F, 1.0F))) ||
+                !(status = add(slider(music_volume_id, "Music volume", settings.music_volume, 0.0F,
+                                      1.0F))) ||
+                !(status = add(slider(effects_volume_id, "Effects volume", settings.effects_volume,
+                                      0.0F, 1.0F))) ||
+                !(status = add(slider(mouse_sensitivity_id, "Mouse sensitivity",
+                                      settings.mouse_sensitivity, 0.1F, 10.0F))) ||
+                !(status = add(slider(controller_sensitivity_id, "Controller sensitivity",
+                                      settings.controller_sensitivity, 0.1F, 10.0F))) ||
+                !(status = add(slider(ui_scale_id, "UI scale", settings.ui_scale, 0.75F, 2.0F))) ||
+                !(status =
+                      add(slider(contrast_id, "UI contrast", settings.ui_contrast, 0.5F, 2.0F))) ||
+                !(status = add(slider(saturation_id, "UI saturation", settings.ui_saturation, 0.0F,
+                                      2.0F))) ||
+                !(status = add(button(color_vision_id,
+                                      "Color vision mode: " + std::string(color_vision_name(
+                                                                  settings.color_vision_mode))))) ||
+                !(status = add(
+                      toggle(controller_id, "Controller enabled", settings.controller_enabled))) ||
+                !(status =
+                      add(toggle(reduced_motion_id, "Reduced motion", settings.reduced_motion))) ||
+                !(status = add(button(menu_back_id, "Back"))))
+                return status;
+            widgets.set_focus(master_volume_id);
+        } else if (menu_screen == MainMenuScreen::delete_confirmation) {
+            const auto name = pending_delete_slot.value_or("unknown");
+            if (!(status = add_title("heartstead.delete.title", "Delete World?")) ||
+                !(status = add(label("heartstead.delete.warning",
+                                     "Permanently delete save slot '" + name + "'?"))) ||
+                !(status = add(button(delete_confirm_id, "Delete Permanently"))) ||
+                !(status = add(button(delete_cancel_id, "Cancel"))))
+                return status;
+            widgets.set_focus(delete_cancel_id);
+        }
+        if (!menu_message.empty()) {
+            status = add(label("heartstead.menu.message", menu_message, 13.0F));
+        }
+        return status;
+    }
 
     [[nodiscard]] core::Status rebuild_ui(ApplicationState state) {
         widgets.clear();
@@ -170,18 +707,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             }
             return add(label("heartstead.boot.status", "Preparing application services..."));
         case ApplicationState::main_menu:
-            if (!(status = add(label("heartstead.menu.title", "HEARTSTEAD", 36.0F))) ||
-                !(status = add(label("heartstead.menu.subtitle",
-                                     "A server-authoritative settlement world"))) ||
-                !(status = add(button(start_id, "Start Development World",
-                                      "Creates a local server and local client")))) {
-                return status;
-            }
-            status = add(button(quit_id, "Quit"));
-            if (status) {
-                widgets.set_focus(start_id);
-            }
-            return status;
+            return build_menu_ui();
         case ApplicationState::session_loading:
             if (!(status = add(label("heartstead.loading.title", "Loading world", 28.0F))) ||
                 !(status = add(label("heartstead.loading.phase",
@@ -196,6 +722,12 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         case ApplicationState::paused:
             if (!(status = add(label("heartstead.pause.title", "Paused", 30.0F))) ||
                 !(status = add(button(resume_id, "Resume")))) {
+                return status;
+            }
+            if (display_error.has_value() &&
+                !(status =
+                      add(label("heartstead.pause.error",
+                                display_error->code + ": " + display_error->message, 13.0F)))) {
                 return status;
             }
             status = add(button(return_id, "Return to Main Menu"));
@@ -237,20 +769,34 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         return core::Status::ok();
     }
 
-    [[nodiscard]] core::Status begin_local_session_loading() {
+    [[nodiscard]] core::Status begin_session_loading() {
         if (loading.valid() || session_runtime.has_value()) {
             return core::Status::failure("heartstead.session_already_pending",
                                          "a runtime session is already active or loading");
+        }
+        if (!pending_launch.has_value()) {
+            return core::Status::failure("heartstead.launch_request_missing",
+                                         "session loading requires a prepared launch request");
         }
         loading_stop = std::stop_source{};
         loading_generation = next_session_generation++;
         const auto stop_token = loading_stop.get_token();
         const auto generation = loading_generation;
         const auto* content_report = config.content_report;
-        const auto headless = config.headless;
+        auto request = std::move(*pending_launch);
+        pending_launch.reset();
+        request.ownership_generation = generation;
+        request.runtime.gameplay_modules.push_back(
+            std::make_shared<animals::WanderingAnimalModule>());
+        loading_mode = request.mode;
+        const auto mode = request.mode;
+        const auto persistence = request.persistence;
+        const auto save_slot_id = std::move(pending_save_slot);
+        const auto world_name = request.world_name;
         loading = std::async(
             std::launch::async,
-            [content_report, headless, generation, stop_token]() -> SessionLoadResult {
+            [content_report, generation, stop_token, request = std::move(request), mode,
+             persistence, save_slot_id, world_name]() mutable -> SessionLoadResult {
                 if (stop_token.stop_requested()) {
                     return SessionLoadResult::failure("heartstead.session_load_cancelled",
                                                       "session loading was cancelled");
@@ -264,31 +810,6 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                     return SessionLoadResult::failure("heartstead.session_load_cancelled",
                                                       "session loading was cancelled");
                 }
-                auto metadata = content::save_metadata_from_content_report(*content_report, "0.1.0",
-                                                                           foundation::world_seed);
-                if (!metadata) {
-                    return SessionLoadResult::failure(metadata.error().code,
-                                                      metadata.error().message);
-                }
-                auto developer_worlds =
-                    DeveloperWorldRegistry::create(content_report->scenario_definitions);
-                if (!developer_worlds) {
-                    return SessionLoadResult::failure(developer_worlds.error().code,
-                                                      developer_worlds.error().message);
-                }
-                auto launch = developer_worlds.value().make_launch_request(
-                    "base:scenarios/foundation_slice", std::move(metadata).value(), headless);
-                if (!launch) {
-                    return SessionLoadResult::failure(launch.error().code, launch.error().message);
-                }
-                auto request = std::move(launch).value();
-                request.ownership_generation = generation;
-                request.runtime.gameplay_modules.push_back(
-                    std::make_shared<animals::WanderingAnimalModule>());
-                if (stop_token.stop_requested()) {
-                    return SessionLoadResult::failure("heartstead.session_load_cancelled",
-                                                      "session loading was cancelled");
-                }
                 auto status = runtime.value().start_session(std::move(request));
                 if (!status) {
                     return SessionLoadResult::failure(status.error().code, status.error().message);
@@ -298,7 +819,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                     return SessionLoadResult::failure("heartstead.session_load_cancelled",
                                                       "session loading was cancelled");
                 }
-                return SessionLoadResult::success({generation, std::move(runtime).value()});
+                return SessionLoadResult::success({generation, mode, persistence, save_slot_id,
+                                                   world_name, std::move(runtime).value()});
             });
         return core::Status::ok();
     }
@@ -310,8 +832,10 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 loaded.error().code == "heartstead.session_load_cancelled") {
                 return core::Status::ok();
             }
-            return states.transition(ApplicationState::load_failure, "session startup failed",
-                                     loaded.error());
+            return states.transition(loading_mode == SessionMode::remote_multiplayer
+                                         ? ApplicationState::connection_failure
+                                         : ApplicationState::load_failure,
+                                     "session startup failed", loaded.error());
         }
         auto completed = std::move(loaded).value();
         auto runtime = std::move(completed.runtime);
@@ -338,6 +862,35 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             }
         }
         session_runtime.emplace(std::move(runtime));
+        active_session_mode = completed.mode;
+        active_persistence = completed.persistence;
+        active_save_slot = completed.save_slot_id;
+        if (active_persistence == PersistencePolicy::persistent && !active_save_slot.empty()) {
+            auto snapshot = session_runtime->capture_save_snapshot();
+            if (!snapshot) {
+                (void)session_runtime->shutdown();
+                session_runtime.reset();
+                return states.transition(ApplicationState::load_failure,
+                                         "initial world save failed", snapshot.error());
+            }
+            const auto saved_at = static_cast<std::uint64_t>(
+                std::max<std::int64_t>(1, frame == nullptr ? 1 : frame->now_milliseconds));
+            auto status = save_catalog.write_snapshot(active_save_slot, snapshot.value(), saved_at);
+            if (status) {
+                status = save_catalog.rename_slot(active_save_slot, completed.world_name);
+            }
+            if (!status) {
+                (void)session_runtime->shutdown();
+                session_runtime.reset();
+                return states.transition(ApplicationState::load_failure,
+                                         "initial world save failed", status.error());
+            }
+            settings.last_world_slot = active_save_slot;
+            status = persist_settings();
+            if (!status) {
+                return status;
+            }
+        }
         return states.transition(ApplicationState::in_game, "session startup completed");
     }
 
@@ -352,7 +905,24 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             runtime_stats.reset();
             ++completed_session_count;
         }
+        active_save_slot.clear();
+        active_persistence = PersistencePolicy::ephemeral;
+        active_session_mode = SessionMode::local_single_player;
         return first_failure;
+    }
+
+    [[nodiscard]] core::Status save_active_session() {
+        if (!session_runtime.has_value() || active_save_slot.empty() ||
+            active_persistence != PersistencePolicy::persistent) {
+            return core::Status::ok();
+        }
+        auto snapshot = session_runtime->capture_save_snapshot();
+        if (!snapshot) {
+            return core::Status::failure(snapshot.error().code, snapshot.error().message);
+        }
+        const auto saved_at = static_cast<std::uint64_t>(
+            std::max<std::int64_t>(1, frame == nullptr ? 1 : frame->now_milliseconds));
+        return save_catalog.write_snapshot(active_save_slot, snapshot.value(), saved_at);
     }
 
     core::Status enter_state(ApplicationState state,
@@ -371,7 +941,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             return status;
         }
         if (state == ApplicationState::session_loading) {
-            return begin_local_session_loading();
+            return begin_session_loading();
         }
         if (state == ApplicationState::session_unloading) {
             loading_stop.request_stop();
@@ -401,11 +971,14 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                     {frame->delta_microseconds, frame->now_milliseconds});
                 if (!advanced) {
                     const auto error = advanced.error();
+                    const auto failed_mode = active_session_mode;
                     auto status = unload_session();
                     if (!status) {
                         return status;
                     }
-                    return states.transition(ApplicationState::load_failure,
+                    return states.transition(failed_mode == SessionMode::remote_multiplayer
+                                                 ? ApplicationState::connection_failure
+                                                 : ApplicationState::load_failure,
                                              "runtime session failed", error);
                 }
                 runtime_stats = std::move(advanced).value();
@@ -427,6 +1000,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                     return status;
                 }
             }
+            (void)refresh_saves();
+            menu_navigation.reset();
             return states.transition(ApplicationState::main_menu, "session resources released");
         case ApplicationState::shutdown:
             if (services != nullptr) {
@@ -448,6 +1023,142 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         return core::Status::ok();
     }
 
+    [[nodiscard]] core::Result<save::SaveMetadata> make_metadata(std::uint64_t seed) const {
+        return content::save_metadata_from_content_report(*config.content_report, "0.1.0", seed);
+    }
+
+    [[nodiscard]] core::Status launch(SessionLaunchRequest request, std::string save_slot = {}) {
+        if (pending_launch.has_value() || loading.valid() || session_runtime.has_value()) {
+            return core::Status::failure("heartstead.session_already_pending",
+                                         "another session is active or loading");
+        }
+        pending_launch = std::move(request);
+        pending_save_slot = std::move(save_slot);
+        return states.transition(ApplicationState::session_loading, "menu launch selected");
+    }
+
+    [[nodiscard]] core::Status launch_new_world() {
+        if (new_world_name.empty() || new_world_name.size() > 96 ||
+            std::ranges::any_of(new_world_name, [](char value) {
+                const auto character = static_cast<unsigned char>(value);
+                return character < 0x20 || character > 0x7e;
+            })) {
+            return core::Status::failure("heartstead.invalid_world_name",
+                                         "world name must be 1-96 printable ASCII characters");
+        }
+        const auto slot_id = safe_slot_id(new_world_name);
+        if (!save::FileSaveSlotCatalog::is_valid_slot_id(slot_id)) {
+            return core::Status::failure("heartstead.invalid_world_name",
+                                         "world name must contain letters or numbers");
+        }
+        if (std::ranges::any_of(save_entries, [&slot_id](const save::SaveSlotSummary& entry) {
+                return entry.slot_id == slot_id;
+            })) {
+            return core::Status::failure("heartstead.world_exists",
+                                         "a world with that save id already exists");
+        }
+        std::uint64_t seed = 0;
+        const auto [end, error] = std::from_chars(
+            new_world_seed.data(), new_world_seed.data() + new_world_seed.size(), seed);
+        if (error != std::errc{} || end != new_world_seed.data() + new_world_seed.size()) {
+            return core::Status::failure("heartstead.invalid_world_seed",
+                                         "world seed must be an unsigned integer");
+        }
+        auto metadata = make_metadata(seed);
+        if (!metadata) {
+            return core::Status::failure(metadata.error().code, metadata.error().message);
+        }
+        SessionLaunchRequest request;
+        request.mode = SessionMode::local_single_player;
+        request.world_source = WorldSourceKind::generated;
+        request.persistence = PersistencePolicy::persistent;
+        request.world_name = new_world_name;
+        request.scenario_id = foundation::scenario_id;
+        request.seed = seed;
+        request.generator_preset = "temperate_valley";
+        request.save_path = save_catalog.root() / slot_id;
+        request.metadata = std::move(metadata).value();
+        request.runtime.headless = config.headless;
+        request.runtime.create_renderer = !config.headless;
+        request.runtime.create_audio = !config.headless;
+        request.runtime.physics_backend =
+            config.headless ? physics::PhysicsBackend::headless : physics::PhysicsBackend::jolt;
+        return launch(std::move(request), slot_id);
+    }
+
+    [[nodiscard]] core::Status launch_saved_world(std::size_t index, bool host) {
+        if (index >= save_entries.size() || !save_is_compatible(save_entries[index])) {
+            return core::Status::failure("heartstead.save_not_loadable",
+                                         "selected save is corrupt or incompatible");
+        }
+        const auto& entry = save_entries[index];
+        SessionLaunchRequest request;
+        request.mode = host ? SessionMode::hosted_multiplayer : SessionMode::local_single_player;
+        request.world_source = WorldSourceKind::existing_save;
+        request.persistence = PersistencePolicy::persistent;
+        request.world_name = entry.metadata.display_name;
+        request.scenario_id.clear();
+        request.save_path = entry.path;
+        request.metadata = *entry.snapshot_metadata;
+        request.runtime.headless = config.headless;
+        request.runtime.create_renderer = !config.headless;
+        request.runtime.create_audio = !config.headless;
+        request.runtime.physics_backend =
+            config.headless ? physics::PhysicsBackend::headless : physics::PhysicsBackend::jolt;
+        if (host) {
+            request.network_endpoint = net::TransportEndpoint{"0.0.0.0", 7777};
+        }
+        return launch(std::move(request), entry.slot_id);
+    }
+
+    [[nodiscard]] core::Status launch_remote() {
+        auto endpoint = parse_endpoint(server_address);
+        if (!endpoint) {
+            return core::Status::failure(endpoint.error().code, endpoint.error().message);
+        }
+        auto metadata = make_metadata(foundation::world_seed);
+        if (!metadata) {
+            return core::Status::failure(metadata.error().code, metadata.error().message);
+        }
+        SessionLaunchRequest request;
+        request.mode = SessionMode::remote_multiplayer;
+        request.world_source = WorldSourceKind::remote_server;
+        request.persistence = PersistencePolicy::ephemeral;
+        request.world_name = server_address;
+        request.scenario_id = foundation::scenario_id;
+        request.network_endpoint = endpoint.value();
+        request.metadata = std::move(metadata).value();
+        request.runtime.headless = config.headless;
+        request.runtime.create_renderer = !config.headless;
+        request.runtime.create_audio = !config.headless;
+        settings.recent_servers.erase(std::remove(settings.recent_servers.begin(),
+                                                  settings.recent_servers.end(), server_address),
+                                      settings.recent_servers.end());
+        settings.recent_servers.insert(settings.recent_servers.begin(), server_address);
+        if (settings.recent_servers.size() > 16)
+            settings.recent_servers.resize(16);
+        auto status = persist_settings();
+        return !status ? status : launch(std::move(request));
+    }
+
+    [[nodiscard]] core::Status launch_developer_world(std::size_t index) {
+        if (index >= developer_worlds.entries().size()) {
+            return core::Status::failure("heartstead.developer_world_not_selected",
+                                         "select a developer world before launching");
+        }
+        const auto& definition = developer_worlds.entries()[index];
+        auto metadata = make_metadata(definition.world_seed.value_or(foundation::world_seed));
+        if (!metadata) {
+            return core::Status::failure(metadata.error().code, metadata.error().message);
+        }
+        auto request = developer_worlds.make_launch_request(
+            definition.prototype_id.value(), std::move(metadata).value(), config.headless);
+        if (!request) {
+            return core::Status::failure(request.error().code, request.error().message);
+        }
+        return launch(std::move(request).value());
+    }
+
     [[nodiscard]] core::Status process_input(const GameApplicationFrame& current_frame) {
         if (current_frame.input == nullptr) {
             return core::Status::ok();
@@ -462,13 +1173,59 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             return core::Status::ok();
         }
         auto status = widgets.layout({static_cast<float>(current_frame.extent.width),
-                                      static_cast<float>(current_frame.extent.height)});
+                                      static_cast<float>(current_frame.extent.height)},
+                                     settings.ui_scale);
         if (!status) {
             return status;
         }
         const auto routed =
             widgets.route_input(ui::UiInputFrame::from_platform(*current_frame.input));
         for (const auto& event : routed.events) {
+            if (event.kind == ui::UiEventKind::text_changed) {
+                if (event.target == world_name_id)
+                    new_world_name = event.text;
+                else if (event.target == world_seed_id)
+                    new_world_seed = event.text;
+                else if (event.target == address_id)
+                    server_address = event.text;
+                else if (event.target == developer_search_id) {
+                    developer_search = event.text;
+                    selected_developer_world.reset();
+                    return rebuild_ui(ApplicationState::main_menu);
+                }
+                continue;
+            }
+            if (event.kind == ui::UiEventKind::value_changed ||
+                event.kind == ui::UiEventKind::toggled) {
+                if (event.target == master_volume_id)
+                    settings.master_volume = event.value;
+                else if (event.target == music_volume_id)
+                    settings.music_volume = event.value;
+                else if (event.target == effects_volume_id)
+                    settings.effects_volume = event.value;
+                else if (event.target == mouse_sensitivity_id)
+                    settings.mouse_sensitivity = event.value;
+                else if (event.target == controller_sensitivity_id)
+                    settings.controller_sensitivity = event.value;
+                else if (event.target == ui_scale_id)
+                    settings.ui_scale = event.value;
+                else if (event.target == contrast_id)
+                    settings.ui_contrast = event.value;
+                else if (event.target == saturation_id)
+                    settings.ui_saturation = event.value;
+                else if (event.target == controller_id)
+                    settings.controller_enabled = event.checked;
+                else if (event.target == windowed_id)
+                    settings.windowed = event.checked;
+                else if (event.target == reduced_motion_id)
+                    settings.reduced_motion = event.checked;
+                status = apply_settings();
+                if (status)
+                    status = persist_settings();
+                if (!status)
+                    return status;
+                continue;
+            }
             if (event.kind == ui::UiEventKind::cancelled) {
                 if (state == ApplicationState::session_loading) {
                     return states.transition(ApplicationState::session_unloading,
@@ -478,6 +1235,11 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                     return states.transition(ApplicationState::in_game, "pause dismissed");
                 }
                 if (state == ApplicationState::main_menu) {
+                    if (menu_navigation.back()) {
+                        pending_delete_slot.reset();
+                        menu_message.clear();
+                        return rebuild_ui(ApplicationState::main_menu);
+                    }
                     return states.transition(ApplicationState::shutdown, "menu back requested");
                 }
                 if (state == ApplicationState::load_failure ||
@@ -489,10 +1251,6 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             if (event.kind != ui::UiEventKind::clicked) {
                 continue;
             }
-            if (event.target == start_id) {
-                return states.transition(ApplicationState::session_loading,
-                                         "development world selected");
-            }
             if (event.target == quit_id) {
                 return states.transition(ApplicationState::shutdown, "quit selected");
             }
@@ -500,13 +1258,158 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 return states.transition(ApplicationState::in_game, "resume selected");
             }
             if (event.target == return_id || event.target == cancel_id) {
+                if (event.target == return_id) {
+                    status = save_active_session();
+                    if (!status) {
+                        display_error = status.error();
+                        return rebuild_ui(ApplicationState::paused);
+                    }
+                }
                 return states.transition(ApplicationState::session_unloading,
                                          event.target == cancel_id ? "session loading cancelled"
                                                                    : "return to menu selected");
             }
             if (event.target == back_id) {
+                menu_navigation.reset();
+                (void)refresh_saves();
                 return states.transition(ApplicationState::main_menu, "error acknowledged");
             }
+            if (state != ApplicationState::main_menu) {
+                continue;
+            }
+            if (event.target == menu_back_id || event.target == delete_cancel_id) {
+                pending_delete_slot.reset();
+                if (!menu_navigation.back()) {
+                    return core::Status::failure("heartstead.menu_at_root",
+                                                 "the root menu has no parent screen");
+                }
+                menu_message.clear();
+                return rebuild_ui(ApplicationState::main_menu);
+            }
+            if (event.target == new_world_id)
+                return show_menu(MainMenuScreen::new_world);
+            if (event.target == load_world_id) {
+                status = refresh_saves();
+                return !status ? status : show_menu(MainMenuScreen::load_world);
+            }
+            if (event.target == multiplayer_id)
+                return show_menu(MainMenuScreen::multiplayer);
+            if (event.target == developer_worlds_id)
+                return show_menu(MainMenuScreen::developer_worlds);
+            if (event.target == options_id)
+                return show_menu(MainMenuScreen::options);
+            if (event.target == developer_category_id) {
+                developer_category = next_scenario_category(developer_category);
+                selected_developer_world.reset();
+                return rebuild_ui(ApplicationState::main_menu);
+            }
+            if (event.target == quality_id) {
+                settings.rendering_quality = next_quality(settings.rendering_quality);
+                status = persist_settings();
+                return !status ? status : rebuild_ui(ApplicationState::main_menu);
+            }
+            if (event.target == color_vision_id) {
+                settings.color_vision_mode = next_color_vision(settings.color_vision_mode);
+                status = apply_settings();
+                if (status)
+                    status = persist_settings();
+                return !status ? status : rebuild_ui(ApplicationState::main_menu);
+            }
+            if (event.target == continue_id) {
+                const auto index = continue_index();
+                status = index.has_value()
+                             ? launch_saved_world(*index, false)
+                             : core::Status::failure("heartstead.no_continue_world",
+                                                     "no compatible recent world exists");
+            } else if (event.target == create_world_id) {
+                status = launch_new_world();
+            } else if (event.target == join_id) {
+                status = launch_remote();
+            } else if (event.target == load_selected_id || event.target == host_selected_id) {
+                status = selected_save.has_value()
+                             ? launch_saved_world(*selected_save, event.target == host_selected_id)
+                             : core::Status::failure("heartstead.save_not_selected",
+                                                     "select a save first");
+            } else if (event.target == rename_selected_id && selected_save.has_value()) {
+                const auto& entry = save_entries[*selected_save];
+                status = save_catalog.rename_slot(entry.slot_id,
+                                                  entry.metadata.display_name + " (Renamed)");
+                if (status)
+                    status = refresh_saves();
+                if (status)
+                    return show_menu(MainMenuScreen::load_world);
+            } else if (event.target == duplicate_selected_id && selected_save.has_value()) {
+                const auto& entry = save_entries[*selected_save];
+                auto destination = entry.slot_id + "_copy";
+                std::uint32_t suffix = 2;
+                while (std::ranges::any_of(save_entries, [&destination](const auto& candidate) {
+                    return candidate.slot_id == destination;
+                }))
+                    destination = entry.slot_id + "_copy_" + std::to_string(suffix++);
+                const auto saved_at = static_cast<std::uint64_t>(
+                    std::max<std::int64_t>(1, current_frame.now_milliseconds));
+                status = save_catalog.duplicate_slot(
+                    entry.slot_id, destination, entry.metadata.display_name + " Copy", saved_at);
+                if (status)
+                    status = refresh_saves();
+                if (status)
+                    return show_menu(MainMenuScreen::load_world);
+            } else if (event.target == delete_selected_id && selected_save.has_value()) {
+                pending_delete_slot = save_entries[*selected_save].slot_id;
+                return show_menu(MainMenuScreen::delete_confirmation);
+            } else if (event.target == delete_confirm_id && pending_delete_slot.has_value()) {
+                status = save_catalog.delete_slot(*pending_delete_slot);
+                pending_delete_slot.reset();
+                if (status)
+                    status = refresh_saves();
+                if (status)
+                    return show_menu(MainMenuScreen::load_world);
+            } else if (event.target == refresh_worlds_id) {
+                status = refresh_saves();
+                if (status)
+                    return show_menu(MainMenuScreen::load_world);
+            } else if (event.target == copy_save_path_id && selected_save.has_value()) {
+                status = services->set_clipboard_text(save_entries[*selected_save].path.string());
+                if (status) {
+                    menu_message = "Save location copied to clipboard.";
+                    return rebuild_ui(ApplicationState::main_menu);
+                }
+            } else if (event.target == developer_launch_id) {
+                status = selected_developer_world.has_value()
+                             ? launch_developer_world(*selected_developer_world)
+                             : core::Status::failure("heartstead.developer_world_not_selected",
+                                                     "select a developer world first");
+            } else {
+                for (std::size_t index = 0; index < save_entries.size(); ++index) {
+                    if (event.target ==
+                        ui::widget_id("heartstead.save." + save_entries[index].slot_id)) {
+                        selected_save = index;
+                        return rebuild_ui(ApplicationState::main_menu);
+                    }
+                }
+                const auto& developer_entries = developer_worlds.entries();
+                for (std::size_t index = 0; index < developer_entries.size(); ++index) {
+                    if (event.target ==
+                        ui::widget_id("heartstead.developer." +
+                                      developer_entries[index].prototype_id.value())) {
+                        selected_developer_world = index;
+                        return rebuild_ui(ApplicationState::main_menu);
+                    }
+                }
+                for (std::size_t index = 0; index < settings.recent_servers.size(); ++index) {
+                    if (event.target ==
+                        ui::widget_id("heartstead.recent_server." + std::to_string(index))) {
+                        server_address = settings.recent_servers[index];
+                        return rebuild_ui(ApplicationState::main_menu);
+                    }
+                }
+                continue;
+            }
+            if (!status) {
+                menu_message = status.error().code + ": " + status.error().message;
+                return rebuild_ui(ApplicationState::main_menu);
+            }
+            return status;
         }
         return core::Status::ok();
     }
@@ -557,7 +1460,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             return core::Status::ok();
         }
         auto status = widgets.layout({static_cast<float>(current_frame.extent.width),
-                                      static_cast<float>(current_frame.extent.height)});
+                                      static_cast<float>(current_frame.extent.height)},
+                                     settings.ui_scale);
         if (!status) {
             return status;
         }
@@ -594,6 +1498,21 @@ core::Status HeartsteadApplicationMode::initialize(GameApplicationServices& serv
         return core::Status::failure(audio.error().code, audio.error().message);
     }
     auto status = services.install_audio_system(std::move(audio).value());
+    if (!status) {
+        return status;
+    }
+    auto developer_worlds =
+        DeveloperWorldRegistry::create(state.config.content_report->scenario_definitions);
+    if (!developer_worlds) {
+        return core::Status::failure(developer_worlds.error().code,
+                                     developer_worlds.error().message);
+    }
+    state.developer_worlds = std::move(developer_worlds).value();
+    status = state.refresh_saves();
+    if (!status) {
+        return status;
+    }
+    status = state.apply_settings();
     if (!status) {
         return status;
     }

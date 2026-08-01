@@ -60,9 +60,9 @@ cmake --build --preset default-debug --target heartstead
 ./build/default-debug/apps/heartstead/heartstead
 ```
 
-It opens at the main menu. **Start Development World** creates an authoritative local server and a
-local client without replacing the application process. The legacy `heartstead_dev_game` target is
-still available temporarily for focused development-slice diagnostics.
+It opens at the main menu. New saves, existing saves, hosted saves, direct-IP clients, and
+developer worlds all enter the same session-launch path. The legacy `heartstead_dev_game` target
+is still available temporarily for focused development-slice diagnostics.
 
 Run the focused Renderer V2 checks:
 
@@ -132,6 +132,7 @@ Start at the [documentation index](docs/README.md).
   vegetation, weather, and effects.
 - [Architecture overview](docs/architecture/overview.md) — system boundaries and data flow.
 - [Game executable](docs/architecture/game_executable.md) — application lifetime and state machine.
+- [Game front end](docs/architecture/game_front_end.md) — menu, saves, and application settings.
 - [Engine specification](docs/architecture/engine_spec.md) — normative long-term contract.
 
 Architecture decision records live in [`docs/adr`](docs/adr). Detailed subsystem documents live in
