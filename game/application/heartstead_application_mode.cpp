@@ -322,7 +322,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     ApplicationStateMachine states;
     GameApplicationServices* services = nullptr;
     const GameApplicationFrame* frame = nullptr;
-    GameRuntime application_runtime;
+    GameRuntimeEnvironment runtime_environment;
     std::optional<GameRuntime> session_runtime;
     std::future<SessionLoadResult> loading;
     std::optional<jobs::JobId> loading_job;
@@ -895,7 +895,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             return core::Status::failure("heartstead.loading_jobs_unavailable",
                                          "session loading requires the application job system");
         }
-        auto prepared_runtime = application_runtime.create_session_runtime();
+        auto prepared_runtime = runtime_environment.create_session_runtime();
         if (!prepared_runtime) {
             return core::Status::failure(prepared_runtime.error().code,
                                          prepared_runtime.error().message);
@@ -2304,12 +2304,13 @@ core::Status HeartsteadApplicationMode::initialize(GameApplicationServices& serv
                                      "Heartstead requires validated content at application boot");
     }
     state.services = &services;
-    auto runtime = GameRuntime::initialize(GameRuntimeConfig{}, *state.config.content_report);
-    if (!runtime) {
-        return core::Status::failure(runtime.error().code, runtime.error().message);
+    auto environment =
+        GameRuntimeEnvironment::initialize(GameRuntimeConfig{}, *state.config.content_report);
+    if (!environment) {
+        return core::Status::failure(environment.error().code, environment.error().message);
     }
-    state.application_runtime = std::move(runtime).value();
-    auto audio = state.application_runtime.create_audio_system(
+    state.runtime_environment = std::move(environment).value();
+    auto audio = state.runtime_environment.create_audio_system(
         state.config.headless ? audio::AudioBackend::null_backend : audio::AudioBackend::miniaudio,
         {}, state.config.headless, state.config.cooked_assets);
     if (!audio) {
@@ -2472,7 +2473,7 @@ core::Status HeartsteadApplicationMode::shutdown(GameApplicationServices&) {
                 "session loading did not acknowledge cancellation within two seconds");
         }
     }
-    status = state.application_runtime.shutdown();
+    status = state.runtime_environment.shutdown();
     if (!status && first_failure) {
         first_failure = status;
     }

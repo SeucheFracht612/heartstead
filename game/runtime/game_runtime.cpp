@@ -433,6 +433,52 @@ core::Result<GameRuntime> GameRuntime::create_session_runtime() const {
     return core::Result<GameRuntime>::success(std::move(runtime));
 }
 
+GameRuntimeEnvironment::GameRuntimeEnvironment() = default;
+
+GameRuntimeEnvironment::~GameRuntimeEnvironment() = default;
+
+GameRuntimeEnvironment::GameRuntimeEnvironment(GameRuntimeEnvironment&&) noexcept = default;
+
+GameRuntimeEnvironment&
+GameRuntimeEnvironment::operator=(GameRuntimeEnvironment&&) noexcept = default;
+
+GameRuntimeEnvironment::GameRuntimeEnvironment(GameRuntime runtime)
+    : template_runtime_(std::move(runtime)) {}
+
+core::Result<GameRuntimeEnvironment> GameRuntimeEnvironment::initialize(
+    GameRuntimeConfig config, const content::ContentValidationReport& content_report) {
+    auto runtime = GameRuntime::initialize(std::move(config), content_report);
+    if (!runtime) {
+        return core::Result<GameRuntimeEnvironment>::failure(runtime.error().code,
+                                                             runtime.error().message);
+    }
+    return core::Result<GameRuntimeEnvironment>::success(
+        GameRuntimeEnvironment(std::move(runtime).value()));
+}
+
+bool GameRuntimeEnvironment::is_initialized() const noexcept {
+    return template_runtime_.is_initialized();
+}
+
+core::Result<GameRuntime> GameRuntimeEnvironment::create_session_runtime() const {
+    return template_runtime_.create_session_runtime();
+}
+
+const GameRuntimeStartupReport& GameRuntimeEnvironment::startup_report() const noexcept {
+    return template_runtime_.startup_report();
+}
+
+core::Result<std::unique_ptr<audio::IAudioSystem>> GameRuntimeEnvironment::create_audio_system(
+    audio::AudioBackend backend, audio::AudioMixerConfig mixer, bool use_null_output_device,
+    const assets::CookedAssetStore* cooked_assets) const {
+    return template_runtime_.create_audio_system(backend, std::move(mixer), use_null_output_device,
+                                                 cooked_assets);
+}
+
+core::Status GameRuntimeEnvironment::shutdown() {
+    return template_runtime_.shutdown();
+}
+
 const GameRuntimeConfig& GameRuntime::config() const noexcept {
     return config_;
 }

@@ -108,15 +108,17 @@ void test_startup_cancellation_is_cooperative(
 
 void test_application_runtime_forks_session_content(
     const content::ContentValidationReport& report) {
-    auto application_runtime = make_runtime(report);
-    auto session_runtime = application_runtime.create_session_runtime();
+    auto environment = game::GameRuntimeEnvironment::initialize({}, report);
+    assert(environment);
+    auto session_runtime = environment.value().create_session_runtime();
     assert(session_runtime);
     assert(session_runtime.value().is_initialized());
     assert(session_runtime.value().startup_report().prototype_count ==
-           application_runtime.startup_report().prototype_count);
+           environment.value().startup_report().prototype_count);
     assert(session_runtime.value().start_session(make_local_request(report, 7)));
     assert(session_runtime.value().shutdown());
-    assert(application_runtime.session() == nullptr);
+    assert(environment.value().is_initialized());
+    assert(environment.value().shutdown());
 }
 
 void test_local_teardown_and_replacement(const content::ContentValidationReport& report) {

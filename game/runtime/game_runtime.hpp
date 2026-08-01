@@ -25,6 +25,8 @@ struct ContentValidationReport;
 
 namespace heartstead::game {
 
+class GameRuntimeEnvironment;
+
 enum class GameSystemKind {
     building,
     rooms,
@@ -108,7 +110,6 @@ class GameRuntime {
                const heartstead::content::ContentValidationReport& content_report);
 
     [[nodiscard]] bool is_initialized() const noexcept;
-    [[nodiscard]] core::Result<GameRuntime> create_session_runtime() const;
     [[nodiscard]] const GameRuntimeConfig& config() const noexcept;
     [[nodiscard]] const GameRuntimeStartupReport& startup_report() const noexcept;
     [[nodiscard]] scripting::ScriptRuntimeDesc
@@ -143,6 +144,10 @@ class GameRuntime {
     [[nodiscard]] const RuntimeSession* session() const noexcept;
 
   private:
+    friend class GameRuntimeEnvironment;
+
+    [[nodiscard]] core::Result<GameRuntime> create_session_runtime() const;
+
     GameRuntimeConfig config_;
     GameRuntimeStartupReport startup_report_;
     std::shared_ptr<const modding::PrototypeRegistry> prototypes_;
@@ -153,6 +158,37 @@ class GameRuntime {
     std::unique_ptr<RuntimeSession> session_;
     std::optional<SessionTeardownReport> last_teardown_report_;
     std::uint64_t next_session_generation_ = 1;
+};
+
+// Application-lifetime, immutable game content from which independently owned world runtimes are
+// created. Keeping this type separate from GameRuntime prevents the application shell itself from
+// looking like a second active world-session owner.
+class GameRuntimeEnvironment {
+  public:
+    GameRuntimeEnvironment();
+    ~GameRuntimeEnvironment();
+    GameRuntimeEnvironment(const GameRuntimeEnvironment&) = delete;
+    GameRuntimeEnvironment& operator=(const GameRuntimeEnvironment&) = delete;
+    GameRuntimeEnvironment(GameRuntimeEnvironment&&) noexcept;
+    GameRuntimeEnvironment& operator=(GameRuntimeEnvironment&&) noexcept;
+
+    [[nodiscard]] static core::Result<GameRuntimeEnvironment>
+    initialize(GameRuntimeConfig config,
+               const heartstead::content::ContentValidationReport& content_report);
+
+    [[nodiscard]] bool is_initialized() const noexcept;
+    [[nodiscard]] core::Result<GameRuntime> create_session_runtime() const;
+    [[nodiscard]] const GameRuntimeStartupReport& startup_report() const noexcept;
+    [[nodiscard]] core::Result<std::unique_ptr<audio::IAudioSystem>>
+    create_audio_system(audio::AudioBackend backend, audio::AudioMixerConfig mixer = {},
+                        bool use_null_output_device = false,
+                        const assets::CookedAssetStore* cooked_assets = nullptr) const;
+    [[nodiscard]] core::Status shutdown();
+
+  private:
+    explicit GameRuntimeEnvironment(GameRuntime runtime);
+
+    GameRuntime template_runtime_;
 };
 
 [[nodiscard]] std::string_view game_system_kind_name(GameSystemKind kind) noexcept;
