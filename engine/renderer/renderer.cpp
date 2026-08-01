@@ -3,7 +3,6 @@
 #include "engine/core/hash.hpp"
 #include "engine/core/logging.hpp"
 #include "engine/renderer/terrain/gpu_chunk_vertex.hpp"
-#include "engine/world/worldgen/terrain_generator.hpp"
 
 #include <algorithm>
 #include <array>
@@ -460,6 +459,100 @@ make_tone_map_shader_program(std::span<const std::uint32_t> vertex_spirv,
 }
 
 } // namespace
+
+FarTerrainSurfaceSample sample_far_terrain_world_surface(const world::WorldState& world,
+                                                         double world_x, double world_z,
+                                                         FarTerrainDomain domain) noexcept {
+    if (domain != FarTerrainDomain::surface || !std::isfinite(world_x) ||
+        !std::isfinite(world_z)) {
+        return {0.0, 0, false};
+    }
+    const auto floored_x = std::floor(world_x);
+    const auto floored_z = std::floor(world_z);
+    constexpr auto minimum = static_cast<double>(std::numeric_limits<std::int64_t>::min());
+    constexpr auto maximum = static_cast<double>(std::numeric_limits<std::int64_t>::max());
+    if (floored_x < minimum || floored_x >= maximum || floored_z < minimum ||
+        floored_z >= maximum) {
+        return {0.0, 0, false};
+    }
+    const world::BlockCoord column{static_cast<std::int64_t>(floored_x), 0,
+                                   static_cast<std::int64_t>(floored_z)};
+    const auto address = world::block_to_chunk_local(column);
+    std::optional<std::int64_t> highest_block;
+    std::uint16_t material = 0;
+    for (const auto* chunk : world.chunks().records()) {
+        if (chunk->coord().x != address.chunk.x || chunk->coord().z != address.chunk.z) {
+            continue;
+        }
+        for (std::int32_t y = world::VoxelChunk::edge_length - 1; y >= 0; --y) {
+            const world::VoxelCoord local{address.local.x, static_cast<std::uint16_t>(y),
+                                          address.local.z};
+            const auto cell = chunk->get(local);
+            if (!cell || cell.value().is_air()) {
+                continue;
+            }
+            const auto block = world::chunk_local_to_block(chunk->coord(), local);
+            if (block && (!highest_block.has_value() || block.value().y > *highest_block)) {
+                highest_block = block.value().y;
+                material = cell.value().type;
+            }
+            break;
+        }
+    }
+    if (!highest_block.has_value() || *highest_block == std::numeric_limits<std::int64_t>::max()) {
+        return {0.0, 0, false};
+    }
+    return {static_cast<double>(*highest_block + 1), material, true};
+}
+
+std::uint64_t far_terrain_world_surface_revision(const world::WorldState& world) noexcept {
+    auto records = world.chunks().records();
+    std::ranges::sort(records, [](const world::VoxelChunk* left, const world::VoxelChunk* right) {
+        return left->coord() < right->coord();
+    });
+    core::StableHash64 hash;
+    hash.add_u64_le(world.metadata().world_seed);
+    for (const auto* chunk : records) {
+        hash.add_u64_le(static_cast<std::uint64_t>(chunk->coord().x));
+        hash.add_u64_le(static_cast<std::uint64_t>(chunk->coord().y));
+        hash.add_u64_le(static_cast<std::uint64_t>(chunk->coord().z));
+        hash.add_u64_le(chunk->identity().load_generation);
+        hash.add_u64_le(chunk->content_revision());
+    }
+    return hash.nonzero_value();
+}
+
+void Renderer::rebuild_far_terrain_world_surface(const world::WorldState& world,
+                                                 std::uint64_t revision) {
+    far_terrain_world_surface_.clear();
+    for (const auto* chunk : world.chunks().records()) {
+        for (std::uint16_t z = 0; z < world::VoxelChunk::edge_length; ++z) {
+            for (std::uint16_t x = 0; x < world::VoxelChunk::edge_length; ++x) {
+                for (std::int32_t y = world::VoxelChunk::edge_length - 1; y >= 0; --y) {
+                    const world::VoxelCoord local{x, static_cast<std::uint16_t>(y), z};
+                    const auto cell = chunk->get(local);
+                    if (!cell || cell.value().is_air()) {
+                        continue;
+                    }
+                    const auto block = world::chunk_local_to_block(chunk->coord(), local);
+                    if (!block || block.value().y == std::numeric_limits<std::int64_t>::max()) {
+                        break;
+                    }
+                    const auto key = std::pair{block.value().x, block.value().z};
+                    const auto height = static_cast<double>(block.value().y + 1);
+                    auto found = far_terrain_world_surface_.find(key);
+                    if (found == far_terrain_world_surface_.end() ||
+                        height > found->second.height) {
+                        far_terrain_world_surface_.insert_or_assign(
+                            key, FarTerrainSurfaceSample{height, cell.value().type, true});
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    far_terrain_world_surface_revision_ = revision;
+}
 
 Renderer::~Renderer() {
     (void)shutdown();
@@ -1054,6 +1147,8 @@ core::Status Renderer::shutdown() {
     fallback_material_ = {};
     terrain_sampler_ = {};
     ui_sampler_ = {};
+    far_terrain_world_surface_.clear();
+    far_terrain_world_surface_revision_ = 0;
     environment_ = {};
     default_environment_ = {};
     default_exposure_ = {};
@@ -1122,6 +1217,8 @@ core::Status Renderer::clear_session_resources() {
     debug_frame_scratch_ = {};
     ui_frame_scratch_ = {};
     debug_text_labels_.clear();
+    far_terrain_world_surface_.clear();
+    far_terrain_world_surface_revision_ = 0;
     stats_ = {};
     frame_started_at_ = {};
     frame_timing_active_ = false;
@@ -1142,24 +1239,39 @@ core::Status Renderer::synchronize_chunks(world::WorldState& world, const Render
             cpu_timings_, profiling::CpuTimingZone::chunk_synchronization);
         status = chunk_system_->synchronize(world, camera);
         if (status && far_terrain_renderer_ != nullptr) {
-            world::TerrainGenerationConfig generation;
-            generation.world_seed = world.metadata().world_seed;
-            const FarTerrainSurfaceSampler sampler = [&generation](double x, double z,
-                                                                   FarTerrainDomain) {
-                const auto block_x = static_cast<std::int64_t>(std::floor(x));
-                const auto block_z = static_cast<std::int64_t>(std::floor(z));
-                return FarTerrainSurfaceSample{
-                    static_cast<double>(world::DeterministicTerrainGenerator::surface_height_at(
-                        generation, block_x, block_z)),
-                    1U,
-                };
+            const auto surface_revision = far_terrain_world_surface_revision(world);
+            if (surface_revision != far_terrain_world_surface_revision_) {
+                rebuild_far_terrain_world_surface(world, surface_revision);
+            }
+            const FarTerrainSurfaceSampler sampler = [this](double x, double z,
+                                                            FarTerrainDomain domain) {
+                if (domain != FarTerrainDomain::surface || !std::isfinite(x) ||
+                    !std::isfinite(z)) {
+                    return FarTerrainSurfaceSample{0.0, 0, false};
+                }
+                const auto floored_x = std::floor(x);
+                const auto floored_z = std::floor(z);
+                constexpr auto minimum =
+                    static_cast<double>(std::numeric_limits<std::int64_t>::min());
+                constexpr auto maximum =
+                    static_cast<double>(std::numeric_limits<std::int64_t>::max());
+                if (floored_x < minimum || floored_x >= maximum || floored_z < minimum ||
+                    floored_z >= maximum) {
+                    return FarTerrainSurfaceSample{0.0, 0, false};
+                }
+                const auto found = far_terrain_world_surface_.find(
+                    {static_cast<std::int64_t>(floored_x),
+                     static_cast<std::int64_t>(floored_z)});
+                return found == far_terrain_world_surface_.end()
+                           ? FarTerrainSurfaceSample{0.0, 0, false}
+                           : found->second;
             };
             const math::Vec3d camera_world{
                 static_cast<double>(camera.floating_origin.block.x) + camera.local_position.x,
                 static_cast<double>(camera.floating_origin.block.y) + camera.local_position.y,
                 static_cast<double>(camera.floating_origin.block.z) + camera.local_position.z,
             };
-            status = far_terrain_renderer_->update(camera_world, sampler);
+            status = far_terrain_renderer_->update(camera_world, sampler, surface_revision);
         }
     }
     update_frontend_stats(world.chunks().chunk_count());

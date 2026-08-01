@@ -139,14 +139,28 @@ core::Result<FarTerrainPatchMesh> FarTerrainClipmap::build_patch_mesh(
 
     FarTerrainPatchMesh result;
     result.key = patch.key;
-    const auto origin_height =
-        sampler(patch.horizontal_bounds.min.x, patch.horizontal_bounds.min.z,
-                patch.key.domain).height;
+    auto origin_height = 0.0;
+    bool found_origin_height = false;
+    for (std::uint32_t z = 0; z <= patch.resolution && !found_origin_height; ++z) {
+        for (std::uint32_t x = 0; x <= patch.resolution; ++x) {
+            const auto sample = sampler(
+                patch.horizontal_bounds.min.x + static_cast<double>(x) * patch.cell_size,
+                patch.horizontal_bounds.min.z + static_cast<double>(z) * patch.cell_size,
+                patch.key.domain);
+            if (sample.valid) {
+                origin_height = sample.height;
+                found_origin_height = true;
+                break;
+            }
+        }
+    }
     result.world_origin = {patch.horizontal_bounds.min.x, origin_height,
                            patch.horizontal_bounds.min.z};
     const auto row = patch.resolution + 1U;
     result.vertices.reserve(static_cast<std::size_t>(row) * row);
     result.indices.reserve(static_cast<std::size_t>(patch.resolution) * patch.resolution * 6U);
+    std::vector<bool> valid_vertices;
+    valid_vertices.reserve(static_cast<std::size_t>(row) * row);
 
     bool has_bounds = false;
     for (std::uint32_t z = 0; z <= patch.resolution; ++z) {
@@ -156,13 +170,19 @@ core::Result<FarTerrainPatchMesh> FarTerrainClipmap::build_patch_mesh(
             const auto world_z = patch.horizontal_bounds.min.z +
                                  static_cast<double>(z) * patch.cell_size;
             const auto sample = sampler(world_x, world_z, patch.key.domain);
-            const auto left = sampler(world_x - patch.cell_size, world_z, patch.key.domain).height;
-            const auto right = sampler(world_x + patch.cell_size, world_z, patch.key.domain).height;
-            const auto back = sampler(world_x, world_z - patch.cell_size, patch.key.domain).height;
-            const auto front = sampler(world_x, world_z + patch.cell_size, patch.key.domain).height;
+            const auto neighbor_height = [&sampler, &sample, domain = patch.key.domain](
+                                             double neighbor_x, double neighbor_z) {
+                const auto neighbor = sampler(neighbor_x, neighbor_z, domain);
+                return neighbor.valid ? neighbor.height : sample.height;
+            };
+            const auto left = neighbor_height(world_x - patch.cell_size, world_z);
+            const auto right = neighbor_height(world_x + patch.cell_size, world_z);
+            const auto back = neighbor_height(world_x, world_z - patch.cell_size);
+            const auto front = neighbor_height(world_x, world_z + patch.cell_size);
             const auto position = math::Vec3f{
                 static_cast<float>(world_x - result.world_origin.x),
-                static_cast<float>(sample.height - result.world_origin.y),
+                static_cast<float>((sample.valid ? sample.height : origin_height) -
+                                   result.world_origin.y),
                 static_cast<float>(world_z - result.world_origin.z)};
             float transition = 1.0F;
             if (patch.key.level > 0U) {
@@ -197,17 +217,18 @@ core::Result<FarTerrainPatchMesh> FarTerrainClipmap::build_patch_mesh(
                              static_cast<float>(back - front)}),
                  {position.x * 0.0625F, position.z * 0.0625F},
                  sample.material, transition});
-            const math::Bounds3f point_bounds{position, position};
-            result.local_bounds = has_bounds
-                                                ? math::Bounds3f{
-                                                      math::component_min(
-                                                          result.local_bounds.min,
-                                                          position),
-                                                      math::component_max(
-                                                          result.local_bounds.max,
-                                                          position)}
-                                                : point_bounds;
-            has_bounds = true;
+            valid_vertices.push_back(sample.valid);
+            if (sample.valid) {
+                const math::Bounds3f point_bounds{position, position};
+                result.local_bounds = has_bounds
+                                          ? math::Bounds3f{
+                                                math::component_min(result.local_bounds.min,
+                                                                    position),
+                                                math::component_max(result.local_bounds.max,
+                                                                    position)}
+                                          : point_bounds;
+                has_bounds = true;
+            }
         }
     }
 
@@ -217,6 +238,10 @@ core::Result<FarTerrainPatchMesh> FarTerrainClipmap::build_patch_mesh(
             const auto top_right = top_left + 1U;
             const auto bottom_left = top_left + row;
             const auto bottom_right = bottom_left + 1U;
+            if (!valid_vertices[top_left] || !valid_vertices[top_right] ||
+                !valid_vertices[bottom_left] || !valid_vertices[bottom_right]) {
+                continue;
+            }
             result.indices.insert(result.indices.end(),
                                   {top_left, bottom_left, top_right,
                                    top_right, bottom_left, bottom_right});

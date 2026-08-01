@@ -72,9 +72,25 @@ int main() {
     assert(draws.size() < far_terrain.stats().visible_patches);
     assert(draws.front().indirect.is_valid());
 
-    assert(far_terrain.update({512.0, 40.0, 512.0}, sampler));
+    assert(far_terrain.update({0.0, 40.0, 0.0}, sampler, 1));
+    assert(far_terrain.stats().built_patches == 3);
+    assert(far_terrain.stats().resident_patches == 3);
+    assert(far_terrain.update({512.0, 40.0, 512.0}, sampler, 1));
     assert(far_terrain.stats().evicted_patches > 0);
     assert(far_terrain.stats().resident_patches <= settled_resident);
+
+    const renderer::FarTerrainSurfaceSampler missing_sampler =
+        [](double, double, renderer::FarTerrainDomain) {
+            return renderer::FarTerrainSurfaceSample{0.0, 0, false};
+        };
+    for (std::size_t frame = 0; frame < 128U; ++frame) {
+        assert(far_terrain.update({0.0, 40.0, 0.0}, missing_sampler, 2));
+        if (far_terrain.stats().pending_patches == 0) {
+            break;
+        }
+    }
+    assert(far_terrain.stats().pending_patches == 0);
+    assert(far_terrain.build_draws(camera).empty());
 
     assert(far_terrain.shutdown());
     assert(device->live_resource_count() == baseline_resources);

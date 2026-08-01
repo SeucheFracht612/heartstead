@@ -34,12 +34,14 @@
 
 #include <array>
 #include <chrono>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace heartstead::renderer {
@@ -124,6 +126,12 @@ struct RendererFallbackResources {
                white_texture.is_valid() && black_texture.is_valid() && normal_texture.is_valid();
     }
 };
+
+[[nodiscard]] FarTerrainSurfaceSample
+sample_far_terrain_world_surface(const world::WorldState& world, double world_x, double world_z,
+                                 FarTerrainDomain domain) noexcept;
+[[nodiscard]] std::uint64_t
+far_terrain_world_surface_revision(const world::WorldState& world) noexcept;
 
 struct ModelRenderMaterialBinding {
     MaterialRuntimeHandle material;
@@ -275,6 +283,8 @@ class Renderer {
                                    std::span<const std::uint32_t> bloom_fragment_spirv);
     void update_frontend_stats(std::size_t loaded_chunk_count) noexcept;
     void update_backend_stats(const rhi::RenderFrameStats& frame) noexcept;
+    void rebuild_far_terrain_world_surface(const world::WorldState& world,
+                                           std::uint64_t revision);
 
     std::unique_ptr<rhi::IRenderDevice> device_;
     rhi::RenderResourceHandle sky_pipeline_{};
@@ -346,6 +356,9 @@ class Renderer {
     DebugFrameCommands debug_frame_scratch_;
     UiFrameCommands ui_frame_scratch_;
     std::vector<DebugTextLabelFrame> debug_text_labels_;
+    std::map<std::pair<std::int64_t, std::int64_t>, FarTerrainSurfaceSample>
+        far_terrain_world_surface_;
+    std::uint64_t far_terrain_world_surface_revision_ = 0;
     rhi::RenderEnvironmentData environment_{};
     rhi::RenderEnvironmentData default_environment_{};
     rhi::RenderExposureSettings default_exposure_{};

@@ -60,6 +60,7 @@ struct FarTerrainPlan {
 struct FarTerrainSurfaceSample {
     double height = 0.0;
     std::uint16_t material = 0;
+    bool valid = true;
 };
 
 using FarTerrainSurfaceSampler =

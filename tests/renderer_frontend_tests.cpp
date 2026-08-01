@@ -833,6 +833,21 @@ void test_renderer_frontend_submits_headless_frames() {
 
     world::WorldState world;
     assert(world.chunks().set({0, 0, 0}, {4, 4, 4}, world::VoxelCell{1, 255}));
+    const auto surface = renderer::sample_far_terrain_world_surface(
+        world, 4.0, 4.0, renderer::FarTerrainDomain::surface);
+    assert(surface.valid);
+    assert(surface.height == 5.0);
+    assert(surface.material == 1);
+    assert(!renderer::sample_far_terrain_world_surface(
+                world, 40.0, 4.0, renderer::FarTerrainDomain::surface)
+                .valid);
+    const auto surface_revision = renderer::far_terrain_world_surface_revision(world);
+    assert(world.chunks().set({0, 0, 0}, {4, 5, 4}, world::VoxelCell{1, 255}));
+    assert(renderer::far_terrain_world_surface_revision(world) != surface_revision);
+    const auto edited_surface = renderer::sample_far_terrain_world_surface(
+        world, 4.0, 4.0, renderer::FarTerrainDomain::surface);
+    assert(edited_surface.valid && edited_surface.height == 6.0);
+    assert(world.chunks().set({0, 0, 0}, {4, 5, 4}, world::VoxelCell::air()));
     const auto identity = world.chunks().find({0, 0, 0})->identity();
     world::ChunkStreamLoadReport load_report;
     load_report.coord = identity.coordinate;

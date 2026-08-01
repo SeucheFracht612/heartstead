@@ -70,7 +70,8 @@ class FarTerrainRenderer {
                                           rhi::RenderResourceHandle pipeline);
     [[nodiscard]] core::Status set_pipeline(rhi::RenderResourceHandle pipeline) noexcept;
     [[nodiscard]] core::Status update(math::Vec3d camera_world,
-                                      const FarTerrainSurfaceSampler& sampler);
+                                      const FarTerrainSurfaceSampler& sampler,
+                                      std::uint64_t surface_revision = 0);
     [[nodiscard]] std::vector<rhi::RenderDrawCommand>
     build_draws(const RenderCamera& camera, std::vector<rhi::RenderDrawCommand> reusable = {});
     [[nodiscard]] core::Status clear();
@@ -107,6 +108,7 @@ class FarTerrainRenderer {
     std::map<FarTerrainPatchKey, ResidentPatch> resident_;
     FarTerrainPlan plan_;
     FarTerrainRendererStats stats_{};
+    std::uint64_t surface_revision_ = 0;
 };
 
 } // namespace heartstead::renderer

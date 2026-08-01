@@ -42,6 +42,23 @@ int main() {
         assert(vertex.material == 7U);
     }
 
+    const auto partial_sampler = [boundary = (patch.horizontal_bounds.min.x +
+                                               patch.horizontal_bounds.max.x) *
+                                              0.5](
+                                     double x, double, renderer::FarTerrainDomain) {
+        return renderer::FarTerrainSurfaceSample{12.0, 3, x <= boundary};
+    };
+    auto partial_mesh = clipmap.build_patch_mesh(patch, partial_sampler);
+    assert(partial_mesh);
+    assert(!partial_mesh.value().indices.empty());
+    assert(partial_mesh.value().indices.size() < mesh.value().indices.size());
+    const auto missing_sampler = [](double, double, renderer::FarTerrainDomain) {
+        return renderer::FarTerrainSurfaceSample{0.0, 0, false};
+    };
+    auto missing_mesh = clipmap.build_patch_mesh(patch, missing_sampler);
+    assert(missing_mesh);
+    assert(missing_mesh.value().indices.empty());
+
     // Crossing a patch boundary replaces only the entering/leaving columns; it never changes the
     // world-space key or samples of patches that remain resident.
     const auto patch_span = 4.0 * 8.0;

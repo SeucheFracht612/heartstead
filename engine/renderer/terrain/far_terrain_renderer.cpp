@@ -139,10 +139,18 @@ core::Status FarTerrainRenderer::set_pipeline(rhi::RenderResourceHandle pipeline
 }
 
 core::Status FarTerrainRenderer::update(math::Vec3d camera_world,
-                                        const FarTerrainSurfaceSampler& sampler) {
+                                        const FarTerrainSurfaceSampler& sampler,
+                                        std::uint64_t surface_revision) {
     if (!clipmap_.has_value() || !sampler) {
         return core::Status::failure("renderer.far_terrain_uninitialized",
                                      "far terrain must be initialized with a surface sampler");
+    }
+    if (surface_revision_ != surface_revision) {
+        auto status = clear();
+        if (!status) {
+            return status;
+        }
+        surface_revision_ = surface_revision;
     }
     stats_.built_patches = 0;
     stats_.evicted_patches = 0;
@@ -199,6 +207,14 @@ core::Status FarTerrainRenderer::upload_patch(const FarTerrainPatch& patch,
     if (!mesh) {
         return core::Status::failure(mesh.error().code, mesh.error().message);
     }
+    if (mesh.value().indices.empty()) {
+        resident_.insert_or_assign(
+            patch.key,
+            ResidentPatch{patch, mesh.value().world_origin, mesh.value().local_bounds, {}, {}, 0,
+                          0});
+        ++stats_.built_patches;
+        return core::Status::ok();
+    }
     std::vector<FarTerrainGpuVertex> vertices;
     vertices.reserve(mesh.value().vertices.size());
     for (const auto& vertex : mesh.value().vertices) {
@@ -245,10 +261,14 @@ core::Status FarTerrainRenderer::upload_patch(const FarTerrainPatch& patch,
 
 void FarTerrainRenderer::release_patch(
     std::map<FarTerrainPatchKey, ResidentPatch>::iterator iterator) {
-    static_cast<void>(vertex_arena_->retire(iterator->second.vertex_allocation,
-                                            device_->last_submission_serial()));
-    static_cast<void>(
-        index_arena_->retire(iterator->second.index_allocation, device_->last_submission_serial()));
+    if (iterator->second.vertex_allocation.is_valid()) {
+        static_cast<void>(vertex_arena_->retire(iterator->second.vertex_allocation,
+                                                device_->last_submission_serial()));
+    }
+    if (iterator->second.index_allocation.is_valid()) {
+        static_cast<void>(index_arena_->retire(iterator->second.index_allocation,
+                                               device_->last_submission_serial()));
+    }
     resident_.erase(iterator);
     ++stats_.evicted_patches;
 }
@@ -291,6 +311,9 @@ FarTerrainRenderer::build_draws(const RenderCamera& camera,
     std::vector<VisiblePatch> visible;
     visible.reserve(resident_.size());
     for (const auto& [key, patch] : resident_) {
+        if (patch.index_count == 0) {
+            continue;
+        }
         auto world_origin = world::WorldPosition::from_legacy_global(patch.world_origin);
         if (!world_origin) {
             continue;
@@ -420,6 +443,7 @@ core::Status FarTerrainRenderer::clear() {
     resident_.clear();
     plan_ = {};
     stats_ = {};
+    surface_revision_ = 0;
     return first_failure;
 }
 
@@ -460,6 +484,7 @@ core::Status FarTerrainRenderer::shutdown() {
     clipmap_.reset();
     pipeline_ = {};
     stats_ = {};
+    surface_revision_ = 0;
     return first_failure;
 }
 
