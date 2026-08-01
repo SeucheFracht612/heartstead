@@ -10,6 +10,7 @@
 #include "engine/save/save_snapshot.hpp"
 #include "engine/simulation/fixed_step.hpp"
 #include "engine/simulation/world_time.hpp"
+#include "engine/world/coords/world_position.hpp"
 #include "engine/world/fluids/chunk_fluid_system.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
 #include "game/features/interaction/voxel_commands.hpp"
@@ -19,6 +20,8 @@
 #include "game/runtime/server_runtime.hpp"
 
 #include <cstdint>
+#include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -52,10 +55,95 @@ struct RuntimeConfiguration {
     [[nodiscard]] core::Status validate() const;
 };
 
-struct SessionRequest {
-    save::SaveMetadata metadata;
+enum class SessionMode {
+    local_single_player,
+    hosted_multiplayer,
+    remote_multiplayer,
+    dedicated_server,
+    automated,
+    replay,
+};
+
+enum class WorldSourceKind {
+    generated,
+    existing_save,
+    developer_scenario,
+    packaged_fixture,
+    remote_server,
+    automated_scenario,
+    replay,
+};
+
+enum class PersistencePolicy {
+    ephemeral,
+    temporary_copy,
+    persistent,
+};
+
+struct PlayerSpawnOverride {
+    world::WorldPosition position;
+    float yaw_degrees = 0.0F;
+    float pitch_degrees = 0.0F;
+};
+
+// The one description used by menu, command-line, test, local, hosted, and remote launches.
+// The metadata/snapshot fields are populated by the loading layer after validation and before the
+// request is handed to RuntimeSession.
+struct SessionLaunchRequest {
+    std::uint64_t ownership_generation = 0;
+    SessionMode mode = SessionMode::local_single_player;
+    WorldSourceKind world_source = WorldSourceKind::generated;
+    PersistencePolicy persistence = PersistencePolicy::ephemeral;
+    std::string world_name;
     std::string scenario_id = "base:scenarios/homestead";
+    std::optional<std::filesystem::path> save_path;
+    std::optional<std::uint64_t> seed;
+    std::string generator_preset;
+    std::vector<std::string> required_mods;
+    std::vector<std::string> required_resource_packs;
+    std::optional<net::TransportEndpoint> network_endpoint;
+    std::optional<PlayerSpawnOverride> player_spawn;
+    std::vector<std::string> initial_runtime_options;
+    RuntimeConfiguration runtime;
+    save::SaveMetadata metadata;
     std::optional<save::SaveSnapshot> initial_snapshot;
+
+    [[nodiscard]] core::Status validate() const;
+};
+
+using SessionRequest = SessionLaunchRequest;
+
+enum class RuntimeSessionState {
+    created,
+    starting,
+    running,
+    stopping,
+    stopped,
+    faulted,
+};
+
+enum class SessionConnectionState {
+    none,
+    connecting,
+    connected,
+    disconnecting,
+    disconnected,
+};
+
+struct SessionTeardownReport {
+    std::uint64_t ownership_generation = 0;
+    std::uint32_t invocation_count = 0;
+    std::size_t presentation_objects_before = 0;
+    std::size_t presentation_objects_after = 0;
+    std::size_t server_entities_before = 0;
+    std::size_t registered_cleanup_count = 0;
+    std::size_t completed_cleanup_count = 0;
+    bool rejected_new_commands = false;
+    bool transport_stopped = false;
+    bool authoritative_ticking_stopped = false;
+    bool presentation_cleared = false;
+    bool client_destroyed = false;
+    bool server_destroyed = false;
 };
 
 struct RuntimeFrameInput {
@@ -98,9 +186,18 @@ class RuntimeSession final {
     [[nodiscard]] core::Result<save::SaveSnapshot> capture_save_snapshot() const;
     [[nodiscard]] core::Status save_to(const save::FileSaveDatabase& database) const;
     [[nodiscard]] RenderSnapshot capture_render_snapshot() const;
+    [[nodiscard]] core::Status request_stop();
+    [[nodiscard]] core::Status register_cleanup(std::string name,
+                                                std::function<core::Status()> cleanup);
     [[nodiscard]] core::Status shutdown();
 
     [[nodiscard]] bool is_running() const noexcept;
+    [[nodiscard]] bool accepts_commands() const noexcept;
+    [[nodiscard]] std::uint64_t ownership_generation() const noexcept;
+    [[nodiscard]] RuntimeSessionState state() const noexcept;
+    [[nodiscard]] SessionConnectionState connection_state() const noexcept;
+    [[nodiscard]] const SessionLaunchRequest& launch_request() const noexcept;
+    [[nodiscard]] const SessionTeardownReport& teardown_report() const noexcept;
     [[nodiscard]] ServerRuntime* server() noexcept;
     [[nodiscard]] const ServerRuntime* server() const noexcept;
     [[nodiscard]] ClientRuntime* client() noexcept;
@@ -121,6 +218,11 @@ class RuntimeSession final {
     [[nodiscard]] core::Status pump_client_messages(std::int64_t now_ms);
     [[nodiscard]] core::Result<PresentationSynchronizationStats> synchronize_presentation();
 
+    struct CleanupEntry {
+        std::string name;
+        std::function<core::Status()> cleanup;
+    };
+
     RuntimeConfiguration config_;
     SessionRequest request_;
     const modding::PrototypeRegistry* prototypes_ = nullptr;
@@ -133,8 +235,17 @@ class RuntimeSession final {
     ClientPresentationSynchronizer presentation_synchronizer_;
     std::optional<RuntimeFrameStats> last_frame_stats_;
     std::optional<core::Error> fault_;
+    std::vector<CleanupEntry> cleanup_entries_;
+    SessionTeardownReport teardown_report_;
     std::uint64_t frame_count_ = 0;
-    bool running_ = false;
+    RuntimeSessionState state_ = RuntimeSessionState::created;
+    bool accepting_commands_ = false;
 };
+
+[[nodiscard]] std::string_view session_mode_name(SessionMode mode) noexcept;
+[[nodiscard]] std::string_view world_source_kind_name(WorldSourceKind source) noexcept;
+[[nodiscard]] std::string_view persistence_policy_name(PersistencePolicy policy) noexcept;
+[[nodiscard]] std::string_view runtime_session_state_name(RuntimeSessionState state) noexcept;
+[[nodiscard]] std::string_view session_connection_state_name(SessionConnectionState state) noexcept;
 
 } // namespace heartstead::game

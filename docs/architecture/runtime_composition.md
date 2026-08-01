@@ -34,6 +34,52 @@ where possible, then queues and runtime stores are destroyed by their owners.
 No process-global world, script VM, renderer, session, or save database is required for normal
 operation.
 
+### Unified launch request
+
+`SessionLaunchRequest` is the only player-session description. It carries an ownership generation,
+session mode, world source, persistence policy, world/scenario identity, save or fixture path,
+seed and generator selection, content requirements, network endpoint, optional large-coordinate
+spawn override, initial runtime options, prepared metadata/snapshot, and the runtime composition.
+The menu, command line, automated harness, dedicated server, and development entry points all
+ultimately call `GameRuntime::start_session` with this descriptor.
+
+The supported modes are local single-player, hosted multiplayer, remote multiplayer, dedicated
+server, and automation. Replay values are representable so stored requests remain explicit, but
+are rejected with `session_launch.replay_unsupported` because this repository has no replay
+runtime. Local mode always resolves to authoritative server + client + in-memory transport. Remote
+mode always resolves to client + external transport. These topology rules are applied centrally;
+presentation cannot select a less authoritative local path.
+
+### Ownership generations and asynchronous work
+
+Every accepted session has a monotonically increasing `ownership_generation`. A runtime rejects a
+launch older than any session it previously owned. Application loading also has a cooperative stop
+token and captures the expected generation. Cancellation requests do not discard the asynchronous
+operation: the application retains and polls its future until completion, destroys any completed
+runtime, and accepts a result only when its generation is still current. This prevents late load
+or connection callbacks from installing an obsolete world.
+
+### Explicit teardown
+
+`RuntimeSession::request_stop` closes the gameplay command gate immediately. `shutdown` is
+idempotent and performs the remaining work in a fixed order:
+
+1. reject new commands and mark the session stopping;
+2. disconnect the remote client, or detach the loopback client;
+3. stop the authoritative host so no new fixed ticks or transport intake can begin;
+4. run registered session-resource cleanup callbacks in reverse registration order;
+5. clear presentation synchronization and retained presentation objects;
+6. destroy the client and external transport;
+7. destroy the server, which in turn destroys world entities, physics bodies, and its owned
+   collision/light/fluid worker schedulers;
+8. publish a `SessionTeardownReport` and mark the session stopped.
+
+The player shell registers its renderer cleanup with the session instead of relying on process
+termination. Future session audio, UI, and other application-backed resources use the same cleanup
+registry. The report records generation, pre/post presentation counts, server entity count,
+callback completion, and the major teardown barriers so lifecycle tests and diagnostics can
+detect partial cleanup.
+
 ## Local frame path
 
 A local interactive frame follows the same conceptual boundary as remote play:

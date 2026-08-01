@@ -120,6 +120,7 @@ class GameRuntime {
     [[nodiscard]] const GameSystemDescriptor* find_system(GameSystemKind kind) const noexcept;
     [[nodiscard]] core::Status require_system(GameSystemKind kind) const;
     [[nodiscard]] core::Status require_prototype_kind(std::string_view kind) const;
+    [[nodiscard]] core::Status start_session(SessionLaunchRequest request);
     [[nodiscard]] core::Status start_session(RuntimeConfiguration config, SessionRequest request);
     [[nodiscard]] core::Status start_session_from_save(RuntimeConfiguration config,
                                                        const save::FileSaveDatabase& database,
@@ -133,6 +134,7 @@ class GameRuntime {
     [[nodiscard]] core::Result<debug::InspectionData> inspect_session() const;
     [[nodiscard]] core::Result<std::vector<debug::InspectionData>> inspect_system_timings() const;
     [[nodiscard]] core::Status shutdown();
+    [[nodiscard]] const std::optional<SessionTeardownReport>& last_teardown_report() const noexcept;
     [[nodiscard]] RuntimeSession* session() noexcept;
     [[nodiscard]] const RuntimeSession* session() const noexcept;
 
@@ -145,6 +147,8 @@ class GameRuntime {
     std::shared_ptr<const assets::AssetCatalog> assets_;
     std::shared_ptr<const audio::SoundEventRegistry> sound_events_;
     std::unique_ptr<RuntimeSession> session_;
+    std::optional<SessionTeardownReport> last_teardown_report_;
+    std::uint64_t next_session_generation_ = 1;
 };
 
 [[nodiscard]] std::string_view game_system_kind_name(GameSystemKind kind) noexcept;

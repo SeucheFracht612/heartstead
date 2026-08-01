@@ -55,8 +55,10 @@ the state machine selects which session work is legal.
 Selecting **Start Development World** starts `GameRuntime` construction on a background operation.
 The foreground continues polling window/input events, updating audio, routing the retained widget
 tree, painting the loading screen, and presenting frames. Completion is observed without blocking
-a frame and then applied through the transition API. Cancellation invalidates the result and
-unloads it when the worker completes.
+a frame and then applied through the transition API. Cancellation requests cooperative stop,
+retains the outstanding operation until completion, and unloads any late result. Each operation
+and session carries a monotonically increasing ownership generation, so a stale result cannot
+replace the current session.
 
 The temporary world uses the normal local composition:
 
@@ -71,9 +73,9 @@ heartstead
         ClientRuntime (prediction/replication/presentation world)
 ```
 
-The menu does not have a `WorldState`. Returning to it clears session chunk, far-terrain, scene,
-debug, and pending UI render resources before destroying the runtime. Save/world browsers and the
-full launch-request surface are added by the subsequent runtime and front-end stages.
+The menu does not have a `WorldState`. Renderer cleanup is registered with the session and runs as
+part of its explicit reverse-order teardown before the runtime is destroyed. The full teardown and
+launch descriptor are documented in [Runtime composition](runtime_composition.md).
 
 ## Build and launch
 

@@ -17,6 +17,7 @@
 #include <memory>
 #include <optional>
 #include <ranges>
+#include <stop_token>
 #include <string>
 #include <utility>
 
@@ -113,7 +114,12 @@ const auto back_id = ui::widget_id("heartstead.error.back");
     return camera;
 }
 
-using SessionLoadResult = core::Result<GameRuntime>;
+struct LoadedSession {
+    std::uint64_t generation = 0;
+    GameRuntime runtime;
+};
+
+using SessionLoadResult = core::Result<LoadedSession>;
 
 } // namespace
 
@@ -130,13 +136,15 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     GameRuntime application_runtime;
     std::optional<GameRuntime> session_runtime;
     std::future<SessionLoadResult> loading;
+    std::stop_source loading_stop;
     ui::WidgetTree widgets;
     movement::PlayerCameraRig camera_rig;
     std::optional<RuntimeFrameStats> runtime_stats;
     std::uint64_t frame_count = 0;
     std::uint64_t completed_session_count = 0;
+    std::uint64_t next_session_generation = 1;
+    std::uint64_t loading_generation = 0;
     bool initialized = false;
-    bool discard_loading_result = false;
     std::optional<core::Error> display_error;
 
     [[nodiscard]] core::Status rebuild_ui(ApplicationState state) {
@@ -233,59 +241,101 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             return core::Status::failure("heartstead.session_already_pending",
                                          "a runtime session is already active or loading");
         }
-        discard_loading_result = false;
+        loading_stop = std::stop_source{};
+        loading_generation = next_session_generation++;
+        const auto stop_token = loading_stop.get_token();
+        const auto generation = loading_generation;
         const auto* content_report = config.content_report;
         const auto headless = config.headless;
-        loading = std::async(std::launch::async, [content_report, headless]() -> SessionLoadResult {
-            auto runtime = GameRuntime::initialize(GameRuntimeConfig{}, *content_report);
-            if (!runtime) {
-                return SessionLoadResult::failure(runtime.error().code, runtime.error().message);
-            }
-            auto metadata = content::save_metadata_from_content_report(*content_report, "0.1.0",
-                                                                       foundation::world_seed);
-            if (!metadata) {
-                return SessionLoadResult::failure(metadata.error().code, metadata.error().message);
-            }
-            RuntimeConfiguration runtime_config;
-            runtime_config.create_server = true;
-            runtime_config.create_client = true;
-            runtime_config.create_renderer = !headless;
-            runtime_config.create_audio = !headless;
-            runtime_config.use_in_memory_transport = true;
-            runtime_config.headless = headless;
-            runtime_config.physics_backend =
-                headless ? physics::PhysicsBackend::headless : physics::PhysicsBackend::jolt;
-            runtime_config.gameplay_modules.push_back(
-                std::make_shared<animals::WanderingAnimalModule>());
-            SessionRequest request;
-            request.metadata = std::move(metadata).value();
-            request.scenario_id = foundation::scenario_id;
-            auto status =
-                runtime.value().start_session(std::move(runtime_config), std::move(request));
-            if (!status) {
-                return SessionLoadResult::failure(status.error().code, status.error().message);
-            }
-            return SessionLoadResult::success(std::move(runtime).value());
-        });
+        loading = std::async(
+            std::launch::async,
+            [content_report, headless, generation, stop_token]() -> SessionLoadResult {
+                if (stop_token.stop_requested()) {
+                    return SessionLoadResult::failure("heartstead.session_load_cancelled",
+                                                      "session loading was cancelled");
+                }
+                auto runtime = GameRuntime::initialize(GameRuntimeConfig{}, *content_report);
+                if (!runtime) {
+                    return SessionLoadResult::failure(runtime.error().code,
+                                                      runtime.error().message);
+                }
+                if (stop_token.stop_requested()) {
+                    return SessionLoadResult::failure("heartstead.session_load_cancelled",
+                                                      "session loading was cancelled");
+                }
+                auto metadata = content::save_metadata_from_content_report(*content_report, "0.1.0",
+                                                                           foundation::world_seed);
+                if (!metadata) {
+                    return SessionLoadResult::failure(metadata.error().code,
+                                                      metadata.error().message);
+                }
+                SessionLaunchRequest request;
+                request.ownership_generation = generation;
+                request.mode = SessionMode::local_single_player;
+                request.world_source = WorldSourceKind::developer_scenario;
+                request.persistence = PersistencePolicy::ephemeral;
+                request.world_name = "Development World";
+                request.metadata = std::move(metadata).value();
+                request.seed = foundation::world_seed;
+                request.scenario_id = foundation::scenario_id;
+                request.runtime.create_renderer = !headless;
+                request.runtime.create_audio = !headless;
+                request.runtime.headless = headless;
+                request.runtime.physics_backend =
+                    headless ? physics::PhysicsBackend::headless : physics::PhysicsBackend::jolt;
+                request.runtime.gameplay_modules.push_back(
+                    std::make_shared<animals::WanderingAnimalModule>());
+                if (stop_token.stop_requested()) {
+                    return SessionLoadResult::failure("heartstead.session_load_cancelled",
+                                                      "session loading was cancelled");
+                }
+                auto status = runtime.value().start_session(std::move(request));
+                if (!status) {
+                    return SessionLoadResult::failure(status.error().code, status.error().message);
+                }
+                if (stop_token.stop_requested()) {
+                    (void)runtime.value().shutdown();
+                    return SessionLoadResult::failure("heartstead.session_load_cancelled",
+                                                      "session loading was cancelled");
+                }
+                return SessionLoadResult::success({generation, std::move(runtime).value()});
+            });
         return core::Status::ok();
     }
 
     [[nodiscard]] core::Status take_finished_load(bool enter_game) {
         auto loaded = loading.get();
         if (!loaded) {
-            if (!enter_game || discard_loading_result) {
+            if (!enter_game || loading_stop.stop_requested() ||
+                loaded.error().code == "heartstead.session_load_cancelled") {
                 return core::Status::ok();
             }
             return states.transition(ApplicationState::load_failure, "session startup failed",
                                      loaded.error());
         }
-        auto runtime = std::move(loaded).value();
-        if (!enter_game || discard_loading_result) {
+        auto completed = std::move(loaded).value();
+        auto runtime = std::move(completed.runtime);
+        if (!enter_game || loading_stop.stop_requested() ||
+            completed.generation != loading_generation) {
             auto status = runtime.shutdown();
             if (!status) {
                 return status;
             }
             return core::Status::ok();
+        }
+        if (runtime.session() == nullptr) {
+            return core::Status::failure("heartstead.loaded_session_missing",
+                                         "completed session load has no runtime session");
+        }
+        if (services != nullptr && services->renderer() != nullptr) {
+            auto* renderer = services->renderer();
+            auto status = runtime.session()->register_cleanup(
+                "application renderer session resources",
+                [renderer]() { return renderer->clear_session_resources(); });
+            if (!status) {
+                (void)runtime.shutdown();
+                return status;
+            }
         }
         session_runtime.emplace(std::move(runtime));
         return states.transition(ApplicationState::in_game, "session startup completed");
@@ -293,12 +343,6 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
 
     [[nodiscard]] core::Status unload_session() {
         auto first_failure = core::Status::ok();
-        if (services != nullptr && services->renderer() != nullptr) {
-            auto status = services->renderer()->clear_session_resources();
-            if (!status) {
-                first_failure = status;
-            }
-        }
         if (session_runtime.has_value()) {
             auto status = session_runtime->shutdown();
             if (!status && first_failure) {
@@ -330,7 +374,10 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             return begin_local_session_loading();
         }
         if (state == ApplicationState::session_unloading) {
-            discard_loading_result = true;
+            loading_stop.request_stop();
+            if (session_runtime.has_value() && session_runtime->session() != nullptr) {
+                return session_runtime->session()->request_stop();
+            }
         }
         return core::Status::ok();
     }
@@ -606,6 +653,7 @@ core::Status HeartsteadApplicationMode::shutdown(GameApplicationServices&) {
     auto& state = *implementation_;
     auto first_failure = state.unload_session();
     if (state.loading.valid()) {
+        state.loading_stop.request_stop();
         state.loading.wait();
         auto status = state.take_finished_load(false);
         if (!status && first_failure) {

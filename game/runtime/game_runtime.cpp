@@ -472,7 +472,7 @@ core::Status GameRuntime::require_prototype_kind(std::string_view kind) const {
     return core::Status::ok();
 }
 
-core::Status GameRuntime::start_session(RuntimeConfiguration config, SessionRequest request) {
+core::Status GameRuntime::start_session(SessionLaunchRequest request) {
     if (!is_initialized() || prototypes_ == nullptr || voxel_palette_ == nullptr) {
         return core::Status::failure("game_runtime.not_initialized",
                                      "game runtime content must be initialized first");
@@ -481,8 +481,84 @@ core::Status GameRuntime::start_session(RuntimeConfiguration config, SessionRequ
         return core::Status::failure("game_runtime.session_active",
                                      "game runtime already owns an active session");
     }
+    if (request.ownership_generation == 0) {
+        request.ownership_generation = next_session_generation_;
+    } else if (request.ownership_generation < next_session_generation_) {
+        return core::Status::failure(
+            "game_runtime.stale_session_generation",
+            "session launch generation is older than a previously owned session");
+    }
+    if (request.ownership_generation == std::numeric_limits<std::uint64_t>::max()) {
+        return core::Status::failure("game_runtime.session_generation_exhausted",
+                                     "session ownership generation space is exhausted");
+    }
+    next_session_generation_ = request.ownership_generation + 1;
+
+    switch (request.mode) {
+    case SessionMode::local_single_player:
+        request.runtime.create_server = true;
+        request.runtime.create_client = true;
+        request.runtime.use_in_memory_transport = true;
+        request.runtime.remote_server_endpoint.reset();
+        break;
+    case SessionMode::hosted_multiplayer:
+        request.runtime.create_server = true;
+        request.runtime.create_client = true;
+        request.runtime.use_in_memory_transport = false;
+        if (request.network_endpoint.has_value()) {
+            request.runtime.server_bind_endpoint = *request.network_endpoint;
+        }
+        break;
+    case SessionMode::remote_multiplayer:
+        request.runtime.create_server = false;
+        request.runtime.create_client = true;
+        request.runtime.use_in_memory_transport = false;
+        request.runtime.remote_server_endpoint = request.network_endpoint;
+        break;
+    case SessionMode::dedicated_server:
+        request.runtime.create_server = true;
+        request.runtime.create_client = false;
+        request.runtime.use_in_memory_transport = false;
+        request.runtime.headless = true;
+        request.runtime.create_renderer = false;
+        request.runtime.create_audio = false;
+        if (request.network_endpoint.has_value()) {
+            request.runtime.server_bind_endpoint = *request.network_endpoint;
+        }
+        break;
+    case SessionMode::automated:
+        break;
+    case SessionMode::replay:
+        return core::Status::failure("session_launch.replay_unsupported",
+                                     "this build has no replay runtime");
+    }
+
+    if (request.save_path.has_value() && !request.initial_snapshot.has_value() &&
+        request.world_source == WorldSourceKind::existing_save) {
+        save::FileSaveDatabase database(*request.save_path);
+        auto snapshot = database.read_snapshot();
+        if (!snapshot) {
+            return core::Status::failure(snapshot.error().code, snapshot.error().message);
+        }
+        request.metadata = snapshot.value().metadata;
+        request.initial_snapshot = std::move(snapshot).value();
+    }
+    if (request.seed.has_value()) {
+        if (request.metadata.world_seed != 0 && request.metadata.world_seed != *request.seed) {
+            return core::Status::failure("session_launch.seed_mismatch",
+                                         "requested seed does not match prepared world metadata");
+        }
+        request.metadata.world_seed = *request.seed;
+    }
     if (request.scenario_id.empty()) {
         request.scenario_id = startup_report_.selected_scenario_id;
+    }
+    if (request.initial_snapshot.has_value()) {
+        request.metadata = request.initial_snapshot->metadata;
+    }
+    auto request_status = request.validate();
+    if (!request_status) {
+        return request_status;
     }
     auto session_palette = voxel_palette_;
     if (request.initial_snapshot.has_value()) {
@@ -495,14 +571,24 @@ core::Status GameRuntime::start_session(RuntimeConfiguration config, SessionRequ
         session_palette =
             std::make_shared<world::VoxelPalette>(std::move(restored_palette).value());
     }
-    auto created = RuntimeSession::create(std::move(config), std::move(request), *prototypes_,
-                                          *session_palette);
+    auto runtime_config = request.runtime;
+    auto created = RuntimeSession::create(std::move(runtime_config), std::move(request),
+                                          *prototypes_, *session_palette);
     if (!created) {
         return core::Status::failure(created.error().code, created.error().message);
     }
     session_voxel_palette_ = std::move(session_palette);
     session_ = std::move(created).value();
     return core::Status::ok();
+}
+
+core::Status GameRuntime::start_session(RuntimeConfiguration config, SessionRequest request) {
+    request.runtime = std::move(config);
+    request.mode = SessionMode::automated;
+    if (request.world_source == WorldSourceKind::generated) {
+        request.world_source = WorldSourceKind::automated_scenario;
+    }
+    return start_session(std::move(request));
 }
 
 core::Status GameRuntime::start_session_from_save(RuntimeConfiguration config,
@@ -599,9 +685,14 @@ core::Status GameRuntime::shutdown() {
         return core::Status::ok();
     }
     auto status = session_->shutdown();
+    last_teardown_report_ = session_->teardown_report();
     session_.reset();
     session_voxel_palette_.reset();
     return status;
+}
+
+const std::optional<SessionTeardownReport>& GameRuntime::last_teardown_report() const noexcept {
+    return last_teardown_report_;
 }
 
 RuntimeSession* GameRuntime::session() noexcept {

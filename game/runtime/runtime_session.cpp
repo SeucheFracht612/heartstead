@@ -147,6 +147,42 @@ core::Status RuntimeConfiguration::validate() const {
     return core::Status::ok();
 }
 
+core::Status SessionLaunchRequest::validate() const {
+    if (scenario_id.empty()) {
+        return core::Status::failure("session_launch.invalid_scenario",
+                                     "session scenario id must not be empty");
+    }
+    if (!metadata.validate()) {
+        return core::Status::failure("session_launch.invalid_metadata",
+                                     "session save metadata is invalid");
+    }
+    if (seed.has_value() && metadata.world_seed != 0 && *seed != metadata.world_seed) {
+        return core::Status::failure("session_launch.seed_mismatch",
+                                     "requested seed does not match prepared world metadata");
+    }
+    if (player_spawn.has_value() &&
+        (!player_spawn->position.is_valid() || !std::isfinite(player_spawn->yaw_degrees) ||
+         !std::isfinite(player_spawn->pitch_degrees))) {
+        return core::Status::failure("session_launch.invalid_spawn",
+                                     "player spawn position and orientation must be finite");
+    }
+    if (mode == SessionMode::remote_multiplayer && !network_endpoint.has_value()) {
+        return core::Status::failure("session_launch.remote_endpoint_missing",
+                                     "remote multiplayer requires a network endpoint");
+    }
+    if (world_source == WorldSourceKind::existing_save && !save_path.has_value() &&
+        !initial_snapshot.has_value()) {
+        return core::Status::failure(
+            "session_launch.save_source_missing",
+            "existing-save launch requires a save path or loaded snapshot");
+    }
+    if (mode == SessionMode::replay || world_source == WorldSourceKind::replay) {
+        return core::Status::failure("session_launch.replay_unsupported",
+                                     "this build has no replay runtime");
+    }
+    return runtime.validate();
+}
+
 RuntimeSession::RuntimeSession(RuntimeConfiguration config, SessionRequest request,
                                const modding::PrototypeRegistry& prototypes,
                                const world::VoxelPalette& voxel_palette)
@@ -169,13 +205,11 @@ RuntimeSession::create(RuntimeConfiguration config, SessionRequest request,
     if (request.initial_snapshot.has_value()) {
         request.metadata = request.initial_snapshot->metadata;
     }
-    if (!request.metadata.validate()) {
-        return core::Result<std::unique_ptr<RuntimeSession>>::failure(
-            "runtime_session.invalid_metadata", "session save metadata is invalid");
-    }
-    if (request.scenario_id.empty()) {
-        return core::Result<std::unique_ptr<RuntimeSession>>::failure(
-            "runtime_session.invalid_scenario", "session scenario id must not be empty");
+    request.runtime = config;
+    status = request.validate();
+    if (!status) {
+        return core::Result<std::unique_ptr<RuntimeSession>>::failure(status.error().code,
+                                                                      status.error().message);
     }
     auto session = std::unique_ptr<RuntimeSession>(
         new RuntimeSession(std::move(config), std::move(request), prototypes, voxel_palette));
@@ -188,6 +222,7 @@ RuntimeSession::create(RuntimeConfiguration config, SessionRequest request,
 }
 
 core::Status RuntimeSession::initialize() {
+    state_ = RuntimeSessionState::starting;
     const auto scenario_id = core::PrototypeId::parse(request_.scenario_id);
     if (!scenario_id) {
         return core::Status::failure("runtime_session.invalid_scenario_id",
@@ -333,7 +368,8 @@ core::Status RuntimeSession::initialize() {
             return core::Status::failure(presented.error().code, presented.error().message);
         }
     }
-    running_ = true;
+    state_ = RuntimeSessionState::running;
+    accepting_commands_ = true;
     return core::Status::ok();
 }
 
@@ -343,7 +379,7 @@ core::Result<RuntimeFrameStats> RuntimeSession::run_frame(RuntimeFrameInput inpu
                                                         "runtime session cannot continue after '" +
                                                             fault_->code + "': " + fault_->message);
     }
-    if (!running_) {
+    if (state_ != RuntimeSessionState::running) {
         return core::Result<RuntimeFrameStats>::failure(
             "runtime_session.not_running", "runtime session must be running before frame advance");
     }
@@ -400,7 +436,8 @@ core::Result<RuntimeFrameStats> RuntimeSession::run_frame(RuntimeFrameInput inpu
 
 core::Result<RuntimeFrameStats> RuntimeSession::fault_frame(const core::Error& error) {
     fault_ = error;
-    running_ = false;
+    accepting_commands_ = false;
+    state_ = RuntimeSessionState::faulted;
     return core::Result<RuntimeFrameStats>::failure(error.code, error.message);
 }
 
@@ -415,7 +452,8 @@ core::Status RuntimeSession::submit_command(std::string type, std::string payloa
 
 core::Result<std::uint64_t>
 RuntimeSession::submit_tracked_command(std::string type, std::string payload, std::int64_t now_ms) {
-    if (!running_ || client_ == nullptr || (server_ == nullptr && remote_transport_ == nullptr)) {
+    if (!accepting_commands_ || state_ != RuntimeSessionState::running || client_ == nullptr ||
+        (server_ == nullptr && remote_transport_ == nullptr)) {
         return core::Result<std::uint64_t>::failure(
             "runtime_session.command_path_unavailable",
             "commands require an active client and authoritative server connection");
@@ -481,8 +519,8 @@ core::Status RuntimeSession::submit_player_input(const movement::PlayerInputFram
     if (!status) {
         return status;
     }
-    if (!running_ || client_ == nullptr || (server_ == nullptr && remote_transport_ == nullptr) ||
-        !client_->is_connected()) {
+    if (!accepting_commands_ || state_ != RuntimeSessionState::running || client_ == nullptr ||
+        (server_ == nullptr && remote_transport_ == nullptr) || !client_->is_connected()) {
         return core::Status::failure("runtime_session.movement_path_unavailable",
                                      "movement input requires an active connected client");
     }
@@ -513,7 +551,7 @@ core::Status RuntimeSession::submit_remove_voxel(const interaction::RemoveVoxelC
 }
 
 core::Result<save::SaveSnapshot> RuntimeSession::capture_save_snapshot() const {
-    if (!running_ || server_ == nullptr) {
+    if (state_ != RuntimeSessionState::running || server_ == nullptr) {
         return core::Result<save::SaveSnapshot>::failure(
             "runtime_session.no_authoritative_world",
             "saving requires an active authoritative server runtime");
@@ -609,39 +647,120 @@ core::Result<PresentationSynchronizationStats> RuntimeSession::synchronize_prese
     return synchronized;
 }
 
+core::Status RuntimeSession::request_stop() {
+    accepting_commands_ = false;
+    teardown_report_.rejected_new_commands = true;
+    if (state_ == RuntimeSessionState::running || state_ == RuntimeSessionState::faulted ||
+        state_ == RuntimeSessionState::starting) {
+        state_ = RuntimeSessionState::stopping;
+    }
+    return core::Status::ok();
+}
+
+core::Status RuntimeSession::register_cleanup(std::string name,
+                                              std::function<core::Status()> cleanup) {
+    if (state_ != RuntimeSessionState::running || !accepting_commands_) {
+        return core::Status::failure("runtime_session.cleanup_registration_closed",
+                                     "session cleanup can only be registered while running");
+    }
+    if (name.empty() || !cleanup) {
+        return core::Status::failure("runtime_session.invalid_cleanup",
+                                     "session cleanup requires a name and callback");
+    }
+    cleanup_entries_.push_back({std::move(name), std::move(cleanup)});
+    return core::Status::ok();
+}
+
 core::Status RuntimeSession::shutdown() {
-    if (!running_ && server_ == nullptr && client_ == nullptr) {
+    ++teardown_report_.invocation_count;
+    teardown_report_.ownership_generation = request_.ownership_generation;
+    if (state_ == RuntimeSessionState::stopped && server_ == nullptr && client_ == nullptr &&
+        remote_transport_ == nullptr && cleanup_entries_.empty()) {
         return core::Status::ok();
     }
+    teardown_report_.presentation_objects_before = presentation_.stats().retained_object_count;
+    teardown_report_.server_entities_before =
+        server_ == nullptr ? 0 : server_->entities().stats().live_entities;
+    teardown_report_.registered_cleanup_count = cleanup_entries_.size();
+    (void)request_stop();
     auto result = core::Status::ok();
-    if (remote_transport_ != nullptr) {
-        auto status = remote_transport_->disconnect(0);
-        if (!status) {
-            result = status;
-        }
-    } else if (server_ != nullptr && client_ != nullptr && server_->is_running()) {
-        auto status = server_->disconnect_client(client_->client_id());
-        if (!status) {
-            result = status;
-        }
-    }
-    presentation_synchronizer_.clear();
-    presentation_.clear();
-    client_.reset();
-    remote_transport_.reset();
-    if (server_ != nullptr) {
-        auto status = server_->stop();
+    const auto remember_failure = [&result](const core::Status& status) {
         if (!status && result) {
             result = status;
         }
+    };
+    if (remote_transport_ != nullptr) {
+        remember_failure(remote_transport_->disconnect(0));
+    } else if (server_ != nullptr && client_ != nullptr && server_->is_running()) {
+        remember_failure(server_->disconnect_client(client_->client_id()));
     }
+    teardown_report_.transport_stopped = true;
+    if (server_ != nullptr && server_->is_running()) {
+        remember_failure(server_->stop());
+    }
+    teardown_report_.authoritative_ticking_stopped = true;
+
+    for (auto entry = cleanup_entries_.rbegin(); entry != cleanup_entries_.rend(); ++entry) {
+        remember_failure(entry->cleanup());
+        ++teardown_report_.completed_cleanup_count;
+    }
+    cleanup_entries_.clear();
+    presentation_synchronizer_.clear();
+    presentation_.clear();
+    teardown_report_.presentation_objects_after = presentation_.stats().retained_object_count;
+    teardown_report_.presentation_cleared = true;
+    client_.reset();
+    teardown_report_.client_destroyed = true;
+    remote_transport_.reset();
     server_.reset();
-    running_ = false;
+    teardown_report_.server_destroyed = true;
+    accepting_commands_ = false;
+    state_ = RuntimeSessionState::stopped;
     return result;
 }
 
 bool RuntimeSession::is_running() const noexcept {
-    return running_;
+    return state_ == RuntimeSessionState::running;
+}
+
+bool RuntimeSession::accepts_commands() const noexcept {
+    return accepting_commands_ && state_ == RuntimeSessionState::running;
+}
+
+std::uint64_t RuntimeSession::ownership_generation() const noexcept {
+    return request_.ownership_generation;
+}
+
+RuntimeSessionState RuntimeSession::state() const noexcept {
+    return state_;
+}
+
+SessionConnectionState RuntimeSession::connection_state() const noexcept {
+    if (state_ == RuntimeSessionState::stopping) {
+        return SessionConnectionState::disconnecting;
+    }
+    if (state_ == RuntimeSessionState::stopped) {
+        return SessionConnectionState::disconnected;
+    }
+    if (client_ == nullptr) {
+        return SessionConnectionState::none;
+    }
+    if (client_->is_connected()) {
+        return SessionConnectionState::connected;
+    }
+    if (remote_transport_ != nullptr &&
+        remote_transport_->state() == net::TransportClientState::connecting) {
+        return SessionConnectionState::connecting;
+    }
+    return SessionConnectionState::disconnected;
+}
+
+const SessionLaunchRequest& RuntimeSession::launch_request() const noexcept {
+    return request_;
+}
+
+const SessionTeardownReport& RuntimeSession::teardown_report() const noexcept {
+    return teardown_report_;
 }
 
 ServerRuntime* RuntimeSession::server() noexcept {
@@ -682,6 +801,90 @@ const std::optional<RuntimeFrameStats>& RuntimeSession::last_frame_stats() const
 
 const std::optional<core::Error>& RuntimeSession::fault() const noexcept {
     return fault_;
+}
+
+std::string_view session_mode_name(SessionMode mode) noexcept {
+    switch (mode) {
+    case SessionMode::local_single_player:
+        return "local-single-player";
+    case SessionMode::hosted_multiplayer:
+        return "hosted-multiplayer";
+    case SessionMode::remote_multiplayer:
+        return "remote-multiplayer";
+    case SessionMode::dedicated_server:
+        return "dedicated-server";
+    case SessionMode::automated:
+        return "automated";
+    case SessionMode::replay:
+        return "replay";
+    }
+    return "unknown";
+}
+
+std::string_view world_source_kind_name(WorldSourceKind source) noexcept {
+    switch (source) {
+    case WorldSourceKind::generated:
+        return "generated";
+    case WorldSourceKind::existing_save:
+        return "existing-save";
+    case WorldSourceKind::developer_scenario:
+        return "developer-scenario";
+    case WorldSourceKind::packaged_fixture:
+        return "packaged-fixture";
+    case WorldSourceKind::remote_server:
+        return "remote-server";
+    case WorldSourceKind::automated_scenario:
+        return "automated-scenario";
+    case WorldSourceKind::replay:
+        return "replay";
+    }
+    return "unknown";
+}
+
+std::string_view persistence_policy_name(PersistencePolicy policy) noexcept {
+    switch (policy) {
+    case PersistencePolicy::ephemeral:
+        return "ephemeral";
+    case PersistencePolicy::temporary_copy:
+        return "temporary-copy";
+    case PersistencePolicy::persistent:
+        return "persistent";
+    }
+    return "unknown";
+}
+
+std::string_view runtime_session_state_name(RuntimeSessionState state) noexcept {
+    switch (state) {
+    case RuntimeSessionState::created:
+        return "created";
+    case RuntimeSessionState::starting:
+        return "starting";
+    case RuntimeSessionState::running:
+        return "running";
+    case RuntimeSessionState::stopping:
+        return "stopping";
+    case RuntimeSessionState::stopped:
+        return "stopped";
+    case RuntimeSessionState::faulted:
+        return "faulted";
+    }
+    return "unknown";
+}
+
+std::string_view session_connection_state_name(SessionConnectionState state) noexcept {
+    switch (state) {
+    case SessionConnectionState::none:
+        return "none";
+    case SessionConnectionState::connecting:
+        return "connecting";
+    case SessionConnectionState::connected:
+        return "connected";
+    case SessionConnectionState::disconnecting:
+        return "disconnecting";
+    case SessionConnectionState::disconnected:
+        return "disconnected";
+    }
+    return "unknown";
 }
 
 } // namespace heartstead::game

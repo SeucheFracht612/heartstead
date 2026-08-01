@@ -105,6 +105,15 @@ target_link_libraries(heartstead_application_state_tests PRIVATE Heartstead::Gam
 heartstead_configure_test_target(heartstead_application_state_tests)
 heartstead_register_unit_test(heartstead_application_state_tests)
 
+add_executable(heartstead_runtime_session_lifecycle_tests runtime_session_lifecycle_tests.cpp)
+target_link_libraries(heartstead_runtime_session_lifecycle_tests PRIVATE Heartstead::GameRuntime)
+target_compile_definitions(
+  heartstead_runtime_session_lifecycle_tests
+  PRIVATE HEARTSTEAD_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+heartstead_configure_test_target(heartstead_runtime_session_lifecycle_tests)
+heartstead_register_unit_test(heartstead_runtime_session_lifecycle_tests)
+
 if(TARGET heartstead_dev_game)
   add_test(
     NAME heartstead_dev_game_save_smoke
