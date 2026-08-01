@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <csignal>
 #include <cmath>
 #include <thread>
 #include <utility>
@@ -16,6 +17,40 @@
 namespace heartstead::game {
 
 namespace {
+
+volatile std::sig_atomic_t application_shutdown_signal = 0;
+
+void request_application_shutdown_from_signal(int signal) noexcept {
+    application_shutdown_signal = signal;
+}
+
+class ScopedApplicationSignalHandlers {
+  public:
+    ScopedApplicationSignalHandlers() noexcept {
+        application_shutdown_signal = 0;
+        previous_interrupt_ = std::signal(SIGINT, request_application_shutdown_from_signal);
+        previous_terminate_ = std::signal(SIGTERM, request_application_shutdown_from_signal);
+    }
+
+    ~ScopedApplicationSignalHandlers() {
+        if (previous_interrupt_ != SIG_ERR) {
+            (void)std::signal(SIGINT, previous_interrupt_);
+        }
+        if (previous_terminate_ != SIG_ERR) {
+            (void)std::signal(SIGTERM, previous_terminate_);
+        }
+        application_shutdown_signal = 0;
+    }
+
+    [[nodiscard]] bool shutdown_requested() const noexcept {
+        return application_shutdown_signal != 0;
+    }
+
+  private:
+    using SignalHandler = void (*)(int);
+    SignalHandler previous_interrupt_ = SIG_ERR;
+    SignalHandler previous_terminate_ = SIG_ERR;
+};
 
 struct ApplicationShaderSet {
     std::vector<std::uint32_t> sky_vertex;
@@ -272,6 +307,7 @@ core::Result<GameApplicationRunReport> GameApplication::run(IGameApplicationMode
         return core::Result<GameApplicationRunReport>::failure(status.error().code,
                                                                status.error().message);
     }
+    ScopedApplicationSignalHandlers signal_handlers;
     status = initialize_shell();
     if (!status) {
         (void)shutdown_shell();
@@ -295,6 +331,10 @@ core::Result<GameApplicationRunReport> GameApplication::run(IGameApplicationMode
 
     while (!first_error.has_value() && platform_ != nullptr && !platform_->should_quit() &&
            (!config_.maximum_frames.has_value() || report.frame_count < *config_.maximum_frames)) {
+        if (signal_handlers.shutdown_requested()) {
+            platform_->request_quit();
+            break;
+        }
         std::optional<platform::WindowInputSnapshot> input;
         std::uint64_t delta_microseconds = 16'667;
         std::int64_t now_milliseconds = 0;
