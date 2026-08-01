@@ -51,12 +51,19 @@ enum class SessionPresence : std::uint8_t {
     required,
 };
 
+enum class AuthoritativeSimulationPolicy : std::uint8_t {
+    stopped,
+    always,
+    multiplayer_only,
+};
+
 struct ApplicationStatePolicy {
     ApplicationInputOwner input_owner = ApplicationInputOwner::application;
     ApplicationCursorOwner cursor_owner = ApplicationCursorOwner::released;
     ApplicationUiOwner ui_owner = ApplicationUiOwner::none;
     SessionPresence session_presence = SessionPresence::forbidden;
-    bool authoritative_simulation_advances = false;
+    AuthoritativeSimulationPolicy authoritative_simulation =
+        AuthoritativeSimulationPolicy::stopped;
     bool world_rendering = false;
     bool platform_events = true;
     bool application_audio = true;
@@ -118,5 +125,7 @@ application_state_policy(ApplicationState state) noexcept;
 [[nodiscard]] std::string_view application_cursor_owner_name(ApplicationCursorOwner owner) noexcept;
 [[nodiscard]] std::string_view application_ui_owner_name(ApplicationUiOwner owner) noexcept;
 [[nodiscard]] std::string_view session_presence_name(SessionPresence presence) noexcept;
+[[nodiscard]] bool authoritative_simulation_advances(const ApplicationStatePolicy& policy,
+                                                     bool multiplayer) noexcept;
 
 } // namespace heartstead::game

@@ -12,34 +12,36 @@ namespace {
 constexpr std::array<ApplicationStatePolicy, 10> policies{{
     // boot
     {ApplicationInputOwner::application, ApplicationCursorOwner::released, ApplicationUiOwner::boot,
-     SessionPresence::forbidden, false, false, true, true},
+     SessionPresence::forbidden, AuthoritativeSimulationPolicy::stopped, false, true, true},
     // main_menu
     {ApplicationInputOwner::menu, ApplicationCursorOwner::released, ApplicationUiOwner::menu,
-     SessionPresence::forbidden, false, false, true, true},
+     SessionPresence::forbidden, AuthoritativeSimulationPolicy::stopped, false, true, true},
     // session_loading
     {ApplicationInputOwner::menu, ApplicationCursorOwner::released, ApplicationUiOwner::loading,
-     SessionPresence::optional, false, false, true, true},
+     SessionPresence::optional, AuthoritativeSimulationPolicy::stopped, false, true, true},
     // in_game
     {ApplicationInputOwner::session, ApplicationCursorOwner::captured, ApplicationUiOwner::session,
-     SessionPresence::required, true, true, true, true},
+     SessionPresence::required, AuthoritativeSimulationPolicy::always, true, true, true},
     // paused
     {ApplicationInputOwner::menu, ApplicationCursorOwner::released, ApplicationUiOwner::pause,
-     SessionPresence::required, false, true, true, true},
+     SessionPresence::required, AuthoritativeSimulationPolicy::multiplayer_only, true, true, true},
     // session_unloading
     {ApplicationInputOwner::application, ApplicationCursorOwner::released,
-     ApplicationUiOwner::loading, SessionPresence::optional, false, false, true, true},
+     ApplicationUiOwner::loading, SessionPresence::optional,
+     AuthoritativeSimulationPolicy::stopped, false, true, true},
     // load_failure
     {ApplicationInputOwner::menu, ApplicationCursorOwner::released, ApplicationUiOwner::error,
-     SessionPresence::forbidden, false, false, true, true},
+     SessionPresence::forbidden, AuthoritativeSimulationPolicy::stopped, false, true, true},
     // connection_failure
     {ApplicationInputOwner::menu, ApplicationCursorOwner::released, ApplicationUiOwner::error,
-     SessionPresence::forbidden, false, false, true, true},
+     SessionPresence::forbidden, AuthoritativeSimulationPolicy::stopped, false, true, true},
     // fatal_error
     {ApplicationInputOwner::application, ApplicationCursorOwner::released,
-     ApplicationUiOwner::error, SessionPresence::optional, false, false, true, false},
+     ApplicationUiOwner::error, SessionPresence::optional,
+     AuthoritativeSimulationPolicy::stopped, false, true, false},
     // shutdown
     {ApplicationInputOwner::application, ApplicationCursorOwner::released, ApplicationUiOwner::none,
-     SessionPresence::optional, false, false, true, false},
+     SessionPresence::optional, AuthoritativeSimulationPolicy::stopped, false, true, false},
 }};
 
 [[nodiscard]] constexpr std::size_t state_index(ApplicationState state) noexcept {
@@ -130,8 +132,30 @@ core::Status ApplicationStateMachine::transition(ApplicationState next, std::str
             rollback.to = state_;
             rollback.reason = "rollback after failed state entry";
             rollback.error = enter_error;
-            (void)lifecycle_->enter_state(state_, rollback);
-            return core::Status::failure(enter_error.code, enter_error.message);
+            const auto target_cleanup = lifecycle_->exit_state(next, rollback);
+            const auto previous_restore = lifecycle_->enter_state(state_, rollback);
+            auto rollback_message = enter_error.message;
+            if (!target_cleanup) {
+                rollback_message += "; target-state cleanup failed: " +
+                                    target_cleanup.error().code + ": " +
+                                    target_cleanup.error().message;
+            }
+            if (!previous_restore) {
+                rollback_message += "; previous-state restoration failed: " +
+                                    previous_restore.error().code + ": " +
+                                    previous_restore.error().message;
+            }
+            history_.push_back(rollback);
+            core::log(core::LogLevel::error,
+                      "Application state #" + std::to_string(rollback.sequence) + " " +
+                          std::string(application_state_name(rollback.from)) + " -> " +
+                          std::string(application_state_name(rollback.to)) + ": " +
+                          rollback_message);
+            if (!target_cleanup || !previous_restore) {
+                return core::Status::failure("application_state.rollback_failed",
+                                             std::move(rollback_message));
+            }
+            return core::Status::failure(enter_error.code, std::move(rollback_message));
         }
     }
 
@@ -278,6 +302,19 @@ std::string_view session_presence_name(SessionPresence presence) noexcept {
         return "required";
     }
     return "unknown";
+}
+
+bool authoritative_simulation_advances(const ApplicationStatePolicy& policy,
+                                       bool multiplayer) noexcept {
+    switch (policy.authoritative_simulation) {
+    case AuthoritativeSimulationPolicy::stopped:
+        return false;
+    case AuthoritativeSimulationPolicy::always:
+        return true;
+    case AuthoritativeSimulationPolicy::multiplayer_only:
+        return multiplayer;
+    }
+    return false;
 }
 
 } // namespace heartstead::game

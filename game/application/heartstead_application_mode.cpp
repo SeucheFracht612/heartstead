@@ -900,15 +900,14 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             return core::Status::failure(prepared_runtime.error().code,
                                          prepared_runtime.error().message);
         }
-        auto request = std::move(*pending_launch);
-        pending_launch.reset();
+        auto request = *pending_launch;
         request.ownership_generation = generation;
         request.runtime.gameplay_modules.push_back(
             std::make_shared<animals::WanderingAnimalModule>());
         loading_mode = request.mode;
         const auto mode = request.mode;
         const auto persistence = request.persistence;
-        const auto save_slot_id = std::move(pending_save_slot);
+        const auto save_slot_id = pending_save_slot;
         const auto world_name = request.world_name;
         const auto progress = loading_progress;
         auto runtime = std::make_shared<GameRuntime>(std::move(prepared_runtime).value());
@@ -965,8 +964,12 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         });
         if (!submitted) {
             loading = {};
+            loading_progress.reset();
+            loading_stop = std::stop_source{};
             return core::Status::failure(submitted.error().code, submitted.error().message);
         }
+        pending_launch.reset();
+        pending_save_slot.clear();
         loading_job = submitted.value();
         return core::Status::ok();
     }
@@ -1429,7 +1432,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             }
             break;
         case ApplicationState::paused:
-            if (session_mode_is_multiplayer(active_session_mode)) {
+            if (authoritative_simulation_advances(
+                    states.policy(), session_mode_is_multiplayer(active_session_mode))) {
                 auto advanced = advance_runtime(false);
                 if (!advanced) {
                     return recover_runtime_failure(advanced.error(),
