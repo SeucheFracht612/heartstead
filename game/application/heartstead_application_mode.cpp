@@ -76,15 +76,13 @@ const auto master_volume_id = ui::widget_id("heartstead.options.master_volume");
 const auto music_volume_id = ui::widget_id("heartstead.options.music_volume");
 const auto effects_volume_id = ui::widget_id("heartstead.options.effects_volume");
 const auto mouse_sensitivity_id = ui::widget_id("heartstead.options.mouse_sensitivity");
-const auto controller_sensitivity_id = ui::widget_id("heartstead.options.controller_sensitivity");
 const auto ui_scale_id = ui::widget_id("heartstead.options.ui_scale");
 const auto contrast_id = ui::widget_id("heartstead.options.contrast");
 const auto saturation_id = ui::widget_id("heartstead.options.saturation");
 const auto quality_id = ui::widget_id("heartstead.options.quality");
 const auto windowed_id = ui::widget_id("heartstead.options.windowed");
+const auto vsync_id = ui::widget_id("heartstead.options.vsync");
 const auto color_vision_id = ui::widget_id("heartstead.options.color_vision");
-const auto controller_id = ui::widget_id("heartstead.options.controller");
-const auto reduced_motion_id = ui::widget_id("heartstead.options.reduced_motion");
 
 [[nodiscard]] ui::WidgetDesc root_widget() {
     ui::WidgetDesc root;
@@ -407,10 +405,12 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     std::int64_t last_runtime_time_ms = 0;
     std::int64_t last_wall_clock_ms = 0;
     std::int64_t last_autosave_at_ms = 0;
+    std::int64_t settings_persist_after_ms = 0;
     std::uint64_t periodic_save_count = 0;
     SessionMode loading_mode = SessionMode::local_single_player;
     bool initialized = false;
     bool diagnostics_visible = false;
+    bool settings_persist_pending = false;
     std::optional<core::Error> display_error;
 
     [[nodiscard]] RuntimeDiagnosticsSnapshot diagnostics_snapshot() const {
@@ -455,10 +455,9 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             snapshot.render_objects = render.retained_objects;
             snapshot.asset_references =
                 static_cast<std::size_t>(render.resident_textures) + render.resident_static_meshes;
-            snapshot.resident_gpu_bytes = render.resident_texture_bytes +
-                                          render.resident_mesh_bytes +
-                                          render.resident_static_mesh_bytes +
-                                          render.far_terrain_resident_bytes;
+            snapshot.resident_gpu_bytes =
+                render.resident_texture_bytes + render.resident_mesh_bytes +
+                render.resident_static_mesh_bytes + render.far_terrain_resident_bytes;
             if (render.device_memory_budget_valid) {
                 snapshot.device_gpu_usage_bytes = render.device_local_memory_usage_bytes;
                 snapshot.device_gpu_budget_bytes = render.device_local_memory_budget_bytes;
@@ -521,6 +520,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         auto status = settings_store.save(settings);
         if (!status) {
             menu_message = status.error().code + ": " + status.error().message;
+        } else {
+            settings_persist_pending = false;
         }
         return status;
     }
@@ -728,18 +729,22 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 return status;
             widgets.set_focus(developer_search_id);
         } else if (menu_screen == MainMenuScreen::options) {
+            const auto displayed_quality = config.safe_mode ? renderer::RendererQualityPreset::low
+                                                            : settings.rendering_quality;
             if (!(status = add_title("heartstead.options.title", "Options")) ||
                 !(status = add(label("heartstead.options.display",
                                      "Display: " + std::to_string(settings.window_width) + "x" +
                                          std::to_string(settings.window_height) +
-                                         " (display changes apply on restart)"))) ||
-                !(status = add(button(quality_id,
-                                      "Rendering quality: " +
-                                          std::string(renderer::renderer_quality_preset_name(
-                                              settings.rendering_quality)),
-                                      "Applies on restart"))) ||
+                                         " (resize the window to change)"))) ||
+                !(status = add(button(
+                      quality_id,
+                      "Rendering quality: " +
+                          std::string(renderer::renderer_quality_preset_name(displayed_quality)),
+                      config.safe_mode ? "Safe mode forces low quality" : "Applies on restart",
+                      !config.safe_mode))) ||
                 !(status = add(toggle(windowed_id, "Windowed mode (restart required)",
                                       settings.windowed))) ||
+                !(status = add(toggle(vsync_id, "VSync (restart required)", settings.vsync))) ||
                 !(status = add(slider(master_volume_id, "Master volume", settings.master_volume,
                                       0.0F, 1.0F))) ||
                 !(status = add(slider(music_volume_id, "Music volume", settings.music_volume, 0.0F,
@@ -748,8 +753,6 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                                       0.0F, 1.0F))) ||
                 !(status = add(slider(mouse_sensitivity_id, "Mouse sensitivity",
                                       settings.mouse_sensitivity, 0.1F, 10.0F))) ||
-                !(status = add(slider(controller_sensitivity_id, "Controller sensitivity",
-                                      settings.controller_sensitivity, 0.1F, 10.0F))) ||
                 !(status = add(slider(ui_scale_id, "UI scale", settings.ui_scale, 0.75F, 2.0F))) ||
                 !(status =
                       add(slider(contrast_id, "UI contrast", settings.ui_contrast, 0.5F, 2.0F))) ||
@@ -758,10 +761,6 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 !(status = add(button(color_vision_id,
                                       "Color vision mode: " + std::string(color_vision_name(
                                                                   settings.color_vision_mode))))) ||
-                !(status = add(
-                      toggle(controller_id, "Controller enabled", settings.controller_enabled))) ||
-                !(status =
-                      add(toggle(reduced_motion_id, "Reduced motion", settings.reduced_motion))) ||
                 !(status = add(button(menu_back_id, "Back"))))
                 return status;
             widgets.set_focus(master_volume_id);
@@ -1137,8 +1136,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     }
 
     [[nodiscard]] core::Status save_active_session() {
-        if (!session_runtime.has_value() ||
-            active_persistence != PersistencePolicy::persistent) {
+        if (!session_runtime.has_value() || active_persistence != PersistencePolicy::persistent) {
             return core::Status::ok();
         }
         auto snapshot = session_runtime->capture_save_snapshot();
@@ -1157,8 +1155,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     }
 
     [[nodiscard]] core::Status autosave_if_due() {
-        if (!session_runtime.has_value() ||
-            active_persistence != PersistencePolicy::persistent ||
+        if (!session_runtime.has_value() || active_persistence != PersistencePolicy::persistent ||
             config.autosave_interval_ms <= 0 ||
             last_runtime_time_ms - last_autosave_at_ms < config.autosave_interval_ms) {
             return core::Status::ok();
@@ -1529,8 +1526,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                                          "no developer world is registered as '" +
                                              std::string(scenario_id) + "'");
         }
-        auto metadata = make_metadata(seed.value_or(
-            definition->world_seed.value_or(foundation::world_seed)));
+        auto metadata =
+            make_metadata(seed.value_or(definition->world_seed.value_or(foundation::world_seed)));
         if (!metadata) {
             return core::Status::failure(metadata.error().code, metadata.error().message);
         }
@@ -1680,6 +1677,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 continue;
             }
             if (event.kind == ui::UiEventKind::value_changed ||
+                event.kind == ui::UiEventKind::value_committed ||
                 event.kind == ui::UiEventKind::toggled) {
                 if (event.target == master_volume_id)
                     settings.master_volume = event.value;
@@ -1689,25 +1687,23 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                     settings.effects_volume = event.value;
                 else if (event.target == mouse_sensitivity_id)
                     settings.mouse_sensitivity = event.value;
-                else if (event.target == controller_sensitivity_id)
-                    settings.controller_sensitivity = event.value;
                 else if (event.target == ui_scale_id)
                     settings.ui_scale = event.value;
                 else if (event.target == contrast_id)
                     settings.ui_contrast = event.value;
                 else if (event.target == saturation_id)
                     settings.ui_saturation = event.value;
-                else if (event.target == controller_id)
-                    settings.controller_enabled = event.checked;
                 else if (event.target == windowed_id)
                     settings.windowed = event.checked;
-                else if (event.target == reduced_motion_id)
-                    settings.reduced_motion = event.checked;
+                else if (event.target == vsync_id)
+                    settings.vsync = event.checked;
                 status = apply_settings();
-                if (status)
+                if (status && event.kind != ui::UiEventKind::value_changed)
                     status = persist_settings();
-                if (!status)
-                    return status;
+                if (!status) {
+                    menu_message = status.error().code + ": " + status.error().message;
+                    return rebuild_ui(ApplicationState::main_menu);
+                }
                 continue;
             }
             if (event.kind == ui::UiEventKind::cancelled) {
@@ -1944,8 +1940,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                     return core::Result<renderer::RenderCamera>::failure(snapshot.error().code,
                                                                          snapshot.error().message);
                 }
-                if (const auto* player = client->local_player_snapshot(); player != nullptr &&
-                    player_camera_frame.has_value()) {
+                if (const auto* player = client->local_player_snapshot();
+                    player != nullptr && player_camera_frame.has_value()) {
                     for (auto& object : snapshot.value().objects) {
                         if (object.source_net_id == player->player_net_id) {
                             object.visible = player_camera_frame->body.local_body_visible;
@@ -1953,8 +1949,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                         }
                     }
                 }
-                auto synchronized = model_presentation.synchronize(
-                    *services->renderer(), snapshot.value(), &camera);
+                auto synchronized = model_presentation.synchronize(*services->renderer(),
+                                                                   snapshot.value(), &camera);
                 if (!synchronized) {
                     return core::Result<renderer::RenderCamera>::failure(
                         synchronized.error().code, synchronized.error().message);
@@ -1985,8 +1981,9 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     }
 
     [[nodiscard]] core::Status paint_ui(const GameApplicationFrame& current_frame) {
-        if (config.headless || states.state() == ApplicationState::shutdown || services == nullptr ||
-            services->renderer() == nullptr || services->renderer()->ui_renderer() == nullptr) {
+        if (config.headless || states.state() == ApplicationState::shutdown ||
+            services == nullptr || services->renderer() == nullptr ||
+            services->renderer()->ui_renderer() == nullptr) {
             return core::Status::ok();
         }
         auto* ui_renderer = services->renderer()->ui_renderer();
@@ -2014,9 +2011,11 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             panel.color = {0.015F, 0.025F, 0.04F, 0.90F};
             status = ui_renderer->submit_quad(panel);
             if (status) {
-                status = ui_renderer->submit_text(
-                    {{20.0F, 20.0F}, format_runtime_diagnostics(diagnostics_snapshot()), 12.0F,
-                     {0.82F, 0.92F, 1.0F, 1.0F}});
+                status =
+                    ui_renderer->submit_text({{20.0F, 20.0F},
+                                              format_runtime_diagnostics(diagnostics_snapshot()),
+                                              12.0F,
+                                              {0.82F, 0.92F, 1.0F, 1.0F}});
             }
         }
         return status;
@@ -2100,11 +2099,31 @@ HeartsteadApplicationMode::update(GameApplicationServices& services,
     state.frame = &frame;
     struct FramePointerReset {
         const GameApplicationFrame*& pointer;
-        ~FramePointerReset() { pointer = nullptr; }
+        ~FramePointerReset() {
+            pointer = nullptr;
+        }
     } frame_pointer_reset{state.frame};
     state.last_runtime_time_ms = frame.now_milliseconds;
     state.last_wall_clock_ms = frame.wall_clock_milliseconds;
     ++state.frame_count;
+    if (!frame.headless && frame.extent.is_valid()) {
+        const auto width = std::clamp(frame.extent.width, 640U, 16'384U);
+        const auto height = std::clamp(frame.extent.height, 360U, 16'384U);
+        if (state.settings.window_width != width || state.settings.window_height != height) {
+            state.settings.window_width = width;
+            state.settings.window_height = height;
+            state.settings_persist_pending = true;
+            state.settings_persist_after_ms = frame.now_milliseconds + 500;
+        }
+    }
+    if (state.settings_persist_pending &&
+        frame.now_milliseconds >= state.settings_persist_after_ms) {
+        auto persisted = state.persist_settings();
+        if (!persisted) {
+            state.display_error = persisted.error();
+            state.settings_persist_after_ms = frame.now_milliseconds + 5'000;
+        }
+    }
     auto status = state.process_input(frame);
     if (status) {
         status = state.states.update(frame.delta_microseconds);

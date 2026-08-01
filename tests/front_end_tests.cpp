@@ -83,6 +83,7 @@ void test_application_settings_round_trip() {
     settings.window_width = 1920;
     settings.window_height = 1080;
     settings.windowed = false;
+    settings.vsync = false;
     settings.rendering_quality = heartstead::renderer::RendererQualityPreset::ultra;
     settings.master_volume = 0.75F;
     settings.music_volume = 0.25F;
@@ -103,6 +104,7 @@ void test_application_settings_round_trip() {
     assert(loaded);
     assert(loaded.value().window_width == 1920);
     assert(!loaded.value().windowed);
+    assert(!loaded.value().vsync);
     assert(loaded.value().rendering_quality == heartstead::renderer::RendererQualityPreset::ultra);
     assert(loaded.value().master_volume == 0.75F);
     assert(loaded.value().controller_sensitivity == 1.5F);
@@ -115,6 +117,54 @@ void test_application_settings_round_trip() {
     const auto invalid = store.save(settings);
     assert(!invalid);
     assert(invalid.error().code == "application_settings.invalid_resolution");
+
+    settings.window_width = 1920;
+    assert(store.save(settings));
+    std::ifstream input(store.path(), std::ios::binary);
+    std::string serialized((std::istreambuf_iterator<char>(input)),
+                           std::istreambuf_iterator<char>());
+    const auto volume = serialized.find("master_volume|0.75");
+    assert(volume != std::string::npos);
+    serialized.replace(volume, std::string("master_volume|0.75").size(),
+                       "master_volume|not-a-number");
+    const auto end = serialized.find("end\n");
+    assert(end != std::string::npos);
+    serialized.insert(end, "future_setting|preserved-by-newer-version\n");
+    {
+        std::ofstream output(store.path(), std::ios::binary | std::ios::trunc);
+        output << serialized;
+        assert(output);
+    }
+    loaded = store.load();
+    assert(loaded);
+    assert(loaded.value().master_volume == 1.0F);
+    assert(loaded.value().window_width == 1920);
+
+    const auto vsync = serialized.find("vsync|false\n");
+    assert(vsync != std::string::npos);
+    serialized.erase(vsync, std::string("vsync|false\n").size());
+    {
+        std::ofstream output(store.path(), std::ios::binary | std::ios::trunc);
+        output << serialized;
+        assert(output);
+    }
+    loaded = store.load();
+    assert(!loaded);
+    assert(loaded.error().code == "application_settings.incomplete");
+
+    {
+        std::ofstream output(store.path(), std::ios::binary | std::ios::trunc);
+        output << "heartstead.application_settings.v1\n"
+               << "windowed|false\n"
+               << "window_width|broken\n"
+               << "end\n";
+        assert(output);
+    }
+    loaded = store.load();
+    assert(loaded);
+    assert(!loaded.value().windowed);
+    assert(loaded.value().window_width == 1280);
+    assert(loaded.value().vsync);
 }
 
 void test_save_world_management() {
@@ -159,8 +209,8 @@ void test_save_world_management() {
 
 void test_command_line_launch_contract() {
     using namespace std::string_view_literals;
-    const std::string_view new_world[]{"--new-world"sv, "CLI Homestead"sv, "--seed"sv,
-                                       "184467"sv, "--safe-mode"sv};
+    const std::string_view new_world[]{"--new-world"sv, "CLI Homestead"sv, "--seed"sv, "184467"sv,
+                                       "--safe-mode"sv};
     auto parsed = game::parse_heartstead_launch_options(new_world);
     assert(parsed);
     assert(parsed.value().safe_mode);
@@ -180,8 +230,7 @@ void test_command_line_launch_contract() {
     parsed = game::parse_heartstead_launch_options(conflict);
     assert(!parsed && parsed.error().code == "heartstead.conflicting_launch_options");
 
-    const std::string_view invalid_seed[]{"--connect"sv, "127.0.0.1:7777"sv, "--seed"sv,
-                                          "12"sv};
+    const std::string_view invalid_seed[]{"--connect"sv, "127.0.0.1:7777"sv, "--seed"sv, "12"sv};
     parsed = game::parse_heartstead_launch_options(invalid_seed);
     assert(!parsed && parsed.error().code == "heartstead.seed_not_supported");
 

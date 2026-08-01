@@ -27,6 +27,8 @@ struct GameApplicationConfig {
     renderer::materials::TerrainMaterialAssetSet terrain_material_assets;
     bool enable_render_validation = true;
     renderer::RendererQualityPreset renderer_quality = renderer::RendererQualityPreset::high;
+    renderer::rhi::PresentMode present_mode = renderer::rhi::PresentMode::fifo;
+    std::uint64_t maximum_frame_delta_microseconds = 250'000;
     std::uint32_t application_worker_count = 2;
 
     [[nodiscard]] core::Status validate() const;
@@ -117,6 +119,7 @@ class GameApplication {
     std::unique_ptr<audio::IAudioSystem> audio_;
     std::unique_ptr<jobs::IJobSystem> jobs_;
     bool running_ = false;
+    bool minimized_ = false;
 };
 
 } // namespace heartstead::game

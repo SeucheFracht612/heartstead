@@ -2400,7 +2400,7 @@ void test_headless_platform() {
     auto invalid_window = platform.create_window({"", 800, 600, true});
     assert(!invalid_window);
 
-    auto window = platform.create_window({"Heartstead Test", 800, 600, true});
+    auto window = platform.create_window({"Heartstead Test", 800, 600, true, true});
     assert(window);
     assert(platform.open_window_count() == 1);
 
@@ -2408,6 +2408,7 @@ void test_headless_platform() {
     assert(state != nullptr);
     assert(state->width == 800);
     assert(state->height == 600);
+    assert(state->fullscreen);
 
     auto first_event = platform.poll_event();
     assert(first_event);
@@ -8001,8 +8002,8 @@ void test_file_save_slot_catalog() {
     auto mismatched_metadata_slots = catalog.list_slots();
     assert(mismatched_metadata_slots);
     assert(mismatched_metadata_slots.value().size() == 2);
-    const auto mismatched_slot = std::ranges::find(
-        mismatched_metadata_slots.value(), "winter-2", &heartstead::save::SaveSlotSummary::slot_id);
+    const auto mismatched_slot = std::ranges::find(mismatched_metadata_slots.value(), "winter-2",
+                                                   &heartstead::save::SaveSlotSummary::slot_id);
     assert(mismatched_slot != mismatched_metadata_slots.value().end());
     assert(mismatched_slot->validation_error.has_value());
     assert(mismatched_slot->validation_error->code == "save_slot.metadata_mismatch");

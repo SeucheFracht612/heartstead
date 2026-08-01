@@ -253,13 +253,19 @@ void test_drag_drop_and_slider() {
     routed = tree.route_input(move);
     assert(tree.find(slider.id)->value > 7.0F);
     assert(routed.events.back().kind == ui::UiEventKind::value_changed);
+    release = move;
+    release.primary_down = false;
+    release.primary_released = true;
+    routed = tree.route_input(release);
+    assert(routed.events.back().kind == ui::UiEventKind::value_committed);
+    assert(routed.events.back().target == slider.id);
 }
 
 void test_nine_slice_tooltip_paint_and_batching() {
     auto fixture = make_fixture();
-    const auto font_bytes = core::read_binary_file(
-        std::filesystem::path{HEARTSTEAD_TEST_SOURCE_DIR} /
-        "mods/base/assets/fonts/heartstead-ui.ttf");
+    const auto font_bytes =
+        core::read_binary_file(std::filesystem::path{HEARTSTEAD_TEST_SOURCE_DIR} /
+                               "mods/base/assets/fonts/heartstead-ui.ttf");
     assert(font_bytes);
     auto built_font = renderer::UiFont::build(font_bytes.value());
     assert(built_font);
@@ -368,9 +374,8 @@ void test_two_thousand_widget_layout_budget_probe() {
     for (std::uint32_t iteration = 0; iteration < 20; ++iteration) {
         assert(tree.layout({1280.0F, 720.0F}));
     }
-    const auto elapsed = std::chrono::duration<double, std::milli>(
-                             std::chrono::steady_clock::now() - start)
-                             .count();
+    const auto elapsed =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     assert(tree.layout_stats().widget_count == 2'001);
     std::cout << "widget_layout_2000_ms=" << elapsed / 20.0 << '\n';
 }

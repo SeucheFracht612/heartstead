@@ -15,6 +15,7 @@ struct ApplicationSettings {
     std::uint32_t window_width = 1280;
     std::uint32_t window_height = 720;
     bool windowed = true;
+    bool vsync = true;
     renderer::RendererQualityPreset rendering_quality = renderer::RendererQualityPreset::high;
     float master_volume = 1.0F;
     float music_volume = 1.0F;

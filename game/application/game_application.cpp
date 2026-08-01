@@ -120,6 +120,11 @@ core::Status GameApplicationConfig::validate() const {
         return core::Status::failure("game_application.invalid_frame_limit",
                                      "application frame limit must be greater than zero");
     }
+    if (maximum_frame_delta_microseconds == 0 || maximum_frame_delta_microseconds > 10'000'000) {
+        return core::Status::failure(
+            "game_application.invalid_frame_delta_limit",
+            "maximum frame delta must be between one microsecond and ten seconds");
+    }
     if (headless) {
         if (application_worker_count == 0) {
             return core::Status::failure("game_application.invalid_worker_count",
@@ -284,8 +289,9 @@ core::Result<GameApplicationRunReport> GameApplication::run(IGameApplicationMode
             const auto elapsed =
                 std::chrono::duration_cast<std::chrono::microseconds>(now - previous_time);
             previous_time = now;
-            delta_microseconds =
-                static_cast<std::uint64_t>(std::clamp<std::int64_t>(elapsed.count(), 1, 100'000));
+            delta_microseconds = static_cast<std::uint64_t>(std::clamp<std::int64_t>(
+                elapsed.count(), 1,
+                static_cast<std::int64_t>(config_.maximum_frame_delta_microseconds)));
             now_milliseconds = platform_->clock().now_ms();
             input = platform_->input_snapshot(window_);
             if (!input.has_value()) {
@@ -307,7 +313,7 @@ core::Result<GameApplicationRunReport> GameApplication::run(IGameApplicationMode
             first_error = output.error();
             break;
         }
-        if (output.value().render.has_value()) {
+        if (output.value().render.has_value() && !minimized_) {
             if (config_.headless || !renderer_.is_initialized()) {
                 first_error =
                     core::Error{"game_application.unavailable_renderer",
@@ -326,12 +332,6 @@ core::Result<GameApplicationRunReport> GameApplication::run(IGameApplicationMode
     }
 
     report.mode_summary = mode.summary();
-    if (renderer_.is_initialized()) {
-        status = renderer_.wait_idle();
-        if (!status && !first_error.has_value()) {
-            first_error = status.error();
-        }
-    }
     if (mode_started) {
         status = mode.shutdown(services);
         if (!status && !first_error.has_value()) {
@@ -389,7 +389,7 @@ core::Status GameApplication::initialize_shell() {
     device_desc.backend = renderer::rhi::RenderBackend::vulkan;
     device_desc.application_name = config_.window.title;
     device_desc.initial_extent = extent_;
-    device_desc.present_mode = renderer::rhi::PresentMode::fifo;
+    device_desc.present_mode = config_.present_mode;
     device_desc.enable_validation = config_.enable_render_validation;
     device_desc.native_window = *native_handle;
     auto device = renderer::rhi::create_render_device(device_desc);
@@ -445,13 +445,17 @@ core::Status GameApplication::pump_platform_events() {
         }
         if (event->kind == platform::PlatformEventKind::window_resized &&
             event->window_id == window_) {
-            extent_ = {event->width, event->height};
-            if (extent_.is_valid()) {
-                auto status = renderer_.resize(extent_);
-                if (!status) {
-                    return status;
-                }
+            const renderer::rhi::RenderExtent requested_extent{event->width, event->height};
+            if (!requested_extent.is_valid()) {
+                minimized_ = true;
+                continue;
             }
+            auto status = renderer_.resize(requested_extent);
+            if (!status) {
+                return status;
+            }
+            extent_ = requested_extent;
+            minimized_ = false;
         }
     }
     return core::Status::ok();

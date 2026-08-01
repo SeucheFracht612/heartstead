@@ -66,6 +66,7 @@ struct WindowDesc {
     std::uint32_t width = 1280;
     std::uint32_t height = 720;
     bool resizable = true;
+    bool fullscreen = false;
 };
 
 struct WindowState {
@@ -75,6 +76,7 @@ struct WindowState {
     std::uint32_t height = 0;
     bool resizable = true;
     bool open = false;
+    bool fullscreen = false;
 };
 
 struct DisplayInfo {

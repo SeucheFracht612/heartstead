@@ -109,13 +109,17 @@ int main(int argc, char** argv) {
         application_config.headless = options.headless;
         application_config.maximum_frames = options.maximum_frames;
         application_config.window = {"Heartstead", application_settings.window_width,
-                                     application_settings.window_height, true};
+                                     application_settings.window_height, true,
+                                     !application_settings.windowed};
         application_config.shader_root = application_root / HEARTSTEAD_GAME_ASSET_DIR / "shaders";
         application_config.voxel_palette = &content_report.voxel_palette;
         application_config.terrain_material_assets = std::move(terrain_assets);
-        application_config.renderer_quality =
-            options.safe_mode ? heartstead::renderer::RendererQualityPreset::low
-                              : application_settings.rendering_quality;
+        application_config.renderer_quality = options.safe_mode
+                                                  ? heartstead::renderer::RendererQualityPreset::low
+                                                  : application_settings.rendering_quality;
+        application_config.present_mode = application_settings.vsync
+                                              ? heartstead::renderer::rhi::PresentMode::fifo
+                                              : heartstead::renderer::rhi::PresentMode::immediate;
 
         heartstead::game::HeartsteadApplicationModeConfig mode_config;
         mode_config.content_report = &content_report;

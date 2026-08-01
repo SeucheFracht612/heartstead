@@ -134,6 +134,20 @@ void test_zero_application_workers_are_rejected() {
     assert(!mode.initialized);
 }
 
+void test_zero_frame_delta_limit_is_rejected() {
+    game::GameApplicationConfig config;
+    config.headless = true;
+    config.maximum_frames = 1;
+    config.maximum_frame_delta_microseconds = 0;
+    game::GameApplication application(config);
+    RecordingMode mode;
+
+    auto report = application.run(mode);
+    assert(!report);
+    assert(report.error().code == "game_application.invalid_frame_delta_limit");
+    assert(!mode.initialized);
+}
+
 } // namespace
 
 int main() {
@@ -141,5 +155,6 @@ int main() {
     test_mode_failure_still_shuts_down();
     test_zero_frame_limit_is_rejected();
     test_zero_application_workers_are_rejected();
+    test_zero_frame_delta_limit_is_rejected();
     return 0;
 }

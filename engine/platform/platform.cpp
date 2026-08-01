@@ -428,8 +428,8 @@ core::Result<WindowId> HeadlessPlatform::create_window(const WindowDesc& desc) {
     }
 
     const auto id = next_window_id();
-    windows_.emplace(id.value(),
-                     WindowState{id, desc.title, desc.width, desc.height, desc.resizable, true});
+    windows_.emplace(id.value(), WindowState{id, desc.title, desc.width, desc.height,
+                                             desc.resizable, true, desc.fullscreen});
     emit_event(PlatformEvent{
         PlatformEventKind::window_created, id, KeyCode::unknown, desc.width, desc.height, {}});
     return core::Result<WindowId>::success(id);
@@ -1012,6 +1012,13 @@ class X11NativePlatform final : public IPlatform {
                          ButtonReleaseMask | PointerMotionMask | ExposureMask | FocusChangeMask);
         XSetWMProtocols(display_, native_window, &wm_delete_window_, 1);
 
+        if (desc.fullscreen) {
+            const auto wm_state = XInternAtom(display_, "_NET_WM_STATE", False);
+            const auto fullscreen = XInternAtom(display_, "_NET_WM_STATE_FULLSCREEN", False);
+            XChangeProperty(display_, native_window, wm_state, XA_ATOM, 32, PropModeReplace,
+                            reinterpret_cast<const unsigned char*>(&fullscreen), 1);
+        }
+
         if (!desc.resizable) {
             XSizeHints size_hints{};
             size_hints.flags = PMinSize | PMaxSize;
@@ -1121,10 +1128,9 @@ class X11NativePlatform final : public IPlatform {
                 return core::Status::ok();
             }
             cursor_capture_requests_.erase(window_id.value());
-            return core::Status::failure(
-                "platform.cursor_capture_failed",
-                "X11 pointer grab failed with " +
-                    std::string(x11_pointer_grab_result_name(result)));
+            return core::Status::failure("platform.cursor_capture_failed",
+                                         "X11 pointer grab failed with " +
+                                             std::string(x11_pointer_grab_result_name(result)));
         } else {
             cursor_capture_requests_.erase(window_id.value());
             XUngrabPointer(display_, CurrentTime);
@@ -1186,10 +1192,9 @@ class X11NativePlatform final : public IPlatform {
         if (logical_.cursor_captured(id)) {
             return GrabSuccess;
         }
-        const auto result =
-            XGrabPointer(display_, native_window, True,
-                         PointerMotionMask | ButtonPressMask | ButtonReleaseMask, GrabModeAsync,
-                         GrabModeAsync, native_window, invisible_cursor_, CurrentTime);
+        const auto result = XGrabPointer(
+            display_, native_window, True, PointerMotionMask | ButtonPressMask | ButtonReleaseMask,
+            GrabModeAsync, GrabModeAsync, native_window, invisible_cursor_, CurrentTime);
         if (result != GrabSuccess) {
             return result;
         }
@@ -1199,8 +1204,7 @@ class X11NativePlatform final : public IPlatform {
         const auto* state = logical_.find_window(id);
         if (state != nullptr) {
             XWarpPointer(display_, None, native_window, 0, 0, 0, 0,
-                         static_cast<int>(state->width / 2),
-                         static_cast<int>(state->height / 2));
+                         static_cast<int>(state->width / 2), static_cast<int>(state->height / 2));
         }
         XFlush(display_);
         const auto status = logical_.set_cursor_capture(id, true);

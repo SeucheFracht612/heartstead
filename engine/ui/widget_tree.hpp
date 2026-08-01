@@ -195,6 +195,7 @@ enum class UiEventKind : std::uint8_t {
     clicked,
     toggled,
     value_changed,
+    value_committed,
     text_changed,
     focus_changed,
     drag_started,
@@ -285,7 +286,8 @@ class WidgetTree {
     void layout_node(Node& node, UiRect bounds, UiRect inherited_clip);
     void rebuild_paint_order();
     void append_paint_order(WidgetId id);
-    [[nodiscard]] WidgetId hit_test(math::Vec2f point, bool drop_targets_only = false) const noexcept;
+    [[nodiscard]] WidgetId hit_test(math::Vec2f point,
+                                    bool drop_targets_only = false) const noexcept;
     [[nodiscard]] std::vector<WidgetId> focus_order() const;
     void navigate_focus(UiNavigation navigation, std::vector<UiEvent>& events);
     void activate(WidgetId id, std::vector<UiEvent>& events);

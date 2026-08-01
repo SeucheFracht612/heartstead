@@ -3,7 +3,9 @@
 #include "engine/core/filesystem.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -15,7 +17,8 @@ namespace heartstead::game {
 
 namespace {
 
-constexpr std::string_view settings_magic = "heartstead.application_settings.v1";
+constexpr std::string_view legacy_settings_magic = "heartstead.application_settings.v1";
+constexpr std::string_view settings_magic = "heartstead.application_settings.v2";
 constexpr std::uintmax_t maximum_settings_bytes = 64U * 1024U;
 
 [[nodiscard]] core::Status failure(std::string code, const std::error_code& error) {
@@ -121,6 +124,37 @@ template <typename Value>
                                        "invalid boolean setting: " + std::string(field));
 }
 
+void recover_invalid_fields(ApplicationSettings& settings) {
+    const ApplicationSettings defaults;
+    if (settings.window_width < 640 || settings.window_width > 16'384) {
+        settings.window_width = defaults.window_width;
+    }
+    if (settings.window_height < 360 || settings.window_height > 16'384) {
+        settings.window_height = defaults.window_height;
+    }
+    const auto recover_range = [](float& value, float minimum, float maximum, float fallback) {
+        if (!std::isfinite(value) || value < minimum || value > maximum) {
+            value = fallback;
+        }
+    };
+    recover_range(settings.master_volume, 0.0F, 1.0F, defaults.master_volume);
+    recover_range(settings.music_volume, 0.0F, 1.0F, defaults.music_volume);
+    recover_range(settings.effects_volume, 0.0F, 1.0F, defaults.effects_volume);
+    recover_range(settings.mouse_sensitivity, 0.1F, 10.0F, defaults.mouse_sensitivity);
+    recover_range(settings.controller_sensitivity, 0.1F, 10.0F, defaults.controller_sensitivity);
+    recover_range(settings.ui_scale, 0.75F, 2.0F, defaults.ui_scale);
+    recover_range(settings.ui_contrast, 0.5F, 2.0F, defaults.ui_contrast);
+    recover_range(settings.ui_saturation, 0.0F, 2.0F, defaults.ui_saturation);
+    if (!safe_text(settings.last_world_slot, 96)) {
+        settings.last_world_slot.clear();
+    }
+    std::erase_if(settings.recent_servers,
+                  [](const std::string& server) { return !safe_text(server, 256); });
+    if (settings.recent_servers.size() > 16) {
+        settings.recent_servers.resize(16);
+    }
+}
+
 } // namespace
 
 core::Status ApplicationSettings::validate() const {
@@ -170,10 +204,12 @@ core::Result<ApplicationSettings> ApplicationSettingsStore::load() const {
     }
     std::ifstream input(path_, std::ios::binary);
     std::string line;
-    if (!input || !std::getline(input, line) || line != settings_magic) {
+    if (!input || !std::getline(input, line) ||
+        (line != settings_magic && line != legacy_settings_magic)) {
         return core::Result<ApplicationSettings>::failure("application_settings.invalid_header",
                                                           "application settings header is invalid");
     }
+    const bool legacy_schema = line == legacy_settings_magic;
     ApplicationSettings settings;
     std::unordered_set<std::string> seen;
     bool ended = false;
@@ -187,59 +223,54 @@ core::Result<ApplicationSettings> ApplicationSettingsStore::load() const {
         }
         const auto separator = line.find('|');
         if (separator == std::string::npos) {
-            return core::Result<ApplicationSettings>::failure(
-                "application_settings.invalid_line", "settings line is missing a separator");
+            continue;
         }
         const auto key = line.substr(0, separator);
         const auto value = std::string_view(line).substr(separator + 1);
         if (key != "recent_server" && !seen.emplace(key).second) {
-            return core::Result<ApplicationSettings>::failure(
-                "application_settings.duplicate_field", "duplicate application setting: " + key);
+            continue;
         }
         if (key == "window_width") {
             auto parsed = parse_number<std::uint32_t>(value, key);
-            if (!parsed)
-                return core::Result<ApplicationSettings>::failure(parsed.error().code,
-                                                                  parsed.error().message);
-            settings.window_width = parsed.value();
+            if (parsed)
+                settings.window_width = parsed.value();
         } else if (key == "window_height") {
             auto parsed = parse_number<std::uint32_t>(value, key);
-            if (!parsed)
-                return core::Result<ApplicationSettings>::failure(parsed.error().code,
-                                                                  parsed.error().message);
-            settings.window_height = parsed.value();
-        } else if (key == "windowed" || key == "controller_enabled" || key == "reduced_motion") {
+            if (parsed)
+                settings.window_height = parsed.value();
+        } else if (key == "windowed" || key == "vsync" || key == "controller_enabled" ||
+                   key == "reduced_motion") {
             auto parsed = parse_bool(value, key);
-            if (!parsed)
-                return core::Result<ApplicationSettings>::failure(parsed.error().code,
-                                                                  parsed.error().message);
+            if (!parsed) {
+                continue;
+            }
             if (key == "windowed")
                 settings.windowed = parsed.value();
+            else if (key == "vsync")
+                settings.vsync = parsed.value();
             else if (key == "controller_enabled")
                 settings.controller_enabled = parsed.value();
             else
                 settings.reduced_motion = parsed.value();
         } else if (key == "rendering_quality") {
             auto parsed = parse_quality(value);
-            if (!parsed)
-                return core::Result<ApplicationSettings>::failure(parsed.error().code,
-                                                                  parsed.error().message);
-            settings.rendering_quality = parsed.value();
+            if (parsed)
+                settings.rendering_quality = parsed.value();
         } else if (key == "color_vision") {
             auto parsed = parse_color_vision(value);
-            if (!parsed)
-                return core::Result<ApplicationSettings>::failure(parsed.error().code,
-                                                                  parsed.error().message);
-            settings.color_vision_mode = parsed.value();
+            if (parsed)
+                settings.color_vision_mode = parsed.value();
         } else if (key == "last_world_slot") {
             settings.last_world_slot = std::string(value);
         } else if (key == "recent_server") {
             settings.recent_servers.emplace_back(value);
-        } else {
+        } else if (key == "master_volume" || key == "music_volume" || key == "effects_volume" ||
+                   key == "mouse_sensitivity" || key == "controller_sensitivity" ||
+                   key == "ui_scale" || key == "ui_contrast" || key == "ui_saturation") {
             auto parsed = parse_number<float>(value, key);
-            if (!parsed)
-                return core::Result<ApplicationSettings>::failure(parsed.error().code,
-                                                                  parsed.error().message);
+            if (!parsed) {
+                continue;
+            }
             if (key == "master_volume")
                 settings.master_volume = parsed.value();
             else if (key == "music_volume")
@@ -256,15 +287,30 @@ core::Result<ApplicationSettings> ApplicationSettingsStore::load() const {
                 settings.ui_contrast = parsed.value();
             else if (key == "ui_saturation")
                 settings.ui_saturation = parsed.value();
-            else
-                return core::Result<ApplicationSettings>::failure(
-                    "application_settings.unknown_field", "unknown application setting: " + key);
         }
     }
     if (!ended) {
         return core::Result<ApplicationSettings>::failure("application_settings.incomplete",
                                                           "application settings has no end marker");
     }
+    if (!legacy_schema) {
+        constexpr std::array required_fields{
+            "window_width",      "window_height",          "windowed",           "vsync",
+            "rendering_quality", "master_volume",          "music_volume",       "effects_volume",
+            "mouse_sensitivity", "controller_sensitivity", "controller_enabled", "ui_scale",
+            "ui_contrast",       "ui_saturation",          "color_vision",       "reduced_motion",
+            "last_world_slot",
+        };
+        const auto missing = std::ranges::find_if(required_fields, [&seen](std::string_view field) {
+            return !seen.contains(std::string(field));
+        });
+        if (missing != required_fields.end()) {
+            return core::Result<ApplicationSettings>::failure(
+                "application_settings.incomplete",
+                "application settings is missing required field: " + std::string(*missing));
+        }
+    }
+    recover_invalid_fields(settings);
     auto status = settings.validate();
     if (!status) {
         return core::Result<ApplicationSettings>::failure(status.error().code,
@@ -294,6 +340,7 @@ core::Status ApplicationSettingsStore::save(const ApplicationSettings& settings)
                << "window_width|" << settings.window_width << '\n'
                << "window_height|" << settings.window_height << '\n'
                << "windowed|" << (settings.windowed ? "true" : "false") << '\n'
+               << "vsync|" << (settings.vsync ? "true" : "false") << '\n'
                << "rendering_quality|" << quality_name(settings.rendering_quality) << '\n'
                << "master_volume|" << settings.master_volume << '\n'
                << "music_volume|" << settings.music_volume << '\n'

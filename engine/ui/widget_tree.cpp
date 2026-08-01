@@ -48,7 +48,8 @@ namespace {
 [[nodiscard]] UiRect aligned_rect(UiRect available, float width, float height,
                                   UiAlignment horizontal, UiAlignment vertical) noexcept {
     width = horizontal == UiAlignment::stretch ? available.width : std::min(width, available.width);
-    height = vertical == UiAlignment::stretch ? available.height : std::min(height, available.height);
+    height =
+        vertical == UiAlignment::stretch ? available.height : std::min(height, available.height);
     auto x = available.x;
     auto y = available.y;
     if (horizontal == UiAlignment::center) {
@@ -115,9 +116,8 @@ core::Status UiSkin::add_region(UiAtlasRegion region) {
     if (region.name.empty() || !region.uv_minimum.is_finite() || !region.uv_maximum.is_finite() ||
         !region.source_size_pixels.is_finite() || region.source_size_pixels.x <= 0.0F ||
         region.source_size_pixels.y <= 0.0F || region.uv_minimum.x < 0.0F ||
-        region.uv_minimum.y < 0.0F || region.uv_maximum.x > 1.0F ||
-        region.uv_maximum.y > 1.0F || region.uv_minimum.x >= region.uv_maximum.x ||
-        region.uv_minimum.y >= region.uv_maximum.y) {
+        region.uv_minimum.y < 0.0F || region.uv_maximum.x > 1.0F || region.uv_maximum.y > 1.0F ||
+        region.uv_minimum.x >= region.uv_maximum.x || region.uv_minimum.y >= region.uv_maximum.y) {
         return core::Status::failure("ui_skin.invalid_region",
                                      "atlas region requires valid name, UVs, and source size");
     }
@@ -175,8 +175,7 @@ UiInputFrame UiInputFrame::from_platform(const platform::WindowInputSnapshot& sn
                             static_cast<float>(snapshot.mouse_delta_y)};
     result.pointer_inside = snapshot.mouse.inside;
     result.wheel_delta = static_cast<float>(snapshot.wheel_delta_y);
-    result.primary_down =
-        contains_button(snapshot.down_mouse_buttons, platform::MouseButton::left);
+    result.primary_down = contains_button(snapshot.down_mouse_buttons, platform::MouseButton::left);
     result.primary_pressed =
         contains_button(snapshot.pressed_mouse_buttons, platform::MouseButton::left);
     result.primary_released =
@@ -199,10 +198,8 @@ UiInputFrame UiInputFrame::from_platform(const platform::WindowInputSnapshot& sn
     } else if (contains_key(snapshot.pressed_keys, platform::KeyCode::arrow_down)) {
         result.navigation = UiNavigation::down;
     }
-    result.backspace_pressed =
-        contains_key(snapshot.pressed_keys, platform::KeyCode::backspace);
-    result.delete_pressed =
-        contains_key(snapshot.pressed_keys, platform::KeyCode::delete_key);
+    result.backspace_pressed = contains_key(snapshot.pressed_keys, platform::KeyCode::backspace);
+    result.delete_pressed = contains_key(snapshot.pressed_keys, platform::KeyCode::delete_key);
     for (const auto& text : snapshot.text) {
         result.text += text;
     }
@@ -230,14 +227,14 @@ core::Status WidgetTree::validate_desc(const WidgetDesc& desc, bool updating) co
     const auto& style = desc.layout;
     if (!finite_nonnegative(style.minimum_width) || !finite_nonnegative(style.minimum_height) ||
         !finite_nonnegative(style.maximum_width) || !finite_nonnegative(style.maximum_height) ||
-        style.minimum_width > style.maximum_width ||
-        style.minimum_height > style.maximum_height || !finite_nonnegative(style.gap) ||
-        style.grid_columns == 0 || !finite_nonnegative(style.grid_cell_height) ||
-        !finite_nonnegative(style.padding.left) || !finite_nonnegative(style.padding.top) ||
-        !finite_nonnegative(style.padding.right) || !finite_nonnegative(style.padding.bottom) ||
-        !std::isfinite(desc.glyph_size_pixels) || desc.glyph_size_pixels <= 0.0F ||
-        !std::isfinite(desc.value) || !std::isfinite(desc.minimum_value) ||
-        !std::isfinite(desc.maximum_value) || desc.minimum_value > desc.maximum_value) {
+        style.minimum_width > style.maximum_width || style.minimum_height > style.maximum_height ||
+        !finite_nonnegative(style.gap) || style.grid_columns == 0 ||
+        !finite_nonnegative(style.grid_cell_height) || !finite_nonnegative(style.padding.left) ||
+        !finite_nonnegative(style.padding.top) || !finite_nonnegative(style.padding.right) ||
+        !finite_nonnegative(style.padding.bottom) || !std::isfinite(desc.glyph_size_pixels) ||
+        desc.glyph_size_pixels <= 0.0F || !std::isfinite(desc.value) ||
+        !std::isfinite(desc.minimum_value) || !std::isfinite(desc.maximum_value) ||
+        desc.minimum_value > desc.maximum_value) {
         return core::Status::failure("widget_tree.invalid_desc",
                                      "widget layout, text, or value range is invalid");
     }
@@ -360,14 +357,15 @@ const WidgetDesc* WidgetTree::find(WidgetId id) const noexcept {
 }
 
 math::Vec2f WidgetTree::measure(const Node& current) const noexcept {
-    const auto horizontal_padding = current.desc.layout.padding.left +
-                                    current.desc.layout.padding.right;
+    const auto horizontal_padding =
+        current.desc.layout.padding.left + current.desc.layout.padding.right;
     const auto vertical_padding =
         current.desc.layout.padding.top + current.desc.layout.padding.bottom;
     auto width = horizontal_padding;
     auto height = vertical_padding;
     if (!current.desc.text.empty()) {
-        width += static_cast<float>(current.desc.text.size()) * current.desc.glyph_size_pixels * 0.75F;
+        width +=
+            static_cast<float>(current.desc.text.size()) * current.desc.glyph_size_pixels * 0.75F;
         height += current.desc.glyph_size_pixels;
     }
     if (current.children.empty()) {
@@ -384,8 +382,9 @@ math::Vec2f WidgetTree::measure(const Node& current) const noexcept {
                 child_height = std::max(child_height, child_size.y);
             }
         }
-        child_width += current.desc.layout.gap *
-                       static_cast<float>(current.children.empty() ? 0 : current.children.size() - 1);
+        child_width +=
+            current.desc.layout.gap *
+            static_cast<float>(current.children.empty() ? 0 : current.children.size() - 1);
         width = std::max(width, horizontal_padding + child_width);
         height = std::max(height, vertical_padding + child_height);
     } else if (current.desc.layout.mode == UiLayoutMode::column) {
@@ -405,7 +404,8 @@ math::Vec2f WidgetTree::measure(const Node& current) const noexcept {
         height = std::max(height, vertical_padding + child_height);
     } else if (current.desc.layout.mode == UiLayoutMode::grid) {
         const auto columns = std::max(1U, current.desc.layout.grid_columns);
-        const auto rows = static_cast<std::uint32_t>((current.children.size() + columns - 1) / columns);
+        const auto rows =
+            static_cast<std::uint32_t>((current.children.size() + columns - 1) / columns);
         float cell_width = 0.0F;
         for (const auto child_id : current.children) {
             if (const auto* child = node(child_id); child != nullptr && child->desc.visible) {
@@ -413,10 +413,11 @@ math::Vec2f WidgetTree::measure(const Node& current) const noexcept {
             }
         }
         width = std::max(width, horizontal_padding + cell_width * static_cast<float>(columns) +
-                                   current.desc.layout.gap * static_cast<float>(columns - 1));
-        height = std::max(height, vertical_padding +
-                                    current.desc.layout.grid_cell_height * static_cast<float>(rows) +
-                                    current.desc.layout.gap * static_cast<float>(rows == 0 ? 0 : rows - 1));
+                                    current.desc.layout.gap * static_cast<float>(columns - 1));
+        height = std::max(
+            height, vertical_padding +
+                        current.desc.layout.grid_cell_height * static_cast<float>(rows) +
+                        current.desc.layout.gap * static_cast<float>(rows == 0 ? 0 : rows - 1));
     } else {
         for (const auto child_id : current.children) {
             if (const auto* child = node(child_id); child != nullptr && child->desc.visible) {
@@ -426,10 +427,9 @@ math::Vec2f WidgetTree::measure(const Node& current) const noexcept {
             }
         }
     }
-    return {clamp_size(width, current.desc.layout.minimum_width,
-                       current.desc.layout.maximum_width),
-            clamp_size(height, current.desc.layout.minimum_height,
-                       current.desc.layout.maximum_height)};
+    return {
+        clamp_size(width, current.desc.layout.minimum_width, current.desc.layout.maximum_width),
+        clamp_size(height, current.desc.layout.minimum_height, current.desc.layout.maximum_height)};
 }
 
 void WidgetTree::layout_node(Node& current, UiRect bounds, UiRect inherited_clip) {
@@ -482,12 +482,10 @@ void WidgetTree::layout_node(Node& current, UiRect bounds, UiRect inherited_clip
         }
         const auto fill_space = std::max(0.0F, available_main - fixed_main);
         if (!row && current.desc.kind == WidgetKind::scroll_area) {
-            current.scroll_extent_y =
-                std::max(content.height, fixed_main +
-                                             gap * static_cast<float>(
-                                                       current.children.empty()
-                                                           ? 0
-                                                           : current.children.size() - 1));
+            current.scroll_extent_y = std::max(
+                content.height,
+                fixed_main + gap * static_cast<float>(
+                                       current.children.empty() ? 0 : current.children.size() - 1));
             current.scroll_offset_y =
                 std::clamp(current.scroll_offset_y, 0.0F,
                            std::max(0.0F, current.scroll_extent_y - content.height));
@@ -509,13 +507,12 @@ void WidgetTree::layout_node(Node& current, UiRect bounds, UiRect inherited_clip
                 row ? child->desc.layout.minimum_height : child->desc.layout.minimum_width;
             const auto maximum_cross =
                 row ? child->desc.layout.maximum_height : child->desc.layout.maximum_width;
-            const auto main = main_spec.mode == UiSizeMode::fill
-                                  ? fill_space * std::max(0.001F, main_spec.value) /
-                                        std::max(0.001F, fill_weight)
-                                  : resolve_size(main_spec, available_main,
-                                                 row ? measured.x : measured.y, minimum_main,
-                                                 maximum_main) *
-                                        dpi_scale_;
+            const auto main =
+                main_spec.mode == UiSizeMode::fill
+                    ? fill_space * std::max(0.001F, main_spec.value) / std::max(0.001F, fill_weight)
+                    : resolve_size(main_spec, available_main, row ? measured.x : measured.y,
+                                   minimum_main, maximum_main) *
+                          dpi_scale_;
             const auto cross_available = row ? content.height : content.width;
             const auto cross =
                 resolve_size(cross_spec, cross_available, row ? measured.y : measured.x,
@@ -526,8 +523,8 @@ void WidgetTree::layout_node(Node& current, UiRect bounds, UiRect inherited_clip
             auto child_bounds =
                 row ? aligned_rect(slot, main, cross, UiAlignment::stretch,
                                    child->desc.layout.vertical_alignment)
-                    : aligned_rect(slot, cross, main,
-                                   child->desc.layout.horizontal_alignment, UiAlignment::stretch);
+                    : aligned_rect(slot, cross, main, child->desc.layout.horizontal_alignment,
+                                   UiAlignment::stretch);
             layout_node(*child, child_bounds, child_clip);
             cursor += main + gap;
         }
@@ -540,17 +537,15 @@ void WidgetTree::layout_node(Node& current, UiRect bounds, UiRect inherited_clip
             std::max(0.0F, (content.width - gap * static_cast<float>(columns - 1)) /
                                static_cast<float>(columns));
         const auto cell_height = current.desc.layout.grid_cell_height * dpi_scale_;
-        const auto visible_count = static_cast<std::uint32_t>(std::ranges::count_if(
-            current.children, [this](WidgetId id) {
+        const auto visible_count =
+            static_cast<std::uint32_t>(std::ranges::count_if(current.children, [this](WidgetId id) {
                 const auto* child = node(id);
                 return child != nullptr && child->desc.visible;
             }));
         const auto rows = (visible_count + columns - 1U) / columns;
-        current.scroll_extent_y =
-            rows == 0
-                ? content.height
-                : static_cast<float>(rows) * cell_height +
-                      static_cast<float>(rows - 1U) * gap;
+        current.scroll_extent_y = rows == 0 ? content.height
+                                            : static_cast<float>(rows) * cell_height +
+                                                  static_cast<float>(rows - 1U) * gap;
         if (current.desc.kind == WidgetKind::scroll_area) {
             current.scroll_offset_y =
                 std::clamp(current.scroll_offset_y, 0.0F,
@@ -567,18 +562,16 @@ void WidgetTree::layout_node(Node& current, UiRect bounds, UiRect inherited_clip
             UiRect slot{content.x + static_cast<float>(column) * (cell_width + gap),
                         content.y + static_cast<float>(row) * (cell_height + gap) -
                             current.scroll_offset_y,
-                        cell_width,
-                        cell_height};
+                        cell_width, cell_height};
             const auto measured = measure(*child);
-            const auto width = resolve_size(child->desc.layout.width, slot.width, measured.x,
-                                            child->desc.layout.minimum_width,
-                                            child->desc.layout.maximum_width);
-            const auto height = resolve_size(child->desc.layout.height, slot.height, measured.y,
-                                             child->desc.layout.minimum_height,
-                                             child->desc.layout.maximum_height);
+            const auto width =
+                resolve_size(child->desc.layout.width, slot.width, measured.x,
+                             child->desc.layout.minimum_width, child->desc.layout.maximum_width);
+            const auto height =
+                resolve_size(child->desc.layout.height, slot.height, measured.y,
+                             child->desc.layout.minimum_height, child->desc.layout.maximum_height);
             layout_node(*child,
-                        aligned_rect(slot, width, height,
-                                     child->desc.layout.horizontal_alignment,
+                        aligned_rect(slot, width, height, child->desc.layout.horizontal_alignment,
                                      child->desc.layout.vertical_alignment),
                         child_clip);
             ++visible_index;
@@ -592,15 +585,14 @@ void WidgetTree::layout_node(Node& current, UiRect bounds, UiRect inherited_clip
             continue;
         }
         const auto measured = measure(*child);
-        const auto width = resolve_size(child->desc.layout.width, content.width, measured.x,
-                                        child->desc.layout.minimum_width,
-                                        child->desc.layout.maximum_width);
-        const auto height = resolve_size(child->desc.layout.height, content.height, measured.y,
-                                         child->desc.layout.minimum_height,
-                                         child->desc.layout.maximum_height);
+        const auto width =
+            resolve_size(child->desc.layout.width, content.width, measured.x,
+                         child->desc.layout.minimum_width, child->desc.layout.maximum_width);
+        const auto height =
+            resolve_size(child->desc.layout.height, content.height, measured.y,
+                         child->desc.layout.minimum_height, child->desc.layout.maximum_height);
         layout_node(*child,
-                    aligned_rect(content, width, height,
-                                 child->desc.layout.horizontal_alignment,
+                    aligned_rect(content, width, height, child->desc.layout.horizontal_alignment,
                                  child->desc.layout.vertical_alignment),
                     child_clip);
     }
@@ -624,15 +616,14 @@ core::Status WidgetTree::layout(math::Vec2f viewport_pixels, float dpi_scale) {
             continue;
         }
         const auto measured = measure(*root);
-        const auto width = resolve_size(root->desc.layout.width, viewport.width, measured.x,
-                                        root->desc.layout.minimum_width,
-                                        root->desc.layout.maximum_width);
-        const auto height = resolve_size(root->desc.layout.height, viewport.height, measured.y,
-                                         root->desc.layout.minimum_height,
-                                         root->desc.layout.maximum_height);
+        const auto width =
+            resolve_size(root->desc.layout.width, viewport.width, measured.x,
+                         root->desc.layout.minimum_width, root->desc.layout.maximum_width);
+        const auto height =
+            resolve_size(root->desc.layout.height, viewport.height, measured.y,
+                         root->desc.layout.minimum_height, root->desc.layout.maximum_height);
         layout_node(*root,
-                    aligned_rect(viewport, width, height,
-                                 root->desc.layout.horizontal_alignment,
+                    aligned_rect(viewport, width, height, root->desc.layout.horizontal_alignment,
                                  root->desc.layout.vertical_alignment),
                     viewport);
     }
@@ -714,8 +705,8 @@ void WidgetTree::activate(WidgetId id, std::vector<UiEvent>& events) {
     }
     if (current->desc.kind == WidgetKind::toggle) {
         current->desc.checked = !current->desc.checked;
-        events.push_back({UiEventKind::toggled, id, {}, {}, {}, current->desc.value,
-                          current->desc.checked});
+        events.push_back(
+            {UiEventKind::toggled, id, {}, {}, {}, current->desc.value, current->desc.checked});
     } else {
         events.push_back({UiEventKind::clicked, id, {}, {}, {}, 0.0F, false});
     }
@@ -737,8 +728,7 @@ UiRouteResult WidgetTree::route_input(const UiInputFrame& input) {
                 continue;
             }
             current->scroll_offset_y =
-                std::clamp(current->scroll_offset_y - input.wheel_delta * 24.0F * dpi_scale_,
-                           0.0F,
+                std::clamp(current->scroll_offset_y - input.wheel_delta * 24.0F * dpi_scale_, 0.0F,
                            std::max(0.0F, current->scroll_extent_y - current->rect.height));
             (void)layout(viewport_, dpi_scale_);
             result.consumed.pointer = true;
@@ -749,8 +739,8 @@ UiRouteResult WidgetTree::route_input(const UiInputFrame& input) {
         captured_ = hovered_;
         pressed_ = hovered_;
         press_position_ = input.pointer;
-        if (const auto* current = node(hovered_); current != nullptr && current->desc.focusable &&
-                                             focused_ != hovered_) {
+        if (const auto* current = node(hovered_);
+            current != nullptr && current->desc.focusable && focused_ != hovered_) {
             focused_ = hovered_;
             result.events.push_back(
                 {UiEventKind::focus_changed, focused_, {}, {}, {}, 0.0F, false});
@@ -781,8 +771,13 @@ UiRouteResult WidgetTree::route_input(const UiInputFrame& input) {
             if (dx * dx + dy * dy >= 16.0F) {
                 drag_source_ = current->desc.id;
                 drag_payload_ = current->desc.drag_payload;
-                result.events.push_back({UiEventKind::drag_started, drag_source_, drag_source_,
-                                         drag_payload_, {}, 0.0F, false});
+                result.events.push_back({UiEventKind::drag_started,
+                                         drag_source_,
+                                         drag_source_,
+                                         drag_payload_,
+                                         {},
+                                         0.0F,
+                                         false});
             }
         }
     }
@@ -790,13 +785,29 @@ UiRouteResult WidgetTree::route_input(const UiInputFrame& input) {
         if (drag_source_.is_valid()) {
             const auto drop_target = hit_test(input.pointer, true);
             if (drop_target.is_valid()) {
-                result.events.push_back({UiEventKind::dropped, drop_target, drag_source_,
-                                         drag_payload_, {}, 0.0F, false});
+                result.events.push_back({UiEventKind::dropped,
+                                         drop_target,
+                                         drag_source_,
+                                         drag_payload_,
+                                         {},
+                                         0.0F,
+                                         false});
             }
             drag_source_ = {};
             drag_payload_.clear();
-        } else if (pressed_ == hovered_) {
-            activate(captured_, result.events);
+        } else {
+            const auto* released = node(captured_);
+            if (released != nullptr && released->desc.kind == WidgetKind::slider) {
+                result.events.push_back({UiEventKind::value_committed,
+                                         released->desc.id,
+                                         {},
+                                         {},
+                                         {},
+                                         released->desc.value,
+                                         false});
+            } else if (pressed_ == hovered_) {
+                activate(captured_, result.events);
+            }
         }
         captured_ = {};
         pressed_ = {};
@@ -813,8 +824,7 @@ UiRouteResult WidgetTree::route_input(const UiInputFrame& input) {
         result.consumed.keyboard = true;
         result.consumed.gamepad = true;
     } else if (input.navigation == UiNavigation::cancel) {
-        result.events.push_back(
-            {UiEventKind::cancelled, focused_, {}, {}, {}, 0.0F, false});
+        result.events.push_back({UiEventKind::cancelled, focused_, {}, {}, {}, 0.0F, false});
         result.consumed.keyboard = true;
         result.consumed.gamepad = true;
     }
@@ -838,8 +848,8 @@ UiRouteResult WidgetTree::route_input(const UiInputFrame& input) {
             result.consumed.keyboard = true;
         }
         if (changed) {
-            result.events.push_back({UiEventKind::text_changed, focused_, {}, {},
-                                     focused->desc.text, 0.0F, false});
+            result.events.push_back(
+                {UiEventKind::text_changed, focused_, {}, {}, focused->desc.text, 0.0F, false});
         }
     }
 
@@ -904,14 +914,14 @@ core::Result<UiPaintStats> WidgetTree::paint(renderer::UiRenderer& output) const
             const auto* region =
                 slice == nullptr ? nullptr : skin_.find_region(slice->atlas_region);
             if (slice != nullptr && region != nullptr) {
-                const auto left = std::min(slice->border_pixels.left * dpi_scale_,
-                                           current->rect.width * 0.5F);
-                const auto right = std::min(slice->border_pixels.right * dpi_scale_,
-                                            current->rect.width * 0.5F);
-                const auto top = std::min(slice->border_pixels.top * dpi_scale_,
-                                          current->rect.height * 0.5F);
-                const auto bottom = std::min(slice->border_pixels.bottom * dpi_scale_,
-                                             current->rect.height * 0.5F);
+                const auto left =
+                    std::min(slice->border_pixels.left * dpi_scale_, current->rect.width * 0.5F);
+                const auto right =
+                    std::min(slice->border_pixels.right * dpi_scale_, current->rect.width * 0.5F);
+                const auto top =
+                    std::min(slice->border_pixels.top * dpi_scale_, current->rect.height * 0.5F);
+                const auto bottom =
+                    std::min(slice->border_pixels.bottom * dpi_scale_, current->rect.height * 0.5F);
                 const std::array xs{current->rect.x, current->rect.x + left,
                                     current->rect.x + current->rect.width - right,
                                     current->rect.x + current->rect.width};
@@ -920,43 +930,40 @@ core::Result<UiPaintStats> WidgetTree::paint(renderer::UiRenderer& output) const
                                     current->rect.y + current->rect.height};
                 const auto uv_width = region->uv_maximum.x - region->uv_minimum.x;
                 const auto uv_height = region->uv_maximum.y - region->uv_minimum.y;
-                const std::array us{
-                    region->uv_minimum.x,
-                    region->uv_minimum.x +
-                        uv_width * slice->border_pixels.left / region->source_size_pixels.x,
-                    region->uv_maximum.x -
-                        uv_width * slice->border_pixels.right / region->source_size_pixels.x,
-                    region->uv_maximum.x};
-                const std::array vs{
-                    region->uv_minimum.y,
-                    region->uv_minimum.y +
-                        uv_height * slice->border_pixels.top / region->source_size_pixels.y,
-                    region->uv_maximum.y -
-                        uv_height * slice->border_pixels.bottom / region->source_size_pixels.y,
-                    region->uv_maximum.y};
+                const std::array us{region->uv_minimum.x,
+                                    region->uv_minimum.x + uv_width * slice->border_pixels.left /
+                                                               region->source_size_pixels.x,
+                                    region->uv_maximum.x - uv_width * slice->border_pixels.right /
+                                                               region->source_size_pixels.x,
+                                    region->uv_maximum.x};
+                const std::array vs{region->uv_minimum.y,
+                                    region->uv_minimum.y + uv_height * slice->border_pixels.top /
+                                                               region->source_size_pixels.y,
+                                    region->uv_maximum.y - uv_height * slice->border_pixels.bottom /
+                                                               region->source_size_pixels.y,
+                                    region->uv_maximum.y};
                 for (std::size_t y = 0; y < 3; ++y) {
                     for (std::size_t x = 0; x < 3; ++x) {
                         UiAtlasRegion cell = *region;
                         cell.uv_minimum = {us[x], vs[y]};
                         cell.uv_maximum = {us[x + 1], vs[y + 1]};
-                        auto status = submit_quad({xs[x], ys[y], xs[x + 1] - xs[x],
-                                                  ys[y + 1] - ys[y]},
-                                                 cell, current->desc.color, current->clip, true);
+                        auto status =
+                            submit_quad({xs[x], ys[y], xs[x + 1] - xs[x], ys[y + 1] - ys[y]}, cell,
+                                        current->desc.color, current->clip, true);
                         if (!status) {
-                            return core::Result<UiPaintStats>::failure(
-                                status.error().code, status.error().message);
+                            return core::Result<UiPaintStats>::failure(status.error().code,
+                                                                       status.error().message);
                         }
                     }
                 }
             }
-        } else if (!current->desc.atlas_region.empty() ||
-                   current->desc.kind != WidgetKind::label) {
-            const auto* region = skin_.find_region(current->desc.atlas_region.empty()
-                                                       ? std::string_view{"solid"}
-                                                       : std::string_view{current->desc.atlas_region});
+        } else if (!current->desc.atlas_region.empty() || current->desc.kind != WidgetKind::label) {
+            const auto* region = skin_.find_region(
+                current->desc.atlas_region.empty() ? std::string_view{"solid"}
+                                                   : std::string_view{current->desc.atlas_region});
             if (region != nullptr) {
-                auto status = submit_quad(current->rect, *region, current->desc.color,
-                                          current->clip, false);
+                auto status =
+                    submit_quad(current->rect, *region, current->desc.color, current->clip, false);
                 if (!status) {
                     return core::Result<UiPaintStats>::failure(status.error().code,
                                                                status.error().message);
@@ -966,10 +973,9 @@ core::Result<UiPaintStats> WidgetTree::paint(renderer::UiRenderer& output) const
 
         if (current->desc.kind == WidgetKind::toggle && current->desc.checked) {
             if (const auto* solid = skin_.find_region("solid"); solid != nullptr) {
-                const auto mark = current->rect.inset(current->rect.width * 0.28F,
-                                                      current->rect.height * 0.28F,
-                                                      current->rect.width * 0.28F,
-                                                      current->rect.height * 0.28F);
+                const auto mark =
+                    current->rect.inset(current->rect.width * 0.28F, current->rect.height * 0.28F,
+                                        current->rect.width * 0.28F, current->rect.height * 0.28F);
                 auto status =
                     submit_quad(mark, *solid, {0.94F, 0.74F, 0.24F, 1.0F}, current->clip, false);
                 if (!status) {
@@ -982,11 +988,10 @@ core::Result<UiPaintStats> WidgetTree::paint(renderer::UiRenderer& output) const
             if (const auto* solid = skin_.find_region("solid"); solid != nullptr) {
                 const auto range = current->desc.maximum_value - current->desc.minimum_value;
                 const auto normalized =
-                    range <= 0.0F ? 0.0F
-                                  : std::clamp((current->desc.value -
-                                                current->desc.minimum_value) /
-                                                   range,
-                                               0.0F, 1.0F);
+                    range <= 0.0F
+                        ? 0.0F
+                        : std::clamp((current->desc.value - current->desc.minimum_value) / range,
+                                     0.0F, 1.0F);
                 const UiRect fill{current->rect.x, current->rect.y,
                                   current->rect.width * normalized, current->rect.height};
                 auto status =
@@ -999,8 +1004,9 @@ core::Result<UiPaintStats> WidgetTree::paint(renderer::UiRenderer& output) const
         }
         if (!current->desc.text.empty()) {
             renderer::UiTextDesc text;
-            text.position_pixels = {current->rect.x + current->desc.layout.padding.left * dpi_scale_,
-                                    current->rect.y + current->desc.layout.padding.top * dpi_scale_};
+            text.position_pixels = {
+                current->rect.x + current->desc.layout.padding.left * dpi_scale_,
+                current->rect.y + current->desc.layout.padding.top * dpi_scale_};
             text.text = current->desc.text;
             text.glyph_size_pixels = current->desc.glyph_size_pixels * dpi_scale_;
             text.color = current->desc.text_color;
@@ -1037,8 +1043,7 @@ core::Result<UiPaintStats> WidgetTree::paint(renderer::UiRenderer& output) const
                                           true,
                                           to_scissor(viewport)});
         if (!status) {
-            return core::Result<UiPaintStats>::failure(status.error().code,
-                                                       status.error().message);
+            return core::Result<UiPaintStats>::failure(status.error().code, status.error().message);
         }
         stats.submitted_glyphs += static_cast<std::uint32_t>(hovered->desc.tooltip.size());
     }
@@ -1091,16 +1096,15 @@ void WidgetTree::set_visible(WidgetId id, bool visible) noexcept {
 
 void WidgetTree::set_focus(WidgetId id) noexcept {
     const auto* found = node(id);
-    focused_ = found != nullptr && found->desc.visible && found->desc.enabled &&
-                       found->desc.focusable
-                   ? id
-                   : WidgetId{};
+    focused_ =
+        found != nullptr && found->desc.visible && found->desc.enabled && found->desc.focusable
+            ? id
+            : WidgetId{};
 }
 
 std::string_view widget_kind_name(WidgetKind kind) noexcept {
-    constexpr std::array names{"panel",      "label",       "image",      "button",
-                               "toggle",     "slider",      "text_input", "scroll_area",
-                               "tooltip",    "grid_slot"};
+    constexpr std::array names{"panel",  "label",      "image",       "button",  "toggle",
+                               "slider", "text_input", "scroll_area", "tooltip", "grid_slot"};
     const auto index = static_cast<std::size_t>(kind);
     return index < names.size() ? names[index] : "unknown";
 }
