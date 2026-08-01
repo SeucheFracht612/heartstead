@@ -78,6 +78,7 @@ class SplitVoxelSectionExperiment {
 
     [[nodiscard]] core::Status validate() const;
     [[nodiscard]] VoxelCell cell(std::size_t index) const noexcept;
+    [[nodiscard]] std::uint16_t block_type(std::size_t index) const noexcept;
     [[nodiscard]] core::Status set(std::size_t index, VoxelCell cell);
     [[nodiscard]] std::vector<VoxelCell> decode() const;
     [[nodiscard]] std::uint64_t scan_type_checksum() const noexcept;
@@ -98,6 +99,7 @@ class PalettePackedVoxelSectionExperiment {
 
     [[nodiscard]] core::Status validate() const;
     [[nodiscard]] VoxelCell cell(std::size_t index) const noexcept;
+    [[nodiscard]] std::uint16_t block_type(std::size_t index) const noexcept;
     [[nodiscard]] core::Status set(std::size_t index, VoxelCell cell);
     [[nodiscard]] std::vector<VoxelCell> decode() const;
     [[nodiscard]] std::uint64_t scan_type_checksum() const noexcept;

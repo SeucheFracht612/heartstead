@@ -229,6 +229,7 @@ endfunction()
 
 add_subdirectory(render_smoke)
 add_subdirectory(render_benchmark)
+add_subdirectory(voxel_benchmark)
 add_subdirectory(audio_benchmark)
 add_subdirectory(ui_benchmark)
 add_subdirectory(scripting_benchmark)

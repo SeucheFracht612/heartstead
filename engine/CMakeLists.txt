@@ -230,6 +230,7 @@ target_sources(
     world/voxel_change.cpp
     world/voxels/voxel_chunk.cpp
     world/voxels/voxel_palette.cpp
+    world/voxels/voxel_storage_benchmark.cpp
     world/voxels/voxel_storage_experiment.cpp
     world/worldgen/terrain_generator.cpp
   PUBLIC
@@ -468,6 +469,7 @@ target_sources(
       world/voxel_change.hpp
       world/voxels/voxel_chunk.hpp
       world/voxels/voxel_palette.hpp
+      world/voxels/voxel_storage_benchmark.hpp
       world/voxels/voxel_storage_experiment.hpp
       world/voxels/voxel_surface_state.hpp
       world/worldgen/terrain_generator.hpp

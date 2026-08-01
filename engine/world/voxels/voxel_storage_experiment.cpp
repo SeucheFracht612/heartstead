@@ -308,6 +308,13 @@ VoxelCell SplitVoxelSectionExperiment::cell(std::size_t index) const noexcept {
     return {types_[index], lights_[index], states_[index], metadata_[index]};
 }
 
+std::uint16_t SplitVoxelSectionExperiment::block_type(std::size_t index) const noexcept {
+    if (index >= types_.size()) {
+        std::terminate();
+    }
+    return types_[index];
+}
+
 core::Status SplitVoxelSectionExperiment::set(std::size_t index, VoxelCell value) {
     if (index >= types_.size()) {
         return core::Status::failure("voxel_storage.split_index_out_of_bounds",
@@ -449,6 +456,13 @@ VoxelCell PalettePackedVoxelSectionExperiment::cell(std::size_t index) const noe
         metadata = metadata_handles_[static_cast<std::size_t>(found - metadata_indices_.begin())];
     }
     return {block.type, light, block.state_bits, metadata};
+}
+
+std::uint16_t PalettePackedVoxelSectionExperiment::block_type(std::size_t index) const noexcept {
+    if (index >= cell_count_) {
+        std::terminate();
+    }
+    return palette_[packed_index(index)].type;
 }
 
 core::Status PalettePackedVoxelSectionExperiment::set(std::size_t index, VoxelCell value) {
