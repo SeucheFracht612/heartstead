@@ -342,6 +342,44 @@ struct CubeCellSummary {
 validate_and_count_cube_cells(const ChunkNeighborhoodSnapshot& neighborhood,
                               const BlockRenderTableSnapshot& render_table) {
     CubeCellSummary result;
+    const auto include_cell = [&result, &render_table](VoxelCell cell, std::uint16_t x,
+                                                       std::uint16_t y,
+                                                       std::uint16_t z) -> core::Status {
+        if (cell.is_air()) {
+            return core::Status::failure("chunk_mesh.invalid_occupancy_mask",
+                                         "snapshot occupancy mask marks an air voxel as occupied");
+        }
+        const auto* block = find_block(render_table, cell.type);
+        if (block == nullptr) {
+            return core::Status::failure(
+                "chunk_mesh.unknown_voxel_type",
+                "snapshot contains a voxel type missing from its block render table");
+        }
+        if (block->geometry == MeshingGeometryKind::full_cube &&
+            block->render_phase != MeshingRenderPhase::fluid) {
+            ++result.count;
+            result.minimum = {std::min(result.minimum.x, x), std::min(result.minimum.y, y),
+                              std::min(result.minimum.z, z)};
+            result.maximum = {std::max(result.maximum.x, x), std::max(result.maximum.y, y),
+                              std::max(result.maximum.z, z)};
+        }
+        return core::Status::ok();
+    };
+    if (neighborhood.center_occupancy.full()) {
+        for (std::uint16_t z = 0; z < edge; ++z) {
+            for (std::uint16_t y = 0; y < edge; ++y) {
+                for (std::uint16_t x = 0; x < edge; ++x) {
+                    const auto status = include_cell(snapshot_cell(neighborhood, x, y, z), x, y, z);
+                    if (!status) {
+                        return core::Result<CubeCellSummary>::failure(status.error().code,
+                                                                      status.error().message);
+                    }
+                }
+            }
+        }
+        return core::Result<CubeCellSummary>::success(result);
+    }
+
     constexpr auto edge_size = static_cast<std::size_t>(edge);
     constexpr auto slice_size = edge_size * edge_size;
     const auto words = neighborhood.center_occupancy.words();
@@ -355,24 +393,10 @@ validate_and_count_cube_cells(const ChunkNeighborhoodSnapshot& neighborhood,
             const auto y = static_cast<std::uint16_t>(remainder / edge_size);
             const auto x = static_cast<std::uint16_t>(remainder % edge_size);
             const auto cell = snapshot_cell(neighborhood, x, y, z);
-            if (cell.is_air()) {
-                return core::Result<CubeCellSummary>::failure(
-                    "chunk_mesh.invalid_occupancy_mask",
-                    "snapshot occupancy mask marks an air voxel as occupied");
-            }
-            const auto* block = find_block(render_table, cell.type);
-            if (block == nullptr) {
-                return core::Result<CubeCellSummary>::failure(
-                    "chunk_mesh.unknown_voxel_type",
-                    "snapshot contains a voxel type missing from its block render table");
-            }
-            if (block->geometry == MeshingGeometryKind::full_cube &&
-                block->render_phase != MeshingRenderPhase::fluid) {
-                ++result.count;
-                result.minimum = {std::min(result.minimum.x, x), std::min(result.minimum.y, y),
-                                  std::min(result.minimum.z, z)};
-                result.maximum = {std::max(result.maximum.x, x), std::max(result.maximum.y, y),
-                                  std::max(result.maximum.z, z)};
+            const auto status = include_cell(cell, x, y, z);
+            if (!status) {
+                return core::Result<CubeCellSummary>::failure(status.error().code,
+                                                              status.error().message);
             }
             word &= word - std::uint64_t{1};
         }
