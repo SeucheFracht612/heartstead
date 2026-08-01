@@ -405,7 +405,9 @@ core::Status FileSaveSlotCatalog::write_snapshot(std::string_view slot_id,
     if (metadata.value().created_at_ms == 0) {
         metadata.value().created_at_ms = saved_at_ms;
     }
-    metadata.value().last_saved_at_ms = saved_at_ms;
+    // Wall clocks can move backwards after an administrator adjustment. Preserve the metadata
+    // invariant while still allowing the snapshot itself to be committed safely.
+    metadata.value().last_saved_at_ms = std::max(saved_at_ms, metadata.value().created_at_ms);
 
     status = metadata.value().validate();
     if (!status) {

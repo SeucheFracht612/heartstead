@@ -7935,8 +7935,11 @@ void test_file_save_slot_catalog() {
     assert(!status);
     assert(status.error().code == "save_slot.invalid_timestamps");
     status = catalog.write_snapshot("settlement_a", snapshot, 50);
-    assert(!status);
-    assert(status.error().code == "save_slot.invalid_timestamps");
+    assert(status);
+    auto clock_adjusted_metadata = catalog.read_metadata("settlement_a");
+    assert(clock_adjusted_metadata);
+    assert(clock_adjusted_metadata.value().created_at_ms == 100);
+    assert(clock_adjusted_metadata.value().last_saved_at_ms == 100);
     status = catalog.write_snapshot("settlement_a", snapshot, 400);
     assert(status);
 
@@ -7951,7 +7954,7 @@ void test_file_save_slot_catalog() {
     assert(listed.value()[1].metadata.display_name == "winter-2");
     assert(listed.value()[0].database_stats.has_snapshot);
     assert(listed.value()[0].database_stats.uses_generation_manifest);
-    assert(listed.value()[0].database_stats.active_generation == "generation_1");
+    assert(listed.value()[0].database_stats.active_generation == "generation_2");
     assert(listed.value()[0].database_stats.chunk_delta_count == 1);
     assert(!listed.value()[1].database_stats.has_snapshot);
 

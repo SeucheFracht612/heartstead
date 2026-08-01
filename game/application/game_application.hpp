@@ -35,7 +35,10 @@ struct GameApplicationConfig {
 struct GameApplicationFrame {
     std::uint64_t frame_index = 0;
     std::uint64_t delta_microseconds = 0;
+    // Monotonic time. Use for simulation, networking, animation, and timeouts.
     std::int64_t now_milliseconds = 0;
+    // Unix UTC time. Use only for persisted and user-visible timestamps.
+    std::int64_t wall_clock_milliseconds = 0;
     renderer::rhi::RenderExtent extent{};
     const platform::WindowInputSnapshot* input = nullptr;
     bool headless = false;

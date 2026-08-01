@@ -404,6 +404,10 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     std::uint64_t completed_session_count = 0;
     std::uint64_t next_session_generation = 1;
     std::uint64_t loading_generation = 0;
+    std::int64_t last_runtime_time_ms = 0;
+    std::int64_t last_wall_clock_ms = 0;
+    std::int64_t last_autosave_at_ms = 0;
+    std::uint64_t periodic_save_count = 0;
     SessionMode loading_mode = SessionMode::local_single_player;
     bool initialized = false;
     bool diagnostics_visible = false;
@@ -519,6 +523,10 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             menu_message = status.error().code + ": " + status.error().message;
         }
         return status;
+    }
+
+    [[nodiscard]] std::uint64_t persisted_timestamp_ms() const noexcept {
+        return static_cast<std::uint64_t>(std::max<std::int64_t>(1, last_wall_clock_ms));
     }
 
     [[nodiscard]] core::Status apply_settings() {
@@ -939,7 +947,10 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             return core::Status::failure("heartstead.loaded_session_missing",
                                          "session activation requires a loaded runtime");
         }
-        if (active_persistence == PersistencePolicy::persistent && !active_save_slot.empty()) {
+        const auto creating_persistent_world =
+            active_persistence == PersistencePolicy::persistent && !active_save_slot.empty() &&
+            session_runtime->session()->launch_request().world_source == WorldSourceKind::generated;
+        if (creating_persistent_world) {
             auto snapshot = session_runtime->capture_save_snapshot();
             if (!snapshot) {
                 const auto error = snapshot.error();
@@ -947,9 +958,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 return states.transition(ApplicationState::load_failure,
                                          "initial world save failed", error);
             }
-            const auto saved_at = static_cast<std::uint64_t>(
-                std::max<std::int64_t>(1, frame == nullptr ? 1 : frame->now_milliseconds));
-            auto status = save_catalog.write_snapshot(active_save_slot, snapshot.value(), saved_at);
+            auto status = save_catalog.write_snapshot(active_save_slot, snapshot.value(),
+                                                      persisted_timestamp_ms());
             if (status) {
                 status = save_catalog.rename_slot(active_save_slot, active_world_name);
             }
@@ -959,15 +969,31 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 return states.transition(ApplicationState::load_failure,
                                          "initial world save failed", error);
             }
+        }
+        if (active_persistence == PersistencePolicy::persistent && !active_save_slot.empty()) {
             settings.last_world_slot = active_save_slot;
-            status = persist_settings();
-            if (!status) {
-                const auto error = status.error();
-                (void)unload_session();
-                return states.transition(ApplicationState::load_failure,
-                                         "world history persistence failed", error);
+            const auto settings_status = persist_settings();
+            if (!settings_status) {
+                menu_message = "World loaded, but recent-world history could not be saved: " +
+                               settings_status.error().message;
             }
         }
+        if (active_session_mode == SessionMode::remote_multiplayer) {
+            settings.recent_servers.erase(std::remove(settings.recent_servers.begin(),
+                                                      settings.recent_servers.end(),
+                                                      active_world_name),
+                                          settings.recent_servers.end());
+            settings.recent_servers.insert(settings.recent_servers.begin(), active_world_name);
+            if (settings.recent_servers.size() > 16) {
+                settings.recent_servers.resize(16);
+            }
+            const auto settings_status = persist_settings();
+            if (!settings_status) {
+                menu_message = "Connected, but recent-server history could not be saved: " +
+                               settings_status.error().message;
+            }
+        }
+        last_autosave_at_ms = last_runtime_time_ms;
         input_scheduler.reset(session_runtime->session()->fixed_step_tick());
         input_scheduler.set_look_sensitivity(static_cast<double>(settings.mouse_sensitivity) *
                                              12.0);
@@ -1114,16 +1140,30 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         if (!snapshot) {
             return core::Status::failure(snapshot.error().code, snapshot.error().message);
         }
-        const auto saved_at = static_cast<std::uint64_t>(
-            std::max<std::int64_t>(1, frame == nullptr ? 1 : frame->now_milliseconds));
         if (!active_save_slot.empty()) {
-            return save_catalog.write_snapshot(active_save_slot, snapshot.value(), saved_at);
+            return save_catalog.write_snapshot(active_save_slot, snapshot.value(),
+                                               persisted_timestamp_ms());
         }
         if (active_save_path.has_value()) {
             return save::FileSaveDatabase(*active_save_path).write_snapshot(snapshot.value());
         }
         return core::Status::failure("heartstead.persistent_save_path_missing",
                                      "persistent session has no save destination");
+    }
+
+    [[nodiscard]] core::Status autosave_if_due() {
+        if (!session_runtime.has_value() ||
+            active_persistence != PersistencePolicy::persistent ||
+            config.autosave_interval_ms <= 0 ||
+            last_runtime_time_ms - last_autosave_at_ms < config.autosave_interval_ms) {
+            return core::Status::ok();
+        }
+        auto status = save_active_session();
+        if (status) {
+            last_autosave_at_ms = last_runtime_time_ms;
+            ++periodic_save_count;
+        }
+        return status;
     }
 
     [[nodiscard]] core::Result<RuntimeFrameStats> advance_runtime(bool gameplay_input) {
@@ -1455,14 +1495,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         request.runtime.headless = config.headless;
         request.runtime.create_renderer = !config.headless;
         request.runtime.create_audio = !config.headless;
-        settings.recent_servers.erase(std::remove(settings.recent_servers.begin(),
-                                                  settings.recent_servers.end(), server_address),
-                                      settings.recent_servers.end());
-        settings.recent_servers.insert(settings.recent_servers.begin(), server_address);
-        if (settings.recent_servers.size() > 16)
-            settings.recent_servers.resize(16);
-        auto status = persist_settings();
-        return !status ? status : launch(std::move(request));
+        return launch(std::move(request));
     }
 
     [[nodiscard]] core::Status launch_developer_world(std::size_t index) {
@@ -1992,6 +2025,10 @@ HeartsteadApplicationMode::~HeartsteadApplicationMode() = default;
 
 core::Status HeartsteadApplicationMode::initialize(GameApplicationServices& services) {
     auto& state = *implementation_;
+    if (state.config.autosave_interval_ms <= 0) {
+        return core::Status::failure("heartstead.invalid_autosave_interval",
+                                     "autosave interval must be positive");
+    }
     if (state.config.content_report == nullptr || state.config.content_report->has_errors()) {
         return core::Status::failure("heartstead.invalid_content",
                                      "Heartstead requires validated content at application boot");
@@ -2056,10 +2093,24 @@ HeartsteadApplicationMode::update(GameApplicationServices& services,
     auto& state = *implementation_;
     state.services = &services;
     state.frame = &frame;
+    struct FramePointerReset {
+        const GameApplicationFrame*& pointer;
+        ~FramePointerReset() { pointer = nullptr; }
+    } frame_pointer_reset{state.frame};
+    state.last_runtime_time_ms = frame.now_milliseconds;
+    state.last_wall_clock_ms = frame.wall_clock_milliseconds;
     ++state.frame_count;
     auto status = state.process_input(frame);
     if (status) {
         status = state.states.update(frame.delta_microseconds);
+    }
+    if (status && state.states.state() == ApplicationState::in_game) {
+        status = state.autosave_if_due();
+        if (!status) {
+            state.display_error = status.error();
+            state.menu_message = "Autosave failed: " + status.error().message;
+            status = core::Status::ok();
+        }
     }
     if (!status) {
         return core::Result<GameApplicationFrameOutput>::failure(status.error().code,
@@ -2144,7 +2195,8 @@ std::string HeartsteadApplicationMode::summary() const {
     return "heartstead application: state=" +
            std::string(application_state_name(state.states.state())) +
            " frames=" + std::to_string(state.frame_count) +
-           " completed_sessions=" + std::to_string(state.completed_session_count);
+           " completed_sessions=" + std::to_string(state.completed_session_count) +
+           " autosaves=" + std::to_string(state.periodic_save_count);
 }
 
 } // namespace heartstead::game

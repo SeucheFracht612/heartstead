@@ -28,6 +28,7 @@ class RecordingMode final : public game::IGameApplicationMode {
         assert(frame.input == nullptr);
         assert(frame.delta_microseconds == 16'667);
         assert(frame.now_milliseconds > previous_now_milliseconds);
+        assert(frame.wall_clock_milliseconds > 1'500'000'000'000LL);
         previous_now_milliseconds = frame.now_milliseconds;
         ++updates;
         return core::Result<game::GameApplicationFrameOutput>::success({});

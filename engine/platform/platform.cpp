@@ -391,6 +391,11 @@ std::int64_t PlatformClock::elapsed_ms() const noexcept {
     return now_ms() - start_ms_;
 }
 
+std::int64_t PlatformClock::wall_time_ms() noexcept {
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+}
+
 PlatformBackend HeadlessPlatform::backend() const noexcept {
     return PlatformBackend::headless;
 }

@@ -214,8 +214,11 @@ class PlatformClock {
   public:
     PlatformClock();
 
+    // Monotonic process-independent time for frame scheduling, networking, and timeouts.
     [[nodiscard]] std::int64_t now_ms() const noexcept;
     [[nodiscard]] std::int64_t elapsed_ms() const noexcept;
+    // Unix UTC time for persisted metadata and user-visible timestamps.
+    [[nodiscard]] static std::int64_t wall_time_ms() noexcept;
 
   private:
     std::int64_t start_ms_ = 0;

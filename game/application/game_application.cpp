@@ -294,6 +294,7 @@ core::Result<GameApplicationRunReport> GameApplication::run(IGameApplicationMode
         const GameApplicationFrame frame{report.frame_count,
                                          delta_microseconds,
                                          now_milliseconds,
+                                         platform::PlatformClock::wall_time_ms(),
                                          extent_,
                                          input.has_value() ? &*input : nullptr,
                                          config_.headless};

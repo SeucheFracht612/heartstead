@@ -24,6 +24,7 @@ struct HeartsteadApplicationModeConfig {
     std::filesystem::path user_data_root;
     ApplicationSettings initial_settings;
     std::optional<InitialLaunchDirective> initial_launch;
+    std::int64_t autosave_interval_ms = 30'000;
     bool headless = false;
     bool safe_mode = false;
 };
