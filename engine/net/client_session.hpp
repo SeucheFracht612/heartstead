@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -66,7 +67,8 @@ class ClientSession {
     [[nodiscard]] std::vector<HostSessionCommandResult> drain_command_results();
     [[nodiscard]] std::vector<ReplicationBatch> drain_replication_batches();
     [[nodiscard]] std::vector<TransportEnvelope>
-    drain_replication_messages(std::string_view payload_type = {});
+    drain_replication_messages(std::string_view payload_type = {},
+                               std::size_t maximum_count = std::numeric_limits<std::size_t>::max());
 
   private:
     [[nodiscard]] core::Status require_connected() const;

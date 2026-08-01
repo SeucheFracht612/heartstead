@@ -312,11 +312,54 @@ void test_voxel_event_applies_before_observation_without_separate_delta() {
     assert(current && current.value() == change.current);
 }
 
+void test_replication_message_drain_preserves_a_bounded_backlog() {
+    net::HostSession host(net::HostSessionConfig{
+        net::TransportHostDesc{
+            net::TransportBackend::in_memory,
+            net::InMemoryTransportHostConfig{core::NetId::from_value(80), 4096},
+        },
+        net::ReplicationRelevancePolicy{},
+    });
+    assert(host.start());
+    auto client_id = host.connect_client();
+    assert(client_id);
+    net::ClientSession client(client_id.value());
+    accept_welcome(host, client_id.value(), client);
+
+    for (std::uint64_t sequence = 1; sequence <= 5; ++sequence) {
+        net::TransportMessage message;
+        message.kind = net::TransportMessageKind::replication;
+        message.channel = net::TransportChannel::reliable;
+        message.sequence = sequence;
+        message.payload_type = sequence % 2 == 0 ? "test.even" : "test.odd";
+        message.payload = std::to_string(sequence);
+        assert(host.send_replication_message(client_id.value(), std::move(message)));
+    }
+    auto delivered = host.drain_client_messages(client_id.value());
+    assert(delivered && delivered.value().size() == 5);
+    for (const auto& envelope : delivered.value()) {
+        assert(client.receive_server_message(envelope));
+    }
+
+    const auto first_odds = client.drain_replication_messages("test.odd", 2);
+    assert(first_odds.size() == 2);
+    assert(first_odds[0].message.payload == "1");
+    assert(first_odds[1].message.payload == "3");
+    assert(client.stats().queued_replication_message_count == 3);
+    const auto next = client.drain_replication_messages({}, 1);
+    assert(next.size() == 1 && next.front().message.payload == "2");
+    const auto remaining = client.drain_replication_messages();
+    assert(remaining.size() == 2);
+    assert(remaining[0].message.payload == "4");
+    assert(remaining[1].message.payload == "5");
+}
+
 } // namespace
 
 int main() {
     test_two_clients_may_both_use_command_sequence_one();
     test_mixed_visibility_filters_events_ids_and_typed_state();
     test_voxel_event_applies_before_observation_without_separate_delta();
+    test_replication_message_drain_preserves_a_bounded_backlog();
     return 0;
 }

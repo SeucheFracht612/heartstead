@@ -38,7 +38,8 @@ core::Status ClientRuntime::receive(std::span<const net::TransportEnvelope> mess
     return core::Status::ok();
 }
 
-core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render_tick) {
+core::Result<ClientRuntimeStats>
+ClientRuntime::synchronize(std::uint64_t render_tick, std::size_t maximum_chunk_snapshot_slices) {
     std::uint32_t reconciled_input_count = 0;
     std::uint32_t acknowledged_input_count = 0;
     std::uint32_t hard_correction_count = 0;
@@ -47,7 +48,7 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render
     double maximum_correction_distance = 0.0;
     player_tombstones_.clear();
     accepted_voxel_edits_.clear();
-    auto completed_chunks = apply_queued_chunk_snapshots();
+    auto completed_chunks = apply_queued_chunk_snapshots(maximum_chunk_snapshot_slices);
     if (!completed_chunks) {
         return core::Result<ClientRuntimeStats>::failure(completed_chunks.error().code,
                                                          completed_chunks.error().message);
@@ -183,15 +184,16 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render
                         reconciled.value().state.position.approximate_global();
                     std::ostringstream diagnostic;
                     diagnostic << "movement hard correction distance="
-                               << reconciled.value().correction_distance << " predicted="
-                               << predicted_position.x << ',' << predicted_position.y << ','
-                               << predicted_position.z << " authoritative="
-                               << authoritative_position.x << ',' << authoritative_position.y << ','
-                               << authoritative_position.z << " reconciled="
-                               << reconciled_position.x << ',' << reconciled_position.y << ','
-                               << reconciled_position.z << " acknowledged="
-                               << reconciled.value().acknowledged_input_count << " replayed="
-                               << reconciled.value().replayed_input_count << " collision_revision="
+                               << reconciled.value().correction_distance
+                               << " predicted=" << predicted_position.x << ','
+                               << predicted_position.y << ',' << predicted_position.z
+                               << " authoritative=" << authoritative_position.x << ','
+                               << authoritative_position.y << ',' << authoritative_position.z
+                               << " reconciled=" << reconciled_position.x << ','
+                               << reconciled_position.y << ',' << reconciled_position.z
+                               << " acknowledged=" << reconciled.value().acknowledged_input_count
+                               << " replayed=" << reconciled.value().replayed_input_count
+                               << " collision_revision="
                                << prediction_buffer_.collision_world_revision() << "->"
                                << authoritative.collision_world_revision;
                     core::log(core::LogLevel::warning, diagnostic.str());
@@ -378,6 +380,28 @@ const world::WorldState& ClientRuntime::world() const noexcept {
     return world_;
 }
 
+core::Status ClientRuntime::install_local_chunk_snapshot(const world::VoxelChunk& source) {
+    if (!source.identity().is_valid() || source.content_revision() == 0) {
+        return core::Status::failure("client_runtime.invalid_local_chunk",
+                                     "local chunk fast path requires a resident source chunk");
+    }
+    const auto remote = remote_chunks_.find(source.coord());
+    if (remote != remote_chunks_.end() && remote->second.first == source.identity() &&
+        remote->second.second >= source.content_revision()) {
+        return core::Status::ok();
+    }
+    const auto cells = source.cells();
+    std::vector<world::VoxelCell> copied(cells.begin(), cells.end());
+    auto& chunk = world_.chunks().get_or_create(source.coord());
+    auto status = chunk.load_generated_cells(std::move(copied));
+    if (!status) {
+        return status;
+    }
+    remote_chunks_.insert_or_assign(source.coord(),
+                                    std::pair{source.identity(), source.content_revision()});
+    return core::Status::ok();
+}
+
 net::ClientSession& ClientRuntime::session() noexcept {
     return session_;
 }
@@ -481,10 +505,13 @@ void ClientRuntime::clear_command_results() noexcept {
     command_results_.clear();
 }
 
-core::Result<ClientRuntime::ChunkSnapshotApplyStats> ClientRuntime::apply_queued_chunk_snapshots() {
-    auto messages = session_.drain_replication_messages(world::chunk_snapshot_slice_payload_type);
-    auto legacy_messages =
-        session_.drain_replication_messages(world::legacy_chunk_snapshot_slice_payload_type);
+core::Result<ClientRuntime::ChunkSnapshotApplyStats>
+ClientRuntime::apply_queued_chunk_snapshots(std::size_t maximum_slices) {
+    auto messages = session_.drain_replication_messages(world::chunk_snapshot_slice_payload_type,
+                                                        maximum_slices);
+    const auto remaining_slice_budget = maximum_slices - messages.size();
+    auto legacy_messages = session_.drain_replication_messages(
+        world::legacy_chunk_snapshot_slice_payload_type, remaining_slice_budget);
     messages.insert(messages.end(), std::make_move_iterator(legacy_messages.begin()),
                     std::make_move_iterator(legacy_messages.end()));
     std::uint32_t completed_count = 0;

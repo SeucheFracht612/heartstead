@@ -13,6 +13,7 @@ class VoxelPalette;
 namespace heartstead::scenarios {
 
 inline constexpr world::ChunkCoord renderer_proof_center{1'000'000'000, 0, -1'000'000'000};
+inline constexpr std::int64_t renderer_proof_stream_radius_chunks = 12;
 
 struct RendererProofVoxelTypes {
     std::uint16_t grass = 1;

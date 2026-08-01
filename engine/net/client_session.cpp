@@ -1,5 +1,6 @@
 #include "engine/net/client_session.hpp"
 
+#include <algorithm>
 #include <utility>
 
 namespace heartstead::net {
@@ -187,16 +188,20 @@ std::vector<ReplicationBatch> ClientSession::drain_replication_batches() {
 }
 
 std::vector<TransportEnvelope>
-ClientSession::drain_replication_messages(std::string_view payload_type) {
-    if (payload_type.empty()) {
+ClientSession::drain_replication_messages(std::string_view payload_type,
+                                          std::size_t maximum_count) {
+    if (payload_type.empty() && maximum_count >= replication_messages_.size()) {
         return drain_vector(replication_messages_);
     }
 
     std::vector<TransportEnvelope> drained;
     std::vector<TransportEnvelope> remaining;
+    drained.reserve(std::min(maximum_count, replication_messages_.size()));
     remaining.reserve(replication_messages_.size());
     for (auto& envelope : replication_messages_) {
-        if (envelope.message.payload_type == payload_type) {
+        const auto type_matches =
+            payload_type.empty() || envelope.message.payload_type == payload_type;
+        if (type_matches && drained.size() < maximum_count) {
             drained.push_back(std::move(envelope));
         } else {
             remaining.push_back(std::move(envelope));

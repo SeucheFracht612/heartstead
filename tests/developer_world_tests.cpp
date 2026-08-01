@@ -106,11 +106,21 @@ void test_packaged_renderer_fixture_launch(const content::ContentValidationRepor
     assert(player != nullptr);
     assert(player->state.position.anchor.x > 30'000'000'000LL);
     assert(player->state.position.anchor.z < -30'000'000'000LL);
-    for (std::int64_t frame_index = 1; frame_index <= 60; ++frame_index) {
+    for (std::int64_t frame_index = 1; frame_index <= 300; ++frame_index) {
         auto frame = runtime.run_frame({16'667, frame_index * 17});
         assert(frame);
     }
-    assert(world.chunks().chunk_count() >= initial_server_chunk_count + 4);
+    std::size_t expected_chunk_count = 0;
+    for (std::int64_t z = -scenarios::renderer_proof_stream_radius_chunks;
+         z <= scenarios::renderer_proof_stream_radius_chunks; ++z) {
+        for (std::int64_t x = -scenarios::renderer_proof_stream_radius_chunks;
+             x <= scenarios::renderer_proof_stream_radius_chunks; ++x) {
+            expected_chunk_count +=
+                x * x + z * z <= scenarios::renderer_proof_stream_radius_chunks *
+                                     scenarios::renderer_proof_stream_radius_chunks;
+        }
+    }
+    assert(world.chunks().chunk_count() == expected_chunk_count);
     assert(runtime.session()->client()->world().chunks().chunk_count() ==
            world.chunks().chunk_count());
     assert(std::ranges::any_of(world.chunks().records(), [](const auto* chunk) {

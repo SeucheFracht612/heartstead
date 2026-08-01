@@ -53,6 +53,7 @@ struct ServerRuntimeDesc {
     std::uint32_t simulation_ticks_per_second = 60;
     std::uint32_t max_transient_snapshot_messages_per_tick = 512;
     std::uint32_t max_transient_snapshot_payload_bytes_per_tick = 256u * 1024u;
+    bool direct_local_chunk_replication = false;
     simulation::WorldTimeConfig world_time;
     const modding::PrototypeRegistry* prototypes = nullptr;
     const world::VoxelPalette* voxel_palette = nullptr;

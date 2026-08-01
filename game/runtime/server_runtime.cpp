@@ -25,9 +25,8 @@ namespace heartstead::game {
 
 namespace {
 
-inline constexpr std::int64_t renderer_proof_stream_radius_chunks = 12;
-inline constexpr std::size_t renderer_proof_chunks_generated_per_update = 1;
-inline constexpr std::int64_t renderer_proof_generation_interval_ms = 250;
+inline constexpr std::size_t renderer_proof_chunks_generated_per_update = 4;
+inline constexpr std::int64_t renderer_proof_generation_interval_ms = 32;
 
 struct RendererProofChunkCandidate {
     world::ChunkCoord coord;
@@ -467,20 +466,30 @@ core::Status ServerRuntime::initialize() {
     if (!status) {
         return status;
     }
-    status = scheduler_.register_system({
-        "runtime.renderer_proof_streaming",
-        simulation::SimulationPhase::movement,
-        {"runtime.command_gateway"},
-        [this](simulation::SimulationContext&) { return stream_renderer_proof_world(); },
-    });
-    if (!status) {
-        return status;
+    std::vector<std::string> chunk_collision_dependencies{"runtime.command_gateway"};
+    if (renderer_proof_streaming_enabled_) {
+        status = scheduler_.register_system({
+            "runtime.renderer_proof_streaming",
+            simulation::SimulationPhase::movement,
+            {"runtime.command_gateway"},
+            [this](simulation::SimulationContext&) { return stream_renderer_proof_world(); },
+        });
+        if (!status) {
+            return status;
+        }
+        chunk_collision_dependencies = {"runtime.renderer_proof_streaming"};
     }
     status = scheduler_.register_system({
         "runtime.chunk_collision",
         simulation::SimulationPhase::movement,
-        {"runtime.renderer_proof_streaming"},
+        std::move(chunk_collision_dependencies),
         [this](simulation::SimulationContext&) {
+            // Renderer Proof exercises streaming and presentation throughput. Its authoritative
+            // character path uses exact voxel collision, so cooking hundreds of duplicate Jolt
+            // terrain compounds would only contaminate the renderer benchmark.
+            if (renderer_proof_streaming_enabled_) {
+                return core::Status::ok();
+            }
             return chunk_collision_->update(world_.chunks(), world_.dirty_regions(),
                                             *desc_.voxel_palette);
         },
@@ -493,6 +502,9 @@ core::Status ServerRuntime::initialize() {
         simulation::SimulationPhase::movement,
         {"runtime.chunk_collision"},
         [this](simulation::SimulationContext& context) {
+            if (renderer_proof_streaming_enabled_) {
+                return core::Status::ok();
+            }
             return chunk_fluids_->update(world_.chunks(), world_.dirty_regions(),
                                          *desc_.voxel_palette, context.tick);
         },
@@ -554,6 +566,11 @@ core::Status ServerRuntime::initialize() {
         simulation::SimulationPhase::environment,
         {"runtime.physical_resources_sync"},
         [this](simulation::SimulationContext&) {
+            // Proof terrain is static, contains no fluid or fire emitters, and is generated with
+            // its final light values. Running dynamic world solvers would distort render timings.
+            if (renderer_proof_streaming_enabled_) {
+                return core::Status::ok();
+            }
             auto sources = collect_fire_light_sources(world_, *desc_.prototypes);
             if (!sources) {
                 return core::Status::failure(sources.error().code, sources.error().message);
@@ -1323,7 +1340,8 @@ core::Status ServerRuntime::spawn_player(core::NetId client_id) {
     controller_record.state = controller_state;
     controller_record.persistent = definition.value().persistent;
     std::unique_ptr<movement::PhysicsCharacterCollisionWorld> physics_collision;
-    if (physics_->capabilities().supports_character_controllers) {
+    if (physics_->capabilities().supports_character_controllers &&
+        !renderer_proof_streaming_enabled_) {
         movement::PhysicsCharacterCollisionConfig collision_config;
         collision_config.physics_island = desc_.chunk_collision.physics_island;
         collision_config.fixed_delta_seconds =
@@ -1441,18 +1459,18 @@ core::Status ServerRuntime::stream_renderer_proof_world() {
 
     std::vector<RendererProofChunkCandidate> candidates;
     const auto players = players_.records();
-    candidates.reserve(players.size() *
-                       static_cast<std::size_t>(renderer_proof_stream_radius_chunks *
-                                                renderer_proof_stream_radius_chunks * 4));
+    candidates.reserve(players.size() * static_cast<std::size_t>(
+                                            scenarios::renderer_proof_stream_radius_chunks *
+                                            scenarios::renderer_proof_stream_radius_chunks * 4));
     for (const auto* player : players) {
         const auto player_chunk = world::chunk_coord_for_block(player->state.position.anchor);
-        for (std::int64_t offset_z = -renderer_proof_stream_radius_chunks;
-             offset_z <= renderer_proof_stream_radius_chunks; ++offset_z) {
-            for (std::int64_t offset_x = -renderer_proof_stream_radius_chunks;
-                 offset_x <= renderer_proof_stream_radius_chunks; ++offset_x) {
+        for (std::int64_t offset_z = -scenarios::renderer_proof_stream_radius_chunks;
+             offset_z <= scenarios::renderer_proof_stream_radius_chunks; ++offset_z) {
+            for (std::int64_t offset_x = -scenarios::renderer_proof_stream_radius_chunks;
+                 offset_x <= scenarios::renderer_proof_stream_radius_chunks; ++offset_x) {
                 const auto distance_squared = offset_x * offset_x + offset_z * offset_z;
-                if (distance_squared >
-                    renderer_proof_stream_radius_chunks * renderer_proof_stream_radius_chunks) {
+                if (distance_squared > scenarios::renderer_proof_stream_radius_chunks *
+                                           scenarios::renderer_proof_stream_radius_chunks) {
                     continue;
                 }
                 const auto x = checked_axis_offset(player_chunk.x, offset_x);
@@ -1672,6 +1690,13 @@ core::Status ServerRuntime::replicate_entity_motion(std::uint64_t simulation_tic
 }
 
 core::Status ServerRuntime::replicate_changed_chunks() {
+    if (desc_.direct_local_chunk_replication && renderer_proof_streaming_enabled_) {
+        // A local Renderer Proof session installs streamed chunks directly into its presentation
+        // client. Encoding every chunk as 32 reliable transport messages would benchmark the
+        // loopback protocol instead of the renderer and create large main-thread bursts.
+        pending_streamed_chunks_.clear();
+        return core::Status::ok();
+    }
     if (player_connections_.empty()) {
         pending_streamed_chunks_.clear();
         return core::Status::ok();

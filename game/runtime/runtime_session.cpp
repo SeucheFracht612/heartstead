@@ -2,6 +2,7 @@
 
 #include "engine/core/hash.hpp"
 #include "engine/net/command_payload.hpp"
+#include "engine/scenarios/scenario_fixture.hpp"
 #include "engine/scenarios/scenario_prototype.hpp"
 #include "engine/world/world_snapshot.hpp"
 #include "engine/world/worldgen/terrain_generator.hpp"
@@ -29,6 +30,8 @@ constexpr std::string_view runtime_tick_state_mod = "engine";
 constexpr std::string_view runtime_tick_state_key = "runtime.fixed_step_tick";
 constexpr std::string_view generator_state_key = "world.generator_preset";
 constexpr std::string_view generator_version_state_key = "world.generator_version";
+constexpr std::uint32_t renderer_proof_local_outbound_budget = 16U * 1024U * 1024U;
+constexpr std::size_t renderer_proof_local_chunks_per_frame = 2;
 
 [[nodiscard]] core::Result<std::uint64_t>
 saved_fixed_step_tick(const save::SaveSnapshot& snapshot) {
@@ -39,12 +42,13 @@ saved_fixed_step_tick(const save::SaveSnapshot& snapshot) {
         return core::Result<std::uint64_t>::success(0);
     }
     std::uint64_t tick = 0;
-    const auto [end, error] = std::from_chars(found->encoded_state.data(),
-                                              found->encoded_state.data() + found->encoded_state.size(),
-                                              tick);
+    const auto [end, error] =
+        std::from_chars(found->encoded_state.data(),
+                        found->encoded_state.data() + found->encoded_state.size(), tick);
     if (error != std::errc{} || end != found->encoded_state.data() + found->encoded_state.size()) {
         return core::Result<std::uint64_t>::failure(
-            "runtime_session.invalid_saved_tick", "saved fixed-step tick is not an unsigned integer");
+            "runtime_session.invalid_saved_tick",
+            "saved fixed-step tick is not an unsigned integer");
     }
     return core::Result<std::uint64_t>::success(tick);
 }
@@ -239,8 +243,8 @@ RuntimeSession::create(RuntimeConfiguration config, SessionRequest request,
     }
     auto cancellation = startup_cancelled(stop_token);
     if (!cancellation) {
-        return core::Result<std::unique_ptr<RuntimeSession>>::failure(
-            cancellation.error().code, cancellation.error().message);
+        return core::Result<std::unique_ptr<RuntimeSession>>::failure(cancellation.error().code,
+                                                                      cancellation.error().message);
     }
     auto status = config.validate();
     if (!status) {
@@ -347,14 +351,20 @@ core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& pr
         server_desc.host.transport.in_memory.impairment_seed = config_.simulated_network_seed;
         server_desc.host.max_outbound_bytes_per_client_per_second =
             config_.max_outbound_bytes_per_client_per_second;
+        if (config_.use_in_memory_transport && scenario.value().setup_hook == "renderer_proof") {
+            local_renderer_proof_chunk_fast_path_ = true;
+            server_desc.direct_local_chunk_replication = true;
+            server_desc.host.max_outbound_bytes_per_client_per_second =
+                std::max(server_desc.host.max_outbound_bytes_per_client_per_second,
+                         renderer_proof_local_outbound_budget);
+        }
         server_desc.physics.backend = config_.physics_backend;
         // Physics remains in a bounded float island. Anchor that island at the launch spawn so
         // packaged worlds and saves at very large coordinates never pass absolute coordinates to
         // the physics backend.
         server_desc.chunk_collision.physics_island.block =
-            scenario.value().spawn_position.has_value()
-                ? scenario.value().spawn_position->anchor
-                : world::BlockCoord{};
+            scenario.value().spawn_position.has_value() ? scenario.value().spawn_position->anchor
+                                                        : world::BlockCoord{};
         server_desc.chunk_fluids = config_.chunk_fluids;
         server_desc.chunk_lighting = config_.chunk_lighting;
         server_desc.simulation_ticks_per_second = config_.fixed_step.ticks_per_second;
@@ -479,7 +489,7 @@ core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& pr
             return core::Status::failure("runtime_session.client_handshake_failed",
                                          "local client did not accept the server welcome");
         }
-        auto synchronized = client_->synchronize();
+        auto synchronized = client_->synchronize(0, std::numeric_limits<std::size_t>::max());
         if (!synchronized) {
             return core::Status::failure(synchronized.error().code, synchronized.error().message);
         }
@@ -560,6 +570,10 @@ core::Result<RuntimeFrameStats> RuntimeSession::run_frame(RuntimeFrameInput inpu
             stats.authoritative_world_tick = server_->world().world_time();
             last_tick_time_ms_ = tick_time_ms;
         }
+    }
+    auto local_chunk_status = synchronize_local_renderer_proof_chunks();
+    if (!local_chunk_status) {
+        return fault_frame(local_chunk_status.error());
     }
     const auto render_tick = server_ == nullptr ? 0 : fixed_step_.tick();
     auto client_status = update_client(render_tick);
@@ -707,21 +721,21 @@ core::Result<save::SaveSnapshot> RuntimeSession::capture_save_snapshot() const {
         return core::Result<save::SaveSnapshot>::failure(status.error().code,
                                                          status.error().message);
     }
-    auto runtime_tick_state = std::ranges::find_if(snapshot.value().mod_states, [](const auto& state) {
-        return state.mod_id == runtime_tick_state_mod && state.state_key == runtime_tick_state_key;
-    });
+    auto runtime_tick_state =
+        std::ranges::find_if(snapshot.value().mod_states, [](const auto& state) {
+            return state.mod_id == runtime_tick_state_mod &&
+                   state.state_key == runtime_tick_state_key;
+        });
     if (runtime_tick_state == snapshot.value().mod_states.end()) {
-        snapshot.value().mod_states.push_back(
-            {std::string(runtime_tick_state_mod), std::string(runtime_tick_state_key),
-             std::to_string(fixed_step_.tick())});
+        snapshot.value().mod_states.push_back({std::string(runtime_tick_state_mod),
+                                               std::string(runtime_tick_state_key),
+                                               std::to_string(fixed_step_.tick())});
     } else {
         runtime_tick_state->encoded_state = std::to_string(fixed_step_.tick());
     }
-    auto generator_state =
-        std::ranges::find_if(snapshot.value().mod_states, [](const auto& state) {
-            return state.mod_id == runtime_tick_state_mod &&
-                   state.state_key == generator_state_key;
-        });
+    auto generator_state = std::ranges::find_if(snapshot.value().mod_states, [](const auto& state) {
+        return state.mod_id == runtime_tick_state_mod && state.state_key == generator_state_key;
+    });
     if (generator_state == snapshot.value().mod_states.end()) {
         snapshot.value().mod_states.push_back(
             {std::string(runtime_tick_state_mod), std::string(generator_state_key),
@@ -735,12 +749,11 @@ core::Result<save::SaveSnapshot> RuntimeSession::capture_save_snapshot() const {
             return state.mod_id == runtime_tick_state_mod &&
                    state.state_key == generator_version_state_key;
         });
-    const auto generator_version =
-        std::to_string(world::deterministic_terrain_generator_version);
+    const auto generator_version = std::to_string(world::deterministic_terrain_generator_version);
     if (generator_version_state == snapshot.value().mod_states.end()) {
-        snapshot.value().mod_states.push_back(
-            {std::string(runtime_tick_state_mod), std::string(generator_version_state_key),
-             generator_version});
+        snapshot.value().mod_states.push_back({std::string(runtime_tick_state_mod),
+                                               std::string(generator_version_state_key),
+                                               generator_version});
     } else {
         generator_version_state->encoded_state = generator_version;
     }
@@ -781,8 +794,9 @@ core::Status RuntimeSession::save_to(const save::FileSaveDatabase& database) con
 }
 
 RenderSnapshot RuntimeSession::capture_render_snapshot() const {
-    const auto tick = server_ == nullptr && client_ != nullptr ? client_->latest_authoritative_tick()
-                                                              : fixed_step_.tick();
+    const auto tick = server_ == nullptr && client_ != nullptr
+                          ? client_->latest_authoritative_tick()
+                          : fixed_step_.tick();
     return presentation_.extract(tick);
 }
 
@@ -823,6 +837,37 @@ core::Status RuntimeSession::pump_client_messages(std::int64_t now_ms) {
     auto messages = server_->drain_client_messages(client_->client_id());
     return !messages ? core::Status::failure(messages.error().code, messages.error().message)
                      : client_->receive(messages.value());
+}
+
+core::Status RuntimeSession::synchronize_local_renderer_proof_chunks() {
+    if (!local_renderer_proof_chunk_fast_path_ || server_ == nullptr || client_ == nullptr) {
+        return core::Status::ok();
+    }
+    std::vector<const world::VoxelChunk*> missing;
+    for (const auto* chunk : server_->world().chunks().records()) {
+        if (client_->world().chunks().find(chunk->coord()) == nullptr) {
+            missing.push_back(chunk);
+        }
+    }
+    std::ranges::sort(missing, [](const auto* lhs, const auto* rhs) {
+        const auto distance_squared = [](world::ChunkCoord coord) {
+            const auto x = coord.x - scenarios::renderer_proof_center.x;
+            const auto z = coord.z - scenarios::renderer_proof_center.z;
+            return x * x + z * z;
+        };
+        const auto lhs_distance = distance_squared(lhs->coord());
+        const auto rhs_distance = distance_squared(rhs->coord());
+        return lhs_distance != rhs_distance ? lhs_distance < rhs_distance
+                                            : lhs->coord() < rhs->coord();
+    });
+    const auto count = std::min(renderer_proof_local_chunks_per_frame, missing.size());
+    for (std::size_t index = 0; index < count; ++index) {
+        auto status = client_->install_local_chunk_snapshot(*missing[index]);
+        if (!status) {
+            return status;
+        }
+    }
+    return core::Status::ok();
 }
 
 core::Result<PresentationSynchronizationStats> RuntimeSession::synchronize_presentation() {
@@ -866,9 +911,8 @@ core::Status RuntimeSession::register_cleanup(std::string name,
         return core::Status::failure("runtime_session.invalid_cleanup",
                                      "session cleanup requires a name and callback");
     }
-    if (std::ranges::any_of(cleanup_entries_, [&name](const CleanupEntry& entry) {
-            return entry.name == name;
-        })) {
+    if (std::ranges::any_of(cleanup_entries_,
+                            [&name](const CleanupEntry& entry) { return entry.name == name; })) {
         return core::Status::failure("runtime_session.duplicate_cleanup",
                                      "session cleanup callback is already registered: " + name);
     }
@@ -886,13 +930,12 @@ core::Status RuntimeSession::shutdown() {
     teardown_report_.presentation_objects_before = presentation_.stats().retained_object_count;
     teardown_report_.server_entities_before =
         server_ == nullptr ? 0 : server_->entities().stats().live_entities;
-    teardown_report_.physics_bodies_before =
-        server_ == nullptr ? 0 : server_->physics_body_count();
+    teardown_report_.physics_bodies_before = server_ == nullptr ? 0 : server_->physics_body_count();
     if (server_ != nullptr) {
         const auto& collision = server_->chunk_collision().stats();
-        teardown_report_.session_jobs_before =
-            collision.pending_chunk_count + collision.in_flight_job_count +
-            collision.completed_mailbox_count;
+        teardown_report_.session_jobs_before = collision.pending_chunk_count +
+                                               collision.in_flight_job_count +
+                                               collision.completed_mailbox_count;
     }
     teardown_report_.registered_cleanup_count = cleanup_entries_.size();
     (void)request_stop();
@@ -949,9 +992,9 @@ core::Status RuntimeSession::shutdown() {
         teardown_report_.session_jobs_after = 0;
     } else {
         const auto& collision = server_->chunk_collision().stats();
-        teardown_report_.session_jobs_after =
-            collision.pending_chunk_count + collision.in_flight_job_count +
-            collision.completed_mailbox_count;
+        teardown_report_.session_jobs_after = collision.pending_chunk_count +
+                                              collision.in_flight_job_count +
+                                              collision.completed_mailbox_count;
     }
     accepting_commands_ = false;
     state_ = result ? RuntimeSessionState::stopped : RuntimeSessionState::stopping;

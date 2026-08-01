@@ -25,6 +25,7 @@
 namespace heartstead::game {
 
 inline constexpr std::size_t client_command_result_history_capacity = 256;
+inline constexpr std::size_t client_chunk_snapshot_slices_per_sync = 128;
 
 struct ClientRuntimeStats {
     std::uint32_t received_message_count = 0;
@@ -55,7 +56,9 @@ class ClientRuntime final {
                   const world::VoxelPalette* movement_palette = nullptr);
 
     [[nodiscard]] core::Status receive(std::span<const net::TransportEnvelope> messages);
-    [[nodiscard]] core::Result<ClientRuntimeStats> synchronize(std::uint64_t render_tick = 0);
+    [[nodiscard]] core::Result<ClientRuntimeStats>
+    synchronize(std::uint64_t render_tick = 0,
+                std::size_t maximum_chunk_snapshot_slices = client_chunk_snapshot_slices_per_sync);
     [[nodiscard]] core::Result<net::CommandEnvelope>
     create_command(std::string type, std::string payload, std::int64_t now_ms);
     [[nodiscard]] core::Result<movement::PlayerInputBundle>
@@ -66,6 +69,7 @@ class ClientRuntime final {
     [[nodiscard]] core::NetId client_id() const noexcept;
     [[nodiscard]] world::WorldState& world() noexcept;
     [[nodiscard]] const world::WorldState& world() const noexcept;
+    [[nodiscard]] core::Status install_local_chunk_snapshot(const world::VoxelChunk& source);
     [[nodiscard]] net::ClientSession& session() noexcept;
     [[nodiscard]] const net::ClientSession& session() const noexcept;
     [[nodiscard]] std::span<const net::HostSessionCommandResult> command_results() const noexcept;
@@ -101,7 +105,8 @@ class ClientRuntime final {
         std::array<bool, world::VoxelChunk::edge_length> received{};
     };
 
-    [[nodiscard]] core::Result<ChunkSnapshotApplyStats> apply_queued_chunk_snapshots();
+    [[nodiscard]] core::Result<ChunkSnapshotApplyStats>
+    apply_queued_chunk_snapshots(std::size_t maximum_slices);
 
     world::WorldState world_;
     const ReplicationRegistry* replication_registry_ = nullptr;

@@ -24,8 +24,8 @@
 #include <functional>
 #include <memory>
 #include <optional>
-#include <string>
 #include <stop_token>
+#include <string>
 #include <vector>
 
 namespace heartstead::game {
@@ -256,6 +256,7 @@ class RuntimeSession final {
                                           std::stop_token stop_token);
     [[nodiscard]] core::Result<RuntimeFrameStats> fault_frame(const core::Error& error);
     [[nodiscard]] core::Status pump_client_messages(std::int64_t now_ms);
+    [[nodiscard]] core::Status synchronize_local_renderer_proof_chunks();
     [[nodiscard]] core::Result<PresentationSynchronizationStats> synchronize_presentation();
 
     struct CleanupEntry {
@@ -281,6 +282,7 @@ class RuntimeSession final {
     std::int64_t last_tick_time_ms_ = 0;
     RuntimeSessionState state_ = RuntimeSessionState::created;
     bool accepting_commands_ = false;
+    bool local_renderer_proof_chunk_fast_path_ = false;
 };
 
 [[nodiscard]] std::string_view session_mode_name(SessionMode mode) noexcept;
