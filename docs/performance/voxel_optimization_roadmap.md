@@ -28,7 +28,7 @@ requires one.
 | Reproducible provenance and gates | Benchmark schema v2 records source/build/CPU/GPU/driver/run metadata. Optional tier gates enforce median, P95, P99, maximum frame, upload, and available GPU limits. | Add calibrated reference-machine baselines, repetitions, relative-regression checks, and non-renderer gates. |
 | Bounded jobs and cancellation | Generic and typed schedulers now bound pending/result work, expose backpressure and queue-age telemetry, age priorities, and support reasoned queued/cooperative cancellation. | Attribute per-type saturation in higher-level pipeline counters and tune limits from traces. |
 | Versioned chunk pipeline | An owner-thread ledger now separates content, light, mesh, collision, persistence, and replication request/output revisions and states. Save/replication, mesh/GPU, collision/physics, and whole-field lighting publication are ticket-validated across edit and reload races. | Calibrate stale-work amplification and latency under representative edit/streaming traces. |
-| Compact voxel sections | Chunks are fixed 32³ and use contiguous dense `VoxelCell` storage. A global palette maps block IDs, but cell storage is not palette-packed. | Benchmark representative bytes, scans, edits, decode cost, and 16/32 section tradeoffs before selecting a packed format. |
+| Compact voxel sections | Chunks remain fixed 32³ with contiguous dense `VoxelCell` production storage. Reproducible 16/32 experiments now cover dense, split, palette-packed, uniform-light, sparse-metadata, and adaptive split-dense fallback candidates. | Retain dense production storage while mask/macro work proceeds; add a medium-diversity crossover sweep before any storage selection. |
 | Occupancy and opacity masks | Not stored with chunk content. | Prototype version-coupled masks and measure empty rejection, face-mask construction, lighting, and memory cost. |
 | Face culling and greedy meshing | Implemented with immutable neighborhood snapshots, material/render phases, bounded scheduling, stale rejection, and buffer reuse. | Add isolated microbenchmarks; use masks where they win; adopt slab or microbrick rebuilds only if edit P95 requires them. |
 | Dynamic edit propagation | Dirty regions, neighbor dependencies, asynchronous mesh/light/collision work, and upload quotas exist. | Measure edit-to-visible/collision/light convergence and coalesce publication under explicit time budgets. |
@@ -97,6 +97,12 @@ Deliverables:
 
 Exit gate: a selected format beats dense storage on the macro corpus without unacceptable edit or
 decode P95. Chunk size remains 32 cubed unless the 16/32 experiment demonstrates an end-to-end win.
+
+Progress: the deterministic corpus, codecs, raw-sample benchmark, exact memory accounting, and
+adaptive fallback are implemented and documented in [Voxel storage experiments](voxel_storage_benchmarks.md).
+The data rejects a universal palette-only live format and does not yet justify replacing production
+storage. Revision-coupled occupancy/opacity masks, macro validation, and compatibility tests for any
+eventually selected format remain open.
 
 ### M4 — meshing and edit latency
 
