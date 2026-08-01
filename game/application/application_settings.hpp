@@ -22,8 +22,6 @@ struct ApplicationSettings {
     float music_volume = 1.0F;
     float effects_volume = 1.0F;
     float mouse_sensitivity = 1.0F;
-    float controller_sensitivity = 1.0F;
-    bool controller_enabled = true;
     float ui_scale = 1.0F;
     float ui_contrast = 1.0F;
     float ui_saturation = 1.0F;

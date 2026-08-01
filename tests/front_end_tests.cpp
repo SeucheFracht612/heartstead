@@ -93,8 +93,6 @@ void test_application_settings_round_trip() {
     settings.music_volume = 0.25F;
     settings.effects_volume = 0.5F;
     settings.mouse_sensitivity = 1.25F;
-    settings.controller_sensitivity = 1.5F;
-    settings.controller_enabled = false;
     settings.ui_scale = 1.5F;
     settings.ui_contrast = 1.25F;
     settings.ui_saturation = 0.8F;
@@ -112,7 +110,6 @@ void test_application_settings_round_trip() {
     assert(loaded.value().first_person_camera);
     assert(loaded.value().rendering_quality == heartstead::renderer::RendererQualityPreset::ultra);
     assert(loaded.value().master_volume == 0.75F);
-    assert(loaded.value().controller_sensitivity == 1.5F);
     assert(loaded.value().color_vision_mode ==
            heartstead::renderer::UiColorVisionMode::deuteranopia);
     assert(loaded.value().last_world_slot == "homestead");
@@ -188,6 +185,28 @@ void test_application_settings_round_trip() {
     assert(!loaded.value().windowed);
     assert(loaded.value().window_width == 1280);
     assert(loaded.value().vsync);
+
+    {
+        std::ofstream output(store.path(), std::ios::binary | std::ios::trunc);
+        output << "heartstead.application_settings.v2\n"
+               << "windowed|false\n"
+               << "controller_enabled|false\n"
+               << "controller_sensitivity|2.5\n"
+               << "end\n";
+        assert(output);
+    }
+    loaded = store.load();
+    assert(loaded);
+    assert(!loaded.value().windowed);
+    assert(store.save(loaded.value()));
+    {
+        std::ifstream migrated_input(store.path(), std::ios::binary);
+        serialized.assign(std::istreambuf_iterator<char>(migrated_input),
+                          std::istreambuf_iterator<char>());
+    }
+    assert(serialized.starts_with("heartstead.application_settings.v3\n"));
+    assert(serialized.find("controller_enabled|") == std::string::npos);
+    assert(serialized.find("controller_sensitivity|") == std::string::npos);
 }
 
 void test_ui_scale_adapts_to_window_capacity() {

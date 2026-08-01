@@ -17,8 +17,9 @@ namespace heartstead::game {
 
 namespace {
 
-constexpr std::string_view legacy_settings_magic = "heartstead.application_settings.v1";
-constexpr std::string_view settings_magic = "heartstead.application_settings.v2";
+constexpr std::string_view legacy_settings_magic_v1 = "heartstead.application_settings.v1";
+constexpr std::string_view legacy_settings_magic_v2 = "heartstead.application_settings.v2";
+constexpr std::string_view settings_magic = "heartstead.application_settings.v3";
 constexpr std::uintmax_t maximum_settings_bytes = 64U * 1024U;
 
 [[nodiscard]] core::Status failure(std::string code, const std::error_code& error) {
@@ -141,7 +142,6 @@ void recover_invalid_fields(ApplicationSettings& settings) {
     recover_range(settings.music_volume, 0.0F, 1.0F, defaults.music_volume);
     recover_range(settings.effects_volume, 0.0F, 1.0F, defaults.effects_volume);
     recover_range(settings.mouse_sensitivity, 0.1F, 10.0F, defaults.mouse_sensitivity);
-    recover_range(settings.controller_sensitivity, 0.1F, 10.0F, defaults.controller_sensitivity);
     recover_range(settings.ui_scale, 0.75F, 2.0F, defaults.ui_scale);
     recover_range(settings.ui_contrast, 0.5F, 2.0F, defaults.ui_contrast);
     recover_range(settings.ui_saturation, 0.0F, 2.0F, defaults.ui_saturation);
@@ -165,8 +165,8 @@ core::Status ApplicationSettings::validate() const {
     }
     const auto unit = [](float value) { return value >= 0.0F && value <= 1.0F; };
     if (!unit(master_volume) || !unit(music_volume) || !unit(effects_volume) ||
-        mouse_sensitivity < 0.1F || mouse_sensitivity > 10.0F || controller_sensitivity < 0.1F ||
-        controller_sensitivity > 10.0F || ui_scale < 0.75F || ui_scale > 2.0F ||
+        mouse_sensitivity < 0.1F || mouse_sensitivity > 10.0F || ui_scale < 0.75F ||
+        ui_scale > 2.0F ||
         ui_contrast < 0.5F || ui_contrast > 2.0F || ui_saturation < 0.0F || ui_saturation > 2.0F) {
         return core::Status::failure("application_settings.invalid_range",
                                      "one or more application settings are outside bounds");
@@ -205,11 +205,12 @@ core::Result<ApplicationSettings> ApplicationSettingsStore::load() const {
     std::ifstream input(path_, std::ios::binary);
     std::string line;
     if (!input || !std::getline(input, line) ||
-        (line != settings_magic && line != legacy_settings_magic)) {
+        (line != settings_magic && line != legacy_settings_magic_v1 &&
+         line != legacy_settings_magic_v2)) {
         return core::Result<ApplicationSettings>::failure("application_settings.invalid_header",
                                                           "application settings header is invalid");
     }
-    const bool legacy_schema = line == legacy_settings_magic;
+    const bool legacy_schema = line != settings_magic;
     ApplicationSettings settings;
     std::unordered_set<std::string> seen;
     bool ended = false;
@@ -239,7 +240,7 @@ core::Result<ApplicationSettings> ApplicationSettingsStore::load() const {
             if (parsed)
                 settings.window_height = parsed.value();
         } else if (key == "windowed" || key == "vsync" || key == "first_person_camera" ||
-                   key == "controller_enabled" || key == "reduced_motion") {
+                   key == "reduced_motion") {
             auto parsed = parse_bool(value, key);
             if (!parsed) {
                 continue;
@@ -250,8 +251,6 @@ core::Result<ApplicationSettings> ApplicationSettingsStore::load() const {
                 settings.vsync = parsed.value();
             else if (key == "first_person_camera")
                 settings.first_person_camera = parsed.value();
-            else if (key == "controller_enabled")
-                settings.controller_enabled = parsed.value();
             else
                 settings.reduced_motion = parsed.value();
         } else if (key == "rendering_quality") {
@@ -267,8 +266,8 @@ core::Result<ApplicationSettings> ApplicationSettingsStore::load() const {
         } else if (key == "recent_server") {
             settings.recent_servers.emplace_back(value);
         } else if (key == "master_volume" || key == "music_volume" || key == "effects_volume" ||
-                   key == "mouse_sensitivity" || key == "controller_sensitivity" ||
-                   key == "ui_scale" || key == "ui_contrast" || key == "ui_saturation") {
+                   key == "mouse_sensitivity" || key == "ui_scale" || key == "ui_contrast" ||
+                   key == "ui_saturation") {
             auto parsed = parse_number<float>(value, key);
             if (!parsed) {
                 continue;
@@ -281,8 +280,6 @@ core::Result<ApplicationSettings> ApplicationSettingsStore::load() const {
                 settings.effects_volume = parsed.value();
             else if (key == "mouse_sensitivity")
                 settings.mouse_sensitivity = parsed.value();
-            else if (key == "controller_sensitivity")
-                settings.controller_sensitivity = parsed.value();
             else if (key == "ui_scale")
                 settings.ui_scale = parsed.value();
             else if (key == "ui_contrast")
@@ -300,8 +297,8 @@ core::Result<ApplicationSettings> ApplicationSettingsStore::load() const {
             "window_width",       "window_height",          "windowed",
             "vsync",              "first_person_camera",    "rendering_quality",
             "master_volume",      "music_volume",           "effects_volume",
-            "mouse_sensitivity",  "controller_sensitivity", "controller_enabled",
-            "ui_scale",           "ui_contrast",             "ui_saturation",
+            "mouse_sensitivity",  "ui_scale",                "ui_contrast",
+            "ui_saturation",
             "color_vision",       "reduced_motion",          "last_world_slot",
         };
         const auto missing = std::ranges::find_if(required_fields, [&seen](std::string_view field) {
@@ -351,8 +348,6 @@ core::Status ApplicationSettingsStore::save(const ApplicationSettings& settings)
                << "music_volume|" << settings.music_volume << '\n'
                << "effects_volume|" << settings.effects_volume << '\n'
                << "mouse_sensitivity|" << settings.mouse_sensitivity << '\n'
-               << "controller_sensitivity|" << settings.controller_sensitivity << '\n'
-               << "controller_enabled|" << (settings.controller_enabled ? "true" : "false") << '\n'
                << "ui_scale|" << settings.ui_scale << '\n'
                << "ui_contrast|" << settings.ui_contrast << '\n'
                << "ui_saturation|" << settings.ui_saturation << '\n'
