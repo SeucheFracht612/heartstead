@@ -47,7 +47,7 @@ void test_discovery_and_browser_data(const content::ContentValidationReport& rep
     assert(!foundation->description.empty() && !renderer->description.empty());
     assert(registry.value().filter(scenarios::ScenarioCategory::rendering).size() == 1);
     assert(registry.value().filter(std::nullopt, "floating-origin").size() == 1);
-    assert(registry.value().filter(std::nullopt, "infinite").size() == 1);
+    assert(registry.value().filter(std::nullopt, "expansive").size() == 1);
     assert(registry.value().filter(std::nullopt, "renderer proof").size() == 1);
     assert(game::default_scenario_setup_registry().contains("renderer_proof"));
 }

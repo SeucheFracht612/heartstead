@@ -44,6 +44,30 @@ struct RendererProofChunkCandidate {
     return base + offset;
 }
 
+[[nodiscard]] bool chunk_fits_physics_island(world::ChunkCoord coord,
+                                             world::PhysicsIslandFrame frame) {
+    const auto block = world::chunk_local_to_block(coord, {0, 0, 0});
+    if (!block) {
+        return false;
+    }
+    const auto position = world::WorldPosition::from_anchor(block.value(), {});
+    if (!position) {
+        return false;
+    }
+    const auto local = world::to_physics_local(position.value(), frame);
+    if (!local) {
+        return false;
+    }
+    constexpr auto chunk_extent = static_cast<float>(world::VoxelChunk::edge_length);
+    if (chunk_extent > frame.max_local_extent * 2.0F) {
+        return false;
+    }
+    const auto maximum_origin = frame.max_local_extent - chunk_extent;
+    return local.value().x >= -frame.max_local_extent && local.value().x <= maximum_origin &&
+           local.value().y >= -frame.max_local_extent && local.value().y <= maximum_origin &&
+           local.value().z >= -frame.max_local_extent && local.value().z <= maximum_origin;
+}
+
 [[nodiscard]] core::Status startup_cancelled(std::stop_token stop_token) {
     if (!stop_token.stop_requested()) {
         return core::Status::ok();
@@ -1437,7 +1461,8 @@ core::Status ServerRuntime::stream_renderer_proof_world() {
                     continue;
                 }
                 const world::ChunkCoord coord{*x, scenarios::renderer_proof_center.y, *z};
-                if (!world_.chunks().contains(coord)) {
+                if (chunk_fits_physics_island(coord, desc_.chunk_collision.physics_island) &&
+                    !world_.chunks().contains(coord)) {
                     candidates.push_back({coord, distance_squared});
                 }
             }
