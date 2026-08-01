@@ -138,6 +138,13 @@ void test_ui_upload_failure_discards_pending_geometry() {
 
 void test_ui_validation() {
     auto fixture = make_fixture();
+    renderer::UiRendererConfig atlas_config;
+    atlas_config.atlas_layers = 1;
+    assert(!atlas_config.validate());
+    atlas_config.atlas_layers = 17;
+    assert(!atlas_config.validate());
+    atlas_config.atlas_layers = 3;
+    assert(atlas_config.validate());
     renderer::UiRenderer ui(*fixture.device, fixture.pipeline);
     assert(ui.initialize({640, 360}));
     renderer::UiQuadDesc invalid;

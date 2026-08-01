@@ -20,12 +20,12 @@ namespace {
 core::Status UiRendererConfig::validate() const {
     constexpr auto maximum_size = std::numeric_limits<std::size_t>::max();
     if (maximum_vertices < 3 || maximum_indices < 3 || buffered_frames < 2 ||
-        buffered_frames > 8 || atlas_layers != 2 ||
+        buffered_frames > 8 || atlas_layers < 2 || atlas_layers > 16 ||
         maximum_vertices > maximum_size / buffered_frames / sizeof(GpuUiVertex) ||
         maximum_indices > maximum_size / buffered_frames / sizeof(std::uint32_t)) {
         return core::Status::failure(
             "ui_renderer.invalid_config",
-            "UI capacities must fit memory, use the two-layer built-in atlas, and buffer two to "
+            "UI capacities must fit memory, use two to sixteen atlas layers, and buffer two to "
             "eight frames");
     }
     return core::Status::ok();

@@ -439,9 +439,10 @@ make_tone_map_shader_program(std::span<const std::uint32_t> vertex_spirv,
 }
 
 [[nodiscard]] std::vector<std::byte> make_ui_atlas(const UiFont* font, std::uint32_t width,
-                                                   std::uint32_t height) {
+                                                   std::uint32_t height,
+                                                   std::uint16_t array_layers) {
     const auto layer_size = static_cast<std::size_t>(width) * height * 4U;
-    std::vector<std::byte> pixels(layer_size * 2U, std::byte{0});
+    std::vector<std::byte> pixels(layer_size * array_layers, std::byte{0});
     std::fill_n(pixels.begin(), static_cast<std::ptrdiff_t>(layer_size), std::byte{0xff});
     if (font == nullptr) {
         return pixels;
@@ -728,8 +729,9 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         (void)shutdown();
         return core::Status::failure(error.code, error.message);
     }
-    pipeline_status =
-        create_ui_pipeline(desc.ui_vertex_spirv, desc.ui_fragment_spirv, desc.ui_font_bytes);
+    pipeline_status = create_ui_pipeline(desc.ui_vertex_spirv, desc.ui_fragment_spirv,
+                                         desc.ui_font_bytes,
+                                         desc.ui_renderer_config.atlas_layers);
     if (!pipeline_status) {
         const auto error = pipeline_status.error();
         (void)shutdown();
@@ -1135,6 +1137,11 @@ core::Status Renderer::shutdown() {
     terrain_surface_texture_array_ = {};
     surface_sampler_ = {};
     ui_texture_atlas_ = {};
+    ui_atlas_rgba8_.clear();
+    ui_atlas_width_ = 0;
+    ui_atlas_height_ = 0;
+    ui_atlas_layers_ = 0;
+    ui_atlas_revision_ = 0;
     ui_font_.reset();
     fallback_material_ = {};
     terrain_sampler_ = {};
@@ -1883,6 +1890,93 @@ core::Status Renderer::set_lighting_debug_view(LightingDebugView view) {
     }
     cascaded_shadows_->set_debug_view(view);
     return core::Status::ok();
+}
+
+core::Status Renderer::set_ui_preview_image(rhi::RenderExtent source_extent,
+                                            std::span<const std::uint8_t> rgba8) {
+    if (!is_initialized() || texture_manager_ == nullptr || ui_atlas_layers_ < 3 ||
+        ui_atlas_width_ == 0 || ui_atlas_height_ == 0) {
+        return core::Status::failure(
+            "renderer.ui_preview_unavailable",
+            "renderer requires an initialized application-owned UI atlas layer");
+    }
+    if (!source_extent.is_valid()) {
+        return core::Status::failure("renderer.ui_preview_invalid_extent",
+                                     "UI preview source extent must be nonzero");
+    }
+    const auto expected = static_cast<std::uint64_t>(source_extent.width) *
+                          source_extent.height * 4U;
+    if (expected > std::numeric_limits<std::size_t>::max() || rgba8.size() != expected) {
+        return core::Status::failure(
+            "renderer.ui_preview_invalid_payload",
+            "UI preview source must contain tightly packed RGBA8 pixels");
+    }
+
+    auto updated = ui_atlas_rgba8_;
+    const auto layer_size = static_cast<std::size_t>(ui_atlas_width_) * ui_atlas_height_ * 4U;
+    const auto destination_base = layer_size * 2U;
+    for (std::uint32_t y = 0; y < ui_atlas_height_; ++y) {
+        const auto source_y = static_cast<std::uint32_t>(
+            static_cast<std::uint64_t>(y) * source_extent.height / ui_atlas_height_);
+        for (std::uint32_t x = 0; x < ui_atlas_width_; ++x) {
+            const auto source_x = static_cast<std::uint32_t>(
+                static_cast<std::uint64_t>(x) * source_extent.width / ui_atlas_width_);
+            const auto source_offset =
+                (static_cast<std::size_t>(source_y) * source_extent.width + source_x) * 4U;
+            const auto destination_offset =
+                destination_base +
+                (static_cast<std::size_t>(y) * ui_atlas_width_ + x) * 4U;
+            for (std::size_t channel = 0; channel < 4U; ++channel) {
+                updated[destination_offset + channel] =
+                    static_cast<std::byte>(rgba8[source_offset + channel]);
+            }
+        }
+    }
+
+    const auto next_revision = ui_atlas_revision_ + 1U;
+    TextureUploadDesc desc;
+    desc.id = "builtin:ui_atlas." + std::to_string(next_revision);
+    desc.width = ui_atlas_width_;
+    desc.height = ui_atlas_height_;
+    desc.array_layers = ui_atlas_layers_;
+    desc.color_space = TextureColorSpace::linear;
+    desc.generate_mipmaps = false;
+    desc.rgba8 = updated;
+    auto status = install_ui_atlas(std::move(desc));
+    if (status) {
+        ui_atlas_rgba8_ = std::move(updated);
+        ui_atlas_revision_ = next_revision;
+    }
+    return status;
+}
+
+core::Status Renderer::clear_ui_preview_image() {
+    if (!is_initialized() || texture_manager_ == nullptr || ui_atlas_layers_ < 3 ||
+        ui_atlas_width_ == 0 || ui_atlas_height_ == 0) {
+        return core::Status::failure(
+            "renderer.ui_preview_unavailable",
+            "renderer requires an initialized application-owned UI atlas layer");
+    }
+    auto updated = ui_atlas_rgba8_;
+    const auto layer_size = static_cast<std::size_t>(ui_atlas_width_) * ui_atlas_height_ * 4U;
+    const auto destination = updated.begin() + static_cast<std::ptrdiff_t>(layer_size * 2U);
+    std::fill_n(destination, static_cast<std::ptrdiff_t>(layer_size), std::byte{0});
+
+    const auto next_revision = ui_atlas_revision_ + 1U;
+    TextureUploadDesc desc;
+    desc.id = "builtin:ui_atlas." + std::to_string(next_revision);
+    desc.width = ui_atlas_width_;
+    desc.height = ui_atlas_height_;
+    desc.array_layers = ui_atlas_layers_;
+    desc.color_space = TextureColorSpace::linear;
+    desc.generate_mipmaps = false;
+    desc.rgba8 = updated;
+    auto status = install_ui_atlas(std::move(desc));
+    if (status) {
+        ui_atlas_rgba8_ = std::move(updated);
+        ui_atlas_revision_ = next_revision;
+    }
+    return status;
 }
 
 core::Status Renderer::set_environment(rhi::RenderEnvironmentData environment) {
@@ -3790,7 +3884,8 @@ core::Status Renderer::create_debug_pipelines(std::span<const std::uint32_t> ver
 
 core::Status Renderer::create_ui_pipeline(std::span<const std::uint32_t> vertex_spirv,
                                           std::span<const std::uint32_t> fragment_spirv,
-                                          std::span<const std::uint8_t> font_bytes) {
+                                          std::span<const std::uint8_t> font_bytes,
+                                          std::uint16_t atlas_layers) {
     if (shader_manager_ == nullptr || pipeline_cache_ == nullptr || texture_manager_ == nullptr ||
         sampler_cache_ == nullptr) {
         return core::Status::failure("renderer.runtime_assets_uninitialized",
@@ -3802,7 +3897,7 @@ core::Status Renderer::create_ui_pipeline(std::span<const std::uint32_t> vertex_
                                      "internal UI material id is invalid");
     }
     TextureUploadDesc atlas_desc;
-    atlas_desc.id = "builtin:ui_atlas";
+    atlas_desc.id = "builtin:ui_atlas.0";
     if (!font_bytes.empty()) {
         auto font = UiFont::build(font_bytes);
         if (!font) {
@@ -3812,10 +3907,15 @@ core::Status Renderer::create_ui_pipeline(std::span<const std::uint32_t> vertex_
     }
     atlas_desc.width = ui_font_ == nullptr ? 128U : ui_font_->atlas_width();
     atlas_desc.height = ui_font_ == nullptr ? 64U : ui_font_->atlas_height();
-    atlas_desc.array_layers = 2;
+    atlas_desc.array_layers = atlas_layers;
     atlas_desc.color_space = TextureColorSpace::linear;
     atlas_desc.generate_mipmaps = false;
-    atlas_desc.rgba8 = make_ui_atlas(ui_font_.get(), atlas_desc.width, atlas_desc.height);
+    atlas_desc.rgba8 =
+        make_ui_atlas(ui_font_.get(), atlas_desc.width, atlas_desc.height, atlas_layers);
+    ui_atlas_width_ = atlas_desc.width;
+    ui_atlas_height_ = atlas_desc.height;
+    ui_atlas_layers_ = atlas_layers;
+    ui_atlas_rgba8_ = atlas_desc.rgba8;
     auto atlas = texture_manager_->create_texture(std::move(atlas_desc));
     if (!atlas) {
         return core::Status::failure(atlas.error().code, atlas.error().message);
@@ -3896,6 +3996,46 @@ core::Status Renderer::create_ui_pipeline(std::span<const std::uint32_t> vertex_
         device_->write_descriptors(std::span<const rhi::RenderDescriptorWrite>{&atlas_write, 1});
     if (!binding) {
         return core::Status::failure(binding.error().code, binding.error().message);
+    }
+    return core::Status::ok();
+}
+
+core::Status Renderer::install_ui_atlas(TextureUploadDesc desc) {
+    if (device_ == nullptr || texture_manager_ == nullptr || !ui_sampler_.is_valid()) {
+        return core::Status::failure("renderer.ui_preview_unavailable",
+                                     "UI atlas resources are not initialized");
+    }
+    const auto material = core::PrototypeId::parse("base:materials/ui");
+    if (!material) {
+        return core::Status::failure("renderer.invalid_ui_material",
+                                     "internal UI material id is invalid");
+    }
+    auto atlas = texture_manager_->create_texture(std::move(desc));
+    if (!atlas) {
+        return core::Status::failure(atlas.error().code, atlas.error().message);
+    }
+    const auto* atlas_view = texture_manager_->find(atlas.value());
+    if (atlas_view == nullptr) {
+        (void)texture_manager_->release_texture(atlas.value());
+        return core::Status::failure("renderer.ui_atlas_missing",
+                                     "new UI atlas disappeared after creation");
+    }
+    const rhi::RenderDescriptorWrite atlas_write{
+        material.value(), "ui_atlas", atlas_view->image, 0, 0, ui_sampler_};
+    auto binding =
+        device_->write_descriptors(std::span<const rhi::RenderDescriptorWrite>{&atlas_write, 1});
+    if (!binding) {
+        (void)texture_manager_->release_texture(atlas.value());
+        return core::Status::failure(binding.error().code, binding.error().message);
+    }
+    const auto previous = ui_texture_atlas_;
+    ui_texture_atlas_ = atlas.value();
+    if (previous.is_valid()) {
+        auto released = texture_manager_->release_texture(previous);
+        if (!released) {
+            core::log(core::LogLevel::warning,
+                      "Retired UI atlas could not be released: " + released.error().message);
+        }
     }
     return core::Status::ok();
 }

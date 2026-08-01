@@ -6,6 +6,7 @@
 #include "engine/core/logging.hpp"
 #include "engine/input/input_action.hpp"
 #include "engine/movement/player_camera.hpp"
+#include "engine/renderer/testing/visual_regression.hpp"
 #include "engine/save/save_compatibility.hpp"
 #include "engine/save/save_slot.hpp"
 #include "engine/ui/widget_tree.hpp"
@@ -91,6 +92,20 @@ const auto windowed_id = ui::widget_id("heartstead.options.windowed");
 const auto vsync_id = ui::widget_id("heartstead.options.vsync");
 const auto color_vision_id = ui::widget_id("heartstead.options.color_vision");
 const auto reduced_motion_id = ui::widget_id("heartstead.options.reduced_motion");
+const auto save_preview_id = ui::widget_id("heartstead.load_world.preview");
+constexpr std::string_view save_preview_region = "__heartstead_save_preview";
+
+[[nodiscard]] ui::UiSkin shell_skin(const content::ContentValidationReport* report) {
+    auto result = report == nullptr ? ui::UiSkin::storybook_default() : report->ui_skin;
+    if (result.find_region(save_preview_region) == nullptr) {
+        auto status = result.add_region({std::string(save_preview_region), 2});
+        if (!status) {
+            core::log(core::LogLevel::warning,
+                      "Save preview UI region unavailable: " + status.error().message);
+        }
+    }
+    return result;
+}
 
 [[nodiscard]] ui::WidgetDesc root_widget() {
     ui::WidgetDesc root;
@@ -347,9 +362,7 @@ using SessionLoadResult = core::Result<LoadedSession>;
 struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     explicit Impl(HeartsteadApplicationModeConfig initial_config)
         : config(std::move(initial_config)), states(this),
-          skin(config.content_report == nullptr ? ui::UiSkin::storybook_default()
-                                                : config.content_report->ui_skin),
-          widgets(skin),
+          skin(shell_skin(config.content_report)), widgets(skin),
           settings(config.initial_settings), settings_store(config.user_data_root / "settings.txt"),
           save_catalog(config.user_data_root / "saves") {
         camera_perspective = settings.first_person_camera
@@ -377,6 +390,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     std::vector<save::SaveSlotSummary> save_entries;
     MainMenuNavigation menu_navigation;
     std::optional<std::size_t> selected_save;
+    std::string loaded_save_preview_slot;
+    bool save_preview_visible = false;
     std::optional<std::size_t> selected_developer_world;
     std::optional<scenarios::ScenarioCategory> developer_category;
     std::optional<std::string> pending_delete_slot;
@@ -409,6 +424,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     bool model_presentation_initialized = false;
     std::optional<movement::PlayerCameraFrame> player_camera_frame;
     std::optional<RuntimeFrameStats> runtime_stats;
+    std::optional<renderer::testing::VisualCapture> pending_save_preview;
     std::uint64_t frame_count = 0;
     std::uint64_t completed_session_count = 0;
     std::uint64_t next_session_generation = 1;
@@ -507,6 +523,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             return core::Status::failure(listed.error().code, listed.error().message);
         }
         save_entries = std::move(listed).value();
+        loaded_save_preview_slot.clear();
+        save_preview_visible = false;
         selected_save.reset();
         if (!preferred_slot.empty()) {
             const auto selected = std::ranges::find(save_entries, preferred_slot,
@@ -557,6 +575,43 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             settings_persist_pending = false;
         }
         return status;
+    }
+
+    void synchronize_save_preview(const save::SaveSlotSummary& entry) {
+        if (loaded_save_preview_slot == entry.slot_id) {
+            return;
+        }
+        loaded_save_preview_slot = entry.slot_id;
+        save_preview_visible = false;
+        if (services == nullptr || services->renderer() == nullptr) {
+            return;
+        }
+        auto* active_renderer = services->renderer();
+        auto cleared = active_renderer->clear_ui_preview_image();
+        if (!cleared) {
+            core::log(core::LogLevel::warning,
+                      "Save preview layer could not be cleared: " + cleared.error().message);
+            return;
+        }
+        const auto preview_path = entry.path / "preview.png";
+        std::error_code filesystem_error;
+        if (!std::filesystem::is_regular_file(preview_path, filesystem_error) || filesystem_error) {
+            return;
+        }
+        auto preview = renderer::testing::read_visual_capture(preview_path);
+        if (!preview) {
+            core::log(core::LogLevel::warning,
+                      "Save preview could not be decoded: " + preview.error().message);
+            return;
+        }
+        auto installed = active_renderer->set_ui_preview_image(preview.value().extent,
+                                                               preview.value().rgba8);
+        if (!installed) {
+            core::log(core::LogLevel::warning,
+                      "Save preview could not be displayed: " + installed.error().message);
+            return;
+        }
+        save_preview_visible = true;
     }
 
     [[nodiscard]] core::Status show_recoverable_menu_error(const core::Status& status,
@@ -687,6 +742,22 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             auto migration_available = false;
             if (has_selection) {
                 const auto& entry = save_entries[*selected_save];
+                synchronize_save_preview(entry);
+                if (save_preview_visible) {
+                    ui::WidgetDesc preview;
+                    preview.id = save_preview_id;
+                    preview.parent = panel_id;
+                    preview.kind = ui::WidgetKind::image;
+                    preview.atlas_region = std::string(save_preview_region);
+                    preview.layout.width = ui::UiSize::fill();
+                    preview.layout.height = ui::UiSize::pixels(252.0F);
+                    preview.layout.minimum_width = 320.0F;
+                    preview.accessibility_label =
+                        "Saved world preview for " + entry.metadata.display_name;
+                    if (!(status = add(std::move(preview)))) {
+                        return status;
+                    }
+                }
                 if (!(status =
                           add(label("heartstead.load.selected_dates",
                                     "Created: " + timestamp_text(entry.metadata.created_at_ms) +
@@ -1371,13 +1442,46 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         active_world_name.clear();
         active_persistence = PersistencePolicy::ephemeral;
         active_session_mode = SessionMode::local_single_player;
+        pending_save_preview.reset();
         input_scheduler.reset();
         input_orientation_initialized = false;
         gameplay_input_enabled = true;
         return first_failure;
     }
 
-    [[nodiscard]] core::Status save_active_session() {
+    void capture_active_save_preview() {
+        if (config.headless || services == nullptr || services->renderer() == nullptr ||
+            services->renderer()->device() == nullptr) {
+            return;
+        }
+        std::optional<std::filesystem::path> preview_path;
+        if (!active_save_slot.empty()) {
+            preview_path = save_catalog.root() / active_save_slot / "preview.png";
+        } else if (active_save_path.has_value()) {
+            preview_path = *active_save_path / "preview.png";
+        }
+        if (!preview_path.has_value()) {
+            return;
+        }
+        if (!pending_save_preview.has_value()) {
+            auto captured = renderer::testing::capture_output(*services->renderer()->device());
+            if (!captured) {
+                core::log(core::LogLevel::warning,
+                          "Save preview capture skipped: " + captured.error().message);
+                return;
+            }
+            pending_save_preview = std::move(captured).value();
+        }
+        auto written =
+            renderer::testing::write_visual_capture(*preview_path, *pending_save_preview);
+        if (!written) {
+            core::log(core::LogLevel::warning,
+                      "Save preview write skipped: " + written.error().message);
+        }
+        pending_save_preview.reset();
+    }
+
+    [[nodiscard]] core::Status save_active_session(bool capture_preview = false) {
         if (!session_runtime.has_value() || active_persistence != PersistencePolicy::persistent) {
             return core::Status::ok();
         }
@@ -1385,15 +1489,19 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         if (!snapshot) {
             return core::Status::failure(snapshot.error().code, snapshot.error().message);
         }
-        if (!active_save_slot.empty()) {
-            return save_catalog.write_snapshot(active_save_slot, snapshot.value(),
-                                               persisted_timestamp_ms());
+        auto status = !active_save_slot.empty()
+                          ? save_catalog.write_snapshot(active_save_slot, snapshot.value(),
+                                                        persisted_timestamp_ms())
+                      : active_save_path.has_value()
+                          ? save::FileSaveDatabase(*active_save_path)
+                                .write_snapshot(snapshot.value())
+                          : core::Status::failure(
+                                "heartstead.persistent_save_path_missing",
+                                "persistent session has no save destination");
+        if (status && capture_preview) {
+            capture_active_save_preview();
         }
-        if (active_save_path.has_value()) {
-            return save::FileSaveDatabase(*active_save_path).write_snapshot(snapshot.value());
-        }
-        return core::Status::failure("heartstead.persistent_save_path_missing",
-                                     "persistent session has no save destination");
+        return status;
     }
 
     [[nodiscard]] core::Status autosave_if_due() {
@@ -1499,6 +1607,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         }
         if (state == ApplicationState::in_game && transition.from == ApplicationState::paused &&
             session_runtime.has_value() && session_runtime->session() != nullptr) {
+            pending_save_preview.reset();
             input_scheduler.reset(session_runtime->session()->fixed_step_tick());
             input_orientation_initialized = false;
         }
@@ -1930,6 +2039,17 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             }
             if (!consumed.keyboard &&
                 action_frame[input::InputAction::close_or_pause].pressed) {
+                if (active_persistence == PersistencePolicy::persistent && services != nullptr &&
+                    services->renderer() != nullptr && services->renderer()->device() != nullptr) {
+                    auto captured =
+                        renderer::testing::capture_output(*services->renderer()->device());
+                    if (captured) {
+                        pending_save_preview = std::move(captured).value();
+                    } else {
+                        core::log(core::LogLevel::warning,
+                                  "Save preview capture skipped: " + captured.error().message);
+                    }
+                }
                 return states.transition(ApplicationState::paused, "pause requested");
             }
             const auto remove = !consumed.pointer && gameplay_input_enabled &&
@@ -2075,7 +2195,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             }
             if (event.target == return_id || event.target == cancel_id) {
                 if (event.target == return_id) {
-                    status = save_active_session();
+                    status = save_active_session(true);
                     if (!status) {
                         display_error = status.error();
                         return rebuild_ui(ApplicationState::paused);
@@ -2624,7 +2744,7 @@ HeartsteadApplicationMode::update(GameApplicationServices& services,
 
 core::Status HeartsteadApplicationMode::shutdown(GameApplicationServices&) {
     auto& state = *implementation_;
-    auto first_failure = state.save_active_session();
+    auto first_failure = state.save_active_session(true);
     auto status = state.unload_session();
     if (!status && first_failure) {
         first_failure = status;

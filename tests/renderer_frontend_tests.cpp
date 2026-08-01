@@ -711,6 +711,13 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(retained_renderer.is_initialized());
     assert(retained_renderer.device() != nullptr);
     assert(retained_renderer.fallback_resources().is_valid());
+    constexpr std::array<std::uint8_t, 16> preview{
+        255, 0,   0,   255, 0,   255, 0,   255,
+        0,   0,   255, 255, 255, 255, 255, 255,
+    };
+    assert(retained_renderer.set_ui_preview_image({2, 2}, preview));
+    assert(!retained_renderer.set_ui_preview_image({0, 2}, preview));
+    assert(retained_renderer.clear_ui_preview_image());
     const auto terrain_array = retained_renderer.describe_terrain_texture();
     assert(terrain_array);
     assert(terrain_array->array_layers == 12);

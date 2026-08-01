@@ -62,6 +62,9 @@ Implemented behavior:
   existing saved or played timestamp backwards
 - updates `last_played_at_ms` separately when a loaded world becomes active, so Continue ordering
   does not confuse opening a world with saving it
+- keeps an optional `preview.png` sidecar beside the authoritative generation store; production
+  captures the last unobscured rendered world frame on explicit/final saves, while preview read,
+  write, or GPU-upload failures remain non-authoritative and cannot fail a world save
 - treats missing `slot.txt` files as legacy/default metadata so older slot directories remain
   discoverable
 - lists save-slot summaries with metadata and `SaveDatabaseStats` for each visible slot

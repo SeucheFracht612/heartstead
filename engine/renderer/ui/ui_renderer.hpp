@@ -86,7 +86,8 @@ struct UiRendererConfig {
     std::uint32_t maximum_vertices = 65'536;
     std::uint32_t maximum_indices = 98'304;
     std::uint32_t buffered_frames = 3;
-    std::uint16_t atlas_layers = 2;
+    // Solid shapes, font glyphs, and one application-owned dynamic image layer.
+    std::uint16_t atlas_layers = 3;
 
     [[nodiscard]] core::Status validate() const;
 };

@@ -172,6 +172,11 @@ class Renderer {
     // or non-finite value is rejected here rather than becoming a NaN frame.
     [[nodiscard]] core::Status set_exposure(rhi::RenderExposureSettings exposure);
     [[nodiscard]] core::Status set_lighting_debug_view(LightingDebugView view);
+    // Replaces the application-owned UI preview layer. The source is tightly packed RGBA8 and is
+    // resampled to the UI atlas without changing authoritative renderer/session resources.
+    [[nodiscard]] core::Status set_ui_preview_image(rhi::RenderExtent source_extent,
+                                                    std::span<const std::uint8_t> rgba8);
+    [[nodiscard]] core::Status clear_ui_preview_image();
     [[nodiscard]] rhi::RenderExposureSettings exposure() const noexcept;
     [[nodiscard]] const rhi::RenderEnvironmentData& environment() const noexcept;
     [[nodiscard]] const RendererQualitySettings& quality_settings() const noexcept;
@@ -270,7 +275,9 @@ class Renderer {
                            std::span<const std::uint32_t> fragment_spirv);
     [[nodiscard]] core::Status create_ui_pipeline(std::span<const std::uint32_t> vertex_spirv,
                                                   std::span<const std::uint32_t> fragment_spirv,
-                                                  std::span<const std::uint8_t> font_bytes);
+                                                  std::span<const std::uint8_t> font_bytes,
+                                                  std::uint16_t atlas_layers);
+    [[nodiscard]] core::Status install_ui_atlas(TextureUploadDesc desc);
     // Builds the material that resolves the linear scene target to the display image. Only needed
     // by the linear HDR graph, so it is skipped when no tone map SPIR-V was supplied.
     [[nodiscard]] core::Status
@@ -325,6 +332,11 @@ class Renderer {
     std::unique_ptr<SurfaceTextureArray> surface_texture_array_;
     std::unique_ptr<SurfaceTextureArray> surface_data_texture_array_;
     TextureHandle ui_texture_atlas_;
+    std::vector<std::byte> ui_atlas_rgba8_;
+    std::uint32_t ui_atlas_width_ = 0;
+    std::uint32_t ui_atlas_height_ = 0;
+    std::uint16_t ui_atlas_layers_ = 0;
+    std::uint64_t ui_atlas_revision_ = 0;
     MaterialRuntimeHandle fallback_material_;
     rhi::RenderResourceHandle terrain_sampler_;
     rhi::RenderResourceHandle ui_sampler_;
