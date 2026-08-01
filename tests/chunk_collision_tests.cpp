@@ -118,7 +118,12 @@ void test_snapshot_rejects_stale_identity_and_unknown_types() {
     for (std::uint32_t attempt = 0; attempt < 500; ++attempt) {
         assert(collision_system.update(chunks, dirty_regions, palette));
         const auto* record = collision_system.find(coordinate);
-        if (record != nullptr && record->content_revision == expected_revision) {
+        const auto* chunk = chunks.find(coordinate);
+        if (record != nullptr && record->content_revision == expected_revision &&
+            record->collision_table_revision == palette.render_revision() && chunk != nullptr &&
+            chunk->stages()
+                .record(heartstead::world::ChunkStage::collision)
+                .resident_is_current()) {
             return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -159,6 +164,8 @@ void test_system_cooks_rebuilds_and_removes_terrain(heartstead::physics::Physics
     const auto* initial_record = collision_system.value()->find(coordinate);
     assert(initial_record != nullptr);
     assert(initial_record->box_count == 1);
+    const auto initial_collision_output_revision =
+        chunks.find(coordinate)->stages().record(world::ChunkStage::collision).output_revision;
     const auto initial_world_revision = collision_system.value()->world_revision();
     assert(initial_world_revision > 1);
     assert(physics_world.value()->body_state(initial_record->body_id).has_value());
@@ -173,6 +180,24 @@ void test_system_cooks_rebuilds_and_removes_terrain(heartstead::physics::Physics
     const auto* unchanged_record = collision_system.value()->find(coordinate);
     assert(unchanged_record != nullptr);
     assert(unchanged_record->body_id == unchanged_body);
+    assert(collision_system.value()->world_revision() == initial_world_revision);
+    assert(chunks.find(coordinate)->stages().record(world::ChunkStage::collision).output_revision ==
+           initial_collision_output_revision);
+
+    const auto collision_request_before_palette_change =
+        chunks.find(coordinate)->stages().record(world::ChunkStage::collision).requested_revision;
+    auto unused = definition(4, "test:voxels/unused");
+    assert(palette.add(std::move(unused)));
+    assert(wait_for_collision_revision(*collision_system.value(), chunks, dirty_regions, palette,
+                                       coordinate, non_colliding_revision));
+    const auto* table_refreshed_record = collision_system.value()->find(coordinate);
+    assert(table_refreshed_record != nullptr);
+    assert(table_refreshed_record->body_id == unchanged_body);
+    assert(table_refreshed_record->collision_table_revision == palette.render_revision());
+    const auto& table_refreshed_stage =
+        chunks.find(coordinate)->stages().record(world::ChunkStage::collision);
+    assert(table_refreshed_stage.requested_revision > collision_request_before_palette_change);
+    assert(table_refreshed_stage.output_revision == initial_collision_output_revision);
     assert(collision_system.value()->world_revision() == initial_world_revision);
 
     physics::PhysicsBodyDesc dropped;
@@ -210,12 +235,67 @@ void test_system_cooks_rebuilds_and_removes_terrain(heartstead::physics::Physics
     assert(collision_system.value()->stats().resident_body_count == 0);
 }
 
+void test_system_rejects_in_flight_edit_and_reload_results() {
+    using namespace heartstead;
+
+    auto physics_world =
+        physics::create_physics_world({.backend = physics::PhysicsBackend::headless});
+    assert(physics_world);
+    auto palette = collision_palette();
+    world::ChunkDatabase chunks;
+    dirty::DirtyRegionTracker dirty_regions;
+    constexpr world::ChunkCoord coordinate{4, 0, -2};
+    auto& chunk = chunks.get_or_create(coordinate);
+    chunk.fill({1, 0});
+
+    auto collision_system = physics::ChunkCollisionSystem::create(*physics_world.value(), palette);
+    assert(collision_system);
+    assert(collision_system.value()->update(chunks, dirty_regions, palette));
+    const auto first_ticket = chunk.stage_ticket(world::ChunkStage::collision);
+    assert(chunk.stages().record(world::ChunkStage::collision).state ==
+           world::ChunkStageState::running);
+
+    assert(chunks.set(coordinate, {0, 0, 0}, world::VoxelCell::air(), dirty_regions));
+    const auto edited_revision = chunks.find(coordinate)->content_revision();
+    const auto edited_ticket = chunks.find(coordinate)->stage_ticket(world::ChunkStage::collision);
+    assert(edited_ticket != first_ticket);
+    assert(wait_for_collision_revision(*collision_system.value(), chunks, dirty_regions, palette,
+                                       coordinate, edited_revision));
+    assert(!chunks.find(coordinate)->stage_ticket_is_current(first_ticket));
+    assert(chunks.find(coordinate)->stage_ticket_is_current(edited_ticket));
+    assert(collision_system.value()->stats().stale_results >= 1);
+
+    assert(chunks.set(coordinate, {1, 0, 0}, world::VoxelCell::air(), dirty_regions));
+    assert(collision_system.value()->update(chunks, dirty_regions, palette));
+    const auto superseded_identity = chunks.find(coordinate)->identity();
+    const auto superseded_ticket =
+        chunks.find(coordinate)->stage_ticket(world::ChunkStage::collision);
+    assert(chunks.find(coordinate)->stages().record(world::ChunkStage::collision).state ==
+           world::ChunkStageState::running);
+
+    assert(chunks.erase(coordinate));
+    auto& replacement = chunks.get_or_create(coordinate);
+    replacement.fill({2, 0});
+    assert(replacement.identity() != superseded_identity);
+    const auto replacement_revision = replacement.content_revision();
+    assert(wait_for_collision_revision(*collision_system.value(), chunks, dirty_regions, palette,
+                                       coordinate, replacement_revision));
+    const auto* replacement_record = collision_system.value()->find(coordinate);
+    assert(replacement_record != nullptr);
+    assert(replacement_record->identity == replacement.identity());
+    assert(replacement_record->box_count == world::VoxelChunk::total_cells);
+    assert(!replacement.stage_ticket_is_current(superseded_ticket));
+    assert(replacement.stages().record(world::ChunkStage::collision).resident_is_current());
+    assert(collision_system.value()->stats().stale_results >= 2);
+}
+
 } // namespace
 
 int main() {
     test_full_chunk_greedily_merges_to_one_box();
     test_partial_and_non_colliding_prototypes_are_preserved();
     test_snapshot_rejects_stale_identity_and_unknown_types();
+    test_system_rejects_in_flight_edit_and_reload_results();
     test_system_cooks_rebuilds_and_removes_terrain(heartstead::physics::PhysicsBackend::headless);
     test_system_cooks_rebuilds_and_removes_terrain(heartstead::physics::PhysicsBackend::jolt);
     return 0;

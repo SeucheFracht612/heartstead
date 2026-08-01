@@ -180,7 +180,7 @@ const ChunkCollisionSystemStats& ChunkCollisionSystem::stats() const noexcept {
 }
 
 core::Status ChunkCollisionSystem::refresh_collision_table(const world::VoxelPalette& palette,
-                                                           const world::ChunkDatabase& chunks) {
+                                                           world::ChunkDatabase& chunks) {
     if (collision_table_ != nullptr && collision_table_->revision == palette.render_revision()) {
         return core::Status::ok();
     }
@@ -190,8 +190,12 @@ core::Status ChunkCollisionSystem::refresh_collision_table(const world::VoxelPal
     }
     collision_table_ =
         std::make_shared<const world::ChunkCollisionTableSnapshot>(std::move(table).value());
-    for (const auto* chunk : chunks.records()) {
-        pending_chunks_.insert(chunk->coord());
+    for (const auto identity : chunks.identities()) {
+        auto* chunk = chunks.find(identity.coordinate);
+        if (chunk != nullptr && chunk->identity() == identity) {
+            static_cast<void>(chunk->request_stage(world::ChunkStage::collision));
+            pending_chunks_.insert(chunk->coord());
+        }
     }
     return core::Status::ok();
 }
@@ -210,6 +214,13 @@ void ChunkCollisionSystem::collect_dirty_chunks(world::ChunkDatabase& chunks,
     }
     for (const auto* chunk : chunks.records()) {
         if (chunk->dirty().contains(world::ChunkDirtyFlag::collision)) {
+            pending_chunks_.insert(chunk->coord());
+        }
+        const auto active_stage_revision = scheduler_->in_flight_stage_revision(chunk->identity());
+        if (active_stage_revision.has_value() &&
+            *active_stage_revision !=
+                chunk->stages().requested_revision(world::ChunkStage::collision)) {
+            scheduler_->cancel(chunk->identity());
             pending_chunks_.insert(chunk->coord());
         }
     }
@@ -261,22 +272,39 @@ core::Status ChunkCollisionSystem::apply_completed(world::ChunkDatabase& chunks)
     return core::Status::ok();
 }
 
-core::Status ChunkCollisionSystem::submit_pending(const world::ChunkDatabase& chunks) {
+core::Status ChunkCollisionSystem::submit_pending(world::ChunkDatabase& chunks) {
     std::size_t submitted = 0;
     for (auto pending = pending_chunks_.begin();
          pending != pending_chunks_.end() && submitted < config_.max_submissions_per_update;) {
-        const auto* chunk = chunks.find(*pending);
+        auto* chunk = chunks.find(*pending);
         if (chunk == nullptr) {
             pending = pending_chunks_.erase(pending);
             continue;
         }
         if (scheduler_->has_in_flight(chunk->identity())) {
+            const auto active_stage_revision =
+                scheduler_->in_flight_stage_revision(chunk->identity());
+            if (active_stage_revision.has_value() &&
+                *active_stage_revision !=
+                    chunk->stages().requested_revision(world::ChunkStage::collision)) {
+                scheduler_->cancel(chunk->identity());
+            }
             ++pending;
             continue;
         }
         if (!scheduler_->has_capacity()) {
             break;
         }
+        auto stage_ticket = chunk->stage_ticket(world::ChunkStage::collision);
+        if (chunk->stages().record(world::ChunkStage::collision).state !=
+            world::ChunkStageState::requested) {
+            stage_ticket = chunk->request_stage(world::ChunkStage::collision);
+        }
+        if (!stage_ticket.is_valid()) {
+            return core::Status::failure("chunk_collision.invalid_stage_ticket",
+                                         "chunk collision work requires a valid stage ticket");
+        }
+
         auto storage = scheduler_->acquire_snapshot_cells(world::VoxelChunk::total_cells);
         auto snapshot = world::build_chunk_collision_snapshot(
             chunks, chunk->identity(), *collision_table_, std::move(storage));
@@ -284,10 +312,16 @@ core::Status ChunkCollisionSystem::submit_pending(const world::ChunkDatabase& ch
             return core::Status::failure(snapshot.error().code, snapshot.error().message);
         }
         ChunkCollisionRequest request;
+        request.stage_ticket = stage_ticket;
         request.snapshot = std::move(snapshot).value();
         request.collision_table = collision_table_;
         auto status = scheduler_->submit(std::move(request));
         if (!status) {
+            return status;
+        }
+        status = chunk->mark_stage_running(stage_ticket);
+        if (!status) {
+            scheduler_->cancel(chunk->identity());
             return status;
         }
         pending = pending_chunks_.erase(pending);
@@ -300,25 +334,58 @@ core::Status ChunkCollisionSystem::submit_pending(const world::ChunkDatabase& ch
 core::Status ChunkCollisionSystem::apply_result(world::ChunkDatabase& chunks,
                                                 ChunkCollisionResult result) {
     stats_.last_cooking_ms = result.cooking_ms;
-    const auto* chunk = chunks.find(result.identity.coordinate);
-    if (result.state == ChunkCollisionResultState::cancelled || chunk == nullptr ||
-        chunk->identity() != result.identity ||
-        chunk->content_revision() != result.center_revision ||
-        collision_table_->revision != result.collision_table_revision) {
+    auto* chunk = chunks.find(result.identity.coordinate);
+    const bool same_identity = chunk != nullptr && chunk->identity() == result.identity;
+    if (result.state == ChunkCollisionResultState::cancelled) {
         ++stats_.stale_results;
-        if (chunk != nullptr) {
+        if (same_identity) {
+            static_cast<void>(chunk->note_stage_cancelled(result.stage_ticket));
             pending_chunks_.insert(chunk->coord());
         }
         return core::Status::ok();
     }
+    if (!same_identity || !chunk->stage_ticket_is_current(result.stage_ticket) ||
+        chunk->content_revision() != result.center_revision || collision_table_ == nullptr ||
+        collision_table_->revision != result.collision_table_revision) {
+        ++stats_.stale_results;
+        if (same_identity) {
+            static_cast<void>(chunk->note_stage_stale(result.stage_ticket));
+            pending_chunks_.insert(chunk->coord());
+        }
+        return core::Status::ok();
+    }
+
+    const auto fail_and_retry = [this, &chunks, &result](core::Status failure) {
+        auto* current = chunks.find(result.identity.coordinate);
+        if (current != nullptr && current->identity() == result.identity &&
+            current->stage_ticket_is_current(result.stage_ticket)) {
+            auto retry = current->retry_stage(result.stage_ticket);
+            if (!retry) {
+                return retry;
+            }
+            pending_chunks_.insert(current->coord());
+        }
+        return failure;
+    };
     if (result.state == ChunkCollisionResultState::failed || !result.shape.has_value()) {
-        return core::Status::failure(
+        return fail_and_retry(core::Status::failure(
             result.error_code.empty() ? "chunk_collision.cook_failed" : result.error_code,
-            result.error_message.empty() ? "chunk collision cook failed" : result.error_message);
+            result.error_message.empty() ? "chunk collision cook failed" : result.error_message));
     }
     auto shape_status = result.shape->validate();
     if (!shape_status) {
-        return shape_status;
+        return fail_and_retry(shape_status);
+    }
+    if (result.shape->identity != result.identity ||
+        result.shape->content_revision != result.center_revision ||
+        result.shape->collision_table_revision != result.collision_table_revision) {
+        return fail_and_retry(
+            core::Status::failure("chunk_collision.shape_revision_mismatch",
+                                  "chunk collision shape does not match its publication metadata"));
+    }
+    auto stage_status = chunk->mark_stage_ready(result.stage_ticket);
+    if (!stage_status) {
+        return stage_status;
     }
 
     const auto shape_fingerprint = collision_shape_fingerprint(*result.shape);
@@ -328,17 +395,17 @@ core::Status ChunkCollisionSystem::apply_result(world::ChunkDatabase& chunks,
                                         existing->second.box_count == result.shape->boxes.size() &&
                                         existing->second.shape_fingerprint == shape_fingerprint);
     if (geometry_is_unchanged) {
+        stage_status = chunk->publish_stage(result.stage_ticket, false);
+        if (!stage_status) {
+            return stage_status;
+        }
         if (existing != bodies_.end()) {
             existing->second.identity = result.identity;
             existing->second.content_revision = result.center_revision;
             existing->second.collision_table_revision = result.collision_table_revision;
         }
-        if (auto* mutable_chunk = chunks.find(result.identity.coordinate);
-            mutable_chunk != nullptr && mutable_chunk->identity() == result.identity &&
-            mutable_chunk->content_revision() == result.center_revision) {
-            mutable_chunk->clear_dirty(world::ChunkDirtyFlag::collision);
-            pending_chunks_.erase(result.identity.coordinate);
-        }
+        chunk->clear_dirty(world::ChunkDirtyFlag::collision);
+        pending_chunks_.erase(result.identity.coordinate);
         ++stats_.applied_shapes;
         ++stats_.applied_this_update;
         return core::Status::ok();
@@ -348,7 +415,8 @@ core::Status ChunkCollisionSystem::apply_result(world::ChunkDatabase& chunks,
     if (!result.shape->empty()) {
         auto position = chunk_physics_position(result.identity.coordinate);
         if (!position) {
-            return core::Status::failure(position.error().code, position.error().message);
+            return fail_and_retry(
+                core::Status::failure(position.error().code, position.error().message));
         }
         PhysicsBodyDesc desc;
         desc.motion_type = BodyMotionType::static_body;
@@ -358,7 +426,8 @@ core::Status ChunkCollisionSystem::apply_result(world::ChunkDatabase& chunks,
         desc.shape.children = result.shape->boxes;
         auto created = physics_world_->create_body(std::move(desc));
         if (!created) {
-            return core::Status::failure(created.error().code, created.error().message);
+            return fail_and_retry(
+                core::Status::failure(created.error().code, created.error().message));
         }
         new_body = created.value();
     }
@@ -369,7 +438,7 @@ core::Status ChunkCollisionSystem::apply_result(world::ChunkDatabase& chunks,
             if (new_body.is_valid()) {
                 (void)physics_world_->destroy_body(new_body);
             }
-            return status;
+            return fail_and_retry(status);
         }
         stats_.current_collision_boxes -= existing->second.box_count;
         bodies_.erase(existing);
@@ -382,12 +451,12 @@ core::Status ChunkCollisionSystem::apply_result(world::ChunkDatabase& chunks,
                                                  new_body, box_count});
         stats_.current_collision_boxes += box_count;
     }
-    if (auto* mutable_chunk = chunks.find(result.identity.coordinate);
-        mutable_chunk != nullptr && mutable_chunk->identity() == result.identity &&
-        mutable_chunk->content_revision() == result.center_revision) {
-        mutable_chunk->clear_dirty(world::ChunkDirtyFlag::collision);
-        pending_chunks_.erase(result.identity.coordinate);
+    stage_status = chunk->publish_stage(result.stage_ticket);
+    if (!stage_status) {
+        return stage_status;
     }
+    chunk->clear_dirty(world::ChunkDirtyFlag::collision);
+    pending_chunks_.erase(result.identity.coordinate);
     ++stats_.applied_shapes;
     ++stats_.applied_this_update;
     ++stats_.body_changes_this_update;

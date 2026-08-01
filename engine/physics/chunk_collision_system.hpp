@@ -81,12 +81,12 @@ class ChunkCollisionSystem {
                          std::shared_ptr<const world::ChunkCollisionTableSnapshot> table);
 
     [[nodiscard]] core::Status refresh_collision_table(const world::VoxelPalette& palette,
-                                                       const world::ChunkDatabase& chunks);
+                                                       world::ChunkDatabase& chunks);
     void collect_dirty_chunks(world::ChunkDatabase& chunks,
                               dirty::DirtyRegionTracker& dirty_regions);
     [[nodiscard]] core::Status reconcile_unloaded_chunks(const world::ChunkDatabase& chunks);
     [[nodiscard]] core::Status apply_completed(world::ChunkDatabase& chunks);
-    [[nodiscard]] core::Status submit_pending(const world::ChunkDatabase& chunks);
+    [[nodiscard]] core::Status submit_pending(world::ChunkDatabase& chunks);
     [[nodiscard]] core::Status apply_result(world::ChunkDatabase& chunks,
                                             ChunkCollisionResult result);
     [[nodiscard]] core::Result<Vec3> chunk_physics_position(world::ChunkCoord coordinate) const;

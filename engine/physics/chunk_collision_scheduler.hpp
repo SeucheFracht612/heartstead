@@ -16,6 +16,7 @@
 namespace heartstead::physics {
 
 struct ChunkCollisionRequest {
+    world::ChunkStageTicket stage_ticket{};
     world::ChunkCollisionSnapshot snapshot;
     std::shared_ptr<const world::ChunkCollisionTableSnapshot> collision_table;
 };
@@ -28,6 +29,7 @@ enum class ChunkCollisionResultState : std::uint8_t {
 
 struct ChunkCollisionResult {
     world::ChunkIdentity identity{};
+    world::ChunkStageTicket stage_ticket{};
     std::uint64_t center_revision = 0;
     std::uint64_t collision_table_revision = 0;
     ChunkCollisionResultState state = ChunkCollisionResultState::failed;
@@ -78,6 +80,8 @@ class ChunkCollisionScheduler {
     void shutdown() noexcept;
 
     [[nodiscard]] bool has_in_flight(world::ChunkIdentity identity) const noexcept;
+    [[nodiscard]] std::optional<std::uint64_t>
+    in_flight_stage_revision(world::ChunkIdentity identity) const noexcept;
     [[nodiscard]] bool has_capacity() const noexcept;
     [[nodiscard]] const ChunkCollisionSchedulerStats& stats() noexcept;
 
@@ -85,6 +89,7 @@ class ChunkCollisionScheduler {
     struct SharedState;
     struct ActiveJob {
         jobs::JobId job_id{};
+        std::uint64_t stage_revision = 0;
         std::uint64_t center_revision = 0;
         std::uint64_t collision_table_revision = 0;
         std::shared_ptr<std::atomic_bool> cancellation;

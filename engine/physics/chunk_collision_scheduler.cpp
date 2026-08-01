@@ -143,7 +143,10 @@ core::Status ChunkCollisionScheduler::submit(ChunkCollisionRequest request) {
                                      "chunk collision scheduler is stopped");
     }
     auto snapshot_status = request.snapshot.validate();
-    if (!snapshot_status || request.collision_table == nullptr ||
+    if (!snapshot_status || !request.stage_ticket.is_valid() ||
+        request.stage_ticket.identity != request.snapshot.identity ||
+        request.stage_ticket.stage != world::ChunkStage::collision ||
+        request.collision_table == nullptr ||
         request.snapshot.collision_table_revision != request.collision_table->revision) {
         shared_state_->release_cells(std::move(request.snapshot.cells));
         return core::Status::failure("chunk_collision.invalid_request",
@@ -161,6 +164,7 @@ core::Status ChunkCollisionScheduler::submit(ChunkCollisionRequest request) {
     }
 
     const auto identity = request.snapshot.identity;
+    const auto stage_revision = request.stage_ticket.revision;
     const auto center_revision = request.snapshot.content_revision;
     const auto table_revision = request.snapshot.collision_table_revision;
     auto cancellation = std::make_shared<std::atomic_bool>(false);
@@ -176,6 +180,7 @@ core::Status ChunkCollisionScheduler::submit(ChunkCollisionRequest request) {
                 shared_state](const jobs::JobContext&) mutable {
         ChunkCollisionResult result;
         result.identity = request.snapshot.identity;
+        result.stage_ticket = request.stage_ticket;
         result.center_revision = request.snapshot.content_revision;
         result.collision_table_revision = request.snapshot.collision_table_revision;
         if (cancellation->load(std::memory_order_acquire)) {
@@ -218,8 +223,8 @@ core::Status ChunkCollisionScheduler::submit(ChunkCollisionRequest request) {
     if (!submitted) {
         return core::Status::failure(submitted.error().code, submitted.error().message);
     }
-    active_jobs_.emplace(identity, ActiveJob{submitted.value(), center_revision, table_revision,
-                                             std::move(cancellation)});
+    active_jobs_.emplace(identity, ActiveJob{submitted.value(), stage_revision, center_revision,
+                                             table_revision, std::move(cancellation)});
     ++stats_.submitted_jobs;
     refresh_stats();
     return core::Status::ok();
@@ -234,6 +239,7 @@ ChunkCollisionScheduler::drain_completed(std::size_t maximum_results) {
     for (const auto& result : results) {
         const auto active = active_jobs_.find(result.identity);
         if (active != active_jobs_.end() &&
+            active->second.stage_revision == result.stage_ticket.revision &&
             active->second.center_revision == result.center_revision &&
             active->second.collision_table_revision == result.collision_table_revision) {
             active_jobs_.erase(active);
@@ -275,6 +281,13 @@ void ChunkCollisionScheduler::shutdown() noexcept {
 
 bool ChunkCollisionScheduler::has_in_flight(world::ChunkIdentity identity) const noexcept {
     return active_jobs_.contains(identity);
+}
+
+std::optional<std::uint64_t>
+ChunkCollisionScheduler::in_flight_stage_revision(world::ChunkIdentity identity) const noexcept {
+    const auto active = active_jobs_.find(identity);
+    return active == active_jobs_.end() ? std::nullopt
+                                        : std::optional(active->second.stage_revision);
 }
 
 bool ChunkCollisionScheduler::has_capacity() const noexcept {

@@ -86,7 +86,10 @@ Implemented foundation:
     non-colliding
   - cooks on a bounded worker queue and applies at most two results within a `2 ms` owner-thread
     budget per simulation tick
-  - rejects results from stale chunk load generations, content revisions, or palette revisions
+  - carries the owner-thread collision-stage ticket through cooking and rejects results from stale
+    stage revisions, chunk load generations, content revisions, or palette revisions
+  - publishes `ready` and `resident` only after the matching physics shape is accepted; unchanged
+    geometry advances the resident request without inventing a new collision-output revision
   - creates one chunk-local static compound body and removes it when the chunk unloads
   - consumes only collision dirty regions, leaving mesh and lighting work for their own schedulers
   - exposes pending, in-flight, stale, box-count, cook-time, and apply-time statistics through the
