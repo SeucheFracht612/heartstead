@@ -37,7 +37,7 @@ without an error payload are rejected before lifecycle callbacks run.
 | `MainMenu` | menu | released | menu | forbidden | no | no | launch or shutdown |
 | `SessionLoading` | menu | released | loading | optional | no | no | cancel or error |
 | `InGame` | session | captured | session | required | yes | yes | pause, unload, error |
-| `Paused` | menu | released | pause | required | no | yes | resume or unload |
+| `Paused` | menu | released | pause | required | local: no; multiplayer: yes | yes | resume or unload |
 | `SessionUnloading` | application | released | loading | optional | no | no | menu or error |
 | `LoadFailure` | menu | released | error | forbidden | no | no | retry or menu |
 | `ConnectionFailure` | menu | released | error | forbidden | no | no | retry or menu |
@@ -48,7 +48,9 @@ Each state has explicit entry, update, and exit callbacks. Entry applies cursor 
 builds the state's UI. Update polls loading, advances the session only when policy permits, or
 performs unloading. Exit is the seam for state-specific cleanup. Platform polling, application
 audio, UI construction, rendering, and presentation continue in the outer application frame while
-the state machine selects which session work is legal.
+the state machine selects which session work is legal. The Paused row is mode-dependent: a local
+single-player runtime is held, while hosted and remote multiplayer runtimes continue pumping so a
+client-side menu cannot stop a live server.
 
 ## Front end and loading behavior
 
@@ -83,7 +85,8 @@ The menu does not have a `WorldState`. Renderer cleanup is registered with the s
 part of its explicit reverse-order teardown before the runtime is destroyed. The full teardown and
 launch descriptor are documented in [Runtime composition](runtime_composition.md). Save discovery,
 world operations, menu capabilities, and application settings are documented in
-[Game front end](game_front_end.md).
+[Game front end](game_front_end.md). Frame/tick ordering, measured loading phases, and pause/error
+behavior are documented in [Runtime loop and transitions](runtime_loop.md).
 
 ## Build and launch
 

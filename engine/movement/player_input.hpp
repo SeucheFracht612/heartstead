@@ -97,6 +97,7 @@ class FixedStepPlayerInputScheduler {
             bool gameplay_enabled = true);
     void set_look_sensitivity(double centidegrees_per_pixel) noexcept;
     void set_orientation(double yaw_centidegrees, double pitch_centidegrees) noexcept;
+    void reset(std::uint64_t tick = 0) noexcept;
 
   private:
     void accumulate(const platform::WindowInputSnapshot& snapshot, bool gameplay_enabled);

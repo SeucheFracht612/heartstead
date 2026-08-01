@@ -1,5 +1,7 @@
 #include "game/application/application_state.hpp"
 
+#include "engine/core/logging.hpp"
+
 #include <array>
 #include <utility>
 
@@ -67,6 +69,9 @@ core::Status ApplicationStateMachine::start(std::string reason) {
     }
     started_ = true;
     history_.push_back(std::move(transition));
+    core::log(core::LogLevel::info, "Application state #" +
+                                        std::to_string(history_.back().sequence) +
+                                        " entered Boot: " + history_.back().reason);
     return core::Status::ok();
 }
 
@@ -137,6 +142,14 @@ core::Status ApplicationStateMachine::transition(ApplicationState next, std::str
         active_error_.reset();
     }
     history_.push_back(std::move(transition));
+    const auto& completed = history_.back();
+    core::log(completed.error.has_value() ? core::LogLevel::warning : core::LogLevel::info,
+              "Application state #" + std::to_string(completed.sequence) + " " +
+                  std::string(application_state_name(completed.from)) + " -> " +
+                  std::string(application_state_name(completed.to)) + ": " + completed.reason +
+                  (completed.error.has_value()
+                       ? " [" + completed.error->code + ": " + completed.error->message + "]"
+                       : std::string{}));
     return core::Status::ok();
 }
 
@@ -196,7 +209,7 @@ bool is_valid_application_transition(ApplicationState from, ApplicationState to)
                to == ApplicationState::load_failure || to == ApplicationState::connection_failure;
     case ApplicationState::paused:
         return to == ApplicationState::in_game || to == ApplicationState::session_unloading ||
-               to == ApplicationState::connection_failure;
+               to == ApplicationState::load_failure || to == ApplicationState::connection_failure;
     case ApplicationState::session_unloading:
         return to == ApplicationState::main_menu || to == ApplicationState::load_failure ||
                to == ApplicationState::connection_failure;

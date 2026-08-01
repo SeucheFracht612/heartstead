@@ -80,6 +80,21 @@ enum class PersistencePolicy {
     persistent,
 };
 
+enum class SessionStartupPhase {
+    validating_request,
+    initializing_content,
+    reading_world,
+    preparing_world,
+    starting_authoritative_server,
+    starting_client,
+    connecting_transport,
+    constructing_presentation,
+    ready,
+    cancelling,
+};
+
+using SessionStartupProgressCallback = std::function<void(SessionStartupPhase)>;
+
 struct PlayerSpawnOverride {
     world::WorldPosition position;
     float yaw_degrees = 0.0F;
@@ -91,6 +106,7 @@ struct PlayerSpawnOverride {
 // request is handed to RuntimeSession.
 struct SessionLaunchRequest {
     std::uint64_t ownership_generation = 0;
+    std::int64_t initial_runtime_time_ms = 0;
     SessionMode mode = SessionMode::local_single_player;
     WorldSourceKind world_source = WorldSourceKind::generated;
     PersistencePolicy persistence = PersistencePolicy::ephemeral;
@@ -164,6 +180,10 @@ class RuntimeSession final {
     [[nodiscard]] static core::Result<std::unique_ptr<RuntimeSession>>
     create(RuntimeConfiguration config, SessionRequest request,
            const modding::PrototypeRegistry& prototypes, const world::VoxelPalette& voxel_palette);
+    [[nodiscard]] static core::Result<std::unique_ptr<RuntimeSession>>
+    create(RuntimeConfiguration config, SessionRequest request,
+           const modding::PrototypeRegistry& prototypes, const world::VoxelPalette& voxel_palette,
+           SessionStartupProgressCallback progress);
 
     RuntimeSession(const RuntimeSession&) = delete;
     RuntimeSession& operator=(const RuntimeSession&) = delete;
@@ -206,6 +226,7 @@ class RuntimeSession final {
     [[nodiscard]] const PresentationWorld* presentation() const noexcept;
     [[nodiscard]] const RuntimeConfiguration& config() const noexcept;
     [[nodiscard]] std::uint64_t frame_count() const noexcept;
+    [[nodiscard]] std::uint64_t fixed_step_tick() const noexcept;
     [[nodiscard]] const std::optional<RuntimeFrameStats>& last_frame_stats() const noexcept;
     [[nodiscard]] const std::optional<core::Error>& fault() const noexcept;
 
@@ -213,7 +234,7 @@ class RuntimeSession final {
     RuntimeSession(RuntimeConfiguration config, SessionRequest request,
                    const modding::PrototypeRegistry& prototypes,
                    const world::VoxelPalette& voxel_palette);
-    [[nodiscard]] core::Status initialize();
+    [[nodiscard]] core::Status initialize(const SessionStartupProgressCallback& progress);
     [[nodiscard]] core::Result<RuntimeFrameStats> fault_frame(const core::Error& error);
     [[nodiscard]] core::Status pump_client_messages(std::int64_t now_ms);
     [[nodiscard]] core::Result<PresentationSynchronizationStats> synchronize_presentation();
@@ -247,5 +268,7 @@ class RuntimeSession final {
 [[nodiscard]] std::string_view persistence_policy_name(PersistencePolicy policy) noexcept;
 [[nodiscard]] std::string_view runtime_session_state_name(RuntimeSessionState state) noexcept;
 [[nodiscard]] std::string_view session_connection_state_name(SessionConnectionState state) noexcept;
+[[nodiscard]] std::string_view session_startup_phase_name(SessionStartupPhase phase) noexcept;
+[[nodiscard]] bool session_mode_is_multiplayer(SessionMode mode) noexcept;
 
 } // namespace heartstead::game

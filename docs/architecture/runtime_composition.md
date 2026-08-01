@@ -98,6 +98,11 @@ platform input
 Sharing a process is an optimization and development convenience. Client code must not reach into
 server stores to make gameplay changes.
 
+`RuntimeSession` owns the fixed-step clock for both local and dedicated compositions. The player
+input scheduler is reset to that clock at session activation and after a multiplayer pause menu,
+then emits exactly one prediction input per fixed step. A mismatch between the input and runtime
+clock is a terminal session diagnostic rather than silently changing prediction speed.
+
 ## Remote frame path
 
 Remote play replaces only the transport and process boundary:

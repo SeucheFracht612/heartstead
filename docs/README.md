@@ -16,6 +16,7 @@ is the map for everything else.
 - [Architecture overview](architecture/overview.md) — ownership boundaries and data flow.
 - [Game executable](architecture/game_executable.md) — application lifetime and states.
 - [Game front end](architecture/game_front_end.md) — menu, saves, and settings.
+- [Runtime loop and transitions](architecture/runtime_loop.md) — ticks, loading, pause, and errors.
 - [Engine specification](architecture/engine_spec.md) — normative long-term engine contract.
 
 ## Document types
@@ -43,6 +44,7 @@ data flow, failure behavior, and extension points rather than repeat every class
 - [Architecture overview](architecture/overview.md)
 - [Game executable](architecture/game_executable.md)
 - [Game front end](architecture/game_front_end.md)
+- [Runtime loop and transitions](architecture/runtime_loop.md)
 - [Runtime composition](architecture/runtime_composition.md)
 - [Platform](architecture/platform.md)
 - [Physics](architecture/physics.md)

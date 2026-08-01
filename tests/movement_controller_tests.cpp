@@ -224,6 +224,13 @@ void test_fixed_step_and_input_codec() {
     assert(disabled_input && disabled_input.value().inputs.size() == 1);
     assert(disabled_input.value().inputs.front().move_x == 0);
     assert(disabled_input.value().inputs.front().move_z == 0);
+
+    scheduler.reset(100);
+    render_input.down_keys.clear();
+    auto resumed_input = scheduler.advance(render_input, 16'667);
+    assert(resumed_input && resumed_input.value().inputs.size() == 1);
+    assert(resumed_input.value().fixed_step.first_tick == 101);
+    assert(resumed_input.value().inputs.front().tick == 101);
 }
 
 void test_lateral_input_matches_camera_right() {
@@ -245,17 +252,14 @@ void test_lateral_input_matches_camera_right() {
            state.position.approximate_global().x);
 
     movement::PlayerCameraRig camera;
-    auto frame =
-        camera.evaluate(state, movement::PlayerCameraPerspective::first_person, 1280, 720);
+    auto frame = camera.evaluate(state, movement::PlayerCameraPerspective::first_person, 1280, 720);
     assert(frame);
     const auto eye = frame.value().position.local_offset;
-    const auto screen_right = frame.value().view *
-                              math::Vec4f{static_cast<float>(eye.x - 1.0),
-                                          static_cast<float>(eye.y),
-                                          static_cast<float>(eye.z), 1.0F};
-    const auto screen_left = frame.value().view *
-                             math::Vec4f{static_cast<float>(eye.x + 1.0),
-                                         static_cast<float>(eye.y),
+    const auto screen_right =
+        frame.value().view * math::Vec4f{static_cast<float>(eye.x - 1.0), static_cast<float>(eye.y),
+                                         static_cast<float>(eye.z), 1.0F};
+    const auto screen_left =
+        frame.value().view * math::Vec4f{static_cast<float>(eye.x + 1.0), static_cast<float>(eye.y),
                                          static_cast<float>(eye.z), 1.0F};
     assert(screen_right.x > 0.0F);
     assert(screen_left.x < 0.0F);

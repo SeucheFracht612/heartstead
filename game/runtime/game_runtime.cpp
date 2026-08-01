@@ -472,7 +472,11 @@ core::Status GameRuntime::require_prototype_kind(std::string_view kind) const {
     return core::Status::ok();
 }
 
-core::Status GameRuntime::start_session(SessionLaunchRequest request) {
+core::Status GameRuntime::start_session(SessionLaunchRequest request,
+                                        SessionStartupProgressCallback progress) {
+    if (progress) {
+        progress(SessionStartupPhase::validating_request);
+    }
     if (!is_initialized() || prototypes_ == nullptr || voxel_palette_ == nullptr) {
         return core::Status::failure("game_runtime.not_initialized",
                                      "game runtime content must be initialized first");
@@ -535,6 +539,9 @@ core::Status GameRuntime::start_session(SessionLaunchRequest request) {
 
     if (request.save_path.has_value() && !request.initial_snapshot.has_value() &&
         request.world_source == WorldSourceKind::existing_save) {
+        if (progress) {
+            progress(SessionStartupPhase::reading_world);
+        }
         save::FileSaveDatabase database(*request.save_path);
         auto snapshot = database.read_snapshot();
         if (!snapshot) {
@@ -569,6 +576,9 @@ core::Status GameRuntime::start_session(SessionLaunchRequest request) {
     if (!request_status) {
         return request_status;
     }
+    if (progress) {
+        progress(SessionStartupPhase::preparing_world);
+    }
     auto session_palette = voxel_palette_;
     if (request.initial_snapshot.has_value()) {
         auto restored_palette = world::voxel_palette_from_prototypes(
@@ -582,7 +592,7 @@ core::Status GameRuntime::start_session(SessionLaunchRequest request) {
     }
     auto runtime_config = request.runtime;
     auto created = RuntimeSession::create(std::move(runtime_config), std::move(request),
-                                          *prototypes_, *session_palette);
+                                          *prototypes_, *session_palette, std::move(progress));
     if (!created) {
         return core::Status::failure(created.error().code, created.error().message);
     }

@@ -233,8 +233,8 @@ void PlayerInputSampler::set_orientation(double yaw_centidegrees,
     pitch_centidegrees_ = std::clamp(pitch_centidegrees, -8'900.0, 8'900.0);
 }
 
-FixedStepPlayerInputScheduler::FixedStepPlayerInputScheduler(
-    simulation::FixedStepConfig fixed_step, PlayerInputBindings bindings)
+FixedStepPlayerInputScheduler::FixedStepPlayerInputScheduler(simulation::FixedStepConfig fixed_step,
+                                                             PlayerInputBindings bindings)
     : fixed_step_(fixed_step), sampler_(bindings) {}
 
 core::Result<FixedStepPlayerInputFrame>
@@ -270,8 +270,7 @@ FixedStepPlayerInputScheduler::advance(const platform::WindowInputSnapshot& snap
     return core::Result<FixedStepPlayerInputFrame>::success(std::move(result));
 }
 
-void FixedStepPlayerInputScheduler::set_look_sensitivity(
-    double centidegrees_per_pixel) noexcept {
+void FixedStepPlayerInputScheduler::set_look_sensitivity(double centidegrees_per_pixel) noexcept {
     sampler_.set_look_sensitivity(centidegrees_per_pixel);
 }
 
@@ -280,8 +279,16 @@ void FixedStepPlayerInputScheduler::set_orientation(double yaw_centidegrees,
     sampler_.set_orientation(yaw_centidegrees, pitch_centidegrees);
 }
 
-void FixedStepPlayerInputScheduler::accumulate(
-    const platform::WindowInputSnapshot& snapshot, bool gameplay_enabled) {
+void FixedStepPlayerInputScheduler::reset(std::uint64_t tick) noexcept {
+    fixed_step_.reset(tick);
+    down_keys_.clear();
+    pressed_keys_.clear();
+    mouse_delta_x_ = 0;
+    mouse_delta_y_ = 0;
+}
+
+void FixedStepPlayerInputScheduler::accumulate(const platform::WindowInputSnapshot& snapshot,
+                                               bool gameplay_enabled) {
     if (!gameplay_enabled) {
         down_keys_.clear();
         pressed_keys_.clear();

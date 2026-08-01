@@ -3,6 +3,7 @@
 #include "engine/assets/cooked_asset_store.hpp"
 #include "engine/audio/audio_system.hpp"
 #include "engine/content/content_validation.hpp"
+#include "engine/core/logging.hpp"
 #include "engine/input/input_action.hpp"
 #include "engine/movement/player_camera.hpp"
 #include "engine/save/save_compatibility.hpp"
@@ -12,11 +13,13 @@
 #include "game/application/main_menu.hpp"
 #include "game/features/animals/wandering_animal_module.hpp"
 #include "game/foundation/foundation_world.hpp"
+#include "game/presentation/client_audio_presentation.hpp"
 #include "game/runtime/game_runtime.hpp"
 #include "game/scenarios/developer_world_registry.hpp"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <charconv>
 #include <chrono>
@@ -330,6 +333,10 @@ struct LoadedSession {
     GameRuntime runtime;
 };
 
+struct LoadingProgressState {
+    std::atomic<SessionStartupPhase> phase{SessionStartupPhase::validating_request};
+};
+
 using SessionLoadResult = core::Result<LoadedSession>;
 
 } // namespace
@@ -350,6 +357,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     std::optional<GameRuntime> session_runtime;
     std::future<SessionLoadResult> loading;
     std::stop_source loading_stop;
+    std::shared_ptr<LoadingProgressState> loading_progress;
     ui::WidgetTree widgets;
     ApplicationSettings settings;
     ApplicationSettingsStore settings_store;
@@ -364,6 +372,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     std::optional<SessionLaunchRequest> pending_launch;
     std::string pending_save_slot;
     std::string active_save_slot;
+    std::string active_world_name;
     SessionMode active_session_mode = SessionMode::local_single_player;
     PersistencePolicy active_persistence = PersistencePolicy::ephemeral;
     std::string new_world_name = "New Homestead";
@@ -372,6 +381,11 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     std::string developer_search;
     std::string menu_message;
     movement::PlayerCameraRig camera_rig;
+    movement::FixedStepPlayerInputScheduler input_scheduler;
+    bool input_orientation_initialized = false;
+    ClientAudioPresentation audio_presentation;
+    bool audio_presentation_initialized = false;
+    std::optional<movement::PlayerCameraFrame> player_camera_frame;
     std::optional<RuntimeFrameStats> runtime_stats;
     std::uint64_t frame_count = 0;
     std::uint64_t completed_session_count = 0;
@@ -708,12 +722,16 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             return add(label("heartstead.boot.status", "Preparing application services..."));
         case ApplicationState::main_menu:
             return build_menu_ui();
-        case ApplicationState::session_loading:
+        case ApplicationState::session_loading: {
+            const auto phase = loading_progress == nullptr
+                                   ? SessionStartupPhase::validating_request
+                                   : loading_progress->phase.load(std::memory_order_relaxed);
             if (!(status = add(label("heartstead.loading.title", "Loading world", 28.0F))) ||
                 !(status = add(label("heartstead.loading.phase",
-                                     "Starting authoritative server and local client...")))) {
+                                     std::string(session_startup_phase_name(phase)) + "...")))) {
                 return status;
             }
+        }
             status = add(button(cancel_id, "Cancel"));
             if (status) {
                 widgets.set_focus(cancel_id);
@@ -721,6 +739,10 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             return status;
         case ApplicationState::paused:
             if (!(status = add(label("heartstead.pause.title", "Paused", 30.0F))) ||
+                !(status = add(label("heartstead.pause.behavior",
+                                     session_mode_is_multiplayer(active_session_mode)
+                                         ? "Multiplayer world continues while this menu is open."
+                                         : "Local authoritative simulation is paused."))) ||
                 !(status = add(button(resume_id, "Resume")))) {
                 return status;
             }
@@ -779,6 +801,9 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                                          "session loading requires a prepared launch request");
         }
         loading_stop = std::stop_source{};
+        loading_progress = std::make_shared<LoadingProgressState>();
+        loading_progress->phase.store(SessionStartupPhase::initializing_content,
+                                      std::memory_order_relaxed);
         loading_generation = next_session_generation++;
         const auto stop_token = loading_stop.get_token();
         const auto generation = loading_generation;
@@ -793,11 +818,14 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         const auto persistence = request.persistence;
         const auto save_slot_id = std::move(pending_save_slot);
         const auto world_name = request.world_name;
+        const auto progress = loading_progress;
         loading = std::async(
             std::launch::async,
             [content_report, generation, stop_token, request = std::move(request), mode,
-             persistence, save_slot_id, world_name]() mutable -> SessionLoadResult {
+             persistence, save_slot_id, world_name, progress]() mutable -> SessionLoadResult {
                 if (stop_token.stop_requested()) {
+                    progress->phase.store(SessionStartupPhase::cancelling,
+                                          std::memory_order_relaxed);
                     return SessionLoadResult::failure("heartstead.session_load_cancelled",
                                                       "session loading was cancelled");
                 }
@@ -807,14 +835,21 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                                                       runtime.error().message);
                 }
                 if (stop_token.stop_requested()) {
+                    progress->phase.store(SessionStartupPhase::cancelling,
+                                          std::memory_order_relaxed);
                     return SessionLoadResult::failure("heartstead.session_load_cancelled",
                                                       "session loading was cancelled");
                 }
-                auto status = runtime.value().start_session(std::move(request));
+                auto status = runtime.value().start_session(
+                    std::move(request), [progress](SessionStartupPhase phase) {
+                        progress->phase.store(phase, std::memory_order_relaxed);
+                    });
                 if (!status) {
                     return SessionLoadResult::failure(status.error().code, status.error().message);
                 }
                 if (stop_token.stop_requested()) {
+                    progress->phase.store(SessionStartupPhase::cancelling,
+                                          std::memory_order_relaxed);
                     (void)runtime.value().shutdown();
                     return SessionLoadResult::failure("heartstead.session_load_cancelled",
                                                       "session loading was cancelled");
@@ -823,6 +858,50 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                                                    world_name, std::move(runtime).value()});
             });
         return core::Status::ok();
+    }
+
+    [[nodiscard]] core::Status activate_loaded_session() {
+        if (!session_runtime.has_value() || session_runtime->session() == nullptr) {
+            return core::Status::failure("heartstead.loaded_session_missing",
+                                         "session activation requires a loaded runtime");
+        }
+        if (active_persistence == PersistencePolicy::persistent && !active_save_slot.empty()) {
+            auto snapshot = session_runtime->capture_save_snapshot();
+            if (!snapshot) {
+                const auto error = snapshot.error();
+                (void)unload_session();
+                return states.transition(ApplicationState::load_failure,
+                                         "initial world save failed", error);
+            }
+            const auto saved_at = static_cast<std::uint64_t>(
+                std::max<std::int64_t>(1, frame == nullptr ? 1 : frame->now_milliseconds));
+            auto status = save_catalog.write_snapshot(active_save_slot, snapshot.value(), saved_at);
+            if (status) {
+                status = save_catalog.rename_slot(active_save_slot, active_world_name);
+            }
+            if (!status) {
+                const auto error = status.error();
+                (void)unload_session();
+                return states.transition(ApplicationState::load_failure,
+                                         "initial world save failed", error);
+            }
+            settings.last_world_slot = active_save_slot;
+            status = persist_settings();
+            if (!status) {
+                const auto error = status.error();
+                (void)unload_session();
+                return states.transition(ApplicationState::load_failure,
+                                         "world history persistence failed", error);
+            }
+        }
+        input_scheduler.reset(session_runtime->session()->fixed_step_tick());
+        input_scheduler.set_look_sensitivity(static_cast<double>(settings.mouse_sensitivity) *
+                                             12.0);
+        input_orientation_initialized = false;
+        if (loading_progress != nullptr) {
+            loading_progress->phase.store(SessionStartupPhase::ready, std::memory_order_relaxed);
+        }
+        return states.transition(ApplicationState::in_game, "session startup completed");
     }
 
     [[nodiscard]] core::Status take_finished_load(bool enter_game) {
@@ -865,33 +944,39 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         active_session_mode = completed.mode;
         active_persistence = completed.persistence;
         active_save_slot = completed.save_slot_id;
-        if (active_persistence == PersistencePolicy::persistent && !active_save_slot.empty()) {
-            auto snapshot = session_runtime->capture_save_snapshot();
-            if (!snapshot) {
-                (void)session_runtime->shutdown();
-                session_runtime.reset();
-                return states.transition(ApplicationState::load_failure,
-                                         "initial world save failed", snapshot.error());
-            }
-            const auto saved_at = static_cast<std::uint64_t>(
-                std::max<std::int64_t>(1, frame == nullptr ? 1 : frame->now_milliseconds));
-            auto status = save_catalog.write_snapshot(active_save_slot, snapshot.value(), saved_at);
-            if (status) {
-                status = save_catalog.rename_slot(active_save_slot, completed.world_name);
-            }
+        active_world_name = completed.world_name;
+        if (services != nullptr && services->audio() != nullptr) {
+            auto* audio = services->audio();
+            auto status = audio_presentation.initialize(*audio);
             if (!status) {
-                (void)session_runtime->shutdown();
-                session_runtime.reset();
+                (void)unload_session();
                 return states.transition(ApplicationState::load_failure,
-                                         "initial world save failed", status.error());
+                                         "session audio startup failed", status.error());
             }
-            settings.last_world_slot = active_save_slot;
-            status = persist_settings();
+            audio_presentation_initialized = true;
+            status = session_runtime->session()->register_cleanup(
+                "application session audio", [this, audio]() {
+                    auto cleanup = audio_presentation.shutdown(*audio);
+                    audio_presentation_initialized = false;
+                    return cleanup;
+                });
             if (!status) {
-                return status;
+                (void)audio_presentation.shutdown(*audio);
+                audio_presentation_initialized = false;
+                (void)unload_session();
+                return states.transition(ApplicationState::load_failure,
+                                         "session audio cleanup registration failed",
+                                         status.error());
             }
         }
-        return states.transition(ApplicationState::in_game, "session startup completed");
+        if (session_runtime->session()->connection_state() == SessionConnectionState::connecting) {
+            if (loading_progress != nullptr) {
+                loading_progress->phase.store(SessionStartupPhase::connecting_transport,
+                                              std::memory_order_relaxed);
+            }
+            return core::Status::ok();
+        }
+        return activate_loaded_session();
     }
 
     [[nodiscard]] core::Status unload_session() {
@@ -903,11 +988,15 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             }
             session_runtime.reset();
             runtime_stats.reset();
+            player_camera_frame.reset();
             ++completed_session_count;
         }
         active_save_slot.clear();
+        active_world_name.clear();
         active_persistence = PersistencePolicy::ephemeral;
         active_session_mode = SessionMode::local_single_player;
+        input_scheduler.reset();
+        input_orientation_initialized = false;
         return first_failure;
     }
 
@@ -923,6 +1012,71 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         const auto saved_at = static_cast<std::uint64_t>(
             std::max<std::int64_t>(1, frame == nullptr ? 1 : frame->now_milliseconds));
         return save_catalog.write_snapshot(active_save_slot, snapshot.value(), saved_at);
+    }
+
+    [[nodiscard]] core::Result<RuntimeFrameStats> advance_runtime(bool gameplay_input) {
+        if (!session_runtime.has_value() || session_runtime->session() == nullptr ||
+            frame == nullptr) {
+            return core::Result<RuntimeFrameStats>::failure(
+                "heartstead.session_missing", "runtime advance requires an active session");
+        }
+        std::optional<movement::FixedStepPlayerInputFrame> scheduled_input;
+        auto* client = session_runtime->session()->client();
+        if (gameplay_input && frame->input != nullptr && client != nullptr) {
+            const auto* player = client->local_player_snapshot();
+            if (player != nullptr && !input_orientation_initialized) {
+                input_scheduler.set_orientation(player->state.yaw_centidegrees,
+                                                player->state.pitch_centidegrees);
+                input_orientation_initialized = true;
+            }
+            auto scheduled =
+                input_scheduler.advance(*frame->input, frame->delta_microseconds, true);
+            if (!scheduled) {
+                return core::Result<RuntimeFrameStats>::failure(scheduled.error().code,
+                                                                scheduled.error().message);
+            }
+            scheduled_input = std::move(scheduled).value();
+            for (const auto& player_input : scheduled_input->inputs) {
+                if (!client->is_connected() || player == nullptr) {
+                    continue;
+                }
+                auto status = session_runtime->session()->submit_player_input(
+                    player_input, frame->now_milliseconds);
+                if (!status) {
+                    return core::Result<RuntimeFrameStats>::failure(status.error().code,
+                                                                    status.error().message);
+                }
+            }
+        }
+        auto advanced =
+            session_runtime->run_frame({frame->delta_microseconds, frame->now_milliseconds});
+        if (!advanced) {
+            return advanced;
+        }
+        if (scheduled_input.has_value() &&
+            (advanced.value().fixed_step.step_count != scheduled_input->fixed_step.step_count ||
+             advanced.value().fixed_step.first_tick != scheduled_input->fixed_step.first_tick)) {
+            return core::Result<RuntimeFrameStats>::failure(
+                "heartstead.input_clock_desynchronized",
+                "player prediction input diverged from the runtime fixed-step clock");
+        }
+        return advanced;
+    }
+
+    [[nodiscard]] core::Status recover_runtime_failure(const core::Error& error,
+                                                       std::string reason) {
+        const auto failed_mode = active_session_mode;
+        auto status = unload_session();
+        if (!status) {
+            return states.transition(session_mode_is_multiplayer(failed_mode)
+                                         ? ApplicationState::connection_failure
+                                         : ApplicationState::load_failure,
+                                     "session teardown failed while recovering", status.error());
+        }
+        return states.transition(session_mode_is_multiplayer(failed_mode)
+                                     ? ApplicationState::connection_failure
+                                     : ApplicationState::load_failure,
+                                 std::move(reason), error);
     }
 
     core::Status enter_state(ApplicationState state,
@@ -945,9 +1099,18 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         }
         if (state == ApplicationState::session_unloading) {
             loading_stop.request_stop();
+            if (loading_progress != nullptr) {
+                loading_progress->phase.store(SessionStartupPhase::cancelling,
+                                              std::memory_order_relaxed);
+            }
             if (session_runtime.has_value() && session_runtime->session() != nullptr) {
                 return session_runtime->session()->request_stop();
             }
+        }
+        if (state == ApplicationState::in_game && transition.from == ApplicationState::paused &&
+            session_runtime.has_value() && session_runtime->session() != nullptr) {
+            input_scheduler.reset(session_runtime->session()->fixed_step_tick());
+            input_orientation_initialized = false;
         }
         return core::Status::ok();
     }
@@ -957,9 +1120,24 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         case ApplicationState::session_loading:
             if (loading.valid() &&
                 loading.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                return take_finished_load(true);
+                auto status = take_finished_load(true);
+                if (!status || states.state() != ApplicationState::session_loading) {
+                    return status;
+                }
             }
-            break;
+            if (session_runtime.has_value()) {
+                auto advanced = advance_runtime(false);
+                if (!advanced) {
+                    return recover_runtime_failure(advanced.error(),
+                                                   "multiplayer connection failed");
+                }
+                runtime_stats = std::move(advanced).value();
+                if (session_runtime->session()->connection_state() ==
+                    SessionConnectionState::connected) {
+                    return activate_loaded_session();
+                }
+            }
+            return rebuild_ui(ApplicationState::session_loading);
         case ApplicationState::in_game:
             if (!session_runtime.has_value() || session_runtime->session() == nullptr ||
                 frame == nullptr) {
@@ -967,19 +1145,27 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                                              "in-game state requires an active runtime session");
             }
             {
-                auto advanced = session_runtime->run_frame(
-                    {frame->delta_microseconds, frame->now_milliseconds});
+                auto advanced = advance_runtime(true);
                 if (!advanced) {
-                    const auto error = advanced.error();
-                    const auto failed_mode = active_session_mode;
-                    auto status = unload_session();
-                    if (!status) {
-                        return status;
-                    }
-                    return states.transition(failed_mode == SessionMode::remote_multiplayer
-                                                 ? ApplicationState::connection_failure
-                                                 : ApplicationState::load_failure,
-                                             "runtime session failed", error);
+                    return recover_runtime_failure(advanced.error(), "runtime session failed");
+                }
+                runtime_stats = std::move(advanced).value();
+                if (runtime_stats->fixed_step.dropped_time_us != 0) {
+                    core::log(
+                        core::LogLevel::warning,
+                        "Runtime fixed-step catch-up dropped " +
+                            std::to_string(runtime_stats->fixed_step.dropped_time_us) +
+                            " us for session generation " +
+                            std::to_string(session_runtime->session()->ownership_generation()));
+                }
+            }
+            break;
+        case ApplicationState::paused:
+            if (session_mode_is_multiplayer(active_session_mode)) {
+                auto advanced = advance_runtime(false);
+                if (!advanced) {
+                    return recover_runtime_failure(advanced.error(),
+                                                   "multiplayer session failed while menu open");
                 }
                 runtime_stats = std::move(advanced).value();
             }
@@ -995,9 +1181,13 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 }
             }
             {
+                const auto failed_mode = active_session_mode;
                 auto status = unload_session();
                 if (!status) {
-                    return status;
+                    return states.transition(session_mode_is_multiplayer(failed_mode)
+                                                 ? ApplicationState::connection_failure
+                                                 : ApplicationState::load_failure,
+                                             "session teardown failed", status.error());
                 }
             }
             (void)refresh_saves();
@@ -1010,7 +1200,6 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             break;
         case ApplicationState::boot:
         case ApplicationState::main_menu:
-        case ApplicationState::paused:
         case ApplicationState::load_failure:
         case ApplicationState::connection_failure:
         case ApplicationState::fatal_error:
@@ -1032,6 +1221,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             return core::Status::failure("heartstead.session_already_pending",
                                          "another session is active or loading");
         }
+        request.initial_runtime_time_ms =
+            std::max<std::int64_t>(0, frame == nullptr ? 0 : frame->now_milliseconds);
         pending_launch = std::move(request);
         pending_save_slot = std::move(save_slot);
         return states.transition(ApplicationState::session_loading, "menu launch selected");
@@ -1417,6 +1608,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     [[nodiscard]] core::Result<renderer::RenderCamera>
     prepare_camera_and_world(const GameApplicationFrame& current_frame) {
         renderer::RenderCamera camera;
+        player_camera_frame.reset();
         auto status =
             camera.set_aspect_ratio(static_cast<float>(std::max(1U, current_frame.extent.width)) /
                                     static_cast<float>(std::max(1U, current_frame.extent.height)));
@@ -1441,6 +1633,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 return core::Result<renderer::RenderCamera>::failure(camera_frame.error().code,
                                                                      camera_frame.error().message);
             }
+            player_camera_frame = camera_frame.value();
             camera = camera_from_frame(camera_frame.value());
         }
         if (services != nullptr && services->renderer() != nullptr) {
@@ -1451,6 +1644,26 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             }
         }
         return core::Result<renderer::RenderCamera>::success(camera);
+    }
+
+    [[nodiscard]] core::Status update_audio(const GameApplicationFrame& current_frame) {
+        if (services == nullptr || services->audio() == nullptr) {
+            return core::Status::ok();
+        }
+        if (audio_presentation_initialized && player_camera_frame.has_value() &&
+            session_runtime.has_value() && session_runtime->session() != nullptr &&
+            session_runtime->session()->client() != nullptr &&
+            !(states.state() == ApplicationState::paused &&
+              !session_mode_is_multiplayer(active_session_mode))) {
+            const auto* player = session_runtime->session()->client()->local_player_snapshot();
+            if (player != nullptr) {
+                return audio_presentation.update(
+                    *services->audio(), player->state, *player_camera_frame,
+                    session_runtime->session()->client()->world().chunks(),
+                    config.content_report->voxel_palette, current_frame.delta_seconds());
+            }
+        }
+        return services->audio()->update(current_frame.delta_seconds());
     }
 
     [[nodiscard]] core::Status paint_ui(const GameApplicationFrame& current_frame) {
@@ -1540,8 +1753,34 @@ HeartsteadApplicationMode::update(GameApplicationServices& services,
     if (status) {
         status = state.states.update(frame.delta_microseconds);
     }
-    if (status && services.audio() != nullptr) {
-        status = services.audio()->update(frame.delta_seconds());
+    if (!status) {
+        return core::Result<GameApplicationFrameOutput>::failure(status.error().code,
+                                                                 status.error().message);
+    }
+    auto camera = state.prepare_camera_and_world(frame);
+    if (!camera) {
+        if (!state.session_runtime.has_value()) {
+            return core::Result<GameApplicationFrameOutput>::failure(camera.error().code,
+                                                                     camera.error().message);
+        }
+        status = state.recover_runtime_failure(camera.error(), "session presentation failed");
+        if (!status) {
+            return core::Result<GameApplicationFrameOutput>::failure(status.error().code,
+                                                                     status.error().message);
+        }
+        renderer::RenderCamera fallback;
+        status = fallback.set_aspect_ratio(static_cast<float>(std::max(1U, frame.extent.width)) /
+                                           static_cast<float>(std::max(1U, frame.extent.height)));
+        if (!status) {
+            return core::Result<GameApplicationFrameOutput>::failure(status.error().code,
+                                                                     status.error().message);
+        }
+        camera = core::Result<renderer::RenderCamera>::success(std::move(fallback));
+    }
+    status = state.update_audio(frame);
+    if (!status && state.session_runtime.has_value()) {
+        const auto error = status.error();
+        status = state.recover_runtime_failure(error, "session audio presentation failed");
     }
     if (status) {
         status = state.paint_ui(frame);
@@ -1552,11 +1791,6 @@ HeartsteadApplicationMode::update(GameApplicationServices& services,
     }
     if (state.config.headless) {
         return core::Result<GameApplicationFrameOutput>::success({});
-    }
-    auto camera = state.prepare_camera_and_world(frame);
-    if (!camera) {
-        return core::Result<GameApplicationFrameOutput>::failure(camera.error().code,
-                                                                 camera.error().message);
     }
     GameApplicationFrameOutput output;
     const auto interpolation =
@@ -1570,16 +1804,24 @@ HeartsteadApplicationMode::update(GameApplicationServices& services,
 
 core::Status HeartsteadApplicationMode::shutdown(GameApplicationServices&) {
     auto& state = *implementation_;
-    auto first_failure = state.unload_session();
+    auto first_failure = state.save_active_session();
+    auto status = state.unload_session();
+    if (!status && first_failure) {
+        first_failure = status;
+    }
     if (state.loading.valid()) {
         state.loading_stop.request_stop();
+        if (state.loading_progress != nullptr) {
+            state.loading_progress->phase.store(SessionStartupPhase::cancelling,
+                                                std::memory_order_relaxed);
+        }
         state.loading.wait();
-        auto status = state.take_finished_load(false);
+        status = state.take_finished_load(false);
         if (!status && first_failure) {
             first_failure = status;
         }
     }
-    auto status = state.application_runtime.shutdown();
+    status = state.application_runtime.shutdown();
     if (!status && first_failure) {
         first_failure = status;
     }

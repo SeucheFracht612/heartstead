@@ -120,7 +120,8 @@ class GameRuntime {
     [[nodiscard]] const GameSystemDescriptor* find_system(GameSystemKind kind) const noexcept;
     [[nodiscard]] core::Status require_system(GameSystemKind kind) const;
     [[nodiscard]] core::Status require_prototype_kind(std::string_view kind) const;
-    [[nodiscard]] core::Status start_session(SessionLaunchRequest request);
+    [[nodiscard]] core::Status start_session(SessionLaunchRequest request,
+                                             SessionStartupProgressCallback progress = {});
     [[nodiscard]] core::Status start_session(RuntimeConfiguration config, SessionRequest request);
     [[nodiscard]] core::Status start_session_from_save(RuntimeConfiguration config,
                                                        const save::FileSaveDatabase& database,

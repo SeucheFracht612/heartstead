@@ -2,6 +2,7 @@
 #include "game/foundation/foundation_world.hpp"
 #include "game/runtime/game_runtime.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <filesystem>
 #include <string>
@@ -42,13 +43,41 @@ void test_launch_descriptor_validation(const content::ContentValidationReport& r
     assert(game::session_mode_name(request.mode) == "local-single-player");
     assert(game::world_source_kind_name(request.world_source) == "developer-scenario");
     assert(game::persistence_policy_name(request.persistence) == "ephemeral");
+    assert(!game::session_mode_is_multiplayer(request.mode));
+    request.initial_runtime_time_ms = -1;
+    auto status = request.validate();
+    assert(!status && status.error().code == "session_launch.invalid_initial_time");
+    request.initial_runtime_time_ms = 0;
 
     request.mode = game::SessionMode::remote_multiplayer;
-    auto status = request.validate();
+    status = request.validate();
     assert(!status && status.error().code == "session_launch.remote_endpoint_missing");
+    assert(game::session_mode_is_multiplayer(request.mode));
     request.mode = game::SessionMode::replay;
     status = request.validate();
     assert(!status && status.error().code == "session_launch.replay_unsupported");
+}
+
+void test_startup_phases_are_real_runtime_boundaries(
+    const content::ContentValidationReport& report) {
+    auto runtime = make_runtime(report);
+    std::vector<game::SessionStartupPhase> phases;
+    assert(runtime.start_session(
+        make_local_request(report, 5),
+        [&phases](game::SessionStartupPhase phase) { phases.push_back(phase); }));
+    assert(!phases.empty());
+    assert(phases.front() == game::SessionStartupPhase::validating_request);
+    assert(std::ranges::find(phases, game::SessionStartupPhase::preparing_world) != phases.end());
+    assert(std::ranges::find(phases, game::SessionStartupPhase::starting_authoritative_server) !=
+           phases.end());
+    assert(std::ranges::find(phases, game::SessionStartupPhase::starting_client) != phases.end());
+    assert(std::ranges::find(phases, game::SessionStartupPhase::connecting_transport) !=
+           phases.end());
+    assert(std::ranges::find(phases, game::SessionStartupPhase::constructing_presentation) !=
+           phases.end());
+    assert(phases.back() == game::SessionStartupPhase::ready);
+    assert(game::session_startup_phase_name(phases.back()) == "World ready");
+    assert(runtime.shutdown());
 }
 
 void test_local_teardown_and_replacement(const content::ContentValidationReport& report) {
@@ -109,10 +138,15 @@ void test_remote_attempt_cancels_and_recovers(const content::ContentValidationRe
     request.mode = game::SessionMode::remote_multiplayer;
     request.world_source = game::WorldSourceKind::remote_server;
     request.network_endpoint = net::TransportEndpoint{"127.0.0.1", 47991};
+    request.initial_runtime_time_ms = 100'000;
     assert(runtime.start_session(std::move(request)));
     assert(runtime.session()->server() == nullptr);
     assert(runtime.session()->client() != nullptr);
     assert(runtime.session()->connection_state() == game::SessionConnectionState::connecting);
+    assert(runtime.run_frame({16'667, 100'016}));
+    auto timed_out = runtime.run_frame({16'667, 105'001});
+    assert(!timed_out);
+    assert(timed_out.error().code == "transport_client.handshake_timeout");
     assert(runtime.session()->request_stop());
     assert(runtime.shutdown());
     assert(runtime.last_teardown_report()->transport_stopped);
@@ -129,6 +163,7 @@ int main() {
         content::ContentValidation::validate(std::filesystem::path(HEARTSTEAD_TEST_SOURCE_DIR));
     assert(!report.has_errors());
     test_launch_descriptor_validation(report);
+    test_startup_phases_are_real_runtime_boundaries(report);
     test_local_teardown_and_replacement(report);
     test_remote_attempt_cancels_and_recovers(report);
     return 0;

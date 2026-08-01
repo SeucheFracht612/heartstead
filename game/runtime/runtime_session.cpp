@@ -148,6 +148,10 @@ core::Status RuntimeConfiguration::validate() const {
 }
 
 core::Status SessionLaunchRequest::validate() const {
+    if (initial_runtime_time_ms < 0) {
+        return core::Status::failure("session_launch.invalid_initial_time",
+                                     "initial runtime time must be nonnegative");
+    }
     if (scenario_id.empty()) {
         return core::Status::failure("session_launch.invalid_scenario",
                                      "session scenario id must not be empty");
@@ -197,6 +201,17 @@ core::Result<std::unique_ptr<RuntimeSession>>
 RuntimeSession::create(RuntimeConfiguration config, SessionRequest request,
                        const modding::PrototypeRegistry& prototypes,
                        const world::VoxelPalette& voxel_palette) {
+    return create(std::move(config), std::move(request), prototypes, voxel_palette, {});
+}
+
+core::Result<std::unique_ptr<RuntimeSession>>
+RuntimeSession::create(RuntimeConfiguration config, SessionRequest request,
+                       const modding::PrototypeRegistry& prototypes,
+                       const world::VoxelPalette& voxel_palette,
+                       SessionStartupProgressCallback progress) {
+    if (progress) {
+        progress(SessionStartupPhase::validating_request);
+    }
     auto status = config.validate();
     if (!status) {
         return core::Result<std::unique_ptr<RuntimeSession>>::failure(status.error().code,
@@ -213,7 +228,7 @@ RuntimeSession::create(RuntimeConfiguration config, SessionRequest request,
     }
     auto session = std::unique_ptr<RuntimeSession>(
         new RuntimeSession(std::move(config), std::move(request), prototypes, voxel_palette));
-    status = session->initialize();
+    status = session->initialize(progress);
     if (!status) {
         return core::Result<std::unique_ptr<RuntimeSession>>::failure(status.error().code,
                                                                       status.error().message);
@@ -221,8 +236,11 @@ RuntimeSession::create(RuntimeConfiguration config, SessionRequest request,
     return core::Result<std::unique_ptr<RuntimeSession>>::success(std::move(session));
 }
 
-core::Status RuntimeSession::initialize() {
+core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& progress) {
     state_ = RuntimeSessionState::starting;
+    if (progress) {
+        progress(SessionStartupPhase::preparing_world);
+    }
     const auto scenario_id = core::PrototypeId::parse(request_.scenario_id);
     if (!scenario_id) {
         return core::Status::failure("runtime_session.invalid_scenario_id",
@@ -263,6 +281,9 @@ core::Status RuntimeSession::initialize() {
     }
 
     if (config_.create_server) {
+        if (progress) {
+            progress(SessionStartupPhase::starting_authoritative_server);
+        }
         ServerRuntimeDesc server_desc;
         server_desc.world.metadata = request_.metadata;
         server_desc.world.voxel_palette = voxel_palette_->manifest();
@@ -307,9 +328,15 @@ core::Status RuntimeSession::initialize() {
     }
 
     if (config_.create_client) {
+        if (progress) {
+            progress(SessionStartupPhase::starting_client);
+        }
         world::WorldStateDesc client_world;
         client_world.metadata = request_.metadata;
         client_world.voxel_palette = voxel_palette_->manifest();
+        if (progress) {
+            progress(SessionStartupPhase::connecting_transport);
+        }
         if (config_.use_in_memory_transport) {
             if (server_ == nullptr) {
                 return core::Status::failure(
@@ -345,7 +372,7 @@ core::Status RuntimeSession::initialize() {
                 return core::Status::failure(remote.error().code, remote.error().message);
             }
             remote_transport_ = std::move(remote).value();
-            auto status = remote_transport_->connect(0);
+            auto status = remote_transport_->connect(request_.initial_runtime_time_ms);
             if (!status) {
                 return status;
             }
@@ -353,7 +380,7 @@ core::Status RuntimeSession::initialize() {
                 core::NetId{}, std::move(client_world),
                 server_ == nullptr ? nullptr : &server_->replication_registry(), voxel_palette_);
         }
-        auto status = pump_client_messages(0);
+        auto status = pump_client_messages(request_.initial_runtime_time_ms);
         if (!status) {
             return status;
         }
@@ -368,6 +395,9 @@ core::Status RuntimeSession::initialize() {
         if (!synchronized) {
             return core::Status::failure(synchronized.error().code, synchronized.error().message);
         }
+        if (progress) {
+            progress(SessionStartupPhase::constructing_presentation);
+        }
         auto presented = synchronize_presentation();
         if (!presented) {
             return core::Status::failure(presented.error().code, presented.error().message);
@@ -375,6 +405,9 @@ core::Status RuntimeSession::initialize() {
     }
     state_ = RuntimeSessionState::running;
     accepting_commands_ = true;
+    if (progress && connection_state() != SessionConnectionState::connecting) {
+        progress(SessionStartupPhase::ready);
+    }
     return core::Status::ok();
 }
 
@@ -398,6 +431,30 @@ core::Result<RuntimeFrameStats> RuntimeSession::run_frame(RuntimeFrameInput inpu
     if (server_ != nullptr) {
         stats.authoritative_world_tick = server_->world().world_time();
     }
+    const auto update_client = [this, &stats, &input](std::uint64_t render_tick) {
+        auto status = pump_client_messages(input.now_ms);
+        if (!status) {
+            return status;
+        }
+        if (client_ == nullptr || !client_->is_connected()) {
+            return core::Status::ok();
+        }
+        auto synchronized = client_->synchronize(render_tick);
+        if (!synchronized) {
+            return core::Status::failure(synchronized.error().code, synchronized.error().message);
+        }
+        stats.client = std::move(synchronized).value();
+        auto presented = synchronize_presentation();
+        if (!presented) {
+            return core::Status::failure(presented.error().code, presented.error().message);
+        }
+        stats.presentation.inserted_objects += presented.value().inserted_objects;
+        stats.presentation.adapter_count += presented.value().adapter_count;
+        stats.presentation.updated_objects += presented.value().updated_objects;
+        stats.presentation.removed_objects += presented.value().removed_objects;
+        stats.presentation.unchanged_objects += presented.value().unchanged_objects;
+        return core::Status::ok();
+    };
     stats.server_ticks.reserve(frame.value().step_count);
     for (std::uint32_t step = 0; step < frame.value().step_count; ++step) {
         if (server_ != nullptr) {
@@ -410,28 +467,15 @@ core::Result<RuntimeFrameStats> RuntimeSession::run_frame(RuntimeFrameInput inpu
             stats.server_ticks.push_back(std::move(tick_result).value());
             stats.authoritative_world_tick = server_->world().world_time();
         }
-        auto status = pump_client_messages(input.now_ms);
+        auto status = update_client(frame.value().first_tick + step);
         if (!status) {
             return fault_frame(status.error());
         }
-        if (client_ != nullptr) {
-            if (!client_->is_connected()) {
-                continue;
-            }
-            auto synchronized = client_->synchronize(frame.value().first_tick + step);
-            if (!synchronized) {
-                return fault_frame(synchronized.error());
-            }
-            stats.client = std::move(synchronized).value();
-            auto presented = synchronize_presentation();
-            if (!presented) {
-                return fault_frame(presented.error());
-            }
-            stats.presentation.inserted_objects += presented.value().inserted_objects;
-            stats.presentation.adapter_count += presented.value().adapter_count;
-            stats.presentation.updated_objects += presented.value().updated_objects;
-            stats.presentation.removed_objects += presented.value().removed_objects;
-            stats.presentation.unchanged_objects += presented.value().unchanged_objects;
+    }
+    if (frame.value().step_count == 0) {
+        auto status = update_client(fixed_step_.tick());
+        if (!status) {
+            return fault_frame(status.error());
         }
     }
     last_frame_stats_ = stats;
@@ -800,6 +844,10 @@ std::uint64_t RuntimeSession::frame_count() const noexcept {
     return frame_count_;
 }
 
+std::uint64_t RuntimeSession::fixed_step_tick() const noexcept {
+    return fixed_step_.tick();
+}
+
 const std::optional<RuntimeFrameStats>& RuntimeSession::last_frame_stats() const noexcept {
     return last_frame_stats_;
 }
@@ -890,6 +938,36 @@ std::string_view session_connection_state_name(SessionConnectionState state) noe
         return "disconnected";
     }
     return "unknown";
+}
+
+std::string_view session_startup_phase_name(SessionStartupPhase phase) noexcept {
+    switch (phase) {
+    case SessionStartupPhase::validating_request:
+        return "Validating session request";
+    case SessionStartupPhase::initializing_content:
+        return "Preparing content services";
+    case SessionStartupPhase::reading_world:
+        return "Reading world snapshot";
+    case SessionStartupPhase::preparing_world:
+        return "Preparing world state";
+    case SessionStartupPhase::starting_authoritative_server:
+        return "Starting authoritative server";
+    case SessionStartupPhase::starting_client:
+        return "Starting client runtime";
+    case SessionStartupPhase::connecting_transport:
+        return "Connecting transport";
+    case SessionStartupPhase::constructing_presentation:
+        return "Constructing presentation world";
+    case SessionStartupPhase::ready:
+        return "World ready";
+    case SessionStartupPhase::cancelling:
+        return "Cancelling session launch";
+    }
+    return "Loading world";
+}
+
+bool session_mode_is_multiplayer(SessionMode mode) noexcept {
+    return mode == SessionMode::hosted_multiplayer || mode == SessionMode::remote_multiplayer;
 }
 
 } // namespace heartstead::game
