@@ -153,6 +153,20 @@ if(TARGET heartstead_dev_game)
 endif()
 
 if(TARGET heartstead)
+  file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/heartstead_invalid_content_smoke)
+  add_test(
+    NAME heartstead_content_recovery_smoke
+    COMMAND
+      ${CMAKE_COMMAND} -E env
+      HEARTSTEAD_CONTENT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/heartstead_invalid_content_smoke
+      HEARTSTEAD_DATA_ROOT=${CMAKE_CURRENT_BINARY_DIR}/heartstead_content_recovery_data
+      $<TARGET_FILE:heartstead> --frames 2
+  )
+  set_tests_properties(
+    heartstead_content_recovery_smoke
+    PROPERTIES TIMEOUT 60 LABELS "smoke;recovery"
+               PASS_REGULAR_EXPRESSION "startup recovery: diagnostics="
+  )
   add_test(NAME heartstead_menu_headless_smoke COMMAND heartstead --frames 5)
   set_tests_properties(heartstead_menu_headless_smoke PROPERTIES TIMEOUT 60 LABELS smoke)
   add_test(

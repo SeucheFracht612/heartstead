@@ -6,8 +6,10 @@
 #include "game/application/game_application.hpp"
 #include "game/application/heartstead_application_mode.hpp"
 #include "game/application/launch_options.hpp"
+#include "game/application/startup_recovery_mode.hpp"
 
 #include <filesystem>
+#include <cstdlib>
 #include <iostream>
 #include <optional>
 #include <string_view>
@@ -70,7 +72,11 @@ int main(int argc, char** argv) {
         }
 
         const auto application_root = executable_directory(argv[0]);
-        const auto content_root = application_root / HEARTSTEAD_GAME_CONTENT_DIR;
+        const auto* configured_content_root = std::getenv("HEARTSTEAD_CONTENT_ROOT");
+        const auto content_root =
+            configured_content_root != nullptr && *configured_content_root != '\0'
+                ? std::filesystem::path(configured_content_root)
+                : application_root / HEARTSTEAD_GAME_CONTENT_DIR;
         const auto user_data_root = heartstead::game::default_application_data_root();
         heartstead::game::ApplicationSettings application_settings;
         const heartstead::game::ApplicationSettingsStore settings_store(user_data_root /
@@ -83,14 +89,11 @@ int main(int argc, char** argv) {
                       << " (using defaults)\n";
         }
         const auto content_report = heartstead::content::ContentValidation::validate(content_root);
-        if (content_report.has_errors()) {
-            return fail({"heartstead.content_validation_failed",
-                         "content validation reported one or more errors"});
-        }
+        const auto content_valid = !content_report.has_errors();
 
         std::optional<heartstead::assets::CookedAssetStore> cooked_assets;
         heartstead::renderer::materials::TerrainMaterialAssetSet terrain_assets;
-        if (!options.headless) {
+        if (!options.headless && content_valid) {
             auto loaded = heartstead::assets::CookedAssetStore::load(
                 application_root / HEARTSTEAD_GAME_COOKED_ASSET_DIR);
             if (!loaded) {
@@ -126,19 +129,25 @@ int main(int argc, char** argv) {
                                               ? heartstead::renderer::rhi::PresentMode::fifo
                                               : heartstead::renderer::rhi::PresentMode::immediate;
 
-        heartstead::game::HeartsteadApplicationModeConfig mode_config;
-        mode_config.content_report = &content_report;
-        mode_config.cooked_assets = cooked_assets.has_value() ? &*cooked_assets : nullptr;
-        mode_config.cooked_asset_root = application_root / HEARTSTEAD_GAME_COOKED_ASSET_DIR;
-        mode_config.user_data_root = user_data_root;
-        mode_config.initial_settings = application_settings;
-        mode_config.initial_launch = options.initial_launch;
-        mode_config.headless = options.headless;
-        mode_config.safe_mode = options.safe_mode;
-
         heartstead::game::GameApplication application(std::move(application_config));
-        heartstead::game::HeartsteadApplicationMode mode(std::move(mode_config));
-        auto report = application.run(mode);
+        heartstead::core::Result<heartstead::game::GameApplicationRunReport> report = [&]() {
+            if (!content_valid) {
+                heartstead::game::StartupRecoveryMode recovery(
+                    {content_report.diagnostics, options.headless, application_settings.ui_scale});
+                return application.run(recovery);
+            }
+            heartstead::game::HeartsteadApplicationModeConfig mode_config;
+            mode_config.content_report = &content_report;
+            mode_config.cooked_assets = cooked_assets.has_value() ? &*cooked_assets : nullptr;
+            mode_config.cooked_asset_root = application_root / HEARTSTEAD_GAME_COOKED_ASSET_DIR;
+            mode_config.user_data_root = user_data_root;
+            mode_config.initial_settings = application_settings;
+            mode_config.initial_launch = options.initial_launch;
+            mode_config.headless = options.headless;
+            mode_config.safe_mode = options.safe_mode;
+            heartstead::game::HeartsteadApplicationMode mode(std::move(mode_config));
+            return application.run(mode);
+        }();
         if (!report) {
             return fail(report.error());
         }

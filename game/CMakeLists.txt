@@ -11,6 +11,7 @@ target_sources(
     application/launch_options.cpp
     application/main_menu.cpp
     application/runtime_diagnostics.cpp
+    application/startup_recovery_mode.cpp
     foundation/foundation_world.cpp
     features/interaction/voxel_raycast.cpp
     features/interaction/voxel_commands.cpp
@@ -46,6 +47,7 @@ target_sources(
       application/launch_options.hpp
       application/main_menu.hpp
       application/runtime_diagnostics.hpp
+      application/startup_recovery_mode.hpp
       foundation/foundation_world.hpp
       features/interaction/voxel_raycast.hpp
       features/interaction/voxel_commands.hpp

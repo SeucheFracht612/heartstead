@@ -1,4 +1,5 @@
 #include "game/application/game_application.hpp"
+#include "game/application/startup_recovery_mode.hpp"
 
 #include <cassert>
 #include <cstdint>
@@ -148,6 +149,23 @@ void test_zero_frame_delta_limit_is_rejected() {
     assert(!mode.initialized);
 }
 
+void test_headless_startup_recovery_needs_no_game_runtime() {
+    game::GameApplicationConfig config;
+    config.headless = true;
+    config.maximum_frames = 2;
+    game::GameApplication application(config);
+    game::StartupRecoveryMode mode({{{modding::DiagnosticSeverity::error,
+                                      "broken-content.txt",
+                                      "content.test_failure",
+                                      "expected validation failure"}},
+                                    true});
+
+    auto report = application.run(mode);
+    assert(report);
+    assert(report.value().frame_count == 2);
+    assert(report.value().mode_summary == "startup recovery: diagnostics=1 frames=2");
+}
+
 } // namespace
 
 int main() {
@@ -156,5 +174,6 @@ int main() {
     test_zero_frame_limit_is_rejected();
     test_zero_application_workers_are_rejected();
     test_zero_frame_delta_limit_is_rejected();
+    test_headless_startup_recovery_needs_no_game_runtime();
     return 0;
 }
