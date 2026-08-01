@@ -53,6 +53,9 @@ const auto quit_id = ui::widget_id("heartstead.menu.quit");
 const auto resume_id = ui::widget_id("heartstead.pause.resume");
 const auto return_id = ui::widget_id("heartstead.pause.return");
 const auto cancel_id = ui::widget_id("heartstead.loading.cancel");
+const auto loading_phase_id = ui::widget_id("heartstead.loading.phase");
+const auto loading_detail_id = ui::widget_id("heartstead.loading.detail");
+const auto loading_elapsed_id = ui::widget_id("heartstead.loading.elapsed");
 const auto back_id = ui::widget_id("heartstead.error.back");
 const auto menu_back_id = ui::widget_id("heartstead.menu.back");
 const auto world_name_id = ui::widget_id("heartstead.new_world.name");
@@ -277,6 +280,40 @@ next_color_vision(renderer::UiColorVisionMode mode) noexcept {
     return renderer::UiColorVisionMode::none;
 }
 
+[[nodiscard]] std::string_view loading_phase_detail(SessionStartupPhase phase) noexcept {
+    switch (phase) {
+    case SessionStartupPhase::validating_request:
+        return "Checking launch mode, persistence, seed, and compatibility.";
+    case SessionStartupPhase::initializing_content:
+        return "Forking validated immutable content for this world session.";
+    case SessionStartupPhase::reading_world:
+        return "Opening the active transactional save generation and decoding its snapshot.";
+    case SessionStartupPhase::restoring_world:
+        return "Restoring entities, chunks, player controller, and authoritative time.";
+    case SessionStartupPhase::preparing_world:
+        return "Creating the authoritative world database and session services.";
+    case SessionStartupPhase::initializing_physics:
+        return "Creating collision state and restoring physics-backed entities.";
+    case SessionStartupPhase::generating_spawn_area:
+        return "Generating or loading the spawn chunks; cancellation is checked per chunk.";
+    case SessionStartupPhase::registering_gameplay_systems:
+        return "Attaching gameplay modules and their cleanup ownership.";
+    case SessionStartupPhase::starting_authoritative_server:
+        return "Starting fixed-step simulation, command routing, and replication.";
+    case SessionStartupPhase::starting_client:
+        return "Starting client prediction and replicated-world storage.";
+    case SessionStartupPhase::connecting_transport:
+        return "Waiting for the network handshake; Cancel remains available.";
+    case SessionStartupPhase::constructing_presentation:
+        return "Creating client presentation state independently of the authoritative world.";
+    case SessionStartupPhase::ready:
+        return "Session ownership is complete and the world is ready to enter.";
+    case SessionStartupPhase::cancelling:
+        return "Waiting for the current cooperative startup boundary to release its resources.";
+    }
+    return "Preparing the requested world session.";
+}
+
 [[nodiscard]] renderer::RenderCamera camera_from_frame(const movement::PlayerCameraFrame& frame) {
     renderer::RenderCamera camera;
     camera.floating_origin = frame.floating_origin;
@@ -377,6 +414,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     std::int64_t last_wall_clock_ms = 0;
     std::int64_t last_autosave_at_ms = 0;
     std::int64_t settings_persist_after_ms = 0;
+    std::int64_t loading_started_at_ms = 0;
+    std::int64_t loading_ui_updated_at_ms = 0;
     std::uint64_t periodic_save_count = 0;
     SessionMode loading_mode = SessionMode::local_single_player;
     bool initialized = false;
@@ -813,7 +852,10 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             rendered_loading_phase = phase;
             if (!(status = add(label("heartstead.loading.title", "Loading world", 28.0F))) ||
                 !(status = add(label("heartstead.loading.phase",
-                                     std::string(session_startup_phase_name(phase)) + "...")))) {
+                                     std::string(session_startup_phase_name(phase)) + "..."))) ||
+                !(status = add(label("heartstead.loading.detail",
+                                     std::string(loading_phase_detail(phase)), 14.0F))) ||
+                !(status = add(label("heartstead.loading.elapsed", "Elapsed: 0.0 s", 13.0F)))) {
                 return status;
             }
         }
@@ -876,6 +918,44 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         return core::Status::ok();
     }
 
+    [[nodiscard]] core::Status update_loading_ui(SessionStartupPhase phase) {
+        if (config.headless) {
+            rendered_loading_phase = phase;
+            return core::Status::ok();
+        }
+        auto* phase_widget = widgets.find(loading_phase_id);
+        auto* detail_widget = widgets.find(loading_detail_id);
+        auto* elapsed_widget = widgets.find(loading_elapsed_id);
+        if (phase_widget == nullptr || detail_widget == nullptr || elapsed_widget == nullptr) {
+            return core::Status::failure("heartstead.loading_ui_missing",
+                                         "stable loading UI widgets are unavailable");
+        }
+        auto phase_desc = *phase_widget;
+        phase_desc.text = std::string(session_startup_phase_name(phase)) + "...";
+        auto status = widgets.update(std::move(phase_desc));
+        if (!status) {
+            return status;
+        }
+        auto detail_desc = *detail_widget;
+        detail_desc.text = std::string(loading_phase_detail(phase));
+        status = widgets.update(std::move(detail_desc));
+        if (!status) {
+            return status;
+        }
+        const auto elapsed_ms = std::max<std::int64_t>(0, last_runtime_time_ms - loading_started_at_ms);
+        std::ostringstream elapsed_text;
+        elapsed_text << "Elapsed: " << std::fixed << std::setprecision(1)
+                     << static_cast<double>(elapsed_ms) / 1'000.0 << " s";
+        auto elapsed_desc = *elapsed_widget;
+        elapsed_desc.text = elapsed_text.str();
+        status = widgets.update(std::move(elapsed_desc));
+        if (status) {
+            rendered_loading_phase = phase;
+            loading_ui_updated_at_ms = last_runtime_time_ms;
+        }
+        return status;
+    }
+
     [[nodiscard]] core::Status begin_session_loading() {
         if (loading.valid() || session_runtime.has_value()) {
             return core::Status::failure("heartstead.session_already_pending",
@@ -890,6 +970,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         loading_progress->phase.store(SessionStartupPhase::initializing_content,
                                       std::memory_order_relaxed);
         loading_generation = next_session_generation++;
+        loading_started_at_ms = last_runtime_time_ms;
+        loading_ui_updated_at_ms = last_runtime_time_ms;
         const auto stop_token = loading_stop.get_token();
         const auto generation = loading_generation;
         if (services == nullptr || services->jobs() == nullptr) {
@@ -1393,8 +1475,9 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 const auto phase = loading_progress == nullptr
                                        ? SessionStartupPhase::validating_request
                                        : loading_progress->phase.load(std::memory_order_relaxed);
-                if (!rendered_loading_phase.has_value() || *rendered_loading_phase != phase) {
-                    return rebuild_ui(ApplicationState::session_loading);
+                if (!rendered_loading_phase.has_value() || *rendered_loading_phase != phase ||
+                    last_runtime_time_ms - loading_ui_updated_at_ms >= 250) {
+                    return update_loading_ui(phase);
                 }
             }
             return core::Status::ok();
