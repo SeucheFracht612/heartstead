@@ -2487,7 +2487,17 @@ core::Status HeartsteadApplicationMode::initialize(GameApplicationServices& serv
     if (!status) {
         return status;
     }
-    status = state.apply_initial_launch();
+    if (state.config.initial_session.has_value()) {
+        if (state.config.initial_launch.has_value()) {
+            return core::Status::failure(
+                "heartstead.conflicting_initial_session",
+                "application mode cannot receive both an initial directive and prepared session");
+        }
+        status = state.launch(std::move(*state.config.initial_session));
+        state.config.initial_session.reset();
+    } else {
+        status = state.apply_initial_launch();
+    }
     if (!status) {
         return status;
     }

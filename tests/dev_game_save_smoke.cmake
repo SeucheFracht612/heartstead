@@ -13,7 +13,7 @@ function(read_active_generation output_name)
   set(${output_name} "${CMAKE_MATCH_1}" PARENT_SCOPE)
 endfunction()
 
-function(run_dev_game expected_save_text)
+function(run_dev_game)
   execute_process(
     COMMAND "${DEV_GAME}" --frames 65 --save "${SAVE_ROOT}" --autosave-seconds 1
     RESULT_VARIABLE result
@@ -23,15 +23,15 @@ function(run_dev_game expected_save_text)
   if(NOT result EQUAL 0)
     message(FATAL_ERROR "dev_game failed (${result}): ${error}")
   endif()
-  if(NOT output MATCHES "save=${expected_save_text}")
-    message(FATAL_ERROR "unexpected dev_game summary: ${output}")
+  if(NOT output MATCHES "heartstead application: state=InGame")
+    message(FATAL_ERROR "dev_game did not run the production application mode: ${output}")
   endif()
   if(NOT output MATCHES "autosaves=1")
     message(FATAL_ERROR "periodic save did not run exactly once: ${output}")
   endif()
 endfunction()
 
-run_dev_game("written")
+run_dev_game()
 
 if(NOT EXISTS "${SAVE_ROOT}/current.txt")
   message(FATAL_ERROR "new save did not commit a generation manifest")
@@ -41,7 +41,7 @@ if(NOT IS_DIRECTORY "${SAVE_ROOT}/generations/${first_generation}")
   message(FATAL_ERROR "new save CURRENT generation is invalid")
 endif()
 
-run_dev_game("loaded\\+written")
+run_dev_game()
 
 read_active_generation(second_generation)
 if("${second_generation}" STREQUAL "${first_generation}" OR

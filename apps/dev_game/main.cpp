@@ -1,10 +1,11 @@
-#include "apps/dev_game/dev_game_mode.hpp"
-
 #include "engine/assets/cooked_asset_store.hpp"
 #include "engine/content/content_validation.hpp"
 #include "engine/core/process_entry.hpp"
 #include "engine/renderer/materials/terrain_material_assets.hpp"
+#include "engine/save/save_database.hpp"
 #include "game/application/game_application.hpp"
+#include "game/application/heartstead_application_mode.hpp"
+#include "game/foundation/foundation_world.hpp"
 
 #include <charconv>
 #include <cstdint>
@@ -18,6 +19,8 @@
 namespace {
 
 using namespace heartstead;
+
+constexpr std::string_view development_scenario_id = "base:scenarios/foundation_slice";
 
 struct LaunchOptions {
     bool headless = false;
@@ -128,7 +131,7 @@ void print_usage(const char* executable, std::ostream& output) {
            << "       --native-frames bounds a real windowed smoke run\n"
            << "       normal local launches persist to saves/foundation_slice_0_1\n"
            << "       bounded/headless runs persist only when --save is supplied\n"
-           << "       --diagnostic-asset-fallbacks injects visible model/animation/audio probes\n";
+           << "       --diagnostic-asset-fallbacks keeps the production diagnostic overlay enabled\n";
 }
 
 int fail(const core::Error& error) {
@@ -139,6 +142,78 @@ int fail(const core::Error& error) {
 int fail(std::string_view message) {
     std::cerr << message << '\n';
     return 1;
+}
+
+[[nodiscard]] std::string endpoint_name(const net::TransportEndpoint& endpoint) {
+    const auto address = endpoint.address.contains(':') ? "[" + endpoint.address + "]"
+                                                        : endpoint.address;
+    return address + ":" + std::to_string(endpoint.port);
+}
+
+[[nodiscard]] core::Result<game::SessionLaunchRequest>
+prepare_session(const LaunchOptions& options,
+                const content::ContentValidationReport& content_report) {
+    auto metadata = content::save_metadata_from_content_report(
+        content_report, "Foundation Slice 0.1", game::foundation::world_seed);
+    if (!metadata) {
+        return core::Result<game::SessionLaunchRequest>::failure(metadata.error().code,
+                                                                 metadata.error().message);
+    }
+
+    game::SessionLaunchRequest request;
+    request.world_name = "Foundation Development Slice";
+    request.scenario_id = std::string(development_scenario_id);
+    request.seed = game::foundation::world_seed;
+    request.generator_preset = "temperate_valley";
+    request.metadata = std::move(metadata).value();
+    request.runtime.headless = options.headless;
+    request.runtime.physics_backend = options.headless ? physics::PhysicsBackend::headless
+                                                       : physics::PhysicsBackend::jolt;
+    if (options.diagnostic_asset_fallbacks) {
+        request.initial_runtime_options.emplace_back("diagnostics");
+    }
+
+    if (options.connect_endpoint.has_value()) {
+        request.mode = game::SessionMode::remote_multiplayer;
+        request.world_source = game::WorldSourceKind::remote_server;
+        request.persistence = game::PersistencePolicy::ephemeral;
+        request.network_endpoint = options.connect_endpoint;
+        request.world_name = endpoint_name(*options.connect_endpoint);
+        return core::Result<game::SessionLaunchRequest>::success(std::move(request));
+    }
+
+    request.mode = game::SessionMode::local_single_player;
+    request.world_source = game::WorldSourceKind::developer_scenario;
+    request.persistence = game::PersistencePolicy::ephemeral;
+
+    std::optional<std::filesystem::path> save_root;
+    if (!options.disable_persistence) {
+        if (options.save_root.has_value()) {
+            save_root = options.save_root;
+        } else if (!options.headless && !options.maximum_frames.has_value()) {
+            save_root = std::filesystem::path{HEARTSTEAD_SOURCE_ROOT} /
+                        "saves/foundation_slice_0_1";
+        }
+    }
+    if (!save_root.has_value()) {
+        return core::Result<game::SessionLaunchRequest>::success(std::move(request));
+    }
+
+    save::FileSaveDatabase database(*save_root);
+    auto stats = database.stats();
+    if (!stats) {
+        return core::Result<game::SessionLaunchRequest>::failure(stats.error().code,
+                                                                 stats.error().message);
+    }
+    request.persistence = game::PersistencePolicy::persistent;
+    request.save_path = *save_root;
+    if (stats.value().has_snapshot) {
+        request.world_source = game::WorldSourceKind::existing_save;
+        request.scenario_id.clear();
+        request.seed.reset();
+        request.generator_preset.clear();
+    }
+    return core::Result<game::SessionLaunchRequest>::success(std::move(request));
 }
 
 } // namespace
@@ -175,6 +250,10 @@ int main(int argc, char** argv) {
         if (!terrain_material_assets) {
             return fail(terrain_material_assets.error());
         }
+        auto initial_session = prepare_session(options, content_report);
+        if (!initial_session) {
+            return fail(initial_session.error());
+        }
 
         heartstead::game::GameApplicationConfig application_config;
         application_config.headless = options.headless;
@@ -192,24 +271,18 @@ int main(int argc, char** argv) {
         application_config.terrain_material_assets =
             std::move(terrain_material_assets).value();
 
-        heartstead::dev_game::DevGameModeConfig mode_config;
+        heartstead::game::HeartsteadApplicationModeConfig mode_config;
         mode_config.content_report = &content_report;
-        mode_config.cooked_asset_root = std::filesystem::path{HEARTSTEAD_DEV_GAME_COOKED_ASSET_DIR};
-        mode_config.connect_endpoint = options.connect_endpoint;
+        mode_config.cooked_assets = &cooked_assets.value();
+        mode_config.cooked_asset_root =
+            std::filesystem::path{HEARTSTEAD_DEV_GAME_COOKED_ASSET_DIR};
+        mode_config.user_data_root = std::filesystem::path{HEARTSTEAD_DEV_GAME_DATA_DIR};
+        mode_config.initial_session = std::move(initial_session).value();
         mode_config.autosave_interval_ms = options.autosave_interval_ms;
         mode_config.headless = options.headless;
-        mode_config.diagnostic_asset_fallbacks = options.diagnostic_asset_fallbacks;
-        if (!options.disable_persistence && !options.connect_endpoint.has_value()) {
-            if (options.save_root.has_value()) {
-                mode_config.save_root = options.save_root;
-            } else if (!options.headless && !options.maximum_frames.has_value()) {
-                mode_config.save_root =
-                    std::filesystem::path{HEARTSTEAD_SOURCE_ROOT} / "saves/foundation_slice_0_1";
-            }
-        }
 
         heartstead::game::GameApplication application(std::move(application_config));
-        heartstead::dev_game::DevGameMode mode(std::move(mode_config));
+        heartstead::game::HeartsteadApplicationMode mode(std::move(mode_config));
         auto report = application.run(mode);
         if (!report) {
             return fail(report.error());
