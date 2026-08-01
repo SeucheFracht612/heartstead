@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <ranges>
 #include <utility>
 
 namespace heartstead::game::animals {
@@ -45,9 +46,10 @@ void transition_locomotion(animation::ReplicatedLocomotionAnimation& locomotion,
 } // namespace
 
 core::Status WanderingAnimalConfig::validate() const {
-    if (!prototype_id.is_valid() || !spawn.is_valid() || !std::isfinite(movement_speed) ||
-        !std::isfinite(wander_radius) || movement_speed <= 0.0 || wander_radius <= 0.0 ||
-        segment_ticks == 0 || segment_ticks > 60U * 60U) {
+    if (!prototype_id.is_valid() || !spawn.is_valid() || !player_offset.is_finite() ||
+        !std::isfinite(movement_speed) || !std::isfinite(wander_radius) ||
+        movement_speed <= 0.0 || wander_radius <= 0.0 || segment_ticks == 0 ||
+        segment_ticks > 60U * 60U) {
         return core::Status::failure(
             "wandering_animal.invalid_config",
             "wandering animal needs a prototype, spawn, positive motion, and bounded segments");
@@ -127,12 +129,30 @@ core::Status WanderingAnimalModule::spawn(simulation::SimulationContext& context
         const auto& error = !runtime_handle ? runtime_handle.error() : net_id.error();
         return core::Status::failure(error.code, error.message);
     }
+    auto spawn = config_.spawn;
+    if (config_.place_near_first_player) {
+        const auto players = context.world->entities().records();
+        const auto player = std::ranges::find_if(players, [](const entities::EntityRecord* record) {
+            return record != nullptr && record->kind == entities::EntityKind::player;
+        });
+        if (player != players.end()) {
+            auto relative_spawn = world::WorldPosition::from_anchor(
+                (*player)->transform.position.anchor,
+                (*player)->transform.position.local_offset + config_.player_offset);
+            if (!relative_spawn) {
+                return core::Status::failure(relative_spawn.error().code,
+                                             relative_spawn.error().message);
+            }
+            spawn = std::move(relative_spawn).value();
+        }
+    }
+
     entities::EntityRecord record;
     record.runtime_handle = runtime_handle.value();
     record.net_id = net_id.value();
     record.prototype_id = config_.prototype_id;
     record.kind = entities::EntityKind::animal;
-    record.transform.position = config_.spawn;
+    record.transform.position = spawn;
     record.transform.scale = {0.72, 0.72, 0.72};
     auto status = context.world->entities().insert(record);
     if (!status) {
@@ -159,7 +179,7 @@ core::Status WanderingAnimalModule::spawn(simulation::SimulationContext& context
         entity_id_, entities::TransformComponent{record.transform, record.transform});
     auto locomotion = entities_->emplace<entities::LocomotionAnimationComponent>(entity_id_);
     auto wandering = entities_->emplace<WanderingAnimalComponent>(
-        entity_id_, WanderingAnimalComponent{config_.spawn, config_.seed,
+        entity_id_, WanderingAnimalComponent{spawn, config_.seed,
                                              static_cast<std::uint32_t>(mix(config_.seed) % 8U),
                                              config_.segment_ticks, true});
     if (!identity || !transform || !locomotion || !wandering) {

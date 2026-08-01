@@ -11,6 +11,11 @@ namespace heartstead::game::animals {
 struct WanderingAnimalConfig {
     core::PrototypeId prototype_id;
     world::WorldPosition spawn{11.5, 1.0, 9.5};
+    // Production sessions use the same module for ordinary and large-coordinate scenarios.  By
+    // default, interpret player_offset relative to the first authoritative player instead of
+    // assuming that the world lives around the legacy origin.
+    bool place_near_first_player = true;
+    math::Vec3d player_offset{3.0, 0.0, 2.0};
     std::uint64_t seed = 0x4845415254535445ULL;
     double movement_speed = 1.4;
     double wander_radius = 4.0;

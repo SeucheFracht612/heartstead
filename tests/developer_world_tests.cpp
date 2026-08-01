@@ -1,6 +1,7 @@
 #include "engine/content/content_validation.hpp"
 #include "engine/scenarios/scenario_fixture.hpp"
 #include "engine/world/worldgen/terrain_generator.hpp"
+#include "game/features/animals/wandering_animal_module.hpp"
 #include "game/foundation/foundation_world.hpp"
 #include "game/runtime/game_runtime.hpp"
 #include "game/scenarios/developer_world_registry.hpp"
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <cassert>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -83,6 +85,8 @@ void test_packaged_renderer_fixture_launch(const content::ContentValidationRepor
     assert(request);
     assert(request.value().world_source == game::WorldSourceKind::packaged_fixture);
     assert(request.value().persistence == game::PersistencePolicy::temporary_copy);
+    request.value().runtime.gameplay_modules.push_back(
+        std::make_shared<game::animals::WanderingAnimalModule>());
 
     auto runtime = runtime_for(report);
     assert(runtime.start_session(std::move(request).value()));
@@ -95,6 +99,15 @@ void test_packaged_renderer_fixture_launch(const content::ContentValidationRepor
     assert(player != nullptr);
     assert(player->state.position.anchor.x > 30'000'000'000LL);
     assert(player->state.position.anchor.z < -30'000'000'000LL);
+    auto frame = runtime.run_frame({16'667, 17});
+    assert(frame);
+    auto render_snapshot = runtime.capture_render_snapshot();
+    assert(render_snapshot);
+    assert(std::ranges::all_of(render_snapshot.value().objects, [player](const auto& object) {
+        return static_cast<bool>(world::to_camera_relative(
+            object.current_transform.position,
+            world::FloatingOrigin{player->state.position.anchor}));
+    }));
     assert(runtime.shutdown());
     assert(runtime.last_teardown_report()->presentation_objects_after == 0);
 }
