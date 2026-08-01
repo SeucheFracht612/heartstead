@@ -153,6 +153,7 @@ class ChunkRenderSystem {
                     std::span<const math::Mat4f> shadow_view_projections = {});
 
     [[nodiscard]] const ChunkRenderStats& stats() const noexcept;
+    void reset_session_stats() noexcept;
 
   private:
     struct VisibleChunk {

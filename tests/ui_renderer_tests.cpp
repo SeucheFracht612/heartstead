@@ -110,10 +110,30 @@ void test_ui_geometry_scissors_and_capacity() {
     assert(text.value().draws.size() == 1);
     assert(text.value().stats.submitted_glyphs == 1);
     assert(text.value().stats.submitted_vertices == 4);
+    assert(text.value().stats.overflowed_batches == 0);
     auto empty = ui.build_frame();
     assert(empty && empty.value().draws.empty());
+    assert(empty.value().stats.overflowed_batches == 0);
     assert(ui.resize({800, 600}));
     assert(ui.shutdown());
+}
+
+void test_ui_upload_failure_discards_pending_geometry() {
+    auto fixture = make_fixture();
+    renderer::UiRenderer ui(*fixture.device, fixture.pipeline, fixture.font);
+    assert(ui.initialize({640, 360}));
+    renderer::UiQuadDesc quad;
+    quad.maximum_pixels = {32.0F, 32.0F};
+    assert(ui.submit_quad(quad));
+    assert(ui.pending_vertex_count() == 4);
+    assert(ui.pending_index_count() == 6);
+    assert(ui.pending_batch_count() == 1);
+
+    assert(fixture.device->release_resource(ui.vertex_buffer()));
+    assert(!ui.build_frame());
+    assert(ui.pending_vertex_count() == 0);
+    assert(ui.pending_index_count() == 0);
+    assert(ui.pending_batch_count() == 0);
 }
 
 void test_ui_validation() {
@@ -161,6 +181,7 @@ void test_ui_accessibility_color_transform() {
 
 int main() {
     test_ui_geometry_scissors_and_capacity();
+    test_ui_upload_failure_discards_pending_geometry();
     test_ui_validation();
     test_ui_pixel_coordinates_use_top_left_origin();
     test_ui_accessibility_color_transform();

@@ -786,6 +786,8 @@ void test_renderer_frontend_submits_headless_frames() {
            model_materials.value().front().material);
     assert(retained_renderer.describe_surface_texture()->array_layers == 5);
 
+    const auto default_environment = retained_renderer.environment();
+    const auto default_exposure = retained_renderer.exposure();
     renderer::rhi::RenderEnvironmentData invalid_environment;
     invalid_environment.fog_end = invalid_environment.fog_start;
     assert(!retained_renderer.set_environment(invalid_environment));
@@ -794,6 +796,10 @@ void test_renderer_frontend_submits_headless_frames() {
     environment.fog_start = 96.0F;
     environment.fog_end = 160.0F;
     assert(retained_renderer.set_environment(environment));
+    auto changed_exposure = default_exposure;
+    changed_exposure.exposure_stops = 1.5F;
+    changed_exposure.automatic_exposure = false;
+    assert(retained_renderer.set_exposure(changed_exposure));
     world::ChunkLightSystemStats lighting_stats;
     lighting_stats.last_solve_ms = 1.25;
     lighting_stats.last_apply_ms = 0.5;
@@ -1072,6 +1078,10 @@ void test_renderer_frontend_submits_headless_frames() {
 
     const auto uploaded_before_resize = retained_renderer.chunk_stats().cache.uploaded_chunk_count;
     assert(retained_renderer.resize({800, 400}));
+    const auto resized_extent = retained_renderer.device()->current_extent();
+    assert(!retained_renderer.resize({0, 400}));
+    assert(retained_renderer.device()->current_extent().width == resized_extent.width);
+    assert(retained_renderer.device()->current_extent().height == resized_extent.height);
     assert(camera.set_aspect_ratio(2.0F));
     assert(retained_renderer.synchronize_chunks(world, camera));
     assert(retained_renderer.chunk_stats().uploaded_chunk_count == 0);
@@ -1099,6 +1109,16 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(retained_renderer.stats().resident_chunks == 0);
     assert(retained_renderer.stats().retained_objects == 0);
     assert(retained_renderer.stats().retained_skin_palettes == 0);
+    assert(retained_renderer.chunk_stats().cache.uploaded_chunk_count == 0);
+    assert(retained_renderer.scene_stats().submitted_instances == 0);
+    assert(retained_renderer.environment().sun_intensity == default_environment.sun_intensity);
+    assert(retained_renderer.environment().fog_start == default_environment.fog_start);
+    assert(retained_renderer.environment().fog_end == default_environment.fog_end);
+    assert(retained_renderer.environment().elapsed_seconds ==
+           default_environment.elapsed_seconds);
+    assert(retained_renderer.exposure().exposure_stops == default_exposure.exposure_stops);
+    assert(retained_renderer.exposure().automatic_exposure ==
+           default_exposure.automatic_exposure);
 
     assert(retained_renderer.shutdown());
     assert(!retained_renderer.is_initialized());

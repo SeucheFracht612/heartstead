@@ -107,6 +107,7 @@ class SceneRenderSystem {
                         float simulation_alpha, SceneDrawCommands scratch = {},
                         std::span<const math::Mat4f> shadow_view_projections = {});
     [[nodiscard]] core::Status set_pipelines(ScenePipelineSet pipelines) noexcept;
+    void reset_session() noexcept;
     [[nodiscard]] core::Status shutdown();
     [[nodiscard]] const SceneRenderStats& stats() const noexcept;
     [[nodiscard]] rhi::RenderResourceHandle instance_buffer() const noexcept;

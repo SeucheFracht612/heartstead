@@ -466,7 +466,7 @@ core::Status SceneRenderSystem::set_pipelines(ScenePipelineSet pipelines) noexce
     return core::Status::ok();
 }
 
-core::Status SceneRenderSystem::shutdown() {
+void SceneRenderSystem::reset_session() noexcept {
     instance_scratch_.clear();
     skin_matrix_scratch_.clear();
     morph_weight_scratch_.clear();
@@ -475,6 +475,10 @@ core::Status SceneRenderSystem::shutdown() {
     skin_motion_history_.clear();
     stats_ = {};
     frame_number_ = 0;
+}
+
+core::Status SceneRenderSystem::shutdown() {
+    reset_session();
     auto status = core::Status::ok();
     if (instance_buffer_.is_valid()) {
         status = device_->release_resource(instance_buffer_);

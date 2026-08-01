@@ -913,6 +913,9 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         return core::Status::failure(error.code, error.message);
     }
     environment_ = desc.environment;
+    default_environment_ = desc.environment;
+    default_exposure_ = desc.exposure;
+    default_clear_color_ = desc.clear_color;
     return core::Status::ok();
 }
 
@@ -1052,6 +1055,9 @@ core::Status Renderer::shutdown() {
     terrain_sampler_ = {};
     ui_sampler_ = {};
     environment_ = {};
+    default_environment_ = {};
+    default_exposure_ = {};
+    default_clear_color_ = {};
     device_.reset();
     owner_thread_ = {};
     return first_failure;
@@ -1089,16 +1095,36 @@ core::Status Renderer::clear_session_resources() {
         }
     }
     scene_.clear();
+    if (scene_render_system_ != nullptr) {
+        scene_render_system_->reset_session();
+    }
     if (debug_renderer_ != nullptr) {
         debug_renderer_->clear();
     }
     if (ui_renderer_ != nullptr) {
         ui_renderer_->clear();
     }
-    stats_.loaded_chunks = 0;
-    stats_.resident_chunks = 0;
-    stats_.retained_objects = 0;
-    stats_.retained_skin_palettes = 0;
+    chunk_cache_->reset_session_stats();
+    chunk_system_->reset_session_stats();
+    environment_ = default_environment_;
+    if (frame_builder_ != nullptr) {
+        frame_builder_->set_clear_color(default_clear_color_);
+        status = frame_builder_->set_exposure(default_exposure_);
+        if (!status && first_failure) {
+            first_failure = status;
+        }
+    }
+    cpu_timings_.reset();
+    chunk_draw_scratch_.clear();
+    far_terrain_draw_scratch_.clear();
+    draw_command_scratch_ = {};
+    scene_draw_scratch_ = {};
+    debug_frame_scratch_ = {};
+    ui_frame_scratch_ = {};
+    debug_text_labels_.clear();
+    stats_ = {};
+    frame_started_at_ = {};
+    frame_timing_active_ = false;
     return first_failure;
 }
 
@@ -1497,22 +1523,10 @@ core::Result<RenderFrameResult> Renderer::render_frame(const RenderFrameInput& i
     return core::Result<RenderFrameResult>::success({rendered.value(), stats_});
 }
 
-core::Status Renderer::resize(rhi::RenderExtent extent) {
-    if (device_ == nullptr || frame_builder_ == nullptr || ui_renderer_ == nullptr) {
-        return core::Status::failure("renderer.not_initialized",
-                                     "renderer must be initialized before resizing");
-    }
-    auto status = device_->resize(extent);
-    if (!status) {
-        return status;
-    }
-    status = frame_builder_->resize(extent);
-    if (!status) {
-        return status;
-    }
-    status = clustered_lighting_->resize(extent);
-    if (!status) {
-        return status;
+core::Status Renderer::bind_clustered_lighting_resources() {
+    if (clustered_lighting_ == nullptr) {
+        return core::Status::failure("renderer.lighting_not_initialized",
+                                     "clustered lighting must be initialized before binding");
     }
     const auto terrain_material = core::PrototypeId::parse("base:materials/milestone_terrain");
     const auto scene_material = core::PrototypeId::parse("base:materials/static_instances");
@@ -1522,7 +1536,8 @@ core::Status Renderer::resize(rhi::RenderExtent extent) {
         return core::Status::failure("renderer.invalid_lighting_material",
                                      "internal lighting material ids are invalid");
     }
-    status = clustered_lighting_->bind(terrain_material.value(), "local_lights", "light_grid");
+    auto status =
+        clustered_lighting_->bind(terrain_material.value(), "local_lights", "light_grid");
     if (!status) {
         return status;
     }
@@ -1541,11 +1556,72 @@ core::Status Renderer::resize(rhi::RenderExtent extent) {
     if (!status) {
         return status;
     }
-    status = clustered_lighting_->bind(transparent_material.value(), "local_lights", "light_grid");
+    return clustered_lighting_->bind(transparent_material.value(), "local_lights", "light_grid");
+}
+
+core::Status Renderer::resize(rhi::RenderExtent extent) {
+    if (device_ == nullptr || frame_builder_ == nullptr || clustered_lighting_ == nullptr ||
+        ui_renderer_ == nullptr) {
+        return core::Status::failure("renderer.not_initialized",
+                                     "renderer must be initialized before resizing");
+    }
+    auto status = rhi::validate_render_extent(extent);
     if (!status) {
         return status;
     }
-    return ui_renderer_->resize(extent);
+    const auto previous_extent = device_->current_extent();
+    if (extent.width == previous_extent.width && extent.height == previous_extent.height) {
+        return core::Status::ok();
+    }
+
+    const auto rollback = [&]() {
+        auto rollback_status = core::Status::ok();
+        const auto remember_failure = [&rollback_status](core::Status candidate) {
+            if (!candidate && rollback_status) {
+                rollback_status = std::move(candidate);
+            }
+        };
+        remember_failure(device_->resize(previous_extent));
+        remember_failure(frame_builder_->resize(previous_extent));
+        const auto lighting_resize = clustered_lighting_->resize(previous_extent);
+        remember_failure(lighting_resize);
+        if (lighting_resize) {
+            remember_failure(bind_clustered_lighting_resources());
+        }
+        remember_failure(ui_renderer_->resize(previous_extent));
+        return rollback_status;
+    };
+    const auto fail_and_rollback = [&rollback](const core::Status& failure) {
+        const auto code = failure.error().code;
+        auto message = failure.error().message;
+        const auto rollback_status = rollback();
+        if (!rollback_status) {
+            message += "; resize rollback also failed: " + rollback_status.error().message;
+        }
+        return core::Status::failure(code, std::move(message));
+    };
+
+    status = device_->resize(extent);
+    if (!status) {
+        return fail_and_rollback(status);
+    }
+    status = frame_builder_->resize(extent);
+    if (!status) {
+        return fail_and_rollback(status);
+    }
+    status = clustered_lighting_->resize(extent);
+    if (!status) {
+        return fail_and_rollback(status);
+    }
+    status = bind_clustered_lighting_resources();
+    if (!status) {
+        return fail_and_rollback(status);
+    }
+    status = ui_renderer_->resize(extent);
+    if (!status) {
+        return fail_and_rollback(status);
+    }
+    return core::Status::ok();
 }
 
 core::Status Renderer::reload_terrain_shaders(std::span<const std::uint32_t> vertex_spirv,
@@ -1686,6 +1762,10 @@ core::Status Renderer::set_exposure(rhi::RenderExposureSettings exposure) {
 
 rhi::RenderExposureSettings Renderer::exposure() const noexcept {
     return frame_builder_ == nullptr ? rhi::RenderExposureSettings{} : frame_builder_->exposure();
+}
+
+const rhi::RenderEnvironmentData& Renderer::environment() const noexcept {
+    return environment_;
 }
 
 const RendererQualitySettings& Renderer::quality_settings() const noexcept {

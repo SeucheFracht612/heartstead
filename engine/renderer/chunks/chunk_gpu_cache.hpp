@@ -144,6 +144,7 @@ class ChunkGpuCache {
     replace_meshes(std::span<const ChunkGpuMeshUpload> uploads);
 
     [[nodiscard]] ChunkGpuCacheStats stats() const noexcept;
+    void reset_session_stats() noexcept;
 
   private:
     [[nodiscard]] core::Status retire_entry_allocations(const ChunkGpuEntry& entry,

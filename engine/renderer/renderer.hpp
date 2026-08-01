@@ -165,6 +165,7 @@ class Renderer {
     [[nodiscard]] core::Status set_exposure(rhi::RenderExposureSettings exposure);
     [[nodiscard]] core::Status set_lighting_debug_view(LightingDebugView view);
     [[nodiscard]] rhi::RenderExposureSettings exposure() const noexcept;
+    [[nodiscard]] const rhi::RenderEnvironmentData& environment() const noexcept;
     [[nodiscard]] const RendererQualitySettings& quality_settings() const noexcept;
     void set_voxel_fluid_stats(const world::ChunkFluidSystemStats& fluids) noexcept;
     void set_voxel_lighting_stats(const world::ChunkLightSystemStats& lighting) noexcept;
@@ -254,6 +255,7 @@ class Renderer {
                             std::span<const std::uint32_t> static_fragment_spirv);
     [[nodiscard]] core::Status bind_shadow_resources();
     [[nodiscard]] core::Status bind_scene_surface_resources();
+    [[nodiscard]] core::Status bind_clustered_lighting_resources();
     [[nodiscard]] core::Status
     create_debug_pipelines(std::span<const std::uint32_t> vertex_spirv,
                            std::span<const std::uint32_t> fragment_spirv);
@@ -345,6 +347,9 @@ class Renderer {
     UiFrameCommands ui_frame_scratch_;
     std::vector<DebugTextLabelFrame> debug_text_labels_;
     rhi::RenderEnvironmentData environment_{};
+    rhi::RenderEnvironmentData default_environment_{};
+    rhi::RenderExposureSettings default_exposure_{};
+    rhi::ClearColor default_clear_color_{};
     RendererStats stats_{};
     RendererQualitySettings quality_settings_{};
     std::chrono::steady_clock::time_point frame_started_at_{};

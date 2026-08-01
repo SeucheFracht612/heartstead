@@ -366,17 +366,15 @@ core::Result<UiFrameCommands> UiRenderer::build_frame(UiFrameCommands scratch) {
         };
         auto upload = device_->upload_buffer_batch(writes);
         if (!upload) {
+            clear_pending_frame();
             return core::Result<UiFrameCommands>::failure(upload.error().code,
                                                           upload.error().message);
         }
         stats_.uploaded_bytes = vertex_bytes.size() + index_bytes.size();
     }
     ++frame_number_;
-    vertices_.clear();
-    indices_.clear();
-    batches_.clear();
-    pending_glyph_count_ = 0;
     scratch.stats = stats_;
+    clear_pending_frame();
     return core::Result<UiFrameCommands>::success(std::move(scratch));
 }
 
@@ -412,14 +410,19 @@ UiAccessibilitySettings UiRenderer::accessibility_settings() const noexcept {
 }
 
 void UiRenderer::clear() noexcept {
+    clear_pending_frame();
+    text_vertices_.clear();
+    text_indices_.clear();
+    stats_ = {};
+}
+
+void UiRenderer::clear_pending_frame() noexcept {
     vertices_.clear();
     indices_.clear();
     batches_.clear();
     gpu_vertices_.clear();
-    text_vertices_.clear();
-    text_indices_.clear();
     pending_glyph_count_ = 0;
-    stats_ = {};
+    overflowed_batches_ = 0;
 }
 
 core::Status UiRenderer::shutdown() {
@@ -442,6 +445,22 @@ core::Status UiRenderer::shutdown() {
 
 const UiRendererStats& UiRenderer::stats() const noexcept {
     return stats_;
+}
+
+std::size_t UiRenderer::pending_vertex_count() const noexcept {
+    return vertices_.size();
+}
+
+std::size_t UiRenderer::pending_index_count() const noexcept {
+    return indices_.size();
+}
+
+std::size_t UiRenderer::pending_batch_count() const noexcept {
+    return batches_.size();
+}
+
+rhi::RenderResourceHandle UiRenderer::vertex_buffer() const noexcept {
+    return vertex_buffer_;
 }
 
 } // namespace heartstead::renderer

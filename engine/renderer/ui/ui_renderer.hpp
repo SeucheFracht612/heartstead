@@ -138,6 +138,10 @@ class UiRenderer {
     void clear() noexcept;
     [[nodiscard]] core::Status shutdown();
     [[nodiscard]] const UiRendererStats& stats() const noexcept;
+    [[nodiscard]] std::size_t pending_vertex_count() const noexcept;
+    [[nodiscard]] std::size_t pending_index_count() const noexcept;
+    [[nodiscard]] std::size_t pending_batch_count() const noexcept;
+    [[nodiscard]] rhi::RenderResourceHandle vertex_buffer() const noexcept;
 
   private:
     struct PendingBatch {
@@ -150,6 +154,8 @@ class UiRenderer {
         UiScissorRect scissor{};
         bool distance_field = false;
     };
+
+    void clear_pending_frame() noexcept;
 
     rhi::IRenderDevice* device_ = nullptr;
     rhi::RenderResourceHandle pipeline_;

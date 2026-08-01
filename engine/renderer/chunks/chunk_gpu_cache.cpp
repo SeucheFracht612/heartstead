@@ -489,6 +489,11 @@ ChunkGpuCacheStats ChunkGpuCache::stats() const noexcept {
     return stats_;
 }
 
+void ChunkGpuCache::reset_session_stats() noexcept {
+    stats_ = {};
+    refresh_current_stats();
+}
+
 core::Status ChunkGpuCache::retire_entry_allocations(const ChunkGpuEntry& entry,
                                                      std::uint64_t submission_serial) {
     core::Status first_failure = core::Status::ok();

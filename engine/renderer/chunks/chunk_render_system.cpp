@@ -563,6 +563,13 @@ const ChunkRenderStats& ChunkRenderSystem::stats() const noexcept {
     return stats_;
 }
 
+void ChunkRenderSystem::reset_session_stats() noexcept {
+    stats_ = {};
+    timings_.reset();
+    refresh_queue_stats();
+    refresh_timing_stats();
+}
+
 void ChunkRenderSystem::enqueue_mesh(world::ChunkIdentity identity, bool forced) {
     const auto found =
         std::ranges::find_if(pending_meshes_, [identity](const PendingMesh& pending) {
