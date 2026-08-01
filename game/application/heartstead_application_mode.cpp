@@ -548,6 +548,18 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         return status;
     }
 
+    [[nodiscard]] core::Status show_recoverable_menu_error(const core::Status& status,
+                                                           std::string_view context) {
+        if (status) {
+            return core::Status::ok();
+        }
+        display_error = status.error();
+        menu_message = std::string(context) + ": " + status.error().code + ": " +
+                       status.error().message;
+        core::log(core::LogLevel::warning, menu_message);
+        return rebuild_ui(ApplicationState::main_menu);
+    }
+
     [[nodiscard]] std::uint64_t persisted_timestamp_ms() const noexcept {
         return static_cast<std::uint64_t>(std::max<std::int64_t>(1, last_wall_clock_ms));
     }
@@ -2047,7 +2059,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 return show_menu(MainMenuScreen::new_world);
             if (event.target == load_world_id) {
                 status = refresh_saves();
-                return !status ? status : show_menu(MainMenuScreen::load_world);
+                return !status ? show_recoverable_menu_error(status, "Save list unavailable")
+                               : show_menu(MainMenuScreen::load_world);
             }
             if (event.target == multiplayer_id)
                 return show_menu(MainMenuScreen::multiplayer);
@@ -2063,14 +2076,16 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             if (event.target == quality_id) {
                 settings.rendering_quality = next_quality(settings.rendering_quality);
                 status = persist_settings();
-                return !status ? status : rebuild_ui(ApplicationState::main_menu);
+                return !status ? show_recoverable_menu_error(status, "Settings were not saved")
+                               : rebuild_ui(ApplicationState::main_menu);
             }
             if (event.target == color_vision_id) {
                 settings.color_vision_mode = next_color_vision(settings.color_vision_mode);
                 status = apply_settings();
                 if (status)
                     status = persist_settings();
-                return !status ? status : rebuild_ui(ApplicationState::main_menu);
+                return !status ? show_recoverable_menu_error(status, "Settings were not applied")
+                               : rebuild_ui(ApplicationState::main_menu);
             }
             if (event.target == continue_id) {
                 const auto index = continue_index();
@@ -2398,13 +2413,22 @@ core::Status HeartsteadApplicationMode::initialize(GameApplicationServices& serv
         return core::Status::failure(environment.error().code, environment.error().message);
     }
     state.runtime_environment = std::move(environment).value();
-    auto audio = state.runtime_environment.create_audio_system(
-        state.config.headless ? audio::AudioBackend::null_backend : audio::AudioBackend::miniaudio,
-        {}, state.config.headless, state.config.cooked_assets);
-    if (!audio) {
-        return core::Status::failure(audio.error().code, audio.error().message);
+    const auto requested_audio_backend =
+        state.config.headless ? audio::AudioBackend::null_backend : audio::AudioBackend::miniaudio;
+    auto created_audio = state.runtime_environment.create_audio_system(
+        requested_audio_backend, {}, state.config.headless, state.config.cooked_assets);
+    if (!created_audio && !state.config.headless) {
+        core::log(core::LogLevel::warning,
+                  "Native audio unavailable; continuing with null audio: " +
+                      created_audio.error().message);
+        state.menu_message = "Audio output is unavailable; the game will continue silently.";
+        created_audio = state.runtime_environment.create_audio_system(
+            audio::AudioBackend::null_backend, {}, true, state.config.cooked_assets);
     }
-    auto status = services.install_audio_system(std::move(audio).value());
+    if (!created_audio) {
+        return core::Status::failure(created_audio.error().code, created_audio.error().message);
+    }
+    auto status = services.install_audio_system(std::move(created_audio).value());
     if (!status) {
         return status;
     }
@@ -2417,11 +2441,15 @@ core::Status HeartsteadApplicationMode::initialize(GameApplicationServices& serv
     state.developer_worlds = std::move(developer_worlds).value();
     status = state.refresh_saves();
     if (!status) {
-        return status;
+        state.display_error = status.error();
+        state.menu_message = "Save list unavailable: " + status.error().message;
+        core::log(core::LogLevel::warning, state.menu_message);
     }
     status = state.apply_settings();
     if (!status) {
-        return status;
+        state.display_error = status.error();
+        state.menu_message = "Some settings could not be applied: " + status.error().message;
+        core::log(core::LogLevel::warning, state.menu_message);
     }
     status = state.states.start();
     if (!status) {

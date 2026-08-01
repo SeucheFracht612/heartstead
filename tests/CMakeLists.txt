@@ -153,6 +153,19 @@ if(TARGET heartstead_dev_game)
 endif()
 
 if(TARGET heartstead)
+  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/heartstead_blocked_data_root "not-a-directory")
+  add_test(
+    NAME heartstead_degraded_persistence_smoke
+    COMMAND
+      ${CMAKE_COMMAND} -E env
+      HEARTSTEAD_DATA_ROOT=${CMAKE_CURRENT_BINARY_DIR}/heartstead_blocked_data_root
+      $<TARGET_FILE:heartstead> --frames 5
+  )
+  set_tests_properties(
+    heartstead_degraded_persistence_smoke
+    PROPERTIES TIMEOUT 60 LABELS "smoke;recovery"
+               PASS_REGULAR_EXPRESSION "state=MainMenu"
+  )
   file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/heartstead_invalid_content_smoke)
   add_test(
     NAME heartstead_content_recovery_smoke
