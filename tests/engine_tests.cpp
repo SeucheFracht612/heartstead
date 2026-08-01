@@ -6263,11 +6263,14 @@ void test_dirty_region_tracker() {
 
     DirtyRegionTracker transitive;
     assert(transitive.mark_single(DirtyRegionKind::chunk_mesh, {0, 0, 0}, "left"));
+    const auto first_mesh_mark = transitive.regions().front().marked_at;
+    assert(first_mesh_mark != DirtyRegionClock::time_point{});
     assert(transitive.mark_single(DirtyRegionKind::chunk_mesh, {4, 0, 0}, "right"));
     assert(transitive.mark(DirtyRegionKind::chunk_mesh, {{1, 0, 0}, {3, 0, 0}}, "bridge"));
     assert(transitive.size() == 1);
     assert((transitive.regions().front().bounds.min == DirtyRegionCoord{0, 0, 0}));
     assert((transitive.regions().front().bounds.max == DirtyRegionCoord{4, 0, 0}));
+    assert(transitive.regions().front().marked_at == first_mesh_mark);
 
     const auto expanded = tracker.regions().front().bounds.expanded(1);
     assert(expanded);

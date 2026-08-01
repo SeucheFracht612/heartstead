@@ -81,6 +81,8 @@ core::Status DirtyRegionTracker::mark(DirtyRegionKind kind, DirtyRegionBounds bo
                                      "dirty region bounds are invalid");
     }
 
+    const auto marked_at = DirtyRegionClock::now();
+    auto earliest_mark = marked_at;
     std::vector<bool> merge_regions(regions_.size(), false);
     bool expanded = true;
     while (expanded) {
@@ -92,6 +94,7 @@ core::Status DirtyRegionTracker::mark(DirtyRegionKind kind, DirtyRegionBounds bo
             }
             merge_regions[index] = true;
             bounds = bounds.merged_with(regions_[index].bounds);
+            earliest_mark = std::min(earliest_mark, regions_[index].marked_at);
             expanded = true;
         }
     }
@@ -114,6 +117,7 @@ core::Status DirtyRegionTracker::mark(DirtyRegionKind kind, DirtyRegionBounds bo
 
         regions_[survivor_index].bounds = bounds;
         regions_[survivor_index].reason = std::move(merged_reason);
+        regions_[survivor_index].marked_at = earliest_mark;
         for (std::size_t index = regions_.size(); index-- > survivor_index + 1;) {
             if (merge_regions[index]) {
                 regions_.erase(regions_.begin() + static_cast<std::ptrdiff_t>(index));
@@ -122,7 +126,7 @@ core::Status DirtyRegionTracker::mark(DirtyRegionKind kind, DirtyRegionBounds bo
         return core::Status::ok();
     }
 
-    regions_.push_back(DirtyRegion{kind, bounds, std::move(reason), next_sequence_});
+    regions_.push_back(DirtyRegion{kind, bounds, std::move(reason), next_sequence_, marked_at});
     ++next_sequence_;
     return core::Status::ok();
 }

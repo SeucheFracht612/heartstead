@@ -3,6 +3,7 @@
 #include "engine/core/result.hpp"
 #include "engine/world/coords/world_coords.hpp"
 
+#include <chrono>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +12,8 @@
 #include <vector>
 
 namespace heartstead::dirty {
+
+using DirtyRegionClock = std::chrono::steady_clock;
 
 enum class DirtyRegionKind {
     chunk_mesh,
@@ -46,6 +49,7 @@ struct DirtyRegion {
     DirtyRegionBounds bounds;
     std::string reason;
     std::uint64_t sequence = 0;
+    DirtyRegionClock::time_point marked_at{};
 };
 
 class DirtyRegionTracker {
