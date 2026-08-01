@@ -124,7 +124,7 @@ int main(int argc, char** argv) {
         heartstead::game::HeartsteadApplicationModeConfig mode_config;
         mode_config.content_report = &content_report;
         mode_config.cooked_assets = cooked_assets.has_value() ? &*cooked_assets : nullptr;
-        mode_config.cooked_asset_root = HEARTSTEAD_GAME_COOKED_ASSET_DIR;
+        mode_config.cooked_asset_root = application_root / HEARTSTEAD_GAME_COOKED_ASSET_DIR;
         mode_config.user_data_root = user_data_root;
         mode_config.initial_settings = application_settings;
         mode_config.initial_launch = options.initial_launch;

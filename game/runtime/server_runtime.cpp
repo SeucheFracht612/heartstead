@@ -24,6 +24,13 @@ namespace heartstead::game {
 
 namespace {
 
+[[nodiscard]] core::Status startup_cancelled(std::stop_token stop_token) {
+    if (!stop_token.stop_requested()) {
+        return core::Status::ok();
+    }
+    return core::Status::failure("session_startup.cancelled", "session startup was cancelled");
+}
+
 void grant_private_subject_access(net::HostSession& host, core::NetId client_id,
                                   core::SaveId subject_id) {
     auto policy = host.replication_relevance_policy();
@@ -203,7 +210,14 @@ core::Result<std::unique_ptr<ServerRuntime>> ServerRuntime::create(ServerRuntime
 }
 
 core::Status ServerRuntime::initialize() {
+    auto cancellation = startup_cancelled(desc_.stop_token);
+    if (!cancellation) {
+        return cancellation;
+    }
     if (desc_.initial_snapshot.has_value()) {
+        if (desc_.startup_progress) {
+            desc_.startup_progress(ServerRuntimeStartupPhase::restoring_world);
+        }
         auto state_snapshot = *desc_.initial_snapshot;
         const auto saved_chunk_edits = std::move(state_snapshot.chunk_edits);
         state_snapshot.chunk_edits.clear();
@@ -214,6 +228,10 @@ core::Status ServerRuntime::initialize() {
         }
         world_ = std::move(imported).value();
         for (const auto& saved_chunk : saved_chunk_edits) {
+            cancellation = startup_cancelled(desc_.stop_token);
+            if (!cancellation) {
+                return cancellation;
+            }
             auto edits = world::ChunkEditDeltaTextCodec::decode(saved_chunk.coord,
                                                                 saved_chunk.encoded_edit_delta);
             if (!edits) {
@@ -224,12 +242,22 @@ core::Status ServerRuntime::initialize() {
                                               std::make_move_iterator(edits.value().end()));
         }
     }
+    if (desc_.startup_progress) {
+        desc_.startup_progress(ServerRuntimeStartupPhase::initializing_physics);
+    }
+    cancellation = startup_cancelled(desc_.stop_token);
+    if (!cancellation) {
+        return cancellation;
+    }
     auto physics = physics::create_physics_world(desc_.physics);
     if (!physics) {
         return core::Status::failure(physics.error().code, physics.error().message);
     }
     physics_ = std::move(physics).value();
 
+    if (desc_.startup_progress) {
+        desc_.startup_progress(ServerRuntimeStartupPhase::generating_spawn_area);
+    }
     if (desc_.initial_snapshot.has_value()) {
         auto spawn_status = ensure_spawn_area();
         if (!spawn_status) {
@@ -266,6 +294,14 @@ core::Status ServerRuntime::initialize() {
         return core::Status::failure(chunk_lighting.error().code, chunk_lighting.error().message);
     }
     chunk_lighting_ = std::move(chunk_lighting).value();
+
+    cancellation = startup_cancelled(desc_.stop_token);
+    if (!cancellation) {
+        return cancellation;
+    }
+    if (desc_.startup_progress) {
+        desc_.startup_progress(ServerRuntimeStartupPhase::registering_gameplay_systems);
+    }
 
     auto status = entities_.register_cleanup(
         "runtime.entity_motion_replication",
@@ -885,11 +921,16 @@ core::Status ServerRuntime::ensure_spawn_area() {
     if (spawn_area_initialized_) {
         return core::Status::ok();
     }
+    auto cancellation = startup_cancelled(desc_.stop_token);
+    if (!cancellation) {
+        return cancellation;
+    }
     // A packaged fixture owns its complete chunk layout. Adding the foundation world at the
     // origin would both contaminate the fixture and place collision bodies outside a far-away
     // physics island.
     if (desc_.scenario.world_source != scenarios::ScenarioWorldSource::packaged_fixture) {
-        auto built = foundation::build_world(world_.chunks(), *desc_.voxel_palette);
+        auto built =
+            foundation::build_world(world_.chunks(), *desc_.voxel_palette, desc_.stop_token);
         if (!built) {
             return core::Status::failure(built.error().code, built.error().message);
         }
@@ -978,6 +1019,10 @@ core::Status ServerRuntime::initialize_new_world_scenario() {
     auto spawn = scenario_spawn_position();
     std::size_t cargo_offset = 0;
     for (const auto& cargo_id : desc_.scenario.starting_cargo) {
+        auto cancellation = startup_cancelled(desc_.stop_token);
+        if (!cancellation) {
+            return cancellation;
+        }
         const auto* prototype = desc_.prototypes->find(cargo_id);
         if (prototype == nullptr) {
             return core::Status::failure("server_runtime.starting_cargo_missing",
@@ -1005,6 +1050,10 @@ core::Status ServerRuntime::initialize_new_world_scenario() {
         ++cargo_offset;
     }
     for (const auto& placement : desc_.scenario.scene_entities) {
+        auto cancellation = startup_cancelled(desc_.stop_token);
+        if (!cancellation) {
+            return cancellation;
+        }
         const auto* prototype = desc_.prototypes->find(placement.prototype_id);
         if (prototype == nullptr) {
             return core::Status::failure("server_runtime.scene_entity_missing",
@@ -1068,6 +1117,10 @@ core::Status ServerRuntime::grant_starting_inventory(core::SaveId owner_id) {
     std::vector<items::ItemStack> stacks;
     stacks.reserve(desc_.scenario.starting_items.size());
     for (const auto& item_id : desc_.scenario.starting_items) {
+        auto cancellation = startup_cancelled(desc_.stop_token);
+        if (!cancellation) {
+            return cancellation;
+        }
         const auto* prototype = desc_.prototypes->find(item_id);
         if (prototype == nullptr) {
             return core::Status::failure("server_runtime.starting_item_missing",

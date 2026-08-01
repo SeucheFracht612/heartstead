@@ -6,6 +6,7 @@
 #include <cassert>
 #include <filesystem>
 #include <string>
+#include <stop_token>
 #include <utility>
 #include <vector>
 
@@ -68,6 +69,12 @@ void test_startup_phases_are_real_runtime_boundaries(
     assert(!phases.empty());
     assert(phases.front() == game::SessionStartupPhase::validating_request);
     assert(std::ranges::find(phases, game::SessionStartupPhase::preparing_world) != phases.end());
+    assert(std::ranges::find(phases, game::SessionStartupPhase::initializing_physics) !=
+           phases.end());
+    assert(std::ranges::find(phases, game::SessionStartupPhase::generating_spawn_area) !=
+           phases.end());
+    assert(std::ranges::find(phases, game::SessionStartupPhase::registering_gameplay_systems) !=
+           phases.end());
     assert(std::ranges::find(phases, game::SessionStartupPhase::starting_authoritative_server) !=
            phases.end());
     assert(std::ranges::find(phases, game::SessionStartupPhase::starting_client) != phases.end());
@@ -78,6 +85,38 @@ void test_startup_phases_are_real_runtime_boundaries(
     assert(phases.back() == game::SessionStartupPhase::ready);
     assert(game::session_startup_phase_name(phases.back()) == "World ready");
     assert(runtime.shutdown());
+}
+
+void test_startup_cancellation_is_cooperative(
+    const content::ContentValidationReport& report) {
+    auto runtime = make_runtime(report);
+    std::stop_source cancellation;
+    cancellation.request_stop();
+    auto status = runtime.start_session(make_local_request(report, 6), {},
+                                        cancellation.get_token());
+    assert(!status);
+    assert(status.error().code == "session_startup.cancelled");
+    assert(runtime.session() == nullptr);
+
+    world::ChunkDatabase chunks;
+    auto built = game::foundation::build_world(chunks, report.voxel_palette,
+                                               cancellation.get_token());
+    assert(!built);
+    assert(built.error().code == "session_startup.cancelled");
+    assert(chunks.chunk_count() == 0);
+}
+
+void test_application_runtime_forks_session_content(
+    const content::ContentValidationReport& report) {
+    auto application_runtime = make_runtime(report);
+    auto session_runtime = application_runtime.create_session_runtime();
+    assert(session_runtime);
+    assert(session_runtime.value().is_initialized());
+    assert(session_runtime.value().startup_report().prototype_count ==
+           application_runtime.startup_report().prototype_count);
+    assert(session_runtime.value().start_session(make_local_request(report, 7)));
+    assert(session_runtime.value().shutdown());
+    assert(application_runtime.session() == nullptr);
 }
 
 void test_local_teardown_and_replacement(const content::ContentValidationReport& report) {
@@ -170,6 +209,8 @@ int main() {
     assert(!report.has_errors());
     test_launch_descriptor_validation(report);
     test_startup_phases_are_real_runtime_boundaries(report);
+    test_startup_cancellation_is_cooperative(report);
+    test_application_runtime_forks_session_content(report);
     test_local_teardown_and_replacement(report);
     test_remote_attempt_cancels_and_recovers(report);
     return 0;

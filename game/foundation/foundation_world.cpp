@@ -96,6 +96,19 @@ world::WorldPosition spawn_position() noexcept {
 
 core::Result<FoundationWorldBuildStats> build_world(world::ChunkDatabase& chunks,
                                                     const world::VoxelPalette& palette) {
+    return build_world(chunks, palette, {});
+}
+
+core::Result<FoundationWorldBuildStats> build_world(world::ChunkDatabase& chunks,
+                                                    const world::VoxelPalette& palette,
+                                                    std::stop_token stop_token) {
+    const auto cancellation = []() {
+        return core::Result<FoundationWorldBuildStats>::failure(
+            "session_startup.cancelled", "world generation was cancelled");
+    };
+    if (stop_token.stop_requested()) {
+        return cancellation();
+    }
     auto cells = resolve_cells(palette);
     if (!cells) {
         return core::Result<FoundationWorldBuildStats>::failure(cells.error().code,
@@ -108,6 +121,9 @@ core::Result<FoundationWorldBuildStats> build_world(world::ChunkDatabase& chunks
     // A compact, deterministic three-layer test island. The negative-Y chunk gives holes and
     // water real depth while keeping the visible surface in the origin chunk.
     for (std::int64_t x = 0; x < world::VoxelChunk::edge_length && status; ++x) {
+        if (stop_token.stop_requested()) {
+            return cancellation();
+        }
         for (std::int64_t z = 0; z < world::VoxelChunk::edge_length && status; ++z) {
             status = set_block(chunks, {x, -2, z}, cells.value().stone, stats.voxel_writes);
             if (status) {
@@ -132,6 +148,9 @@ core::Result<FoundationWorldBuildStats> build_world(world::ChunkDatabase& chunks
         cells.value().stone,
         cells.value().clay,
     };
+    if (stop_token.stop_requested()) {
+        return cancellation();
+    }
     for (std::size_t index = 0; index < swatches.size() && status; ++index) {
         status = fill_box(chunks, {swatches[index].first, 0, 1}, {swatches[index].second, 0, 4},
                           swatch_cells[index], stats.voxel_writes);
@@ -211,6 +230,9 @@ core::Result<FoundationWorldBuildStats> build_world(world::ChunkDatabase& chunks
     }
 
     // Spawn and the starting-cargo strip remain guaranteed clear after every base rebuild.
+    if (stop_token.stop_requested()) {
+        return cancellation();
+    }
     if (status) {
         status =
             fill_box(chunks, {6, 1, 6}, {12, 4, 12}, world::VoxelCell::air(), stats.voxel_writes);

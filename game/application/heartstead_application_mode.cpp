@@ -27,6 +27,7 @@
 #include <charconv>
 #include <chrono>
 #include <ctime>
+#include <exception>
 #include <future>
 #include <iomanip>
 #include <memory>
@@ -363,8 +364,10 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     GameRuntime application_runtime;
     std::optional<GameRuntime> session_runtime;
     std::future<SessionLoadResult> loading;
+    std::optional<jobs::JobId> loading_job;
     std::stop_source loading_stop;
     std::shared_ptr<LoadingProgressState> loading_progress;
+    std::optional<SessionStartupPhase> rendered_loading_phase;
     ui::WidgetTree widgets;
     ApplicationSettings settings;
     ApplicationSettingsStore settings_store;
@@ -807,6 +810,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             const auto phase = loading_progress == nullptr
                                    ? SessionStartupPhase::validating_request
                                    : loading_progress->phase.load(std::memory_order_relaxed);
+            rendered_loading_phase = phase;
             if (!(status = add(label("heartstead.loading.title", "Loading world", 28.0F))) ||
                 !(status = add(label("heartstead.loading.phase",
                                      std::string(session_startup_phase_name(phase)) + "...")))) {
@@ -888,7 +892,15 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         loading_generation = next_session_generation++;
         const auto stop_token = loading_stop.get_token();
         const auto generation = loading_generation;
-        const auto* content_report = config.content_report;
+        if (services == nullptr || services->jobs() == nullptr) {
+            return core::Status::failure("heartstead.loading_jobs_unavailable",
+                                         "session loading requires the application job system");
+        }
+        auto prepared_runtime = application_runtime.create_session_runtime();
+        if (!prepared_runtime) {
+            return core::Status::failure(prepared_runtime.error().code,
+                                         prepared_runtime.error().message);
+        }
         auto request = std::move(*pending_launch);
         pending_launch.reset();
         request.ownership_generation = generation;
@@ -900,44 +912,63 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         const auto save_slot_id = std::move(pending_save_slot);
         const auto world_name = request.world_name;
         const auto progress = loading_progress;
-        loading = std::async(
-            std::launch::async,
-            [content_report, generation, stop_token, request = std::move(request), mode,
-             persistence, save_slot_id, world_name, progress]() mutable -> SessionLoadResult {
+        auto runtime = std::make_shared<GameRuntime>(std::move(prepared_runtime).value());
+        auto launch_request = std::make_shared<SessionLaunchRequest>(std::move(request));
+        auto completion = std::make_shared<std::promise<SessionLoadResult>>();
+        loading = completion->get_future();
+        auto submitted = services->jobs()->submit({
+            "heartstead.session_loading",
+            jobs::JobPriority::high,
+            [generation, stop_token, runtime, launch_request, mode, persistence, save_slot_id,
+             world_name, progress, completion](const jobs::JobContext&) mutable {
+                const auto complete = [&completion](SessionLoadResult result) {
+                    completion->set_value(std::move(result));
+                    return core::Status::ok();
+                };
+                try {
                 if (stop_token.stop_requested()) {
                     progress->phase.store(SessionStartupPhase::cancelling,
                                           std::memory_order_relaxed);
-                    return SessionLoadResult::failure("heartstead.session_load_cancelled",
-                                                      "session loading was cancelled");
+                    return complete(SessionLoadResult::failure(
+                        "heartstead.session_load_cancelled", "session loading was cancelled"));
                 }
-                auto runtime = GameRuntime::initialize(GameRuntimeConfig{}, *content_report);
-                if (!runtime) {
-                    return SessionLoadResult::failure(runtime.error().code,
-                                                      runtime.error().message);
-                }
-                if (stop_token.stop_requested()) {
-                    progress->phase.store(SessionStartupPhase::cancelling,
-                                          std::memory_order_relaxed);
-                    return SessionLoadResult::failure("heartstead.session_load_cancelled",
-                                                      "session loading was cancelled");
-                }
-                auto status = runtime.value().start_session(
-                    std::move(request), [progress](SessionStartupPhase phase) {
+                auto status = runtime->start_session(
+                    std::move(*launch_request), [progress](SessionStartupPhase phase) {
                         progress->phase.store(phase, std::memory_order_relaxed);
-                    });
+                    }, stop_token);
                 if (!status) {
-                    return SessionLoadResult::failure(status.error().code, status.error().message);
+                    return complete(
+                        SessionLoadResult::failure(status.error().code, status.error().message));
                 }
                 if (stop_token.stop_requested()) {
                     progress->phase.store(SessionStartupPhase::cancelling,
                                           std::memory_order_relaxed);
-                    (void)runtime.value().shutdown();
-                    return SessionLoadResult::failure("heartstead.session_load_cancelled",
-                                                      "session loading was cancelled");
+                    auto shutdown = runtime->shutdown();
+                    if (!shutdown) {
+                        return complete(SessionLoadResult::failure(shutdown.error().code,
+                                                                   shutdown.error().message));
+                    }
+                    return complete(SessionLoadResult::failure(
+                        "heartstead.session_load_cancelled", "session loading was cancelled"));
                 }
-                return SessionLoadResult::success({generation, mode, persistence, save_slot_id,
-                                                   world_name, std::move(runtime).value()});
-            });
+                return complete(SessionLoadResult::success(
+                    {generation, mode, persistence, save_slot_id, world_name, std::move(*runtime)}));
+                } catch (const std::exception& exception) {
+                    return complete(SessionLoadResult::failure(
+                        "heartstead.session_load_exception",
+                        std::string("session loading threw an exception: ") + exception.what()));
+                } catch (...) {
+                    return complete(SessionLoadResult::failure(
+                        "heartstead.session_load_exception",
+                        "session loading threw a non-standard exception"));
+                }
+            },
+        });
+        if (!submitted) {
+            loading = {};
+            return core::Status::failure(submitted.error().code, submitted.error().message);
+        }
+        loading_job = submitted.value();
         return core::Status::ok();
     }
 
@@ -1004,7 +1035,20 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     }
 
     [[nodiscard]] core::Status take_finished_load(bool enter_game) {
-        auto loaded = loading.get();
+        SessionLoadResult loaded = [&]() {
+            try {
+                return loading.get();
+            } catch (const std::exception& exception) {
+                return SessionLoadResult::failure(
+                    "heartstead.session_load_exception",
+                    std::string("session loading completion failed: ") + exception.what());
+            } catch (...) {
+                return SessionLoadResult::failure(
+                    "heartstead.session_load_exception",
+                    "session loading completion failed with a non-standard exception");
+            }
+        }();
+        loading_job.reset();
         if (!loaded) {
             if (!enter_game || loading_stop.stop_requested() ||
                 loaded.error().code == "heartstead.session_load_cancelled") {
@@ -1291,7 +1335,15 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                     return activate_loaded_session();
                 }
             }
-            return rebuild_ui(ApplicationState::session_loading);
+            {
+                const auto phase = loading_progress == nullptr
+                                       ? SessionStartupPhase::validating_request
+                                       : loading_progress->phase.load(std::memory_order_relaxed);
+                if (!rendered_loading_phase.has_value() || *rendered_loading_phase != phase) {
+                    return rebuild_ui(ApplicationState::session_loading);
+                }
+            }
+            return core::Status::ok();
         case ApplicationState::in_game:
             if (!session_runtime.has_value() || session_runtime->session() == nullptr ||
                 frame == nullptr) {
@@ -2198,10 +2250,15 @@ core::Status HeartsteadApplicationMode::shutdown(GameApplicationServices&) {
             state.loading_progress->phase.store(SessionStartupPhase::cancelling,
                                                 std::memory_order_relaxed);
         }
-        state.loading.wait();
-        status = state.take_finished_load(false);
-        if (!status && first_failure) {
-            first_failure = status;
+        if (state.loading.wait_for(std::chrono::seconds(2)) == std::future_status::ready) {
+            status = state.take_finished_load(false);
+            if (!status && first_failure) {
+                first_failure = status;
+            }
+        } else if (first_failure) {
+            first_failure = core::Status::failure(
+                "heartstead.session_cancel_timeout",
+                "session loading did not acknowledge cancellation within two seconds");
         }
     }
     status = state.application_runtime.shutdown();

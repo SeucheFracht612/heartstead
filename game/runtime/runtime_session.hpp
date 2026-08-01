@@ -25,6 +25,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <stop_token>
 #include <vector>
 
 namespace heartstead::game {
@@ -84,7 +85,11 @@ enum class SessionStartupPhase {
     validating_request,
     initializing_content,
     reading_world,
+    restoring_world,
     preparing_world,
+    initializing_physics,
+    generating_spawn_area,
+    registering_gameplay_systems,
     starting_authoritative_server,
     starting_client,
     connecting_transport,
@@ -197,7 +202,7 @@ class RuntimeSession final {
     [[nodiscard]] static core::Result<std::unique_ptr<RuntimeSession>>
     create(RuntimeConfiguration config, SessionRequest request,
            const modding::PrototypeRegistry& prototypes, const world::VoxelPalette& voxel_palette,
-           SessionStartupProgressCallback progress);
+           SessionStartupProgressCallback progress, std::stop_token stop_token = {});
 
     RuntimeSession(const RuntimeSession&) = delete;
     RuntimeSession& operator=(const RuntimeSession&) = delete;
@@ -249,7 +254,8 @@ class RuntimeSession final {
     RuntimeSession(RuntimeConfiguration config, SessionRequest request,
                    const modding::PrototypeRegistry& prototypes,
                    const world::VoxelPalette& voxel_palette);
-    [[nodiscard]] core::Status initialize(const SessionStartupProgressCallback& progress);
+    [[nodiscard]] core::Status initialize(const SessionStartupProgressCallback& progress,
+                                          std::stop_token stop_token);
     [[nodiscard]] core::Result<RuntimeFrameStats> fault_frame(const core::Error& error);
     [[nodiscard]] core::Status pump_client_messages(std::int64_t now_ms);
     [[nodiscard]] core::Result<PresentationSynchronizationStats> synchronize_presentation();

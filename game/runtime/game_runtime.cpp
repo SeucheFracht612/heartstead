@@ -23,6 +23,13 @@ namespace {
     return "game runtime required prototype kind has no loaded prototypes: " + std::string(kind);
 }
 
+[[nodiscard]] core::Status startup_cancelled(std::stop_token stop_token) {
+    if (!stop_token.stop_requested()) {
+        return core::Status::ok();
+    }
+    return core::Status::failure("session_startup.cancelled", "session startup was cancelled");
+}
+
 [[nodiscard]] scripting::ScriptHostApiDesc
 make_script_host_api(std::string api_id, scripting::ScriptStage stage,
                      std::vector<scripting::ScriptPermission> permissions,
@@ -409,6 +416,23 @@ bool GameRuntime::is_initialized() const noexcept {
     return startup_report_.initialized;
 }
 
+core::Result<GameRuntime> GameRuntime::create_session_runtime() const {
+    if (!is_initialized() || prototypes_ == nullptr || voxel_palette_ == nullptr ||
+        assets_ == nullptr || sound_events_ == nullptr) {
+        return core::Result<GameRuntime>::failure(
+            "game_runtime.not_initialized",
+            "application content runtime must be initialized before creating a session runtime");
+    }
+    GameRuntime runtime;
+    runtime.config_ = config_;
+    runtime.startup_report_ = startup_report_;
+    runtime.prototypes_ = prototypes_;
+    runtime.voxel_palette_ = voxel_palette_;
+    runtime.assets_ = assets_;
+    runtime.sound_events_ = sound_events_;
+    return core::Result<GameRuntime>::success(std::move(runtime));
+}
+
 const GameRuntimeConfig& GameRuntime::config() const noexcept {
     return config_;
 }
@@ -473,9 +497,14 @@ core::Status GameRuntime::require_prototype_kind(std::string_view kind) const {
 }
 
 core::Status GameRuntime::start_session(SessionLaunchRequest request,
-                                        SessionStartupProgressCallback progress) {
+                                        SessionStartupProgressCallback progress,
+                                        std::stop_token stop_token) {
     if (progress) {
         progress(SessionStartupPhase::validating_request);
+    }
+    auto cancellation = startup_cancelled(stop_token);
+    if (!cancellation) {
+        return cancellation;
     }
     if (!is_initialized() || prototypes_ == nullptr || voxel_palette_ == nullptr) {
         return core::Status::failure("game_runtime.not_initialized",
@@ -543,12 +572,20 @@ core::Status GameRuntime::start_session(SessionLaunchRequest request,
             progress(SessionStartupPhase::reading_world);
         }
         save::FileSaveDatabase database(*request.save_path);
+        cancellation = startup_cancelled(stop_token);
+        if (!cancellation) {
+            return cancellation;
+        }
         auto snapshot = database.read_snapshot();
         if (!snapshot) {
             return core::Status::failure(snapshot.error().code, snapshot.error().message);
         }
         request.metadata = snapshot.value().metadata;
         request.initial_snapshot = std::move(snapshot).value();
+        cancellation = startup_cancelled(stop_token);
+        if (!cancellation) {
+            return cancellation;
+        }
     }
     if (request.seed.has_value()) {
         if (request.metadata.world_seed != 0 && request.metadata.world_seed != *request.seed) {
@@ -581,6 +618,13 @@ core::Status GameRuntime::start_session(SessionLaunchRequest request,
     }
     auto session_palette = voxel_palette_;
     if (request.initial_snapshot.has_value()) {
+        if (progress) {
+            progress(SessionStartupPhase::restoring_world);
+        }
+        cancellation = startup_cancelled(stop_token);
+        if (!cancellation) {
+            return cancellation;
+        }
         auto restored_palette = world::voxel_palette_from_prototypes(
             *prototypes_, request.initial_snapshot->voxel_palette, true);
         if (!restored_palette) {
@@ -590,9 +634,14 @@ core::Status GameRuntime::start_session(SessionLaunchRequest request,
         session_palette =
             std::make_shared<world::VoxelPalette>(std::move(restored_palette).value());
     }
+    cancellation = startup_cancelled(stop_token);
+    if (!cancellation) {
+        return cancellation;
+    }
     auto runtime_config = request.runtime;
     auto created = RuntimeSession::create(std::move(runtime_config), std::move(request),
-                                          *prototypes_, *session_palette, std::move(progress));
+                                          *prototypes_, *session_palette, std::move(progress),
+                                          stop_token);
     if (!created) {
         return core::Status::failure(created.error().code, created.error().message);
     }

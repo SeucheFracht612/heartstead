@@ -17,6 +17,13 @@ namespace heartstead::game {
 
 namespace {
 
+[[nodiscard]] core::Status startup_cancelled(std::stop_token stop_token) {
+    if (!stop_token.stop_requested()) {
+        return core::Status::ok();
+    }
+    return core::Status::failure("session_startup.cancelled", "session startup was cancelled");
+}
+
 constexpr std::string_view runtime_tick_state_mod = "engine";
 constexpr std::string_view runtime_tick_state_key = "runtime.fixed_step_tick";
 
@@ -224,16 +231,21 @@ core::Result<std::unique_ptr<RuntimeSession>>
 RuntimeSession::create(RuntimeConfiguration config, SessionRequest request,
                        const modding::PrototypeRegistry& prototypes,
                        const world::VoxelPalette& voxel_palette) {
-    return create(std::move(config), std::move(request), prototypes, voxel_palette, {});
+    return create(std::move(config), std::move(request), prototypes, voxel_palette, {}, {});
 }
 
 core::Result<std::unique_ptr<RuntimeSession>>
 RuntimeSession::create(RuntimeConfiguration config, SessionRequest request,
                        const modding::PrototypeRegistry& prototypes,
                        const world::VoxelPalette& voxel_palette,
-                       SessionStartupProgressCallback progress) {
+                       SessionStartupProgressCallback progress, std::stop_token stop_token) {
     if (progress) {
         progress(SessionStartupPhase::validating_request);
+    }
+    auto cancellation = startup_cancelled(stop_token);
+    if (!cancellation) {
+        return core::Result<std::unique_ptr<RuntimeSession>>::failure(
+            cancellation.error().code, cancellation.error().message);
     }
     auto status = config.validate();
     if (!status) {
@@ -251,7 +263,7 @@ RuntimeSession::create(RuntimeConfiguration config, SessionRequest request,
     }
     auto session = std::unique_ptr<RuntimeSession>(
         new RuntimeSession(std::move(config), std::move(request), prototypes, voxel_palette));
-    status = session->initialize(progress);
+    status = session->initialize(progress, stop_token);
     if (!status) {
         return core::Result<std::unique_ptr<RuntimeSession>>::failure(status.error().code,
                                                                       status.error().message);
@@ -259,9 +271,17 @@ RuntimeSession::create(RuntimeConfiguration config, SessionRequest request,
     return core::Result<std::unique_ptr<RuntimeSession>>::success(std::move(session));
 }
 
-core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& progress) {
+core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& progress,
+                                        std::stop_token stop_token) {
     state_ = RuntimeSessionState::starting;
+    auto cancellation = startup_cancelled(stop_token);
+    if (!cancellation) {
+        return cancellation;
+    }
     if (request_.initial_snapshot.has_value()) {
+        if (progress) {
+            progress(SessionStartupPhase::restoring_world);
+        }
         auto saved_tick = saved_fixed_step_tick(*request_.initial_snapshot);
         if (!saved_tick) {
             return core::Status::failure(saved_tick.error().code, saved_tick.error().message);
@@ -353,11 +373,39 @@ core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& pr
         server_desc.scenario = std::move(scenario).value();
         server_desc.initial_snapshot = request_.initial_snapshot;
         server_desc.gameplay_modules = config_.gameplay_modules;
+        server_desc.stop_token = stop_token;
+        server_desc.startup_progress = [progress](ServerRuntimeStartupPhase phase) {
+            if (!progress) {
+                return;
+            }
+            switch (phase) {
+            case ServerRuntimeStartupPhase::restoring_world:
+                progress(SessionStartupPhase::restoring_world);
+                break;
+            case ServerRuntimeStartupPhase::initializing_physics:
+                progress(SessionStartupPhase::initializing_physics);
+                break;
+            case ServerRuntimeStartupPhase::generating_spawn_area:
+                progress(SessionStartupPhase::generating_spawn_area);
+                break;
+            case ServerRuntimeStartupPhase::registering_gameplay_systems:
+                progress(SessionStartupPhase::registering_gameplay_systems);
+                break;
+            }
+        };
+        cancellation = startup_cancelled(stop_token);
+        if (!cancellation) {
+            return cancellation;
+        }
         auto server = ServerRuntime::create(std::move(server_desc));
         if (!server) {
             return core::Status::failure(server.error().code, server.error().message);
         }
         server_ = std::move(server).value();
+        cancellation = startup_cancelled(stop_token);
+        if (!cancellation) {
+            return cancellation;
+        }
         auto status = server_->start();
         if (!status) {
             return status;
@@ -365,6 +413,10 @@ core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& pr
     }
 
     if (config_.create_client) {
+        cancellation = startup_cancelled(stop_token);
+        if (!cancellation) {
+            return cancellation;
+        }
         if (progress) {
             progress(SessionStartupPhase::starting_client);
         }
@@ -409,6 +461,10 @@ core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& pr
                 return core::Status::failure(remote.error().code, remote.error().message);
             }
             remote_transport_ = std::move(remote).value();
+            cancellation = startup_cancelled(stop_token);
+            if (!cancellation) {
+                return cancellation;
+            }
             auto status = remote_transport_->connect(request_.initial_runtime_time_ms);
             if (!status) {
                 return status;
@@ -434,6 +490,10 @@ core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& pr
         }
         if (progress) {
             progress(SessionStartupPhase::constructing_presentation);
+        }
+        cancellation = startup_cancelled(stop_token);
+        if (!cancellation) {
+            return cancellation;
         }
         auto presented = synchronize_presentation();
         if (!presented) {
@@ -1070,8 +1130,16 @@ std::string_view session_startup_phase_name(SessionStartupPhase phase) noexcept 
         return "Preparing content services";
     case SessionStartupPhase::reading_world:
         return "Reading world snapshot";
+    case SessionStartupPhase::restoring_world:
+        return "Restoring saved world state";
     case SessionStartupPhase::preparing_world:
         return "Preparing world state";
+    case SessionStartupPhase::initializing_physics:
+        return "Initializing world physics";
+    case SessionStartupPhase::generating_spawn_area:
+        return "Generating the spawn area";
+    case SessionStartupPhase::registering_gameplay_systems:
+        return "Registering gameplay systems";
     case SessionStartupPhase::starting_authoritative_server:
         return "Starting authoritative server";
     case SessionStartupPhase::starting_client:

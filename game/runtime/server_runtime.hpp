@@ -23,12 +23,24 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <unordered_map>
 
 namespace heartstead::game {
+
+enum class ServerRuntimeStartupPhase {
+    restoring_world,
+    initializing_physics,
+    generating_spawn_area,
+    registering_gameplay_systems,
+};
+
+using ServerRuntimeStartupProgressCallback =
+    std::function<void(ServerRuntimeStartupPhase phase)>;
 
 struct ServerRuntimeDesc {
     world::WorldStateDesc world;
@@ -47,6 +59,8 @@ struct ServerRuntimeDesc {
     scenarios::ScenarioDefinition scenario;
     std::optional<save::SaveSnapshot> initial_snapshot;
     std::vector<std::shared_ptr<IGameplayModule>> gameplay_modules;
+    std::stop_token stop_token;
+    ServerRuntimeStartupProgressCallback startup_progress;
 };
 
 struct ServerRuntimeTickStats {

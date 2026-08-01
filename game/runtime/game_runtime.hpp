@@ -14,6 +14,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <stop_token>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -107,6 +108,7 @@ class GameRuntime {
                const heartstead::content::ContentValidationReport& content_report);
 
     [[nodiscard]] bool is_initialized() const noexcept;
+    [[nodiscard]] core::Result<GameRuntime> create_session_runtime() const;
     [[nodiscard]] const GameRuntimeConfig& config() const noexcept;
     [[nodiscard]] const GameRuntimeStartupReport& startup_report() const noexcept;
     [[nodiscard]] scripting::ScriptRuntimeDesc
@@ -121,7 +123,8 @@ class GameRuntime {
     [[nodiscard]] core::Status require_system(GameSystemKind kind) const;
     [[nodiscard]] core::Status require_prototype_kind(std::string_view kind) const;
     [[nodiscard]] core::Status start_session(SessionLaunchRequest request,
-                                             SessionStartupProgressCallback progress = {});
+                                             SessionStartupProgressCallback progress = {},
+                                             std::stop_token stop_token = {});
     [[nodiscard]] core::Status start_session(RuntimeConfiguration config, SessionRequest request);
     [[nodiscard]] core::Status start_session_from_save(RuntimeConfiguration config,
                                                        const save::FileSaveDatabase& database,

@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <stop_token>
 
 namespace heartstead::game::foundation {
 
@@ -28,5 +29,8 @@ struct FoundationWorldBuildStats {
 
 [[nodiscard]] core::Result<FoundationWorldBuildStats>
 build_world(world::ChunkDatabase& chunks, const world::VoxelPalette& palette);
+[[nodiscard]] core::Result<FoundationWorldBuildStats>
+build_world(world::ChunkDatabase& chunks, const world::VoxelPalette& palette,
+            std::stop_token stop_token);
 
 } // namespace heartstead::game::foundation
