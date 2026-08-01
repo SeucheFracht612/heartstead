@@ -553,8 +553,6 @@ core::Status GameRuntime::start_session(SessionLaunchRequest request,
         request.runtime.create_client = false;
         request.runtime.use_in_memory_transport = false;
         request.runtime.headless = true;
-        request.runtime.create_renderer = false;
-        request.runtime.create_audio = false;
         if (request.network_endpoint.has_value()) {
             request.runtime.server_bind_endpoint = *request.network_endpoint;
         }

@@ -1549,8 +1549,6 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         request.save_path = save_catalog.root() / slot_id;
         request.metadata = std::move(metadata).value();
         request.runtime.headless = config.headless;
-        request.runtime.create_renderer = !config.headless;
-        request.runtime.create_audio = !config.headless;
         request.runtime.physics_backend =
             config.headless ? physics::PhysicsBackend::headless : physics::PhysicsBackend::jolt;
         return launch(std::move(request), slot_id);
@@ -1589,8 +1587,6 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         request.save_path = path;
         request.metadata = metadata;
         request.runtime.headless = config.headless;
-        request.runtime.create_renderer = !config.headless;
-        request.runtime.create_audio = !config.headless;
         request.runtime.physics_backend =
             config.headless ? physics::PhysicsBackend::headless : physics::PhysicsBackend::jolt;
         if (host) {
@@ -1621,8 +1617,6 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         request.network_endpoint = endpoint.value();
         request.metadata = std::move(metadata).value();
         request.runtime.headless = config.headless;
-        request.runtime.create_renderer = !config.headless;
-        request.runtime.create_audio = !config.headless;
         return launch(std::move(request));
     }
 

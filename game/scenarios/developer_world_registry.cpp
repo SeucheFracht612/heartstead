@@ -143,8 +143,6 @@ DeveloperWorldRegistry::make_launch_request(std::string_view stable_id, save::Sa
                                 definition->spawn_pitch_degrees};
     }
     request.runtime.headless = headless;
-    request.runtime.create_renderer = !headless;
-    request.runtime.create_audio = !headless;
     request.runtime.physics_backend =
         headless ? physics::PhysicsBackend::headless : physics::PhysicsBackend::jolt;
     return core::Result<SessionLaunchRequest>::success(std::move(request));

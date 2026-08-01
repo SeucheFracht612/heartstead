@@ -33,8 +33,6 @@ namespace heartstead::game {
 struct RuntimeConfiguration {
     bool create_server = true;
     bool create_client = true;
-    bool create_renderer = false;
-    bool create_audio = false;
     bool use_in_memory_transport = true;
     bool headless = true;
     simulation::FixedStepConfig fixed_step{};

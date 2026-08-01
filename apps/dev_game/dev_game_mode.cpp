@@ -67,8 +67,6 @@ namespace {
     game::RuntimeConfiguration config;
     config.create_server = !options.connect_endpoint.has_value();
     config.create_client = true;
-    config.create_renderer = !options.headless;
-    config.create_audio = !options.headless;
     config.use_in_memory_transport = !options.connect_endpoint.has_value();
     config.remote_server_endpoint = options.connect_endpoint;
     config.headless = options.headless;

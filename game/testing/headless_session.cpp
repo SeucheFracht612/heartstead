@@ -22,10 +22,10 @@ HeadlessSessionHarness::create(HeadlessSessionDesc desc) {
             "headless_session.missing_source_root",
             "headless test session requires a content source root");
     }
-    if (!desc.runtime.headless || desc.runtime.create_renderer || desc.runtime.create_audio) {
+    if (!desc.runtime.headless) {
         return core::Result<std::unique_ptr<HeadlessSessionHarness>>::failure(
             "headless_session.invalid_runtime",
-            "headless test sessions cannot create renderer or audio services");
+            "headless test sessions require a headless runtime configuration");
     }
     const auto content_report = content::ContentValidation::validate(desc.source_root);
     if (content_report.has_errors()) {

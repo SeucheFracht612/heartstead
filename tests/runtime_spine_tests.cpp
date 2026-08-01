@@ -294,8 +294,6 @@ void test_local_runtime_advances_authority_through_loopback() {
     game::RuntimeConfiguration config;
     config.create_server = true;
     config.create_client = true;
-    config.create_renderer = false;
-    config.create_audio = false;
     config.use_in_memory_transport = true;
     config.headless = true;
     config.fixed_step = {60, 4, 250'000};
@@ -2049,11 +2047,6 @@ void test_runtime_configuration_rejects_invalid_compositions() {
     loopback_client.create_client = true;
     loopback_client.use_in_memory_transport = true;
     assert(!loopback_client.validate());
-
-    game::RuntimeConfiguration headless_renderer;
-    headless_renderer.create_renderer = true;
-    headless_renderer.headless = true;
-    assert(!headless_renderer.validate());
 
     game::RuntimeConfiguration invalid_world_time;
     invalid_world_time.world_time.ticks_per_second = 0;

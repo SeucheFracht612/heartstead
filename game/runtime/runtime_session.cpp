@@ -166,14 +166,6 @@ core::Status RuntimeConfiguration::validate() const {
             }
         }
     }
-    if (create_renderer && (!create_client || headless)) {
-        return core::Status::failure("runtime_configuration.invalid_renderer",
-                                     "renderer creation requires a non-headless client runtime");
-    }
-    if (create_audio && (!create_client || headless)) {
-        return core::Status::failure("runtime_configuration.invalid_audio",
-                                     "audio creation requires a non-headless client runtime");
-    }
     return core::Status::ok();
 }
 
