@@ -130,6 +130,7 @@ enum class KeyCode {
     f3,
     f4,
     f5,
+    f7,
 };
 
 enum class MouseButton {

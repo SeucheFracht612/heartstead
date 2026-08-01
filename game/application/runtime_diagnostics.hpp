@@ -45,7 +45,26 @@ struct RuntimeDiagnosticsSnapshot {
     ProcessResourceSample process;
 };
 
+struct FrameRateSample {
+    double frames_per_second = 0.0;
+    double frame_time_milliseconds = 0.0;
+};
+
+class FrameRateCounter {
+  public:
+    void record_frame(std::uint64_t delta_microseconds) noexcept;
+    void reset() noexcept;
+    [[nodiscard]] FrameRateSample sample() const noexcept;
+
+  private:
+    static constexpr std::uint64_t refresh_interval_microseconds = 250'000;
+    std::uint64_t accumulated_microseconds_ = 0;
+    std::uint64_t accumulated_frames_ = 0;
+    FrameRateSample sample_{};
+};
+
 [[nodiscard]] ProcessResourceSample sample_process_resources() noexcept;
 [[nodiscard]] std::string format_runtime_diagnostics(const RuntimeDiagnosticsSnapshot& snapshot);
+[[nodiscard]] std::string format_frame_rate(FrameRateSample sample);
 
 } // namespace heartstead::game

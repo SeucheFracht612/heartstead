@@ -36,6 +36,33 @@ namespace {
 
 } // namespace
 
+void FrameRateCounter::record_frame(std::uint64_t delta_microseconds) noexcept {
+    accumulated_microseconds_ += delta_microseconds;
+    ++accumulated_frames_;
+    if (accumulated_microseconds_ < refresh_interval_microseconds &&
+        sample_.frames_per_second > 0.0) {
+        return;
+    }
+    const auto elapsed = static_cast<double>(accumulated_microseconds_);
+    const auto frames = static_cast<double>(accumulated_frames_);
+    if (elapsed > 0.0 && frames > 0.0) {
+        sample_.frames_per_second = frames * 1'000'000.0 / elapsed;
+        sample_.frame_time_milliseconds = elapsed / frames / 1'000.0;
+    }
+    accumulated_microseconds_ = 0;
+    accumulated_frames_ = 0;
+}
+
+void FrameRateCounter::reset() noexcept {
+    accumulated_microseconds_ = 0;
+    accumulated_frames_ = 0;
+    sample_ = {};
+}
+
+FrameRateSample FrameRateCounter::sample() const noexcept {
+    return sample_;
+}
+
 ProcessResourceSample sample_process_resources() noexcept {
     ProcessResourceSample sample;
 #if defined(__linux__)
@@ -113,6 +140,12 @@ std::string format_runtime_diagnostics(const RuntimeDiagnosticsSnapshot& snapsho
         output << *snapshot.process.open_file_count;
     else
         output << "unavailable";
+    return output.str();
+}
+
+std::string format_frame_rate(FrameRateSample sample) {
+    std::ostringstream output;
+    output << std::fixed << std::setprecision(1) << "FPS " << sample.frames_per_second;
     return output.str();
 }
 

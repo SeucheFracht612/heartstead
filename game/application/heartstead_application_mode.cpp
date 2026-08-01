@@ -439,6 +439,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     SessionMode loading_mode = SessionMode::local_single_player;
     bool initialized = false;
     bool diagnostics_visible = false;
+    bool frame_rate_visible = false;
+    FrameRateCounter frame_rate;
     bool settings_persist_pending = false;
     std::optional<core::Error> display_error;
 
@@ -1988,6 +1990,9 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             return core::Status::ok();
         }
         const auto state = states.state();
+        if (key_pressed(*current_frame.input, platform::KeyCode::f7)) {
+            frame_rate_visible = !frame_rate_visible;
+        }
         if (state != ApplicationState::in_game &&
             key_pressed(*current_frame.input, platform::KeyCode::f3)) {
             diagnostics_visible = !diagnostics_visible;
@@ -2554,6 +2559,23 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                                               {0.82F, 0.92F, 1.0F, 1.0F}});
             }
         }
+        if (status && frame_rate_visible) {
+            constexpr float panel_width = 104.0F;
+            constexpr float panel_height = 34.0F;
+            const auto right = static_cast<float>(current_frame.extent.width) - 12.0F;
+            renderer::UiQuadDesc panel;
+            panel.minimum_pixels = {std::max(12.0F, right - panel_width), 12.0F};
+            panel.maximum_pixels = {right, 12.0F + panel_height};
+            panel.color = {0.015F, 0.025F, 0.04F, 0.82F};
+            status = ui_renderer->submit_quad(panel);
+            if (status) {
+                status = ui_renderer->submit_text(
+                    {{panel.minimum_pixels.x + 10.0F, panel.minimum_pixels.y + 9.0F},
+                     format_frame_rate(frame_rate.sample()),
+                     14.0F,
+                     {0.90F, 0.96F, 1.0F, 1.0F}});
+            }
+        }
         return status;
     }
 };
@@ -2659,6 +2681,7 @@ HeartsteadApplicationMode::update(GameApplicationServices& services,
     } frame_pointer_reset{state.frame};
     state.last_runtime_time_ms = frame.now_milliseconds;
     state.last_wall_clock_ms = frame.wall_clock_milliseconds;
+    state.frame_rate.record_frame(frame.delta_microseconds);
     ++state.frame_count;
     if (!frame.headless && frame.extent.is_valid()) {
         const auto width = std::clamp(frame.extent.width, 640U, 16'384U);

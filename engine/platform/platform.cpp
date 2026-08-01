@@ -200,6 +200,8 @@ struct X11OutgoingIncrementalClipboardTransfer {
         return KeyCode::f4;
     case XK_F5:
         return KeyCode::f5;
+    case XK_F7:
+        return KeyCode::f7;
     default:
         return KeyCode::unknown;
     }
@@ -2300,6 +2302,8 @@ std::string_view key_code_name(KeyCode key) noexcept {
         return "f4";
     case KeyCode::f5:
         return "f5";
+    case KeyCode::f7:
+        return "f7";
     }
     return "unknown";
 }

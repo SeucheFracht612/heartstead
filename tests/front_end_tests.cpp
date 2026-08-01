@@ -352,6 +352,15 @@ void test_runtime_diagnostics_are_explicit() {
     assert(process.thread_count.has_value() && *process.thread_count > 0);
     assert(process.open_file_count.has_value() && *process.open_file_count > 0);
 #endif
+
+    game::FrameRateCounter frame_rate;
+    for (std::size_t frame = 0; frame < 15; ++frame) {
+        frame_rate.record_frame(16'667);
+    }
+    assert(std::abs(frame_rate.sample().frames_per_second - 60.0) < 0.01);
+    assert(game::format_frame_rate(frame_rate.sample()) == "FPS 60.0");
+    frame_rate.reset();
+    assert(frame_rate.sample().frames_per_second == 0.0);
 }
 
 } // namespace

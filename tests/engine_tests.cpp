@@ -2665,6 +2665,7 @@ void test_headless_platform() {
     assert(heartstead::platform::platform_event_kind_name(
                heartstead::platform::PlatformEventKind::mouse_wheel) == "mouse_wheel");
     assert(heartstead::platform::key_code_name(heartstead::platform::KeyCode::escape) == "escape");
+    assert(heartstead::platform::key_code_name(heartstead::platform::KeyCode::f7) == "f7");
     assert(heartstead::platform::mouse_button_name(heartstead::platform::MouseButton::left) ==
            "left");
     assert(heartstead::platform::platform_backend_name(
