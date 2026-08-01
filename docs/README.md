@@ -134,6 +134,8 @@ data flow, failure behavior, and extension points rather than repeat every class
 - [Visual regression](dev/visual_regression.md)
 - [Renderer benchmarks](performance/renderer_benchmarks.md)
 - [Voxel optimization roadmap](performance/voxel_optimization_roadmap.md)
+- [Voxel storage experiments](performance/voxel_storage_benchmarks.md)
+- [Voxel meshing experiments](performance/voxel_meshing_benchmarks.md)
 - [Known renderer limitations](known_renderer_limitations.md)
 
 ## Maintenance rules
