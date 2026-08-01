@@ -336,6 +336,46 @@ struct CubeCellSummary {
     std::size_t count = 0;
     VoxelCoord minimum{edge, edge, edge};
     VoxelCoord maximum{};
+    std::array<std::uint64_t, VoxelOccupancyMask::word_count> words{};
+
+    void include(VoxelCoord coordinate) noexcept {
+        constexpr auto edge_size = static_cast<std::size_t>(edge);
+        const auto index = static_cast<std::size_t>(coordinate.z) * edge_size * edge_size +
+                           static_cast<std::size_t>(coordinate.y) * edge_size + coordinate.x;
+        words[index / 64U] |= std::uint64_t{1} << (index % 64U);
+        ++count;
+        minimum = {std::min(minimum.x, coordinate.x), std::min(minimum.y, coordinate.y),
+                   std::min(minimum.z, coordinate.z)};
+        maximum = {std::max(maximum.x, coordinate.x), std::max(maximum.y, coordinate.y),
+                   std::max(maximum.z, coordinate.z)};
+    }
+
+    [[nodiscard]] std::uint32_t row(std::uint16_t y, std::uint16_t z) const noexcept {
+        constexpr auto edge_size = static_cast<std::size_t>(edge);
+        const auto index = static_cast<std::size_t>(z) * edge_size * edge_size +
+                           static_cast<std::size_t>(y) * edge_size;
+        return static_cast<std::uint32_t>(words[index / 64U] >> (index % 64U));
+    }
+
+    [[nodiscard]] std::size_t exposed_unit_face_upper_bound() const noexcept {
+        std::size_t adjacent_pairs = 0;
+        for (std::uint16_t z = 0; z < edge; ++z) {
+            for (std::uint16_t y = 0; y < edge; ++y) {
+                const auto current = row(y, z);
+                adjacent_pairs +=
+                    static_cast<std::size_t>(std::popcount(current & (current >> 1U)));
+                if (y + 1U < edge) {
+                    adjacent_pairs +=
+                        static_cast<std::size_t>(std::popcount(current & row(y + 1U, z)));
+                }
+                if (z + 1U < edge) {
+                    adjacent_pairs +=
+                        static_cast<std::size_t>(std::popcount(current & row(y, z + 1U)));
+                }
+            }
+        }
+        return count * 6U - adjacent_pairs * 2U;
+    }
 };
 
 [[nodiscard]] core::Result<CubeCellSummary>
@@ -357,11 +397,7 @@ validate_and_count_cube_cells(const ChunkNeighborhoodSnapshot& neighborhood,
         }
         if (block->geometry == MeshingGeometryKind::full_cube &&
             block->render_phase != MeshingRenderPhase::fluid) {
-            ++result.count;
-            result.minimum = {std::min(result.minimum.x, x), std::min(result.minimum.y, y),
-                              std::min(result.minimum.z, z)};
-            result.maximum = {std::max(result.maximum.x, x), std::max(result.maximum.y, y),
-                              std::max(result.maximum.z, z)};
+            result.include({x, y, z});
         }
         return core::Status::ok();
     };
@@ -377,7 +413,7 @@ validate_and_count_cube_cells(const ChunkNeighborhoodSnapshot& neighborhood,
                 }
             }
         }
-        return core::Result<CubeCellSummary>::success(result);
+        return core::Result<CubeCellSummary>::success(std::move(result));
     }
 
     constexpr auto edge_size = static_cast<std::size_t>(edge);
@@ -401,7 +437,7 @@ validate_and_count_cube_cells(const ChunkNeighborhoodSnapshot& neighborhood,
             word &= word - std::uint64_t{1};
         }
     }
-    return core::Result<CubeCellSummary>::success(result);
+    return core::Result<CubeCellSummary>::success(std::move(result));
 }
 
 } // namespace
@@ -447,7 +483,8 @@ GreedyChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborh
     mesh.chunk_coord = neighborhood.center_identity.coordinate;
     mesh.provided_halo_radius = neighborhood.halo_radius;
     mesh.required_halo_radius = neighborhood.halo_radius;
-    const auto reserve_quads = std::min<std::size_t>(cube_cells.value().count * 2U, 16U * 1024U);
+    const auto reserve_quads =
+        std::min<std::size_t>(cube_cells.value().exposed_unit_face_upper_bound(), 16U * 1024U);
     mesh.vertices.reserve(reserve_quads * 4U);
     mesh.indices.reserve(reserve_quads * 6U);
 
