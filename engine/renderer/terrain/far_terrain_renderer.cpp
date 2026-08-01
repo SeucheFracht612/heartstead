@@ -140,21 +140,42 @@ core::Status FarTerrainRenderer::set_pipeline(rhi::RenderResourceHandle pipeline
 
 core::Status FarTerrainRenderer::update(math::Vec3d camera_world,
                                         const FarTerrainSurfaceSampler& sampler,
-                                        std::uint64_t surface_revision) {
+                                        std::uint64_t surface_revision,
+                                        std::span<const math::Bounds3d> invalidated_regions) {
     if (!clipmap_.has_value() || !sampler) {
         return core::Status::failure("renderer.far_terrain_uninitialized",
                                      "far terrain must be initialized with a surface sampler");
     }
-    if (surface_revision_ != surface_revision) {
-        auto status = clear();
-        if (!status) {
-            return status;
-        }
-        surface_revision_ = surface_revision;
-    }
     stats_.built_patches = 0;
     stats_.evicted_patches = 0;
     stats_.uploaded_bytes = 0;
+    if (surface_revision_ != surface_revision) {
+        if (invalidated_regions.empty()) {
+            auto status = clear();
+            if (!status) {
+                return status;
+            }
+        } else {
+            const auto intersects_invalidated_region =
+                [&invalidated_regions](const FarTerrainPatch& patch) {
+                    return std::ranges::any_of(invalidated_regions, [&patch](const auto& region) {
+                        return patch.horizontal_bounds.min.x < region.max.x &&
+                               patch.horizontal_bounds.max.x > region.min.x &&
+                               patch.horizontal_bounds.min.z < region.max.z &&
+                               patch.horizontal_bounds.max.z > region.min.z;
+                    });
+                };
+            for (auto iterator = resident_.begin(); iterator != resident_.end();) {
+                if (!intersects_invalidated_region(iterator->second.patch)) {
+                    ++iterator;
+                    continue;
+                }
+                auto removed = iterator++;
+                release_patch(removed);
+            }
+        }
+        surface_revision_ = surface_revision;
+    }
     vertex_arena_->collect(device_->completed_submission_serial());
     index_arena_->collect(device_->completed_submission_serial());
     plan_ = clipmap_->plan(camera_world);
@@ -210,8 +231,8 @@ core::Status FarTerrainRenderer::upload_patch(const FarTerrainPatch& patch,
     if (mesh.value().indices.empty()) {
         resident_.insert_or_assign(
             patch.key,
-            ResidentPatch{patch, mesh.value().world_origin, mesh.value().local_bounds, {}, {}, 0,
-                          0});
+            ResidentPatch{
+                patch, mesh.value().world_origin, mesh.value().local_bounds, {}, {}, 0, 0});
         ++stats_.built_patches;
         return core::Status::ok();
     }

@@ -17,14 +17,6 @@ namespace {
     return quotient;
 }
 
-[[nodiscard]] constexpr std::int32_t floor_mod(std::int32_t value, std::int32_t divisor) noexcept {
-    auto remainder = value % divisor;
-    if (remainder < 0) {
-        remainder += divisor;
-    }
-    return remainder;
-}
-
 [[nodiscard]] std::optional<std::int64_t> checked_add(std::int64_t value,
                                                       std::int32_t offset) noexcept {
     constexpr auto minimum = std::numeric_limits<std::int64_t>::min();
@@ -33,37 +25,6 @@ namespace {
         return std::nullopt;
     }
     return value + offset;
-}
-
-struct ResolvedCell {
-    ChunkCoord chunk{};
-    VoxelCoord local{};
-};
-
-[[nodiscard]] std::optional<ResolvedCell> resolve_cell(ChunkCoord center, std::int32_t x,
-                                                       std::int32_t y, std::int32_t z) noexcept {
-    constexpr auto edge = static_cast<std::int32_t>(VoxelChunk::edge_length);
-    const auto dx = floor_div(x, edge);
-    const auto dy = floor_div(y, edge);
-    const auto dz = floor_div(z, edge);
-    const auto chunk_x = checked_add(center.x, dx);
-    const auto chunk_y = checked_add(center.y, dy);
-    const auto chunk_z = checked_add(center.z, dz);
-    if (!chunk_x || !chunk_y || !chunk_z) {
-        return std::nullopt;
-    }
-    return ResolvedCell{
-        {*chunk_x, *chunk_y, *chunk_z},
-        {static_cast<std::uint16_t>(floor_mod(x, edge)),
-         static_cast<std::uint16_t>(floor_mod(y, edge)),
-         static_cast<std::uint16_t>(floor_mod(z, edge))},
-    };
-}
-
-[[nodiscard]] std::size_t chunk_cell_index(VoxelCoord coordinate) noexcept {
-    constexpr auto edge = static_cast<std::size_t>(VoxelChunk::edge_length);
-    return static_cast<std::size_t>(coordinate.z) * edge * edge +
-           static_cast<std::size_t>(coordinate.y) * edge + static_cast<std::size_t>(coordinate.x);
 }
 
 [[nodiscard]] MeshingGeometryKind geometry_kind(const BlockModelDefinition& model) noexcept {
@@ -315,28 +276,12 @@ build_chunk_neighborhood_snapshot(const ChunkDatabase& chunks, ChunkIdentity cen
 
     const auto halo_i32 = static_cast<std::int32_t>(result.halo_radius);
     const auto edge_i32 = static_cast<std::int32_t>(VoxelChunk::edge_length);
-    std::size_t output_index = 0;
-    for (std::int32_t z = -halo_i32; z < edge_i32 + halo_i32; ++z) {
-        for (std::int32_t y = -halo_i32; y < edge_i32 + halo_i32; ++y) {
-            for (std::int32_t x = -halo_i32; x < edge_i32 + halo_i32; ++x) {
-                const auto address = resolve_cell(center.coordinate, x, y, z);
-                if (!address) {
-                    return core::Result<ChunkNeighborhoodSnapshot>::failure(
-                        "chunk_mesh.snapshot_coordinate_overflow",
-                        "chunk neighborhood crosses the signed coordinate limit");
-                }
-                const auto* source_chunk = chunks.find(address->chunk);
-                if (source_chunk != nullptr) {
-                    result.cells[output_index] =
-                        source_chunk->cells()[chunk_cell_index(address->local)];
-                }
-                ++output_index;
-            }
-        }
-    }
-
     const auto minimum_delta = floor_div(-halo_i32, edge_i32);
     const auto maximum_delta = floor_div(edge_i32 - 1 + halo_i32, edge_i32);
+    const auto output_minimum = -halo_i32;
+    const auto output_maximum = edge_i32 + halo_i32;
+    const auto source_edge = static_cast<std::size_t>(edge_i32);
+    const auto output_side = static_cast<std::size_t>(result.side_length);
     for (auto dz = minimum_delta; dz <= maximum_delta; ++dz) {
         for (auto dy = minimum_delta; dy <= maximum_delta; ++dy) {
             for (auto dx = minimum_delta; dx <= maximum_delta; ++dx) {
@@ -355,6 +300,31 @@ build_chunk_neighborhood_snapshot(const ChunkDatabase& chunks, ChunkIdentity cen
                     dependency.present = true;
                     dependency.identity = chunk->identity();
                     dependency.content_revision = chunk->content_revision();
+
+                    const auto begin_x = std::max(output_minimum, dx * edge_i32);
+                    const auto end_x = std::min(output_maximum, (dx + 1) * edge_i32);
+                    const auto begin_y = std::max(output_minimum, dy * edge_i32);
+                    const auto end_y = std::min(output_maximum, (dy + 1) * edge_i32);
+                    const auto begin_z = std::max(output_minimum, dz * edge_i32);
+                    const auto end_z = std::min(output_maximum, (dz + 1) * edge_i32);
+                    const auto copy_count = static_cast<std::size_t>(end_x - begin_x);
+                    const auto source_cells = chunk->cells();
+                    for (auto z = begin_z; z < end_z; ++z) {
+                        const auto source_z = static_cast<std::size_t>(z - dz * edge_i32);
+                        const auto output_z = static_cast<std::size_t>(z + halo_i32);
+                        for (auto y = begin_y; y < end_y; ++y) {
+                            const auto source_y = static_cast<std::size_t>(y - dy * edge_i32);
+                            const auto output_y = static_cast<std::size_t>(y + halo_i32);
+                            const auto source_x = static_cast<std::size_t>(begin_x - dx * edge_i32);
+                            const auto output_x = static_cast<std::size_t>(begin_x + halo_i32);
+                            const auto source_index = source_z * source_edge * source_edge +
+                                                      source_y * source_edge + source_x;
+                            const auto output_index = output_z * output_side * output_side +
+                                                      output_y * output_side + output_x;
+                            std::copy_n(source_cells.begin() + source_index, copy_count,
+                                        result.cells.begin() + output_index);
+                        }
+                    }
                 }
                 result.dependencies.push_back(dependency);
             }

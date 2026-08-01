@@ -1,6 +1,7 @@
 #include "engine/renderer/rhi/render_device.hpp"
 #include "engine/renderer/terrain/far_terrain_renderer.hpp"
 
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -37,13 +38,13 @@ int main() {
 
     renderer::FarTerrainRenderer far_terrain(*device);
     assert(far_terrain.initialize(config, renderer::rhi::RenderResourceHandle{77}));
-    const renderer::FarTerrainSurfaceSampler sampler =
-        [](double x, double z, renderer::FarTerrainDomain) {
-            return renderer::FarTerrainSurfaceSample{
-                24.0 + std::sin(x * 0.025) * 3.0 + std::cos(z * 0.025) * 2.0,
-                1U,
-            };
+    const renderer::FarTerrainSurfaceSampler sampler = [](double x, double z,
+                                                          renderer::FarTerrainDomain) {
+        return renderer::FarTerrainSurfaceSample{
+            24.0 + std::sin(x * 0.025) * 3.0 + std::cos(z * 0.025) * 2.0,
+            1U,
         };
+    };
 
     assert(far_terrain.update({0.0, 40.0, 0.0}, sampler));
     assert(far_terrain.stats().planned_patches > 0);
@@ -54,8 +55,7 @@ int main() {
     // each vertex/index arena stay constant as patch residency grows.
     assert(device->live_resource_count() == baseline_resources + 10U);
 
-    for (std::size_t frame = 0; frame < 128U && far_terrain.stats().pending_patches > 0U;
-         ++frame) {
+    for (std::size_t frame = 0; frame < 128U && far_terrain.stats().pending_patches > 0U; ++frame) {
         assert(far_terrain.update({0.0, 40.0, 0.0}, sampler));
     }
     assert(far_terrain.stats().pending_patches == 0);
@@ -72,17 +72,19 @@ int main() {
     assert(draws.size() < far_terrain.stats().visible_patches);
     assert(draws.front().indirect.is_valid());
 
-    assert(far_terrain.update({0.0, 40.0, 0.0}, sampler, 1));
-    assert(far_terrain.stats().built_patches == 3);
-    assert(far_terrain.stats().resident_patches == 3);
+    const std::array invalidated_regions{
+        math::Bounds3d{{-1.0, 0.0, -1.0}, {1.0, 0.0, 1.0}},
+    };
+    assert(far_terrain.update({0.0, 40.0, 0.0}, sampler, 1, invalidated_regions));
+    assert(far_terrain.stats().resident_patches > 3);
     assert(far_terrain.update({512.0, 40.0, 512.0}, sampler, 1));
     assert(far_terrain.stats().evicted_patches > 0);
     assert(far_terrain.stats().resident_patches <= settled_resident);
 
-    const renderer::FarTerrainSurfaceSampler missing_sampler =
-        [](double, double, renderer::FarTerrainDomain) {
-            return renderer::FarTerrainSurfaceSample{0.0, 0, false};
-        };
+    const renderer::FarTerrainSurfaceSampler missing_sampler = [](double, double,
+                                                                  renderer::FarTerrainDomain) {
+        return renderer::FarTerrainSurfaceSample{0.0, 0, false};
+    };
     for (std::size_t frame = 0; frame < 128U; ++frame) {
         assert(far_terrain.update({0.0, 40.0, 0.0}, missing_sampler, 2));
         if (far_terrain.stats().pending_patches == 0) {

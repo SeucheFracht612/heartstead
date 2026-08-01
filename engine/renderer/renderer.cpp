@@ -13,6 +13,7 @@
 #include <limits>
 #include <map>
 #include <ranges>
+#include <set>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -464,8 +465,7 @@ make_tone_map_shader_program(std::span<const std::uint32_t> vertex_spirv,
 FarTerrainSurfaceSample sample_far_terrain_world_surface(const world::WorldState& world,
                                                          double world_x, double world_z,
                                                          FarTerrainDomain domain) noexcept {
-    if (domain != FarTerrainDomain::surface || !std::isfinite(world_x) ||
-        !std::isfinite(world_z)) {
+    if (domain != FarTerrainDomain::surface || !std::isfinite(world_x) || !std::isfinite(world_z)) {
         return {0.0, 0, false};
     }
     const auto floored_x = std::floor(world_x);
@@ -523,36 +523,95 @@ std::uint64_t far_terrain_world_surface_revision(const world::WorldState& world)
     return hash.nonzero_value();
 }
 
-void Renderer::rebuild_far_terrain_world_surface(const world::WorldState& world,
-                                                 std::uint64_t revision) {
-    far_terrain_world_surface_.clear();
-    for (const auto* chunk : world.chunks().records()) {
-        for (std::uint16_t z = 0; z < world::VoxelChunk::edge_length; ++z) {
-            for (std::uint16_t x = 0; x < world::VoxelChunk::edge_length; ++x) {
-                for (std::int32_t y = world::VoxelChunk::edge_length - 1; y >= 0; --y) {
-                    const world::VoxelCoord local{x, static_cast<std::uint16_t>(y), z};
-                    const auto cell = chunk->get(local);
-                    if (!cell || cell.value().is_air()) {
-                        continue;
-                    }
-                    const auto block = world::chunk_local_to_block(chunk->coord(), local);
-                    if (!block || block.value().y == std::numeric_limits<std::int64_t>::max()) {
+std::vector<math::Bounds3d>
+Renderer::synchronize_far_terrain_world_surface(const world::WorldState& world,
+                                                std::uint64_t revision) {
+    using HorizontalChunkCoord = std::pair<std::int64_t, std::int64_t>;
+    using ChunkSurfaceState = std::pair<std::uint64_t, std::uint64_t>;
+
+    const auto chunks = world.chunks().records();
+    std::map<world::ChunkCoord, ChunkSurfaceState> current_states;
+    std::map<HorizontalChunkCoord, std::vector<const world::VoxelChunk*>> column_chunks;
+    std::set<HorizontalChunkCoord> dirty_columns;
+    for (const auto* chunk : chunks) {
+        const auto identity = chunk->identity();
+        const ChunkSurfaceState state{identity.load_generation, chunk->content_revision()};
+        current_states.insert_or_assign(identity.coordinate, state);
+        column_chunks[{identity.coordinate.x, identity.coordinate.z}].push_back(chunk);
+        const auto previous = far_terrain_chunk_states_.find(identity.coordinate);
+        if (previous == far_terrain_chunk_states_.end() || previous->second != state) {
+            dirty_columns.insert({identity.coordinate.x, identity.coordinate.z});
+        }
+    }
+    for (const auto& [coord, state] : far_terrain_chunk_states_) {
+        static_cast<void>(state);
+        if (!current_states.contains(coord)) {
+            dirty_columns.insert({coord.x, coord.z});
+        }
+    }
+
+    constexpr auto edge = world::VoxelChunk::edge_length;
+    constexpr auto edge_size = static_cast<std::size_t>(edge);
+    std::vector<math::Bounds3d> invalidated_regions;
+    invalidated_regions.reserve(dirty_columns.size());
+    for (const auto& [chunk_x, chunk_z] : dirty_columns) {
+        const world::ChunkCoord horizontal_coord{chunk_x, 0, chunk_z};
+        const auto minimum = world::chunk_local_to_block(horizontal_coord, {0, 0, 0});
+        const auto maximum =
+            world::chunk_local_to_block(horizontal_coord, {static_cast<std::uint16_t>(edge - 1U), 0,
+                                                           static_cast<std::uint16_t>(edge - 1U)});
+        if (!minimum || !maximum) {
+            continue;
+        }
+        invalidated_regions.push_back(
+            {{static_cast<double>(minimum.value().x), 0.0, static_cast<double>(minimum.value().z)},
+             {static_cast<double>(maximum.value().x) + 1.0, 0.0,
+              static_cast<double>(maximum.value().z) + 1.0}});
+
+        const auto found_chunks = column_chunks.find({chunk_x, chunk_z});
+        const auto resident_chunks =
+            found_chunks == column_chunks.end()
+                ? std::span<const world::VoxelChunk* const>{}
+                : std::span<const world::VoxelChunk* const>{found_chunks->second};
+        for (std::uint16_t z = 0; z < edge; ++z) {
+            for (std::uint16_t x = 0; x < edge; ++x) {
+                const auto world_x = minimum.value().x + static_cast<std::int64_t>(x);
+                const auto world_z = minimum.value().z + static_cast<std::int64_t>(z);
+                const auto key = std::pair{world_x, world_z};
+                far_terrain_world_surface_.erase(key);
+                std::optional<std::int64_t> highest_block;
+                std::uint16_t material = 0;
+                for (const auto* chunk : resident_chunks) {
+                    const auto cells = chunk->cells();
+                    for (std::int32_t y = static_cast<std::int32_t>(edge) - 1; y >= 0; --y) {
+                        const auto index = static_cast<std::size_t>(z) * edge_size * edge_size +
+                                           static_cast<std::size_t>(y) * edge_size + x;
+                        const auto cell = cells[index];
+                        if (cell.is_air()) {
+                            continue;
+                        }
+                        const auto block = world::chunk_local_to_block(
+                            chunk->coord(), {x, static_cast<std::uint16_t>(y), z});
+                        if (block &&
+                            (!highest_block.has_value() || block.value().y > *highest_block)) {
+                            highest_block = block.value().y;
+                            material = cell.type;
+                        }
                         break;
                     }
-                    const auto key = std::pair{block.value().x, block.value().z};
-                    const auto height = static_cast<double>(block.value().y + 1);
-                    auto found = far_terrain_world_surface_.find(key);
-                    if (found == far_terrain_world_surface_.end() ||
-                        height > found->second.height) {
-                        far_terrain_world_surface_.insert_or_assign(
-                            key, FarTerrainSurfaceSample{height, cell.value().type, true});
-                    }
-                    break;
+                }
+                if (highest_block.has_value() &&
+                    *highest_block != std::numeric_limits<std::int64_t>::max()) {
+                    far_terrain_world_surface_.insert_or_assign(
+                        key, FarTerrainSurfaceSample{static_cast<double>(*highest_block + 1),
+                                                     material, true});
                 }
             }
         }
     }
+    far_terrain_chunk_states_ = std::move(current_states);
     far_terrain_world_surface_revision_ = revision;
+    return invalidated_regions;
 }
 
 Renderer::~Renderer() {
@@ -730,8 +789,7 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         return core::Status::failure(error.code, error.message);
     }
     pipeline_status = create_ui_pipeline(desc.ui_vertex_spirv, desc.ui_fragment_spirv,
-                                         desc.ui_font_bytes,
-                                         desc.ui_renderer_config.atlas_layers);
+                                         desc.ui_font_bytes, desc.ui_renderer_config.atlas_layers);
     if (!pipeline_status) {
         const auto error = pipeline_status.error();
         (void)shutdown();
@@ -739,9 +797,8 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
     }
     if (!desc.tone_map_vertex_spirv.empty() && !desc.tone_map_fragment_spirv.empty()) {
         pipeline_status = create_image_quality_pipelines(
-            desc.tone_map_vertex_spirv, desc.ssao_fragment_spirv,
-            desc.ao_composite_fragment_spirv, desc.fxaa_fragment_spirv,
-            desc.bloom_fragment_spirv);
+            desc.tone_map_vertex_spirv, desc.ssao_fragment_spirv, desc.ao_composite_fragment_spirv,
+            desc.fxaa_fragment_spirv, desc.bloom_fragment_spirv);
         if (!pipeline_status) {
             const auto error = pipeline_status.error();
             (void)shutdown();
@@ -970,14 +1027,14 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
     frame_builder_->set_image_quality_pipelines(
         image_quality_pipelines_[0], image_quality_pipelines_[1], image_quality_pipelines_[2],
         image_quality_pipelines_[3]);
-    const auto ambient_occlusion_available = image_quality_pipelines_[0].is_valid() &&
-                                             image_quality_pipelines_[1].is_valid();
+    const auto ambient_occlusion_available =
+        image_quality_pipelines_[0].is_valid() && image_quality_pipelines_[1].is_valid();
     const auto anti_aliasing_available = image_quality_pipelines_[2].is_valid();
     const auto bloom_available = image_quality_pipelines_[3].is_valid();
     auto image_quality_status = frame_builder_->set_image_quality_settings(
         {.render_scale = quality_settings_.render_scale,
-         .ambient_occlusion = quality_settings_.ambient_occlusion_quality != 0U &&
-                              ambient_occlusion_available,
+         .ambient_occlusion =
+             quality_settings_.ambient_occlusion_quality != 0U && ambient_occlusion_available,
          .anti_aliasing = quality_settings_.anti_aliasing != RendererAntiAliasing::off &&
                           anti_aliasing_available,
          .bloom = quality_settings_.bloom && bloom_available});
@@ -1147,6 +1204,7 @@ core::Status Renderer::shutdown() {
     terrain_sampler_ = {};
     ui_sampler_ = {};
     far_terrain_world_surface_.clear();
+    far_terrain_chunk_states_.clear();
     far_terrain_world_surface_revision_ = 0;
     environment_ = {};
     default_environment_ = {};
@@ -1217,6 +1275,7 @@ core::Status Renderer::clear_session_resources() {
     ui_frame_scratch_ = {};
     debug_text_labels_.clear();
     far_terrain_world_surface_.clear();
+    far_terrain_chunk_states_.clear();
     far_terrain_world_surface_revision_ = 0;
     stats_ = {};
     frame_started_at_ = {};
@@ -1239,13 +1298,14 @@ core::Status Renderer::synchronize_chunks(world::WorldState& world, const Render
         status = chunk_system_->synchronize(world, camera);
         if (status && far_terrain_renderer_ != nullptr) {
             const auto surface_revision = far_terrain_world_surface_revision(world);
+            std::vector<math::Bounds3d> invalidated_regions;
             if (surface_revision != far_terrain_world_surface_revision_) {
-                rebuild_far_terrain_world_surface(world, surface_revision);
+                invalidated_regions =
+                    synchronize_far_terrain_world_surface(world, surface_revision);
             }
             const FarTerrainSurfaceSampler sampler = [this](double x, double z,
                                                             FarTerrainDomain domain) {
-                if (domain != FarTerrainDomain::surface || !std::isfinite(x) ||
-                    !std::isfinite(z)) {
+                if (domain != FarTerrainDomain::surface || !std::isfinite(x) || !std::isfinite(z)) {
                     return FarTerrainSurfaceSample{0.0, 0, false};
                 }
                 const auto floored_x = std::floor(x);
@@ -1259,8 +1319,7 @@ core::Status Renderer::synchronize_chunks(world::WorldState& world, const Render
                     return FarTerrainSurfaceSample{0.0, 0, false};
                 }
                 const auto found = far_terrain_world_surface_.find(
-                    {static_cast<std::int64_t>(floored_x),
-                     static_cast<std::int64_t>(floored_z)});
+                    {static_cast<std::int64_t>(floored_x), static_cast<std::int64_t>(floored_z)});
                 return found == far_terrain_world_surface_.end()
                            ? FarTerrainSurfaceSample{0.0, 0, false}
                            : found->second;
@@ -1270,7 +1329,8 @@ core::Status Renderer::synchronize_chunks(world::WorldState& world, const Render
                 static_cast<double>(camera.floating_origin.block.y) + camera.local_position.y,
                 static_cast<double>(camera.floating_origin.block.z) + camera.local_position.z,
             };
-            status = far_terrain_renderer_->update(camera_world, sampler, surface_revision);
+            status = far_terrain_renderer_->update(camera_world, sampler, surface_revision,
+                                                   invalidated_regions);
         }
     }
     update_frontend_stats(world.chunks().chunk_count());
@@ -1647,8 +1707,7 @@ core::Status Renderer::bind_clustered_lighting_resources() {
         return core::Status::failure("renderer.invalid_lighting_material",
                                      "internal lighting material ids are invalid");
     }
-    auto status =
-        clustered_lighting_->bind(terrain_material.value(), "local_lights", "light_grid");
+    auto status = clustered_lighting_->bind(terrain_material.value(), "local_lights", "light_grid");
     if (!status) {
         return status;
     }
@@ -1911,28 +1970,26 @@ core::Status Renderer::set_ui_preview_image(rhi::RenderExtent source_extent,
         return core::Status::failure("renderer.ui_preview_invalid_extent",
                                      "UI preview source extent must be nonzero");
     }
-    const auto expected = static_cast<std::uint64_t>(source_extent.width) *
-                          source_extent.height * 4U;
+    const auto expected =
+        static_cast<std::uint64_t>(source_extent.width) * source_extent.height * 4U;
     if (expected > std::numeric_limits<std::size_t>::max() || rgba8.size() != expected) {
-        return core::Status::failure(
-            "renderer.ui_preview_invalid_payload",
-            "UI preview source must contain tightly packed RGBA8 pixels");
+        return core::Status::failure("renderer.ui_preview_invalid_payload",
+                                     "UI preview source must contain tightly packed RGBA8 pixels");
     }
 
     auto updated = ui_atlas_rgba8_;
     const auto layer_size = static_cast<std::size_t>(ui_atlas_width_) * ui_atlas_height_ * 4U;
     const auto destination_base = layer_size * 2U;
     for (std::uint32_t y = 0; y < ui_atlas_height_; ++y) {
-        const auto source_y = static_cast<std::uint32_t>(
-            static_cast<std::uint64_t>(y) * source_extent.height / ui_atlas_height_);
+        const auto source_y = static_cast<std::uint32_t>(static_cast<std::uint64_t>(y) *
+                                                         source_extent.height / ui_atlas_height_);
         for (std::uint32_t x = 0; x < ui_atlas_width_; ++x) {
-            const auto source_x = static_cast<std::uint32_t>(
-                static_cast<std::uint64_t>(x) * source_extent.width / ui_atlas_width_);
+            const auto source_x = static_cast<std::uint32_t>(static_cast<std::uint64_t>(x) *
+                                                             source_extent.width / ui_atlas_width_);
             const auto source_offset =
                 (static_cast<std::size_t>(source_y) * source_extent.width + source_x) * 4U;
             const auto destination_offset =
-                destination_base +
-                (static_cast<std::size_t>(y) * ui_atlas_width_ + x) * 4U;
+                destination_base + (static_cast<std::size_t>(y) * ui_atlas_width_ + x) * 4U;
             for (std::size_t channel = 0; channel < 4U; ++channel) {
                 updated[destination_offset + channel] =
                     static_cast<std::byte>(rgba8[source_offset + channel]);
@@ -4099,8 +4156,8 @@ Renderer::create_image_quality_pipelines(std::span<const std::uint32_t> vertex_s
             make_post_shader_program(post.name, vertex_spirv, post.fragment, post.descriptors));
         if (!shader) {
             core::log(core::LogLevel::warning,
-                      std::string(post.name) + " post-processing disabled: " +
-                          shader.error().message);
+                      std::string(post.name) +
+                          " post-processing disabled: " + shader.error().message);
             continue;
         }
         rhi::RenderPipelineLayoutDesc layout;
@@ -4141,8 +4198,8 @@ Renderer::create_image_quality_pipelines(std::span<const std::uint32_t> vertex_s
         auto created = pipeline_cache_->prewarm(key, layout, std::move(pipeline));
         if (!created) {
             core::log(core::LogLevel::warning,
-                      std::string(post.name) + " post-processing disabled: " +
-                          created.error().message);
+                      std::string(post.name) +
+                          " post-processing disabled: " + created.error().message);
             continue;
         }
         image_quality_shader_programs_[index] = shader.value();

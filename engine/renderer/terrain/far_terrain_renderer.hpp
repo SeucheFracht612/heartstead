@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace heartstead::renderer {
@@ -71,7 +72,8 @@ class FarTerrainRenderer {
     [[nodiscard]] core::Status set_pipeline(rhi::RenderResourceHandle pipeline) noexcept;
     [[nodiscard]] core::Status update(math::Vec3d camera_world,
                                       const FarTerrainSurfaceSampler& sampler,
-                                      std::uint64_t surface_revision = 0);
+                                      std::uint64_t surface_revision = 0,
+                                      std::span<const math::Bounds3d> invalidated_regions = {});
     [[nodiscard]] std::vector<rhi::RenderDrawCommand>
     build_draws(const RenderCamera& camera, std::vector<rhi::RenderDrawCommand> reusable = {});
     [[nodiscard]] core::Status clear();
