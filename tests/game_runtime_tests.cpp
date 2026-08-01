@@ -11,6 +11,7 @@
 #include "game/runtime/game_runtime.hpp"
 #include "game/runtime/script_host_commands.hpp"
 
+#include <array>
 #include <cassert>
 #include <filesystem>
 #include <string>
@@ -222,6 +223,13 @@ void test_game_runtime_starts_from_aggregate_content() {
         }
     }
     assert(drying != nullptr && drying->default_required_work_ticks == 3'600);
+    const auto* panel_style = report.ui_skin.find_nine_slice("carved_panel");
+    const auto* button_style = report.ui_skin.find_nine_slice("carved_button");
+    assert(panel_style != nullptr && button_style != nullptr);
+    assert((panel_style->tint == std::array<float, 4>{0.25F, 0.13F, 0.045F, 0.98F}));
+    assert((button_style->tint == std::array<float, 4>{0.42F, 0.23F, 0.075F, 1.0F}));
+    assert((report.ui_skin.theme().shell_background ==
+            std::array<float, 4>{0.025F, 0.045F, 0.065F, 0.94F}));
 
     auto runtime =
         heartstead::game::GameRuntime::initialize(heartstead::game::GameRuntimeConfig{}, report);

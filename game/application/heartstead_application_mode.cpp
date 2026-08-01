@@ -347,8 +347,9 @@ using SessionLoadResult = core::Result<LoadedSession>;
 struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     explicit Impl(HeartsteadApplicationModeConfig initial_config)
         : config(std::move(initial_config)), states(this),
-          widgets(config.content_report == nullptr ? ui::UiSkin::storybook_default()
-                                                   : config.content_report->ui_skin),
+          skin(config.content_report == nullptr ? ui::UiSkin::storybook_default()
+                                                : config.content_report->ui_skin),
+          widgets(skin),
           settings(config.initial_settings), settings_store(config.user_data_root / "settings.txt"),
           save_catalog(config.user_data_root / "saves") {
         camera_perspective = settings.first_person_camera
@@ -367,6 +368,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     std::stop_source loading_stop;
     std::shared_ptr<LoadingProgressState> loading_progress;
     std::optional<SessionStartupPhase> rendered_loading_phase;
+    ui::UiSkin skin;
     ui::WidgetTree widgets;
     ApplicationSettings settings;
     ApplicationSettingsStore settings_store;
@@ -599,8 +601,24 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         return rebuild_ui(ApplicationState::main_menu);
     }
 
+    [[nodiscard]] core::Status add_shell_widget(ui::WidgetDesc widget) {
+        widget.text_color = skin.theme().text_color;
+        if (widget.id == root_id) {
+            widget.color = skin.theme().shell_background;
+        }
+        if (!widget.nine_slice.empty()) {
+            if (const auto* slice = skin.find_nine_slice(widget.nine_slice); slice != nullptr) {
+                widget.color = slice->tint;
+                widget.text_color = slice->text_color;
+            }
+        }
+        return widgets.add(std::move(widget));
+    }
+
     [[nodiscard]] core::Status build_menu_ui() {
-        const auto add = [this](ui::WidgetDesc widget) { return widgets.add(std::move(widget)); };
+        const auto add = [this](ui::WidgetDesc widget) {
+            return add_shell_widget(std::move(widget));
+        };
         auto status = core::Status::ok();
         const auto add_title = [&](std::string_view id, std::string title) {
             return add(label(id, std::move(title), 30.0F));
@@ -844,15 +862,17 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             state == ApplicationState::shutdown) {
             return core::Status::ok();
         }
-        auto status = widgets.add(root_widget());
+        auto status = add_shell_widget(root_widget());
         if (status) {
-            status = widgets.add(menu_panel());
+            status = add_shell_widget(menu_panel());
         }
         if (!status) {
             return status;
         }
 
-        const auto add = [this](ui::WidgetDesc widget) { return widgets.add(std::move(widget)); };
+        const auto add = [this](ui::WidgetDesc widget) {
+            return add_shell_widget(std::move(widget));
+        };
         switch (state) {
         case ApplicationState::boot:
             if (!(status = add(label("heartstead.boot.title", "HEARTSTEAD", 32.0F)))) {

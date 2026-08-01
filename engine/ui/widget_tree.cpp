@@ -16,6 +16,12 @@ namespace {
     return std::isfinite(value) && value >= 0.0F;
 }
 
+[[nodiscard]] bool valid_color(const std::array<float, 4>& color) noexcept {
+    return std::ranges::all_of(color, [](float channel) {
+        return std::isfinite(channel) && channel >= 0.0F && channel <= 1.0F;
+    });
+}
+
 [[nodiscard]] UiRect intersection(UiRect left, UiRect right) noexcept {
     const auto x0 = std::max(left.x, right.x);
     const auto y0 = std::max(left.y, right.y);
@@ -141,7 +147,8 @@ core::Status UiSkin::add_nine_slice(UiNineSlice slice) {
         !finite_nonnegative(slice.border_pixels.left) ||
         !finite_nonnegative(slice.border_pixels.top) ||
         !finite_nonnegative(slice.border_pixels.right) ||
-        !finite_nonnegative(slice.border_pixels.bottom)) {
+        !finite_nonnegative(slice.border_pixels.bottom) || !valid_color(slice.tint) ||
+        !valid_color(slice.text_color)) {
         return core::Status::failure(
             "ui_skin.invalid_nine_slice",
             "nine-slice requires a known atlas region and non-negative borders");
@@ -166,12 +173,34 @@ const UiNineSlice* UiSkin::find_nine_slice(std::string_view name) const noexcept
     return found == nine_slices_.end() ? nullptr : &*found;
 }
 
+const UiSkinTheme& UiSkin::theme() const noexcept {
+    return theme_;
+}
+
+core::Status UiSkin::set_theme(UiSkinTheme theme) {
+    if (!valid_color(theme.shell_background) || !valid_color(theme.text_color)) {
+        return core::Status::failure("ui_skin.invalid_theme",
+                                     "UI theme colors must contain normalized finite channels");
+    }
+    theme_ = theme;
+    return core::Status::ok();
+}
+
 UiSkin UiSkin::storybook_default() {
     UiSkin result;
     (void)result.add_region({"solid", 0, {}, {1.0F, 1.0F}, {32.0F, 32.0F}});
-    (void)result.add_nine_slice({"carved_panel", "solid", {6.0F, 6.0F, 6.0F, 6.0F}});
-    (void)result.add_nine_slice({"carved_button", "solid", {4.0F, 4.0F, 4.0F, 4.0F}});
-    (void)result.add_nine_slice({"carved_slot", "solid", {3.0F, 3.0F, 3.0F, 3.0F}});
+    (void)result.add_nine_slice({"carved_panel",
+                                 "solid",
+                                 {6.0F, 6.0F, 6.0F, 6.0F},
+                                 {0.25F, 0.13F, 0.045F, 0.98F}});
+    (void)result.add_nine_slice({"carved_button",
+                                 "solid",
+                                 {4.0F, 4.0F, 4.0F, 4.0F},
+                                 {0.42F, 0.23F, 0.075F, 1.0F}});
+    (void)result.add_nine_slice({"carved_slot",
+                                 "solid",
+                                 {3.0F, 3.0F, 3.0F, 3.0F},
+                                 {0.30F, 0.18F, 0.075F, 1.0F}});
     return result;
 }
 

@@ -120,6 +120,13 @@ struct UiNineSlice {
     std::string name;
     std::string atlas_region;
     UiInsets border_pixels{};
+    std::array<float, 4> tint{1.0F, 1.0F, 1.0F, 1.0F};
+    std::array<float, 4> text_color{0.96F, 0.92F, 0.82F, 1.0F};
+};
+
+struct UiSkinTheme {
+    std::array<float, 4> shell_background{0.025F, 0.045F, 0.065F, 0.94F};
+    std::array<float, 4> text_color{0.96F, 0.92F, 0.82F, 1.0F};
 };
 
 class UiSkin {
@@ -128,11 +135,14 @@ class UiSkin {
     [[nodiscard]] core::Status add_nine_slice(UiNineSlice slice);
     [[nodiscard]] const UiAtlasRegion* find_region(std::string_view name) const noexcept;
     [[nodiscard]] const UiNineSlice* find_nine_slice(std::string_view name) const noexcept;
+    [[nodiscard]] const UiSkinTheme& theme() const noexcept;
+    [[nodiscard]] core::Status set_theme(UiSkinTheme theme);
     [[nodiscard]] static UiSkin storybook_default();
 
   private:
     std::vector<UiAtlasRegion> regions_;
     std::vector<UiNineSlice> nine_slices_;
+    UiSkinTheme theme_;
 };
 
 struct WidgetDesc {

@@ -118,13 +118,53 @@ ui_skin_from_panel_prototypes(std::span<const modding::GenericPrototype* const> 
                                                      status.error().message);
             }
         }
-        auto status = skin.add_nine_slice(
-            {*skin_name,
-             *atlas_region,
-             {parsed_border.value()[0], parsed_border.value()[1], parsed_border.value()[2],
-              parsed_border.value()[3]}});
+        UiNineSlice slice{
+            *skin_name,
+            *atlas_region,
+            {parsed_border.value()[0], parsed_border.value()[1], parsed_border.value()[2],
+             parsed_border.value()[3]}};
+        if (const auto* fill_color = field(*prototype, "fill_color"); fill_color != nullptr) {
+            auto parsed = parse_float_list<4>(*fill_color, "fill_color");
+            if (!parsed) {
+                return core::Result<UiSkin>::failure(parsed.error().code, parsed.error().message);
+            }
+            slice.tint = parsed.value();
+        }
+        if (const auto* text_color = field(*prototype, "text_color"); text_color != nullptr) {
+            auto parsed = parse_float_list<4>(*text_color, "text_color");
+            if (!parsed) {
+                return core::Result<UiSkin>::failure(parsed.error().code, parsed.error().message);
+            }
+            slice.text_color = parsed.value();
+        }
+        auto status = skin.add_nine_slice(std::move(slice));
         if (!status) {
             return core::Result<UiSkin>::failure(status.error().code, status.error().message);
+        }
+        auto theme = skin.theme();
+        auto theme_changed = false;
+        if (const auto* background = field(*prototype, "theme_background_color");
+            background != nullptr) {
+            auto parsed = parse_float_list<4>(*background, "theme_background_color");
+            if (!parsed) {
+                return core::Result<UiSkin>::failure(parsed.error().code, parsed.error().message);
+            }
+            theme.shell_background = parsed.value();
+            theme_changed = true;
+        }
+        if (const auto* text_color = field(*prototype, "theme_text_color"); text_color != nullptr) {
+            auto parsed = parse_float_list<4>(*text_color, "theme_text_color");
+            if (!parsed) {
+                return core::Result<UiSkin>::failure(parsed.error().code, parsed.error().message);
+            }
+            theme.text_color = parsed.value();
+            theme_changed = true;
+        }
+        if (theme_changed) {
+            status = skin.set_theme(theme);
+            if (!status) {
+                return core::Result<UiSkin>::failure(status.error().code, status.error().message);
+            }
         }
     }
     return core::Result<UiSkin>::success(std::move(skin));
