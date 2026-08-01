@@ -185,6 +185,7 @@ struct RuntimeFrameStats {
     std::vector<ServerRuntimeTickStats> server_ticks;
     ClientRuntimeStats client;
     PresentationSynchronizationStats presentation;
+    std::optional<core::Error> client_presentation_error;
     std::uint64_t authoritative_world_tick = 0;
 };
 
@@ -273,6 +274,7 @@ class RuntimeSession final {
     std::vector<CleanupEntry> cleanup_entries_;
     SessionTeardownReport teardown_report_;
     std::uint64_t frame_count_ = 0;
+    std::int64_t last_tick_time_ms_ = 0;
     RuntimeSessionState state_ = RuntimeSessionState::created;
     bool accepting_commands_ = false;
 };

@@ -6,6 +6,7 @@
 #include "engine/world/coords/world_position.hpp"
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 namespace heartstead::entities {
@@ -33,6 +34,7 @@ struct EntityRecord {
     core::PrototypeId prototype_id;
     EntityKind kind = EntityKind::temporary_physics;
     Transform transform;
+    std::string encoded_state;
     bool persistent = false;
     bool sleeping = false;
 

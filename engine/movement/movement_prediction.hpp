@@ -24,6 +24,8 @@ inline constexpr std::string_view legacy_movement_input_bundle_payload_type =
 inline constexpr std::string_view movement_input_bundle_payload_type = "movement.input_bundle.v2";
 inline constexpr std::string_view player_assignment_payload_type = "movement.player_assignment.v1";
 inline constexpr std::string_view player_removal_payload_type = "movement.player_removal.v1";
+inline constexpr std::string_view player_controller_save_state_magic =
+    "heartstead.player_controller.v3\n";
 
 struct PlayerInputBundle {
     std::vector<PlayerInputFrame> frames;

@@ -73,6 +73,7 @@ class ClientRuntime final {
     player_snapshot(core::NetId player_net_id) const noexcept;
     [[nodiscard]] core::NetId local_player_net_id() const noexcept;
     [[nodiscard]] const movement::PlayerControllerSnapshot* local_player_snapshot() const noexcept;
+    [[nodiscard]] std::uint64_t latest_authoritative_tick() const noexcept;
     [[nodiscard]] const movement::PlayerControllerTickDiagnostics*
     last_prediction_diagnostics() const noexcept;
     [[nodiscard]] std::vector<const movement::PlayerControllerSnapshot*> movement_snapshots() const;

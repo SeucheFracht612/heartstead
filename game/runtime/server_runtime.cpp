@@ -3,6 +3,7 @@
 #include "engine/cargo/cargo_prototype.hpp"
 #include "engine/entities/entity_prototype.hpp"
 #include "engine/items/item_prototype.hpp"
+#include "engine/movement/movement_prediction.hpp"
 #include "engine/simulation/fire_prototype.hpp"
 #include "engine/world/chunks/chunk_edit_delta_codec.hpp"
 #include "engine/world/chunks/chunk_replication.hpp"
@@ -1189,6 +1190,18 @@ core::Status ServerRuntime::spawn_player(core::NetId client_id) {
     controller_state.scripted_target = transform.position;
     controller_state.mode = movement::PlayerControllerMode::grounded;
     controller_state.grounded = true;
+    if (saved_player != nullptr &&
+        saved_player->encoded_state.starts_with(movement::player_controller_save_state_magic)) {
+        const auto payload = std::string_view(saved_player->encoded_state).substr(
+            movement::player_controller_save_state_magic.size());
+        auto restored = movement::PlayerControllerSnapshotTextCodec::decode(
+            payload, player_controller_.config());
+        if (!restored) {
+            cleanup_entity();
+            return core::Status::failure(restored.error().code, restored.error().message);
+        }
+        controller_state = std::move(restored).value().state;
+    }
     movement::PlayerControllerRecord controller_record;
     controller_record.runtime_handle = runtime_handle;
     controller_record.net_id = net_id;

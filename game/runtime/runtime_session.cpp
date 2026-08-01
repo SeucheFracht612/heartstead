@@ -17,6 +17,28 @@ namespace heartstead::game {
 
 namespace {
 
+constexpr std::string_view runtime_tick_state_mod = "engine";
+constexpr std::string_view runtime_tick_state_key = "runtime.fixed_step_tick";
+
+[[nodiscard]] core::Result<std::uint64_t>
+saved_fixed_step_tick(const save::SaveSnapshot& snapshot) {
+    const auto found = std::ranges::find_if(snapshot.mod_states, [](const auto& state) {
+        return state.mod_id == runtime_tick_state_mod && state.state_key == runtime_tick_state_key;
+    });
+    if (found == snapshot.mod_states.end()) {
+        return core::Result<std::uint64_t>::success(0);
+    }
+    std::uint64_t tick = 0;
+    const auto [end, error] = std::from_chars(found->encoded_state.data(),
+                                              found->encoded_state.data() + found->encoded_state.size(),
+                                              tick);
+    if (error != std::errc{} || end != found->encoded_state.data() + found->encoded_state.size()) {
+        return core::Result<std::uint64_t>::failure(
+            "runtime_session.invalid_saved_tick", "saved fixed-step tick is not an unsigned integer");
+    }
+    return core::Result<std::uint64_t>::success(tick);
+}
+
 [[nodiscard]] std::string content_session_fingerprint(const save::SaveMetadata& metadata) {
     core::StableHash64 hash;
     hash.add_string(metadata.game_version);
@@ -191,7 +213,8 @@ RuntimeSession::RuntimeSession(RuntimeConfiguration config, SessionRequest reque
                                const modding::PrototypeRegistry& prototypes,
                                const world::VoxelPalette& voxel_palette)
     : config_(std::move(config)), request_(std::move(request)), prototypes_(&prototypes),
-      voxel_palette_(&voxel_palette), fixed_step_(config_.fixed_step) {}
+      voxel_palette_(&voxel_palette), fixed_step_(config_.fixed_step),
+      last_tick_time_ms_(request_.initial_runtime_time_ms) {}
 
 RuntimeSession::~RuntimeSession() {
     (void)shutdown();
@@ -238,6 +261,13 @@ RuntimeSession::create(RuntimeConfiguration config, SessionRequest request,
 
 core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& progress) {
     state_ = RuntimeSessionState::starting;
+    if (request_.initial_snapshot.has_value()) {
+        auto saved_tick = saved_fixed_step_tick(*request_.initial_snapshot);
+        if (!saved_tick) {
+            return core::Status::failure(saved_tick.error().code, saved_tick.error().message);
+        }
+        fixed_step_.reset(saved_tick.value());
+    }
     if (progress) {
         progress(SessionStartupPhase::preparing_world);
     }
@@ -455,35 +485,36 @@ core::Result<RuntimeFrameStats> RuntimeSession::run_frame(RuntimeFrameInput inpu
         if (!presented) {
             return core::Status::failure(presented.error().code, presented.error().message);
         }
-        stats.presentation.inserted_objects += presented.value().inserted_objects;
-        stats.presentation.adapter_count += presented.value().adapter_count;
-        stats.presentation.updated_objects += presented.value().updated_objects;
-        stats.presentation.removed_objects += presented.value().removed_objects;
-        stats.presentation.unchanged_objects += presented.value().unchanged_objects;
+        stats.presentation = std::move(presented).value();
         return core::Status::ok();
     };
     stats.server_ticks.reserve(frame.value().step_count);
     for (std::uint32_t step = 0; step < frame.value().step_count; ++step) {
         if (server_ != nullptr) {
             const auto tick = frame.value().first_tick + step;
+            const auto remaining_steps = frame.value().step_count - step - 1;
+            const auto remaining_ms = static_cast<std::int64_t>(
+                (static_cast<std::uint64_t>(remaining_steps) * frame.value().step_us) / 1'000U);
+            const auto tick_time_ms = std::max(last_tick_time_ms_ + 1, input.now_ms - remaining_ms);
             auto tick_result = server_->run_tick(
-                tick, 1.0 / static_cast<double>(config_.fixed_step.ticks_per_second), input.now_ms);
+                tick, 1.0 / static_cast<double>(config_.fixed_step.ticks_per_second), tick_time_ms);
             if (!tick_result) {
                 return fault_frame(tick_result.error());
             }
             stats.server_ticks.push_back(std::move(tick_result).value());
             stats.authoritative_world_tick = server_->world().world_time();
-        }
-        auto status = update_client(frame.value().first_tick + step);
-        if (!status) {
-            return fault_frame(status.error());
+            last_tick_time_ms_ = tick_time_ms;
         }
     }
-    if (frame.value().step_count == 0) {
-        auto status = update_client(fixed_step_.tick());
-        if (!status) {
-            return fault_frame(status.error());
+    const auto render_tick = server_ == nullptr ? 0 : fixed_step_.tick();
+    auto client_status = update_client(render_tick);
+    if (!client_status) {
+        if (server_ == nullptr) {
+            return fault_frame(client_status.error());
         }
+        stats.client_presentation_error = client_status.error();
+        presentation_synchronizer_.clear();
+        presentation_.clear();
     }
     last_frame_stats_ = stats;
     ++frame_count_;
@@ -621,6 +652,34 @@ core::Result<save::SaveSnapshot> RuntimeSession::capture_save_snapshot() const {
         return core::Result<save::SaveSnapshot>::failure(status.error().code,
                                                          status.error().message);
     }
+    auto runtime_tick_state = std::ranges::find_if(snapshot.value().mod_states, [](const auto& state) {
+        return state.mod_id == runtime_tick_state_mod && state.state_key == runtime_tick_state_key;
+    });
+    if (runtime_tick_state == snapshot.value().mod_states.end()) {
+        snapshot.value().mod_states.push_back(
+            {std::string(runtime_tick_state_mod), std::string(runtime_tick_state_key),
+             std::to_string(fixed_step_.tick())});
+    } else {
+        runtime_tick_state->encoded_state = std::to_string(fixed_step_.tick());
+    }
+    for (const auto* player : server_->players().records()) {
+        if (!player->persistent) {
+            continue;
+        }
+        const auto entity = std::ranges::find(snapshot.value().entities, player->save_id,
+                                              &save::EntitySaveRecord::save_id);
+        if (entity == snapshot.value().entities.end()) {
+            continue;
+        }
+        movement::PlayerControllerSnapshot controller;
+        controller.player_net_id = player->net_id;
+        controller.player_save_id = player->save_id;
+        controller.state = player->state;
+        controller.last_processed_input_sequence = player->state.last_input_sequence;
+        controller.collision_world_revision = 0;
+        entity->encoded_state = std::string(movement::player_controller_save_state_magic) +
+                                movement::PlayerControllerSnapshotTextCodec::encode(controller);
+    }
     const auto validation = save::SaveSnapshotValidator::validate(snapshot.value(), *prototypes_);
     if (!validation.valid()) {
         return core::Result<save::SaveSnapshot>::failure(
@@ -640,7 +699,9 @@ core::Status RuntimeSession::save_to(const save::FileSaveDatabase& database) con
 }
 
 RenderSnapshot RuntimeSession::capture_render_snapshot() const {
-    return presentation_.extract(fixed_step_.tick());
+    const auto tick = server_ == nullptr && client_ != nullptr ? client_->latest_authoritative_tick()
+                                                              : fixed_step_.tick();
+    return presentation_.extract(tick);
 }
 
 core::Status RuntimeSession::pump_client_messages(std::int64_t now_ms) {
@@ -759,36 +820,59 @@ core::Status RuntimeSession::shutdown() {
             result = status;
         }
     };
+    auto transport_status = core::Status::ok();
     if (remote_transport_ != nullptr) {
-        remember_failure(remote_transport_->disconnect(0));
+        transport_status = remote_transport_->disconnect(last_tick_time_ms_);
     } else if (server_ != nullptr && client_ != nullptr && server_->is_running()) {
-        remember_failure(server_->disconnect_client(client_->client_id()));
+        transport_status = server_->disconnect_client(client_->client_id());
     }
-    teardown_report_.transport_stopped = true;
+    remember_failure(transport_status);
+    teardown_report_.transport_stopped = static_cast<bool>(transport_status);
+    auto server_status = core::Status::ok();
     if (server_ != nullptr && server_->is_running()) {
-        remember_failure(server_->stop());
+        server_status = server_->stop();
+        remember_failure(server_status);
     }
-    teardown_report_.authoritative_ticking_stopped = true;
+    teardown_report_.authoritative_ticking_stopped = static_cast<bool>(server_status);
 
+    std::vector<CleanupEntry> failed_cleanup_entries;
     for (auto entry = cleanup_entries_.rbegin(); entry != cleanup_entries_.rend(); ++entry) {
-        remember_failure(entry->cleanup());
-        ++teardown_report_.completed_cleanup_count;
+        auto cleanup_status = entry->cleanup();
+        remember_failure(cleanup_status);
+        if (cleanup_status) {
+            ++teardown_report_.completed_cleanup_count;
+        } else {
+            failed_cleanup_entries.push_back(*entry);
+        }
     }
-    cleanup_entries_.clear();
+    std::ranges::reverse(failed_cleanup_entries);
+    cleanup_entries_ = std::move(failed_cleanup_entries);
     presentation_synchronizer_.clear();
     presentation_.clear();
     teardown_report_.presentation_objects_after = presentation_.stats().retained_object_count;
     teardown_report_.presentation_cleared = true;
-    client_.reset();
-    teardown_report_.client_destroyed = true;
-    remote_transport_.reset();
-    server_.reset();
-    teardown_report_.server_destroyed = true;
-    teardown_report_.server_entities_after = 0;
-    teardown_report_.physics_bodies_after = 0;
-    teardown_report_.session_jobs_after = 0;
+    if (transport_status) {
+        client_.reset();
+        remote_transport_.reset();
+        teardown_report_.client_destroyed = true;
+    }
+    if (server_status) {
+        server_.reset();
+        teardown_report_.server_destroyed = true;
+    }
+    teardown_report_.server_entities_after =
+        server_ == nullptr ? 0 : server_->entities().stats().live_entities;
+    teardown_report_.physics_bodies_after = server_ == nullptr ? 0 : server_->physics_body_count();
+    if (server_ == nullptr) {
+        teardown_report_.session_jobs_after = 0;
+    } else {
+        const auto& collision = server_->chunk_collision().stats();
+        teardown_report_.session_jobs_after =
+            collision.pending_chunk_count + collision.in_flight_job_count +
+            collision.completed_mailbox_count;
+    }
     accepting_commands_ = false;
-    state_ = RuntimeSessionState::stopped;
+    state_ = result ? RuntimeSessionState::stopped : RuntimeSessionState::stopping;
     return result;
 }
 

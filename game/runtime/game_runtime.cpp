@@ -705,8 +705,10 @@ core::Status GameRuntime::shutdown() {
     }
     auto status = session_->shutdown();
     last_teardown_report_ = session_->teardown_report();
-    session_.reset();
-    session_voxel_palette_.reset();
+    if (status) {
+        session_.reset();
+        session_voxel_palette_.reset();
+    }
     return status;
 }
 

@@ -286,6 +286,17 @@ core::Result<ClientRuntimeStats> ClientRuntime::synchronize(std::uint64_t render
     return core::Result<ClientRuntimeStats>::success(std::move(stats));
 }
 
+std::uint64_t ClientRuntime::latest_authoritative_tick() const noexcept {
+    std::uint64_t latest = 0;
+    for (const auto& [_, tick] : authoritative_movement_ticks_) {
+        latest = std::max(latest, tick);
+    }
+    for (const auto& [_, snapshot] : entity_motion_snapshots_) {
+        latest = std::max(latest, snapshot.simulation_tick);
+    }
+    return latest;
+}
+
 core::Result<net::CommandEnvelope>
 ClientRuntime::create_command(std::string type, std::string payload, std::int64_t now_ms) {
     return session_.create_command(std::move(type), std::move(payload), now_ms);

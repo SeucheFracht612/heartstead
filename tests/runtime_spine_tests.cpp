@@ -1522,8 +1522,18 @@ void test_session_save_and_reload_restores_authoritative_state() {
     const auto removed_authoritative =
         session->server()->world().chunks().get(removed_address.chunk, removed_address.local);
     assert(removed_authoritative && removed_authoritative.value().is_air());
-    const auto saved_player_position =
-        session->server()->player_for_client(session->client()->client_id())->state.position;
+    auto* saved_player = session->server()->player_for_client(session->client()->client_id());
+    assert(saved_player != nullptr);
+    saved_player->state.velocity = {1.25, -2.5, 0.75};
+    saved_player->state.mode = movement::PlayerControllerMode::airborne;
+    saved_player->state.grounded = false;
+    saved_player->state.crouched = true;
+    saved_player->state.health_milli = 73'000;
+    saved_player->state.stamina_milli = 21'000;
+    saved_player->state.yaw_centidegrees = 12'345;
+    saved_player->state.pitch_centidegrees = -2'500;
+    const auto saved_player_state = saved_player->state;
+    const auto saved_fixed_step_tick = session->fixed_step_tick();
     const auto grass_tuft = core::PrototypeId::parse("base:items/grass_tuft");
     assert(grass_tuft.has_value());
     const auto player_save_id =
@@ -1544,6 +1554,16 @@ void test_session_save_and_reload_restores_authoritative_state() {
     assert(persisted);
     assert(!persisted.value().chunk_edits.empty());
     assert(!persisted.value().entities.empty());
+    const auto persisted_player = std::ranges::find(
+        persisted.value().entities, entities::EntityKind::player,
+        &save::EntitySaveRecord::kind);
+    assert(persisted_player != persisted.value().entities.end());
+    assert(persisted_player->encoded_state.starts_with(
+        movement::player_controller_save_state_magic));
+    assert(std::ranges::any_of(persisted.value().mod_states, [&](const auto& state) {
+        return state.mod_id == "engine" && state.state_key == "runtime.fixed_step_tick" &&
+               state.encoded_state == std::to_string(saved_fixed_step_tick);
+    }));
     assert(persisted.value().voxel_palette.entries == report.voxel_palette.manifest().entries);
     assert(runtime.shutdown());
 
@@ -1577,6 +1597,7 @@ void test_session_save_and_reload_restores_authoritative_state() {
     assert(runtime.start_session_from_save({}, database));
     session = runtime.session();
     assert(session != nullptr && session->server() != nullptr && session->client() != nullptr);
+    assert(session->fixed_step_tick() == saved_fixed_step_tick);
     const auto authoritative =
         session->server()->world().chunks().get(address.chunk, address.local);
     const auto replicated = session->client()->world().chunks().get(address.chunk, address.local);
@@ -1592,9 +1613,17 @@ void test_session_save_and_reload_restores_authoritative_state() {
     const auto* restored_player =
         session->server()->player_for_client(session->client()->client_id());
     assert(restored_player != nullptr);
-    assert(restored_player->state.position == saved_player_position);
+    assert(restored_player->state.position == saved_player_state.position);
+    assert(restored_player->state.velocity == saved_player_state.velocity);
+    assert(restored_player->state.mode == saved_player_state.mode);
+    assert(restored_player->state.grounded == saved_player_state.grounded);
+    assert(restored_player->state.crouched == saved_player_state.crouched);
+    assert(restored_player->state.health_milli == saved_player_state.health_milli);
+    assert(restored_player->state.stamina_milli == saved_player_state.stamina_milli);
+    assert(restored_player->state.yaw_centidegrees == saved_player_state.yaw_centidegrees);
+    assert(restored_player->state.pitch_centidegrees == saved_player_state.pitch_centidegrees);
     assert(session->client()->local_player_snapshot() != nullptr);
-    assert(session->client()->local_player_snapshot()->state.position == saved_player_position);
+    assert(session->client()->local_player_snapshot()->state.position == saved_player_state.position);
     assert(runtime.shutdown());
     std::filesystem::remove_all(save_root);
 }
@@ -1946,7 +1975,7 @@ void test_feature_registries_reject_missing_callbacks() {
     assert(!status && status.error().code == "gameplay_module.presentation_callback_missing");
 }
 
-void test_feature_failures_are_contextual_and_frame_failures_are_terminal() {
+void test_feature_failures_are_contextual_and_client_failures_are_isolated() {
     const auto report = content::ContentValidation::validate(source_root());
     assert(!report.has_errors());
     auto runtime = make_runtime(report);
@@ -1973,18 +2002,19 @@ void test_feature_failures_are_contextual_and_frame_failures_are_terminal() {
     assert(runtime.start_session(std::move(replication_config), make_session_request(report)));
     assert(runtime.submit_command("test.failing_replication.trigger", {}, 10));
     auto frame = runtime.run_frame({16'667, 17});
-    assert(!frame && frame.error().code == "test.replication_failed");
-    assert(frame.error().message.find("test.failing_replication.delta") != std::string::npos);
-    assert(!runtime.session()->is_running());
-    assert(runtime.session()->fault().has_value());
-    assert(runtime.session()->fault()->code == "test.replication_failed");
+    assert(frame);
+    assert(frame.value().client_presentation_error.has_value());
+    assert(frame.value().client_presentation_error->code == "test.replication_failed");
+    assert(frame.value().client_presentation_error->message.find(
+               "test.failing_replication.delta") != std::string::npos);
+    assert(runtime.session()->is_running());
+    assert(!runtime.session()->fault().has_value());
     const auto diagnostics = game::GameInspector::inspect(*runtime.session());
-    assert(diagnostics.state == "faulted");
-    assert(diagnostics.find_field("fault_code")->value == "test.replication_failed");
-    assert(!diagnostics.issues.empty());
+    assert(diagnostics.state == "running");
     auto retried = runtime.run_frame({16'667, 34});
-    assert(!retried && retried.error().code == "runtime_session.faulted");
-    assert(!runtime.submit_command("test.failing_replication.trigger", {}, 20));
+    assert(retried);
+    assert(!retried.value().client_presentation_error.has_value());
+    assert(runtime.submit_command("test.failing_replication.trigger", {}, 20));
     assert(runtime.shutdown());
 }
 
@@ -2038,7 +2068,7 @@ int main() {
     test_gameplay_modules_extend_runtime_through_registration_contract();
     test_replication_tombstone_removes_presentation_proxy();
     test_feature_registries_reject_missing_callbacks();
-    test_feature_failures_are_contextual_and_frame_failures_are_terminal();
+    test_feature_failures_are_contextual_and_client_failures_are_isolated();
     test_runtime_configuration_rejects_invalid_compositions();
     return 0;
 }

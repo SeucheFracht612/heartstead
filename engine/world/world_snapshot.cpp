@@ -155,7 +155,7 @@ core::Result<save::SaveSnapshot> WorldSnapshotBridge::export_snapshot(const Worl
                 entity->prototype_id,
                 entity->kind,
                 entity->sleeping,
-                {},
+                entity->encoded_state,
                 entity->transform,
             });
         }
@@ -376,6 +376,7 @@ core::Result<WorldState> WorldSnapshotBridge::import_snapshot(const save::SaveSn
         record.prototype_id = entity.prototype_id;
         record.kind = entity.kind;
         record.transform = entity.transform;
+        record.encoded_state = entity.encoded_state;
         record.persistent = true;
         record.sleeping = entity.sleeping;
         status = state.entities().insert(record);

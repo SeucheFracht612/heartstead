@@ -1116,10 +1116,15 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             if (!status && first_failure) {
                 first_failure = status;
             }
-            session_runtime.reset();
-            runtime_stats.reset();
-            player_camera_frame.reset();
-            ++completed_session_count;
+            if (status) {
+                session_runtime.reset();
+                runtime_stats.reset();
+                player_camera_frame.reset();
+                ++completed_session_count;
+            }
+        }
+        if (!first_failure) {
+            return first_failure;
         }
         active_save_slot.clear();
         active_save_path.reset();
