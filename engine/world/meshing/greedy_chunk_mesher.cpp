@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
@@ -341,28 +342,39 @@ struct CubeCellSummary {
 validate_and_count_cube_cells(const ChunkNeighborhoodSnapshot& neighborhood,
                               const BlockRenderTableSnapshot& render_table) {
     CubeCellSummary result;
-    for (std::uint16_t z = 0; z < edge; ++z) {
-        for (std::uint16_t y = 0; y < edge; ++y) {
-            for (std::uint16_t x = 0; x < edge; ++x) {
-                const auto cell = snapshot_cell(neighborhood, x, y, z);
-                if (cell.is_air()) {
-                    continue;
-                }
-                const auto* block = find_block(render_table, cell.type);
-                if (block == nullptr) {
-                    return core::Result<CubeCellSummary>::failure(
-                        "chunk_mesh.unknown_voxel_type",
-                        "snapshot contains a voxel type missing from its block render table");
-                }
-                if (block->geometry == MeshingGeometryKind::full_cube &&
-                    block->render_phase != MeshingRenderPhase::fluid) {
-                    ++result.count;
-                    result.minimum = {std::min(result.minimum.x, x), std::min(result.minimum.y, y),
-                                      std::min(result.minimum.z, z)};
-                    result.maximum = {std::max(result.maximum.x, x), std::max(result.maximum.y, y),
-                                      std::max(result.maximum.z, z)};
-                }
+    constexpr auto edge_size = static_cast<std::size_t>(edge);
+    constexpr auto slice_size = edge_size * edge_size;
+    const auto words = neighborhood.center_occupancy.words();
+    for (std::size_t word_index = 0; word_index < words.size(); ++word_index) {
+        auto word = words[word_index];
+        while (word != 0) {
+            const auto bit_index = static_cast<std::size_t>(std::countr_zero(word));
+            const auto index = word_index * 64U + bit_index;
+            const auto z = static_cast<std::uint16_t>(index / slice_size);
+            const auto remainder = index % slice_size;
+            const auto y = static_cast<std::uint16_t>(remainder / edge_size);
+            const auto x = static_cast<std::uint16_t>(remainder % edge_size);
+            const auto cell = snapshot_cell(neighborhood, x, y, z);
+            if (cell.is_air()) {
+                return core::Result<CubeCellSummary>::failure(
+                    "chunk_mesh.invalid_occupancy_mask",
+                    "snapshot occupancy mask marks an air voxel as occupied");
             }
+            const auto* block = find_block(render_table, cell.type);
+            if (block == nullptr) {
+                return core::Result<CubeCellSummary>::failure(
+                    "chunk_mesh.unknown_voxel_type",
+                    "snapshot contains a voxel type missing from its block render table");
+            }
+            if (block->geometry == MeshingGeometryKind::full_cube &&
+                block->render_phase != MeshingRenderPhase::fluid) {
+                ++result.count;
+                result.minimum = {std::min(result.minimum.x, x), std::min(result.minimum.y, y),
+                                  std::min(result.minimum.z, z)};
+                result.maximum = {std::max(result.maximum.x, x), std::max(result.maximum.y, y),
+                                  std::max(result.maximum.z, z)};
+            }
+            word &= word - std::uint64_t{1};
         }
     }
     return core::Result<CubeCellSummary>::success(result);

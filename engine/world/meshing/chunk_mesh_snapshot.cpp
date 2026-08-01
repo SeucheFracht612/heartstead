@@ -1,6 +1,7 @@
 #include "engine/world/meshing/chunk_mesh_snapshot.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -200,8 +201,17 @@ std::size_t ChunkNeighborhoodSnapshot::cell_count() const noexcept {
     return cells.size();
 }
 
+bool ChunkNeighborhoodSnapshot::center_occupied(std::size_t index) const noexcept {
+    return center_occupancy.occupied(index);
+}
+
+bool ChunkNeighborhoodSnapshot::center_occupied(VoxelCoord coordinate) const noexcept {
+    return center_occupancy.occupied(coordinate);
+}
+
 core::Status ChunkNeighborhoodSnapshot::validate() const {
     if (!center_identity.is_valid() || center_revision == 0 ||
+        center_occupancy.content_revision() != center_revision ||
         halo_radius > BlockModelDefinition::max_dependency_radius) {
         return core::Status::failure("chunk_mesh.invalid_neighborhood_metadata",
                                      "chunk neighborhood metadata is invalid");
@@ -246,6 +256,40 @@ core::Result<std::uint16_t> required_chunk_halo(std::span<const VoxelCell> cente
     return core::Result<std::uint16_t>::success(required);
 }
 
+core::Result<std::uint16_t>
+required_chunk_halo(std::span<const VoxelCell> center_cells,
+                    const VoxelOccupancyMask& occupancy,
+                    const BlockRenderTableSnapshot& render_table) {
+    if (center_cells.size() != VoxelChunk::total_cells) {
+        return core::Result<std::uint16_t>::failure("chunk_mesh.invalid_center_snapshot",
+                                                    "center chunk snapshot has an invalid size");
+    }
+    std::uint16_t required = 0;
+    const auto words = occupancy.words();
+    for (std::size_t word_index = 0; word_index < words.size(); ++word_index) {
+        auto word = words[word_index];
+        while (word != 0) {
+            const auto bit_index = static_cast<std::size_t>(std::countr_zero(word));
+            const auto index = word_index * 64U + bit_index;
+            const auto cell = center_cells[index];
+            if (cell.is_air()) {
+                return core::Result<std::uint16_t>::failure(
+                    "chunk_mesh.invalid_occupancy_mask",
+                    "center occupancy mask marks an air voxel as occupied");
+            }
+            const auto* block = render_table.find(cell.type);
+            if (block == nullptr) {
+                return core::Result<std::uint16_t>::failure(
+                    "chunk_mesh.unknown_voxel_type",
+                    "center chunk contains a voxel missing from the block render table");
+            }
+            required = std::max(required, block->neighbor_dependency_radius);
+            word &= word - std::uint64_t{1};
+        }
+    }
+    return core::Result<std::uint16_t>::success(required);
+}
+
 core::Result<ChunkNeighborhoodSnapshot>
 build_chunk_neighborhood_snapshot(const ChunkDatabase& chunks, ChunkIdentity center,
                                   const BlockRenderTableSnapshot& render_table,
@@ -256,7 +300,13 @@ build_chunk_neighborhood_snapshot(const ChunkDatabase& chunks, ChunkIdentity cen
             "chunk_mesh.stale_snapshot_identity",
             "cannot snapshot an unloaded or superseded chunk identity");
     }
-    const auto halo = required_chunk_halo(center_chunk->cells(), render_table);
+    if (center_chunk->occupancy().content_revision() != center_chunk->content_revision()) {
+        return core::Result<ChunkNeighborhoodSnapshot>::failure(
+            "chunk_mesh.stale_occupancy_mask",
+            "cannot snapshot a chunk whose occupancy mask revision is stale");
+    }
+    const auto halo =
+        required_chunk_halo(center_chunk->cells(), center_chunk->occupancy(), render_table);
     if (!halo) {
         return core::Result<ChunkNeighborhoodSnapshot>::failure(halo.error().code,
                                                                 halo.error().message);
@@ -265,6 +315,7 @@ build_chunk_neighborhood_snapshot(const ChunkDatabase& chunks, ChunkIdentity cen
     ChunkNeighborhoodSnapshot result;
     result.center_identity = center;
     result.center_revision = center_chunk->content_revision();
+    result.center_occupancy = center_chunk->occupancy();
     result.halo_radius = halo.value();
     result.side_length =
         static_cast<std::uint16_t>(static_cast<std::uint32_t>(VoxelChunk::edge_length) +

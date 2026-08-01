@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -1026,65 +1027,77 @@ core::Result<ChunkMesh> build_snapshot_surface_mesh(const ChunkNeighborhoodSnaps
     mesh.chunk_coord = neighborhood.center_identity.coordinate;
     mesh.provided_halo_radius = neighborhood.halo_radius;
     mesh.required_halo_radius = neighborhood.halo_radius;
-    for (std::uint16_t z = 0; z < VoxelChunk::edge_length; ++z) {
-        for (std::uint16_t y = 0; y < VoxelChunk::edge_length; ++y) {
-            for (std::uint16_t x = 0; x < VoxelChunk::edge_length; ++x) {
-                const auto cell = neighborhood.cell(x, y, z);
-                if (cell.is_air()) {
-                    continue;
+    constexpr auto edge_size = static_cast<std::size_t>(VoxelChunk::edge_length);
+    constexpr auto slice_size = edge_size * edge_size;
+    const auto words = neighborhood.center_occupancy.words();
+    for (std::size_t word_index = 0; word_index < words.size(); ++word_index) {
+        auto word = words[word_index];
+        while (word != 0) {
+            const auto bit_index = static_cast<std::size_t>(std::countr_zero(word));
+            const auto index = word_index * 64U + bit_index;
+            const auto z = static_cast<std::uint16_t>(index / slice_size);
+            const auto remainder = index % slice_size;
+            const auto y = static_cast<std::uint16_t>(remainder / edge_size);
+            const auto x = static_cast<std::uint16_t>(remainder % edge_size);
+            const auto cell = neighborhood.cell(x, y, z);
+            if (cell.is_air()) {
+                return core::Result<ChunkMesh>::failure(
+                    "chunk_mesh.invalid_occupancy_mask",
+                    "snapshot occupancy mask marks an air voxel as occupied");
+            }
+            const auto* block = render_table.find(cell.type);
+            if (block == nullptr) {
+                return core::Result<ChunkMesh>::failure(
+                    "chunk_mesh.unknown_voxel_type",
+                    "snapshot contains a voxel type missing from its block render table");
+            }
+            if (specialized_only && block->geometry == MeshingGeometryKind::full_cube &&
+                block->render_phase != MeshingRenderPhase::fluid) {
+                word &= word - std::uint64_t{1};
+                continue;
+            }
+            if (block->render_phase == MeshingRenderPhase::fluid) {
+                const auto fluid_query = [&neighborhood, &render_table](std::int32_t query_x,
+                                                                        std::int32_t query_y,
+                                                                        std::int32_t query_z) {
+                    const auto queried =
+                        query_cell(neighborhood, render_table, query_x, query_y, query_z);
+                    return FluidMeshCell{queried.cell, is_full_occluder(queried)};
+                };
+                auto fluid_status = add_fluid_cell(
+                    mesh, fluid_query, {x, y, z}, cell,
+                    block->material_index == 0 ? cell.type : block->material_index);
+                if (!fluid_status) {
+                    return core::Result<ChunkMesh>::failure(fluid_status.error().code,
+                                                            fluid_status.error().message);
                 }
-                const auto* block = render_table.find(cell.type);
-                if (block == nullptr) {
-                    return core::Result<ChunkMesh>::failure(
-                        "chunk_mesh.unknown_voxel_type",
-                        "snapshot contains a voxel type missing from its block render table");
-                }
-                if (specialized_only && block->geometry == MeshingGeometryKind::full_cube &&
-                    block->render_phase != MeshingRenderPhase::fluid) {
-                    continue;
-                }
-                if (block->render_phase == MeshingRenderPhase::fluid) {
-                    const auto fluid_query = [&neighborhood, &render_table](std::int32_t query_x,
-                                                                            std::int32_t query_y,
-                                                                            std::int32_t query_z) {
-                        const auto queried =
-                            query_cell(neighborhood, render_table, query_x, query_y, query_z);
-                        return FluidMeshCell{queried.cell, is_full_occluder(queried)};
-                    };
-                    auto fluid_status = add_fluid_cell(
-                        mesh, fluid_query, {x, y, z}, cell,
-                        block->material_index == 0 ? cell.type : block->material_index);
-                    if (!fluid_status) {
-                        return core::Result<ChunkMesh>::failure(fluid_status.error().code,
-                                                                fluid_status.error().message);
-                    }
-                } else if (block->geometry == MeshingGeometryKind::rich_model) {
-                    add_rich_instance(mesh, {x, y, z}, cell, *block);
-                } else if (block->geometry == MeshingGeometryKind::cross_plane) {
-                    add_cross_planes(mesh, {x, y, z}, cell,
-                                     block->material_index == 0 ? cell.type : block->material_index,
-                                     block->render_phase);
-                } else {
-                    for (const auto& box : block->boxes) {
-                        add_box(mesh, neighborhood, render_table, {x, y, z}, cell, box,
-                                block->material_index == 0 ? cell.type : block->material_index,
-                                block->render_phase);
-                    }
-                    for (const auto& triangle : block->triangles) {
-                        add_authored_triangle(
-                            mesh, {x, y, z}, cell, triangle,
+            } else if (block->geometry == MeshingGeometryKind::rich_model) {
+                add_rich_instance(mesh, {x, y, z}, cell, *block);
+            } else if (block->geometry == MeshingGeometryKind::cross_plane) {
+                add_cross_planes(mesh, {x, y, z}, cell,
+                                 block->material_index == 0 ? cell.type : block->material_index,
+                                 block->render_phase);
+            } else {
+                for (const auto& box : block->boxes) {
+                    add_box(mesh, neighborhood, render_table, {x, y, z}, cell, box,
                             block->material_index == 0 ? cell.type : block->material_index,
-                            block->render_phase,
-                            [&neighborhood, &render_table](
-                                std::int32_t query_x, std::int32_t query_y, std::int32_t query_z) {
-                                const auto queried = query_cell(neighborhood, render_table, query_x,
-                                                                query_y, query_z);
-                                return AuthoredNeighbor{is_full_occluder(queried),
-                                                        queried.cell.light};
-                            });
-                    }
+                            block->render_phase);
+                }
+                for (const auto& triangle : block->triangles) {
+                    add_authored_triangle(
+                        mesh, {x, y, z}, cell, triangle,
+                        block->material_index == 0 ? cell.type : block->material_index,
+                        block->render_phase,
+                        [&neighborhood, &render_table](std::int32_t query_x,
+                                                       std::int32_t query_y,
+                                                       std::int32_t query_z) {
+                            const auto queried = query_cell(neighborhood, render_table, query_x,
+                                                            query_y, query_z);
+                            return AuthoredNeighbor{is_full_occluder(queried), queried.cell.light};
+                        });
                 }
             }
+            word &= word - std::uint64_t{1};
         }
     }
 

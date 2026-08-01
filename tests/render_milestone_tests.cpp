@@ -293,7 +293,15 @@ void test_immutable_chunk_meshing_snapshot() {
     assert(snapshot.value().side_length == 34);
     assert(snapshot.value().cell_count() == 34U * 34U * 34U);
     assert(snapshot.value().dependencies.size() == 27);
+    assert(snapshot.value().center_occupancy.content_revision() == center.content_revision());
+    assert(snapshot.value().center_occupancy.occupied_count() == 1);
+    assert(snapshot.value().center_occupied({31, 4, 5}));
+    assert(!snapshot.value().center_occupied({30, 4, 5}));
     assert(world::dependency_revisions_match(chunks, snapshot.value().dependencies));
+
+    auto stale_mask_snapshot = snapshot.value();
+    stale_mask_snapshot.center_occupancy = {};
+    assert(!stale_mask_snapshot.validate());
 
     auto immutable_mesh = world::ChunkMesher::build_surface_mesh(snapshot.value(), table.value());
     assert(immutable_mesh);

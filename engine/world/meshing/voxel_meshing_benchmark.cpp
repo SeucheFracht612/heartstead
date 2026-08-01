@@ -124,6 +124,11 @@ constexpr std::uint64_t checksum_prime = 1'099'511'628'211ULL;
 [[nodiscard]] std::uint64_t snapshot_checksum(const ChunkNeighborhoodSnapshot& snapshot) noexcept {
     auto result = combine_checksum(0, snapshot.center_revision);
     result = combine_checksum(result, snapshot.side_length);
+    result = combine_checksum(result, snapshot.center_occupancy.content_revision());
+    result = combine_checksum(result, snapshot.center_occupancy.occupied_count());
+    for (const auto word : snapshot.center_occupancy.words()) {
+        result = combine_checksum(result, word);
+    }
     for (const auto cell : snapshot.cells) {
         result = cell_checksum(result, cell);
     }
@@ -720,7 +725,8 @@ run_voxel_meshing_benchmark(const VoxelMeshingBenchmarkConfig& config) {
         measurement.snapshot_cell_count = snapshot.value().cells.size();
         measurement.snapshot_payload_bytes =
             snapshot.value().cells.size() * sizeof(VoxelCell) +
-            snapshot.value().dependencies.size() * sizeof(ChunkDependencyRevision);
+            snapshot.value().dependencies.size() * sizeof(ChunkDependencyRevision) +
+            VoxelOccupancyMask::payload_bytes;
         measurement.snapshot_allocated_bytes =
             sizeof(ChunkNeighborhoodSnapshot) +
             snapshot.value().cells.capacity() * sizeof(VoxelCell) +

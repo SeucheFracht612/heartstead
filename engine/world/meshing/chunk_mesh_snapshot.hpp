@@ -76,6 +76,7 @@ struct ChunkDependencyRevision {
 struct ChunkNeighborhoodSnapshot {
     ChunkIdentity center_identity{};
     std::uint64_t center_revision = 0;
+    VoxelOccupancyMask center_occupancy;
     std::uint16_t halo_radius = 0;
     std::uint16_t side_length = VoxelChunk::edge_length;
     std::vector<VoxelCell> cells;
@@ -84,12 +85,19 @@ struct ChunkNeighborhoodSnapshot {
     [[nodiscard]] VoxelCell cell(std::uint16_t x, std::uint16_t y, std::uint16_t z) const noexcept;
     [[nodiscard]] VoxelCell cell_relative(std::int32_t x, std::int32_t y,
                                           std::int32_t z) const noexcept;
+    [[nodiscard]] bool center_occupied(std::size_t index) const noexcept;
+    [[nodiscard]] bool center_occupied(VoxelCoord coordinate) const noexcept;
     [[nodiscard]] std::size_t cell_count() const noexcept;
     [[nodiscard]] core::Status validate() const;
 };
 
 [[nodiscard]] core::Result<std::uint16_t>
 required_chunk_halo(std::span<const VoxelCell> center_cells,
+                    const BlockRenderTableSnapshot& render_table);
+
+[[nodiscard]] core::Result<std::uint16_t>
+required_chunk_halo(std::span<const VoxelCell> center_cells,
+                    const VoxelOccupancyMask& occupancy,
                     const BlockRenderTableSnapshot& render_table);
 
 [[nodiscard]] core::Result<ChunkNeighborhoodSnapshot>

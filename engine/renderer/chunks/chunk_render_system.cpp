@@ -934,7 +934,8 @@ core::Status ChunkRenderSystem::schedule_mesh_jobs(world::WorldState& world,
                                          "chunk mesh work requires a valid stage ticket");
         }
 
-        const auto halo = world::required_chunk_halo(chunk->cells(), *render_table_);
+        const auto halo =
+            world::required_chunk_halo(chunk->cells(), chunk->occupancy(), *render_table_);
         if (!halo) {
             ++stats_.failed_mesh_count;
             ++stats_.total_failed_mesh_count;
