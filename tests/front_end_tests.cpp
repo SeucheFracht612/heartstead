@@ -1,12 +1,15 @@
 #include "engine/save/save_slot.hpp"
 #include "game/application/application_settings.hpp"
+#include "game/application/launch_options.hpp"
 #include "game/application/main_menu.hpp"
+#include "game/application/runtime_diagnostics.hpp"
 
 #include <cassert>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 
 namespace {
 
@@ -154,11 +157,73 @@ void test_save_world_management() {
     assert(corrupt.validation_error.has_value());
 }
 
+void test_command_line_launch_contract() {
+    using namespace std::string_view_literals;
+    const std::string_view new_world[]{"--new-world"sv, "CLI Homestead"sv, "--seed"sv,
+                                       "184467"sv, "--safe-mode"sv};
+    auto parsed = game::parse_heartstead_launch_options(new_world);
+    assert(parsed);
+    assert(parsed.value().safe_mode);
+    assert(parsed.value().initial_launch.has_value());
+    assert(parsed.value().initial_launch->kind == game::InitialLaunchKind::new_world);
+    assert(parsed.value().initial_launch->target == "CLI Homestead");
+    assert(parsed.value().initial_launch->seed == 184467);
+
+    const std::string_view world[]{"--world"sv, "/tmp/world-a"sv, "--headless"sv,
+                                   "--native-frames"sv, "60"sv};
+    parsed = game::parse_heartstead_launch_options(world);
+    assert(parsed && parsed.value().headless && parsed.value().maximum_frames == 60);
+    assert(parsed.value().initial_launch->kind == game::InitialLaunchKind::world);
+
+    const std::string_view conflict[]{"--scenario"sv, "base:scenarios/renderer_proof"sv,
+                                      "--connect"sv, "127.0.0.1:7777"sv};
+    parsed = game::parse_heartstead_launch_options(conflict);
+    assert(!parsed && parsed.error().code == "heartstead.conflicting_launch_options");
+
+    const std::string_view invalid_seed[]{"--connect"sv, "127.0.0.1:7777"sv, "--seed"sv,
+                                          "12"sv};
+    parsed = game::parse_heartstead_launch_options(invalid_seed);
+    assert(!parsed && parsed.error().code == "heartstead.seed_not_supported");
+
+    const std::string_view help[]{"--help"sv};
+    parsed = game::parse_heartstead_launch_options(help);
+    assert(parsed && parsed.value().show_help);
+    assert(game::heartstead_command_line_usage("heartstead").find("--scenario") !=
+           std::string::npos);
+}
+
+void test_runtime_diagnostics_are_explicit() {
+    game::RuntimeDiagnosticsSnapshot snapshot;
+    snapshot.application_state = game::ApplicationState::in_game;
+    snapshot.session_state = game::RuntimeSessionState::running;
+    snapshot.session_mode = game::SessionMode::local_single_player;
+    snapshot.connection_state = game::SessionConnectionState::connected;
+    snapshot.active_world = "Diagnostics World";
+    snapshot.session_generation = 9;
+    snapshot.authoritative_tick = 120;
+    snapshot.physics_objects = 4;
+    snapshot.device_gpu_usage_bytes = 32U * 1024U * 1024U;
+    snapshot.device_gpu_budget_bytes = 512U * 1024U * 1024U;
+    const auto text = game::format_runtime_diagnostics(snapshot);
+    assert(text.find("application InGame") != std::string::npos);
+    assert(text.find("generation 9") != std::string::npos);
+    assert(text.find("budget telemetry unavailable") == std::string::npos);
+
+    const auto process = game::sample_process_resources();
+#if defined(__linux__)
+    assert(process.resident_memory_bytes.has_value());
+    assert(process.thread_count.has_value() && *process.thread_count > 0);
+    assert(process.open_file_count.has_value() && *process.open_file_count > 0);
+#endif
+}
+
 } // namespace
 
 int main() {
     test_main_menu_navigation();
     test_application_settings_round_trip();
     test_save_world_management();
+    test_command_line_launch_contract();
+    test_runtime_diagnostics_are_explicit();
     return 0;
 }

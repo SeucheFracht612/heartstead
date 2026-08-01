@@ -176,7 +176,8 @@ Inspect production assets and state mappings through the real presentation path:
 For interactive sign-off, run `heartstead_dev_game --native-frames 1200 --no-save`. Check the
 always-visible minimap, press `M` for the full map and Escape to close it, resize/minimize the
 window, edit chunk boundaries rapidly, visit water, and inspect `F3` diagnostics. High is the game
-default. Low/Medium/Ultra currently have automated policy coverage but no player-facing selector.
+default. The player Options screen exposes all four tested policy presets, although not every
+environment subsystem consumes every quality value yet.
 
 Use [Visual regression](visual_regression.md) for PNG capture/compare and
 [Renderer benchmarks](../performance/renderer_benchmarks.md) for performance methodology.
@@ -189,7 +190,7 @@ Use two processes for a real socket path rather than relying only on the in-memo
 ./build/default-debug/apps/dedicated_server/heartstead_dedicated_server \
   --bind 127.0.0.1:7777
 
-./build/default-debug/apps/dev_game/heartstead_dev_game \
+./build/default-debug/apps/heartstead/heartstead \
   --connect 127.0.0.1:7777
 ```
 
@@ -201,6 +202,30 @@ For impaired-network testing, use `tools/netem_multiplayer.sh` on Linux to apply
 latency/jitter/loss profile. Do not turn one observed packet count or correction distance into a
 permanent architecture claim; keep durable acceptance thresholds in tests and record individual
 runs as artifacts.
+
+## Game-shell lifecycle checks
+
+Run the state, front-end, session, and repeated-replacement coverage with:
+
+```bash
+ctest --test-dir build/default-debug-werror \
+  -R 'application_state|front_end|runtime_session_lifecycle|game_shell_lifecycle|heartstead_.*shutdown_smoke' \
+  --output-on-failure
+```
+
+`heartstead_game_shell_lifecycle_stress_tests` warms the allocator, then replaces generated and
+packaged far-coordinate sessions repeatedly, reloads a persistent save, and checks teardown
+counters after each transition. On Linux it also bounds RSS growth and checks that thread and open
+file counts do not accumulate. Pair it with leak detection for ownership changes:
+
+```bash
+cmake --preset linux-clang-asan
+cmake --build --preset linux-clang-asan --target heartstead_game_shell_lifecycle_stress_tests
+ctest --preset linux-clang-asan-leaks -R game_shell_lifecycle_stress
+```
+
+The F3 panel is the native counterpart: record renderer object counts and Vulkan device memory
+before and after several world switches. A headless pass is not evidence of GPU-memory stability.
 
 ## Benchmarks
 

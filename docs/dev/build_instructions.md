@@ -34,7 +34,7 @@ ctest --preset default-debug
 Build one target while iterating:
 
 ```bash
-cmake --build --preset default-debug --target heartstead_dev_game
+cmake --build --preset default-debug --target heartstead
 ```
 
 List targets known to the configured build:

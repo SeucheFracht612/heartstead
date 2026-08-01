@@ -114,6 +114,19 @@ target_compile_definitions(
 heartstead_configure_test_target(heartstead_runtime_session_lifecycle_tests)
 heartstead_register_unit_test(heartstead_runtime_session_lifecycle_tests)
 
+add_executable(heartstead_game_shell_lifecycle_stress_tests
+               game_shell_lifecycle_stress_tests.cpp)
+target_link_libraries(heartstead_game_shell_lifecycle_stress_tests
+                      PRIVATE Heartstead::GameRuntime)
+target_compile_definitions(
+  heartstead_game_shell_lifecycle_stress_tests
+  PRIVATE HEARTSTEAD_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+heartstead_configure_test_target(heartstead_game_shell_lifecycle_stress_tests)
+heartstead_register_unit_test(heartstead_game_shell_lifecycle_stress_tests)
+set_tests_properties(heartstead_game_shell_lifecycle_stress_tests
+                     PROPERTIES TIMEOUT 240 LABELS "lifecycle;stress")
+
 add_executable(heartstead_developer_world_tests developer_world_tests.cpp)
 target_link_libraries(heartstead_developer_world_tests PRIVATE Heartstead::GameRuntime)
 target_compile_definitions(
@@ -142,6 +155,21 @@ endif()
 if(TARGET heartstead)
   add_test(NAME heartstead_menu_headless_smoke COMMAND heartstead --frames 5)
   set_tests_properties(heartstead_menu_headless_smoke PROPERTIES TIMEOUT 60 LABELS smoke)
+  add_test(
+    NAME heartstead_loading_shutdown_smoke
+    COMMAND heartstead --scenario base:scenarios/foundation_slice --frames 5
+  )
+  set_tests_properties(heartstead_loading_shutdown_smoke
+                       PROPERTIES TIMEOUT 60 LABELS "smoke;lifecycle")
+  add_test(
+    NAME heartstead_active_session_shutdown_smoke
+    COMMAND heartstead --scenario base:scenarios/foundation_slice --frames 10000
+  )
+  set_tests_properties(
+    heartstead_active_session_shutdown_smoke
+    PROPERTIES TIMEOUT 60 LABELS "smoke;lifecycle"
+               PASS_REGULAR_EXPRESSION "state=InGame"
+  )
 endif()
 
 add_executable(heartstead_client_audio_presentation_tests client_audio_presentation_tests.cpp)

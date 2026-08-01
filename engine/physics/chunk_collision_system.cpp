@@ -404,7 +404,17 @@ ChunkCollisionSystem::chunk_physics_position(world::ChunkCoord coordinate) const
     if (!position) {
         return core::Result<Vec3>::failure(position.error().code, position.error().message);
     }
-    return world::to_physics_local(position.value(), config_.physics_island);
+    auto local = world::to_physics_local(position.value(), config_.physics_island);
+    if (!local) {
+        return core::Result<Vec3>::failure(
+            local.error().code,
+            local.error().message + ": chunk " + std::to_string(coordinate.x) + "," +
+                std::to_string(coordinate.y) + "," + std::to_string(coordinate.z) +
+                " physics origin " + std::to_string(config_.physics_island.block.x) + "," +
+                std::to_string(config_.physics_island.block.y) + "," +
+                std::to_string(config_.physics_island.block.z));
+    }
+    return local;
 }
 
 void ChunkCollisionSystem::refresh_stats() noexcept {

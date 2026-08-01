@@ -99,6 +99,9 @@ void test_local_teardown_and_replacement(const content::ContentValidationReport&
         cleanup_order.emplace_back("second");
         return core::Status::ok();
     }));
+    auto duplicate_cleanup = first->register_cleanup("second", [] { return core::Status::ok(); });
+    assert(!duplicate_cleanup &&
+           duplicate_cleanup.error().code == "runtime_session.duplicate_cleanup");
     assert(first->request_stop());
     assert(!first->accepts_commands());
     assert(first->state() == game::RuntimeSessionState::stopping);
@@ -115,6 +118,9 @@ void test_local_teardown_and_replacement(const content::ContentValidationReport&
     assert(teardown.authoritative_ticking_stopped);
     assert(teardown.presentation_cleared);
     assert(teardown.presentation_objects_after == 0);
+    assert(teardown.server_entities_after == 0);
+    assert(teardown.physics_bodies_after == 0);
+    assert(teardown.session_jobs_after == 0);
     assert(teardown.completed_cleanup_count == 2);
     assert(teardown.client_destroyed && teardown.server_destroyed);
 

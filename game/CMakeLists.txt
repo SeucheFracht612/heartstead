@@ -8,7 +8,9 @@ target_sources(
     application/application_settings.cpp
     application/game_application.cpp
     application/heartstead_application_mode.cpp
+    application/launch_options.cpp
     application/main_menu.cpp
+    application/runtime_diagnostics.cpp
     foundation/foundation_world.cpp
     features/interaction/voxel_raycast.cpp
     features/interaction/voxel_commands.cpp
@@ -41,7 +43,9 @@ target_sources(
       application/application_settings.hpp
       application/game_application.hpp
       application/heartstead_application_mode.hpp
+      application/launch_options.hpp
       application/main_menu.hpp
+      application/runtime_diagnostics.hpp
       foundation/foundation_world.hpp
       features/interaction/voxel_raycast.hpp
       features/interaction/voxel_commands.hpp

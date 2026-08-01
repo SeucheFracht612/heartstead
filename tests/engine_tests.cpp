@@ -7996,11 +7996,20 @@ void test_file_save_slot_catalog() {
                "heartstead.save_slot.v1\nslot_id|other\n"
                "display_name|Other\ncreated_at_ms|0\nlast_saved_at_ms|0\nend\n");
     auto mismatched_metadata_slots = catalog.list_slots();
-    assert(!mismatched_metadata_slots);
-    assert(mismatched_metadata_slots.error().code == "save_slot.metadata_mismatch");
+    assert(mismatched_metadata_slots);
+    assert(mismatched_metadata_slots.value().size() == 2);
+    const auto mismatched_slot = std::ranges::find(
+        mismatched_metadata_slots.value(), "winter-2", &heartstead::save::SaveSlotSummary::slot_id);
+    assert(mismatched_slot != mismatched_metadata_slots.value().end());
+    assert(mismatched_slot->validation_error.has_value());
+    assert(mismatched_slot->validation_error->code == "save_slot.metadata_mismatch");
     auto mismatched_metadata_summary = catalog.summary();
-    assert(!mismatched_metadata_summary);
-    assert(mismatched_metadata_summary.error().code == "save_slot.metadata_mismatch");
+    assert(mismatched_metadata_summary);
+    auto mismatched_catalog_inspection =
+        heartstead::debug::Inspector::inspect(mismatched_metadata_summary.value());
+    assert(mismatched_catalog_inspection.state == "invalid");
+    assert(mismatched_catalog_inspection.find_field("invalid_slot_count")->value == "1");
+    assert(mismatched_catalog_inspection.has_errors());
 }
 
 void test_debug_inspection() {

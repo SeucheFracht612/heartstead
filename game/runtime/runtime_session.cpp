@@ -303,6 +303,13 @@ core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& pr
         server_desc.host.max_outbound_bytes_per_client_per_second =
             config_.max_outbound_bytes_per_client_per_second;
         server_desc.physics.backend = config_.physics_backend;
+        // Physics remains in a bounded float island. Anchor that island at the launch spawn so
+        // packaged worlds and saves at very large coordinates never pass absolute coordinates to
+        // the physics backend.
+        server_desc.chunk_collision.physics_island.block =
+            scenario.value().spawn_position.has_value()
+                ? scenario.value().spawn_position->anchor
+                : world::BlockCoord{};
         server_desc.chunk_fluids = config_.chunk_fluids;
         server_desc.chunk_lighting = config_.chunk_lighting;
         server_desc.simulation_ticks_per_second = config_.fixed_step.ticks_per_second;
@@ -716,6 +723,12 @@ core::Status RuntimeSession::register_cleanup(std::string name,
         return core::Status::failure("runtime_session.invalid_cleanup",
                                      "session cleanup requires a name and callback");
     }
+    if (std::ranges::any_of(cleanup_entries_, [&name](const CleanupEntry& entry) {
+            return entry.name == name;
+        })) {
+        return core::Status::failure("runtime_session.duplicate_cleanup",
+                                     "session cleanup callback is already registered: " + name);
+    }
     cleanup_entries_.push_back({std::move(name), std::move(cleanup)});
     return core::Status::ok();
 }
@@ -730,6 +743,14 @@ core::Status RuntimeSession::shutdown() {
     teardown_report_.presentation_objects_before = presentation_.stats().retained_object_count;
     teardown_report_.server_entities_before =
         server_ == nullptr ? 0 : server_->entities().stats().live_entities;
+    teardown_report_.physics_bodies_before =
+        server_ == nullptr ? 0 : server_->physics_body_count();
+    if (server_ != nullptr) {
+        const auto& collision = server_->chunk_collision().stats();
+        teardown_report_.session_jobs_before =
+            collision.pending_chunk_count + collision.in_flight_job_count +
+            collision.completed_mailbox_count;
+    }
     teardown_report_.registered_cleanup_count = cleanup_entries_.size();
     (void)request_stop();
     auto result = core::Status::ok();
@@ -763,6 +784,9 @@ core::Status RuntimeSession::shutdown() {
     remote_transport_.reset();
     server_.reset();
     teardown_report_.server_destroyed = true;
+    teardown_report_.server_entities_after = 0;
+    teardown_report_.physics_bodies_after = 0;
+    teardown_report_.session_jobs_after = 0;
     accepting_commands_ = false;
     state_ = RuntimeSessionState::stopped;
     return result;
@@ -810,6 +834,20 @@ const SessionLaunchRequest& RuntimeSession::launch_request() const noexcept {
 
 const SessionTeardownReport& RuntimeSession::teardown_report() const noexcept {
     return teardown_report_;
+}
+
+SessionResourceCounts RuntimeSession::resource_counts() const noexcept {
+    SessionResourceCounts counts;
+    counts.server_entities = server_ == nullptr ? 0 : server_->entities().stats().live_entities;
+    counts.physics_bodies = server_ == nullptr ? 0 : server_->physics_body_count();
+    counts.presentation_objects = presentation_.stats().retained_object_count;
+    counts.registered_cleanup_callbacks = cleanup_entries_.size();
+    if (server_ != nullptr) {
+        const auto& collision = server_->chunk_collision().stats();
+        counts.active_jobs = collision.pending_chunk_count + collision.in_flight_job_count +
+                             collision.completed_mailbox_count;
+    }
+    return counts;
 }
 
 ServerRuntime* RuntimeSession::server() noexcept {

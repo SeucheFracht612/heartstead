@@ -1094,6 +1094,12 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(empty_frame);
     assert(empty_frame.value().draw_count == 6);
 
+    assert(retained_renderer.clear_session_resources());
+    assert(retained_renderer.stats().loaded_chunks == 0);
+    assert(retained_renderer.stats().resident_chunks == 0);
+    assert(retained_renderer.stats().retained_objects == 0);
+    assert(retained_renderer.stats().retained_skin_palettes == 0);
+
     assert(retained_renderer.shutdown());
     assert(!retained_renderer.is_initialized());
     assert(retained_renderer.device() == nullptr);

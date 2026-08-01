@@ -11,9 +11,12 @@
 #include "engine/ui/widget_tree.hpp"
 #include "game/application/application_state.hpp"
 #include "game/application/main_menu.hpp"
+#include "game/application/runtime_diagnostics.hpp"
 #include "game/features/animals/wandering_animal_module.hpp"
+#include "game/features/interaction/voxel_raycast.hpp"
 #include "game/foundation/foundation_world.hpp"
 #include "game/presentation/client_audio_presentation.hpp"
+#include "game/presentation/model_presentation_system.hpp"
 #include "game/runtime/game_runtime.hpp"
 #include "game/scenarios/developer_world_registry.hpp"
 
@@ -250,6 +253,12 @@ const auto reduced_motion_id = ui::widget_id("heartstead.options.reduced_motion"
     return std::ranges::find(input.pressed_keys, key) != input.pressed_keys.end();
 }
 
+[[nodiscard]] bool mouse_pressed(const platform::WindowInputSnapshot& input,
+                                 platform::MouseButton button) noexcept {
+    return std::ranges::find(input.pressed_mouse_buttons, button) !=
+           input.pressed_mouse_buttons.end();
+}
+
 [[nodiscard]] std::optional<scenarios::ScenarioCategory>
 next_scenario_category(std::optional<scenarios::ScenarioCategory> category) noexcept {
     constexpr std::array categories{
@@ -372,6 +381,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     std::optional<SessionLaunchRequest> pending_launch;
     std::string pending_save_slot;
     std::string active_save_slot;
+    std::optional<std::filesystem::path> active_save_path;
     std::string active_world_name;
     SessionMode active_session_mode = SessionMode::local_single_player;
     PersistencePolicy active_persistence = PersistencePolicy::ephemeral;
@@ -385,6 +395,9 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     bool input_orientation_initialized = false;
     ClientAudioPresentation audio_presentation;
     bool audio_presentation_initialized = false;
+    ModelPresentationSystem model_presentation;
+    bool model_presentation_initialized = false;
+    core::PrototypeId placement_voxel;
     std::optional<movement::PlayerCameraFrame> player_camera_frame;
     std::optional<RuntimeFrameStats> runtime_stats;
     std::uint64_t frame_count = 0;
@@ -393,7 +406,68 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     std::uint64_t loading_generation = 0;
     SessionMode loading_mode = SessionMode::local_single_player;
     bool initialized = false;
+    bool diagnostics_visible = false;
     std::optional<core::Error> display_error;
+
+    [[nodiscard]] RuntimeDiagnosticsSnapshot diagnostics_snapshot() const {
+        RuntimeDiagnosticsSnapshot snapshot;
+        snapshot.application_state = states.state();
+        snapshot.active_world = active_world_name;
+        if (active_save_path.has_value()) {
+            snapshot.save_destination = active_save_path->string();
+        }
+        snapshot.pending_loading_operations = loading.valid() ? 1U : 0U;
+        if (loading_progress != nullptr && loading.valid()) {
+            snapshot.loading_phase = loading_progress->phase.load(std::memory_order_relaxed);
+        }
+        if (services != nullptr && services->jobs() != nullptr) {
+            snapshot.active_jobs = services->jobs()->pending_count();
+        }
+        if (runtime_stats.has_value()) {
+            snapshot.authoritative_tick = runtime_stats->authoritative_world_tick;
+            snapshot.interpolation_alpha = runtime_stats->fixed_step.interpolation_alpha;
+            snapshot.dropped_tick_time_us = runtime_stats->fixed_step.dropped_time_us;
+        }
+        if (session_runtime.has_value() && session_runtime->session() != nullptr) {
+            const auto* session = session_runtime->session();
+            snapshot.session_state = session->state();
+            snapshot.session_mode = session->launch_request().mode;
+            snapshot.connection_state = session->connection_state();
+            snapshot.session_generation = session->ownership_generation();
+            snapshot.fixed_step_tick = session->fixed_step_tick();
+            const auto resources = session->resource_counts();
+            snapshot.world_entities = resources.server_entities;
+            snapshot.physics_objects = resources.physics_bodies;
+            snapshot.presentation_objects = resources.presentation_objects;
+            snapshot.registered_session_callbacks = resources.registered_cleanup_callbacks;
+            snapshot.active_jobs += resources.active_jobs;
+            if (session->connection_state() == SessionConnectionState::connecting ||
+                session->connection_state() == SessionConnectionState::connected) {
+                snapshot.active_network_connections = 1;
+            }
+        }
+        if (services != nullptr && services->renderer() != nullptr) {
+            const auto& render = services->renderer()->stats();
+            snapshot.render_objects = render.retained_objects;
+            snapshot.asset_references =
+                static_cast<std::size_t>(render.resident_textures) + render.resident_static_meshes;
+            snapshot.resident_gpu_bytes = render.resident_texture_bytes +
+                                          render.resident_mesh_bytes +
+                                          render.resident_static_mesh_bytes +
+                                          render.far_terrain_resident_bytes;
+            if (render.device_memory_budget_valid) {
+                snapshot.device_gpu_usage_bytes = render.device_local_memory_usage_bytes;
+                snapshot.device_gpu_budget_bytes = render.device_local_memory_budget_bytes;
+            }
+        }
+        if (services != nullptr && services->audio() != nullptr) {
+            const auto audio = services->audio()->stats();
+            snapshot.audio_emitters = audio.active_voices;
+            snapshot.asset_references += audio.cached_assets;
+        }
+        snapshot.process = sample_process_resources();
+        return snapshot;
+    }
 
     [[nodiscard]] bool save_is_compatible(const save::SaveSlotSummary& entry) const {
         if (entry.validation_error.has_value() || !entry.snapshot_metadata.has_value()) {
@@ -944,6 +1018,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         active_session_mode = completed.mode;
         active_persistence = completed.persistence;
         active_save_slot = completed.save_slot_id;
+        active_save_path = session_runtime->session()->launch_request().save_path;
         active_world_name = completed.world_name;
         if (services != nullptr && services->audio() != nullptr) {
             auto* audio = services->audio();
@@ -966,6 +1041,35 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 (void)unload_session();
                 return states.transition(ApplicationState::load_failure,
                                          "session audio cleanup registration failed",
+                                         status.error());
+            }
+        }
+        if (!config.headless && services != nullptr && services->renderer() != nullptr) {
+            ModelPresentationSystemConfig presentation_config;
+            presentation_config.material_registry = &config.content_report->material_registry;
+            auto status = model_presentation.initialize(
+                *services->renderer(), config.content_report->visual_definitions,
+                config.cooked_asset_root, presentation_config);
+            if (!status) {
+                (void)unload_session();
+                return states.transition(ApplicationState::load_failure,
+                                         "session model presentation startup failed",
+                                         status.error());
+            }
+            model_presentation_initialized = true;
+            auto* renderer = services->renderer();
+            status = session_runtime->session()->register_cleanup(
+                "application model presentation", [this, renderer]() {
+                    auto cleanup = model_presentation.shutdown(*renderer);
+                    model_presentation_initialized = false;
+                    return cleanup;
+                });
+            if (!status) {
+                (void)model_presentation.shutdown(*renderer);
+                model_presentation_initialized = false;
+                (void)unload_session();
+                return states.transition(ApplicationState::load_failure,
+                                         "session model cleanup registration failed",
                                          status.error());
             }
         }
@@ -992,6 +1096,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             ++completed_session_count;
         }
         active_save_slot.clear();
+        active_save_path.reset();
         active_world_name.clear();
         active_persistence = PersistencePolicy::ephemeral;
         active_session_mode = SessionMode::local_single_player;
@@ -1001,7 +1106,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     }
 
     [[nodiscard]] core::Status save_active_session() {
-        if (!session_runtime.has_value() || active_save_slot.empty() ||
+        if (!session_runtime.has_value() ||
             active_persistence != PersistencePolicy::persistent) {
             return core::Status::ok();
         }
@@ -1011,7 +1116,14 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         }
         const auto saved_at = static_cast<std::uint64_t>(
             std::max<std::int64_t>(1, frame == nullptr ? 1 : frame->now_milliseconds));
-        return save_catalog.write_snapshot(active_save_slot, snapshot.value(), saved_at);
+        if (!active_save_slot.empty()) {
+            return save_catalog.write_snapshot(active_save_slot, snapshot.value(), saved_at);
+        }
+        if (active_save_path.has_value()) {
+            return save::FileSaveDatabase(*active_save_path).write_snapshot(snapshot.value());
+        }
+        return core::Status::failure("heartstead.persistent_save_path_missing",
+                                     "persistent session has no save destination");
     }
 
     [[nodiscard]] core::Result<RuntimeFrameStats> advance_runtime(bool gameplay_input) {
@@ -1223,6 +1335,9 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         }
         request.initial_runtime_time_ms =
             std::max<std::int64_t>(0, frame == nullptr ? 0 : frame->now_milliseconds);
+        if (config.safe_mode) {
+            request.initial_runtime_options.emplace_back("safe-mode");
+        }
         pending_launch = std::move(request);
         pending_save_slot = std::move(save_slot);
         return states.transition(ApplicationState::session_loading, "menu launch selected");
@@ -1283,14 +1398,32 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                                          "selected save is corrupt or incompatible");
         }
         const auto& entry = save_entries[index];
+        return launch_saved_path(entry.path, entry.metadata.display_name, *entry.snapshot_metadata,
+                                 host, entry.slot_id);
+    }
+
+    [[nodiscard]] core::Status launch_saved_path(const std::filesystem::path& path,
+                                                 std::string world_name,
+                                                 const save::SaveMetadata& metadata, bool host,
+                                                 std::string slot_id = {}) {
+        if (metadata.schema_version != save::current_save_schema_version) {
+            return core::Status::failure("heartstead.save_not_loadable",
+                                         "save schema is incompatible with this build");
+        }
+        const auto compatibility = save::SaveCompatibilityChecker::compare(
+            metadata, config.content_report->mod_fingerprints);
+        if (compatibility.has_errors()) {
+            return core::Status::failure("heartstead.save_not_loadable",
+                                         "save requires missing or incompatible content");
+        }
         SessionLaunchRequest request;
         request.mode = host ? SessionMode::hosted_multiplayer : SessionMode::local_single_player;
         request.world_source = WorldSourceKind::existing_save;
         request.persistence = PersistencePolicy::persistent;
-        request.world_name = entry.metadata.display_name;
+        request.world_name = std::move(world_name);
         request.scenario_id.clear();
-        request.save_path = entry.path;
-        request.metadata = *entry.snapshot_metadata;
+        request.save_path = path;
+        request.metadata = metadata;
         request.runtime.headless = config.headless;
         request.runtime.create_renderer = !config.headless;
         request.runtime.create_audio = !config.headless;
@@ -1299,7 +1432,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         if (host) {
             request.network_endpoint = net::TransportEndpoint{"0.0.0.0", 7777};
         }
-        return launch(std::move(request), entry.slot_id);
+        return launch(std::move(request), std::move(slot_id));
     }
 
     [[nodiscard]] core::Status launch_remote() {
@@ -1350,14 +1483,136 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         return launch(std::move(request).value());
     }
 
+    [[nodiscard]] core::Status launch_developer_world(std::string_view scenario_id,
+                                                      std::optional<std::uint64_t> seed) {
+        const auto* definition = developer_worlds.find(scenario_id);
+        if (definition == nullptr) {
+            return core::Status::failure("heartstead.scenario_not_found",
+                                         "no developer world is registered as '" +
+                                             std::string(scenario_id) + "'");
+        }
+        auto metadata = make_metadata(seed.value_or(
+            definition->world_seed.value_or(foundation::world_seed)));
+        if (!metadata) {
+            return core::Status::failure(metadata.error().code, metadata.error().message);
+        }
+        auto request = developer_worlds.make_launch_request(
+            definition->prototype_id.value(), std::move(metadata).value(), config.headless);
+        if (!request) {
+            return core::Status::failure(request.error().code, request.error().message);
+        }
+        if (seed.has_value()) {
+            request.value().seed = seed;
+            request.value().metadata.world_seed = *seed;
+        }
+        return launch(std::move(request).value());
+    }
+
+    [[nodiscard]] core::Status launch_world_target(std::string_view target, bool host) {
+        for (std::size_t index = 0; index < save_entries.size(); ++index) {
+            if (save_entries[index].slot_id == target) {
+                return launch_saved_world(index, host);
+            }
+        }
+        const auto path = std::filesystem::path(target);
+        auto snapshot = save::FileSaveDatabase(path).read_snapshot();
+        if (!snapshot) {
+            return core::Status::failure(snapshot.error().code, snapshot.error().message);
+        }
+        auto name = path.filename().string();
+        if (name.empty()) {
+            name = "External World";
+        }
+        return launch_saved_path(path, std::move(name), snapshot.value().metadata, host);
+    }
+
+    [[nodiscard]] core::Status apply_initial_launch() {
+        if (!config.initial_launch.has_value()) {
+            return core::Status::ok();
+        }
+        auto directive = std::move(*config.initial_launch);
+        config.initial_launch.reset();
+        core::Status status = core::Status::ok();
+        switch (directive.kind) {
+        case InitialLaunchKind::scenario:
+            status = launch_developer_world(directive.target, directive.seed);
+            break;
+        case InitialLaunchKind::world:
+            status = launch_world_target(directive.target, false);
+            break;
+        case InitialLaunchKind::new_world:
+            new_world_name = directive.target;
+            if (directive.seed.has_value()) {
+                new_world_seed = std::to_string(*directive.seed);
+            }
+            status = launch_new_world();
+            break;
+        case InitialLaunchKind::connect:
+            server_address = directive.target;
+            status = launch_remote();
+            break;
+        case InitialLaunchKind::host:
+            status = launch_world_target(directive.target, true);
+            break;
+        }
+        if (status) {
+            return status;
+        }
+        return states.transition(directive.kind == InitialLaunchKind::connect
+                                     ? ApplicationState::connection_failure
+                                     : ApplicationState::load_failure,
+                                 "command-line launch rejected", status.error());
+    }
+
     [[nodiscard]] core::Status process_input(const GameApplicationFrame& current_frame) {
         if (current_frame.input == nullptr) {
             return core::Status::ok();
         }
         const auto state = states.state();
+        if (key_pressed(*current_frame.input, platform::KeyCode::f3)) {
+            diagnostics_visible = !diagnostics_visible;
+        }
         if (state == ApplicationState::in_game &&
             key_pressed(*current_frame.input, platform::KeyCode::escape)) {
             return states.transition(ApplicationState::paused, "pause requested");
+        }
+        if (state == ApplicationState::in_game && player_camera_frame.has_value() &&
+            session_runtime.has_value() && session_runtime->session() != nullptr &&
+            session_runtime->session()->client() != nullptr &&
+            (mouse_pressed(*current_frame.input, platform::MouseButton::left) ||
+             mouse_pressed(*current_frame.input, platform::MouseButton::right))) {
+            auto* client = session_runtime->session()->client();
+            const auto* player = client->local_player_snapshot();
+            if (player != nullptr) {
+                const auto camera_from_player =
+                    player_camera_frame->position.relative_to(player->state.position.anchor) -
+                    player->state.position.local_offset;
+                const auto distance =
+                    interaction::maximum_voxel_interaction_reach + math::length(camera_from_player);
+                auto hit = interaction::raycast_voxels(
+                    client->world().chunks(),
+                    {player_camera_frame->position, player_camera_frame->forward, distance},
+                    &config.content_report->voxel_palette);
+                if (!hit) {
+                    return core::Status::failure(hit.error().code, hit.error().message);
+                }
+                if (hit.value().hit.has_value()) {
+                    auto reachable = interaction::validate_voxel_interaction_reach(
+                        hit.value().hit->block, player->state);
+                    if (!reachable && reachable.error().code != "voxel_command.out_of_reach") {
+                        return reachable;
+                    }
+                    if (reachable) {
+                        if (mouse_pressed(*current_frame.input, platform::MouseButton::left)) {
+                            return session_runtime->session()->submit_remove_voxel(
+                                {hit.value().hit->block}, current_frame.now_milliseconds);
+                        }
+                        return session_runtime->session()->submit_place_voxel(
+                            {hit.value().hit->adjacent_block, placement_voxel},
+                            current_frame.now_milliseconds);
+                    }
+                }
+            }
         }
         if (config.headless || state == ApplicationState::in_game ||
             state == ApplicationState::session_unloading || state == ApplicationState::shutdown) {
@@ -1616,6 +1871,9 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             return core::Result<renderer::RenderCamera>::failure(status.error().code,
                                                                  status.error().message);
         }
+        if (config.headless) {
+            return core::Result<renderer::RenderCamera>::success(camera);
+        }
         if (!states.policy().world_rendering || !session_runtime.has_value() ||
             session_runtime->session() == nullptr ||
             session_runtime->session()->client() == nullptr) {
@@ -1642,6 +1900,28 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 return core::Result<renderer::RenderCamera>::failure(status.error().code,
                                                                      status.error().message);
             }
+            if (model_presentation_initialized) {
+                auto snapshot = session_runtime->capture_render_snapshot();
+                if (!snapshot) {
+                    return core::Result<renderer::RenderCamera>::failure(snapshot.error().code,
+                                                                         snapshot.error().message);
+                }
+                if (const auto* player = client->local_player_snapshot(); player != nullptr &&
+                    player_camera_frame.has_value()) {
+                    for (auto& object : snapshot.value().objects) {
+                        if (object.source_net_id == player->player_net_id) {
+                            object.visible = player_camera_frame->body.local_body_visible;
+                            break;
+                        }
+                    }
+                }
+                auto synchronized = model_presentation.synchronize(
+                    *services->renderer(), snapshot.value(), &camera);
+                if (!synchronized) {
+                    return core::Result<renderer::RenderCamera>::failure(
+                        synchronized.error().code, synchronized.error().message);
+                }
+            }
         }
         return core::Result<renderer::RenderCamera>::success(camera);
     }
@@ -1667,23 +1947,41 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     }
 
     [[nodiscard]] core::Status paint_ui(const GameApplicationFrame& current_frame) {
-        if (config.headless || states.state() == ApplicationState::in_game ||
-            states.state() == ApplicationState::shutdown || services == nullptr ||
+        if (config.headless || states.state() == ApplicationState::shutdown || services == nullptr ||
             services->renderer() == nullptr || services->renderer()->ui_renderer() == nullptr) {
             return core::Status::ok();
         }
-        auto status = widgets.layout({static_cast<float>(current_frame.extent.width),
-                                      static_cast<float>(current_frame.extent.height)},
-                                     settings.ui_scale);
-        if (!status) {
-            return status;
+        auto* ui_renderer = services->renderer()->ui_renderer();
+        auto status = core::Status::ok();
+        if (states.state() != ApplicationState::in_game) {
+            status = widgets.layout({static_cast<float>(current_frame.extent.width),
+                                     static_cast<float>(current_frame.extent.height)},
+                                    settings.ui_scale);
+            if (!status) {
+                return status;
+            }
+            auto painted = widgets.paint(*ui_renderer);
+            if (!painted) {
+                return core::Status::failure(painted.error().code, painted.error().message);
+            }
+            services->renderer()->set_ui_widget_stats(0.0, 0.0,
+                                                      widgets.layout_stats().widget_count);
         }
-        auto painted = widgets.paint(*services->renderer()->ui_renderer());
-        if (!painted) {
-            return core::Status::failure(painted.error().code, painted.error().message);
+        if (diagnostics_visible) {
+            renderer::UiQuadDesc panel;
+            panel.minimum_pixels = {12.0F, 12.0F};
+            panel.maximum_pixels = {
+                std::min(660.0F, static_cast<float>(current_frame.extent.width) - 12.0F),
+                std::min(230.0F, static_cast<float>(current_frame.extent.height) - 12.0F)};
+            panel.color = {0.015F, 0.025F, 0.04F, 0.90F};
+            status = ui_renderer->submit_quad(panel);
+            if (status) {
+                status = ui_renderer->submit_text(
+                    {{20.0F, 20.0F}, format_runtime_diagnostics(diagnostics_snapshot()), 12.0F,
+                     {0.82F, 0.92F, 1.0F, 1.0F}});
+            }
         }
-        services->renderer()->set_ui_widget_stats(0.0, 0.0, widgets.layout_stats().widget_count);
-        return core::Status::ok();
+        return status;
     }
 };
 
@@ -1721,6 +2019,12 @@ core::Status HeartsteadApplicationMode::initialize(GameApplicationServices& serv
                                      developer_worlds.error().message);
     }
     state.developer_worlds = std::move(developer_worlds).value();
+    auto placement_voxel = core::PrototypeId::parse("base:voxels/clay");
+    if (!placement_voxel) {
+        return core::Status::failure("heartstead.invalid_placement_voxel",
+                                     "the built-in placement voxel id is invalid");
+    }
+    state.placement_voxel = std::move(*placement_voxel);
     status = state.refresh_saves();
     if (!status) {
         return status;
@@ -1735,6 +2039,10 @@ core::Status HeartsteadApplicationMode::initialize(GameApplicationServices& serv
     }
     status =
         state.states.transition(ApplicationState::main_menu, "application services initialized");
+    if (!status) {
+        return status;
+    }
+    status = state.apply_initial_launch();
     if (!status) {
         return status;
     }

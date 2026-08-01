@@ -63,6 +63,7 @@ schema differs from the current schema remains visible but disabled.
 ## Regression coverage
 
 `heartstead_front_end_tests` covers root action availability, valid and invalid menu navigation,
-settings round trips/range rejection, snapshot-backed duplication, rename/delete, and corrupt-slot
-discovery. `heartstead_menu_headless_smoke` boots the complete executable through the menu without
-creating a world.
+settings round trips/range rejection, snapshot-backed duplication, rename/delete, corrupt-slot
+discovery, CLI conflicts, and diagnostics formatting/process sampling.
+`heartstead_menu_headless_smoke` boots the complete executable through the menu without creating a
+world; loading and active-session smoke cases verify bounded shutdown through the same executable.

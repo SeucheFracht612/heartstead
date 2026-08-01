@@ -712,6 +712,10 @@ const world::VoxelPalette& ServerRuntime::voxel_palette() const noexcept {
     return *desc_.voxel_palette;
 }
 
+std::uint32_t ServerRuntime::physics_body_count() const noexcept {
+    return physics_ == nullptr ? 0U : physics_->body_count();
+}
+
 entities::EntityWorld& ServerRuntime::entities() noexcept {
     return entities_;
 }
@@ -880,9 +884,14 @@ core::Status ServerRuntime::ensure_spawn_area() {
     if (spawn_area_initialized_) {
         return core::Status::ok();
     }
-    auto built = foundation::build_world(world_.chunks(), *desc_.voxel_palette);
-    if (!built) {
-        return core::Status::failure(built.error().code, built.error().message);
+    // A packaged fixture owns its complete chunk layout. Adding the foundation world at the
+    // origin would both contaminate the fixture and place collision bodies outside a far-away
+    // physics island.
+    if (desc_.scenario.world_source != scenarios::ScenarioWorldSource::packaged_fixture) {
+        auto built = foundation::build_world(world_.chunks(), *desc_.voxel_palette);
+        if (!built) {
+            return core::Status::failure(built.error().code, built.error().message);
+        }
     }
     if (!pending_saved_voxel_edits_.empty()) {
         auto status =

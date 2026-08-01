@@ -23,21 +23,37 @@ explicit directory for isolated development runs; it contains `settings.txt` and
 catalog. The Options screen persists display, rendering, audio, input, UI-scale, and available
 accessibility settings outside any world.
 
-Supported shell options in this stage are `--headless`, `--frames N`, and `--native-frames N`.
-Run `heartstead --help` for the exact syntax. The broader world/save/connect command line is added
-through the unified launch request rather than a second runtime path.
+Supported launch examples are:
 
-## Legacy development game
+```bash
+heartstead --scenario base:scenarios/renderer_proof
+heartstead --world homestead
+heartstead --new-world "CLI Homestead" --seed 1337
+heartstead --connect 127.0.0.1:7777
+heartstead --host homestead
+heartstead --safe-mode
+```
 
-Start the compatibility interactive slice:
+`--world` and `--host` accept a catalog slot ID or explicit save directory. `--frames N` is a
+bounded headless smoke run; `--native-frames N` keeps native presentation. Run `heartstead --help`
+for the exact syntax. All automatic launches enter the main-menu state and use the unified launch
+request; none is a hidden runtime construction path. Press `F3` for lifecycle/resource diagnostics.
+
+Primary game controls currently include movement (`W/A/S/D`), traversal (`Space`, Shift, Ctrl,
+`Q`, Alt), authoritative remove/place (left/right mouse), F3 diagnostics, and Escape for pause/back.
+Inventory, map, camera-mode, and extended VFX debug controls below belong to the standalone
+diagnostic until their gameplay UI is promoted into the shell.
+
+## Standalone presentation diagnostic
+
+Start the focused renderer/VFX diagnostic:
 
 ```bash
 ./build/default-debug/apps/dev_game/heartstead_dev_game
 ```
 
-An unbounded local native compatibility launch owns both the authoritative server and client and uses
-`saves/foundation_slice_0_1` by default. The name is a compatibility path, not an active milestone
-name.
+This target preserves its own bounded diagnostic controls and broad environment/VFX probes. Use
+the main `heartstead` executable for normal gameplay and world switching.
 
 Useful options:
 
@@ -77,7 +93,7 @@ Examples:
   --save saves/my_test_world --autosave-seconds 30
 ```
 
-## Controls
+## Standalone diagnostic controls
 
 | Action | Default input |
 | --- | --- |
@@ -176,7 +192,7 @@ timestamps. See [Renderer benchmarks](../performance/renderer_benchmarks.md) bef
 results.
 
 The player-facing application exposes the renderer preset in Options and applies it on the next
-process start. The compatibility development game continues to select High directly. Use the
+process start. The standalone presentation diagnostic continues to select High directly. Use the
 automated quality-policy test to compare the four resolved profiles.
 
 ## Asset Lab

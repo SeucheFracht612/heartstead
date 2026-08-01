@@ -61,8 +61,8 @@ cmake --build --preset default-debug --target heartstead
 ```
 
 It opens at the main menu. New saves, existing saves, hosted saves, direct-IP clients, and
-developer worlds all enter the same session-launch path. The legacy `heartstead_dev_game` target
-is still available temporarily for focused development-slice diagnostics.
+developer worlds and command-line launches all enter the same session-launch path. The standalone
+`heartstead_dev_game` target remains only for focused presentation diagnostics.
 
 Run the focused Renderer V2 checks:
 
@@ -91,14 +91,14 @@ Run a dedicated server and join it from another process or machine:
 ./build/default-debug/apps/dedicated_server/heartstead_dedicated_server \
   --bind 0.0.0.0:7777
 
-./build/default-debug/apps/dev_game/heartstead_dev_game \
+./build/default-debug/apps/heartstead/heartstead \
   --connect 192.168.1.10:7777
 ```
 
 The client accepts numeric IPv4 endpoints. The dedicated server is headless and memory-only at
 this stage. Do not expose the current transport to untrusted Internet clients.
 
-Common controls:
+Primary game controls:
 
 | Action | Default input |
 | --- | --- |
@@ -107,12 +107,12 @@ Common controls:
 | Sprint | `Left Shift` |
 | Crouch | `Left Ctrl` |
 | Dash / roll | `Q` / `Left Alt` |
-| Interact | `E` |
-| Inventory | `Tab` |
-| Full map | `M` |
 | Remove / place voxel | Left / right mouse button |
-| Camera / diagnostics / geometry | `F1` / `F3` / `F4` |
+| Runtime diagnostics | `F3` |
 | Close menu / pause | `Escape` |
+
+The standalone presentation diagnostic retains additional inventory, map, camera, environment,
+and geometry-debug controls described in [Running Heartstead](docs/dev/running.md).
 
 The executable's `--help` output is the source of truth for command-line options. See
 [Running Heartstead](docs/dev/running.md) for saves, bounded runs, remote play, and the complete

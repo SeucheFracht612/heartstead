@@ -17,6 +17,8 @@ is the map for everything else.
 - [Game executable](architecture/game_executable.md) — application lifetime and states.
 - [Game front end](architecture/game_front_end.md) — menu, saves, and settings.
 - [Runtime loop and transitions](architecture/runtime_loop.md) — ticks, loading, pause, and errors.
+- [Game shell completion report](game_shell_completion_report.md) — implemented surface, tests,
+  measured cleanup, and known limitations.
 - [Engine specification](architecture/engine_spec.md) — normative long-term engine contract.
 
 ## Document types

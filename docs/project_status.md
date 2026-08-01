@@ -7,7 +7,17 @@ promise that every architecture target is complete.
 
 ## What works now
 
-### Development runtime
+### Player-facing game shell
+
+`heartstead` is the primary executable. It owns the application window, renderer, UI, audio,
+input, jobs, settings, menus, asynchronous session loading, and an optional unified runtime
+session. It supports persistent new/load/continue/host flows, direct-address clients, data-driven
+developer worlds, local and multiplayer pause behavior, return-to-menu teardown, automatic CLI
+launches, model presentation, authoritative movement and voxel editing, and F3 lifecycle/resource
+diagnostics. Local single-player is always an authoritative server plus a client over in-memory
+transport.
+
+### Standalone development diagnostic
 
 `heartstead_dev_game` composes an authoritative server and a client in one process for local play.
 It can also run as a remote client against `heartstead_dedicated_server`. The development scene
@@ -70,7 +80,7 @@ controller.
 
 ### Persistence
 
-The local development game can create and reopen a versioned save database, including world data,
+The player-facing game can create and reopen a versioned save database, including world data,
 profiles, discovery, logs, migrations, and stable prototype mappings. Missing content is retained
 through explicit placeholder behavior rather than silently discarded.
 
@@ -93,6 +103,7 @@ while preserving metadata validation.
 
 The default build defines these applications:
 
+- `heartstead`
 - `heartstead_dev_game`
 - `heartstead_dedicated_server`
 - `heartstead_asset_lab`

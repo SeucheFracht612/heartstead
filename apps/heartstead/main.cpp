@@ -5,69 +5,25 @@
 #include "game/application/application_settings.hpp"
 #include "game/application/game_application.hpp"
 #include "game/application/heartstead_application_mode.hpp"
+#include "game/application/launch_options.hpp"
 
-#include <charconv>
-#include <cstdint>
 #include <filesystem>
 #include <iostream>
 #include <optional>
-#include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
 using namespace heartstead;
 
-struct LaunchOptions {
-    bool headless = false;
-    std::optional<std::uint64_t> maximum_frames;
-    bool help = false;
-};
-
-[[nodiscard]] core::Result<std::uint64_t> parse_frame_count(std::string_view value) {
-    std::uint64_t frames = 0;
-    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), frames);
-    if (error != std::errc{} || end != value.data() + value.size() || frames == 0) {
-        return core::Result<std::uint64_t>::failure(
-            "heartstead.invalid_frame_count", "frame count must be a positive 64-bit integer");
-    }
-    return core::Result<std::uint64_t>::success(frames);
-}
-
-[[nodiscard]] core::Result<LaunchOptions> parse_options(int argc, char** argv) {
-    LaunchOptions options;
+[[nodiscard]] core::Result<game::HeartsteadLaunchOptions> parse_options(int argc, char** argv) {
+    std::vector<std::string_view> arguments;
+    arguments.reserve(argc > 1 ? static_cast<std::size_t>(argc - 1) : 0U);
     for (int index = 1; index < argc; ++index) {
-        const auto argument = std::string_view(argv[index]);
-        if (argument == "--help" || argument == "-h") {
-            options.help = true;
-        } else if (argument == "--headless") {
-            options.headless = true;
-        } else if (argument == "--frames" || argument == "--native-frames") {
-            if (index + 1 >= argc) {
-                return core::Result<LaunchOptions>::failure("heartstead.missing_frame_count",
-                                                            std::string(argument) + " requires N");
-            }
-            auto frames = parse_frame_count(argv[++index]);
-            if (!frames) {
-                return core::Result<LaunchOptions>::failure(frames.error().code,
-                                                            frames.error().message);
-            }
-            options.maximum_frames = frames.value();
-            if (argument == "--frames") {
-                options.headless = true;
-            }
-        } else {
-            return core::Result<LaunchOptions>::failure("heartstead.unknown_option",
-                                                        "unknown option: " + std::string(argument));
-        }
+        arguments.emplace_back(argv[index]);
     }
-    return core::Result<LaunchOptions>::success(std::move(options));
-}
-
-void print_usage(const char* executable, std::ostream& output) {
-    output << "usage: " << executable
-           << " [--headless] [--frames N] [--native-frames N]\n"
-              "       --frames implies --headless for deterministic smoke runs\n";
+    return game::parse_heartstead_launch_options(arguments);
 }
 
 int fail(const core::Error& error) {
@@ -81,13 +37,17 @@ int main(int argc, char** argv) {
     return heartstead::core::run_process_entry(argv[0], [argc, argv] {
         auto parsed = parse_options(argc, argv);
         if (!parsed) {
-            print_usage(argv[0], std::cerr);
+            std::cerr << heartstead::game::heartstead_command_line_usage(argv[0]);
             std::cerr << parsed.error().code << ": " << parsed.error().message << '\n';
             return 2;
         }
         const auto options = std::move(parsed).value();
-        if (options.help) {
-            print_usage(argv[0], std::cout);
+        if (options.show_help) {
+            std::cout << heartstead::game::heartstead_command_line_usage(argv[0]);
+            return 0;
+        }
+        if (options.show_version) {
+            std::cout << "Heartstead 0.1.0\n";
             return 0;
         }
 
@@ -135,7 +95,9 @@ int main(int argc, char** argv) {
             std::filesystem::path{HEARTSTEAD_GAME_ASSET_DIR} / "shaders";
         application_config.voxel_palette = &content_report.voxel_palette;
         application_config.terrain_material_assets = std::move(terrain_assets);
-        application_config.renderer_quality = application_settings.rendering_quality;
+        application_config.renderer_quality =
+            options.safe_mode ? heartstead::renderer::RendererQualityPreset::low
+                              : application_settings.rendering_quality;
 
         heartstead::game::HeartsteadApplicationModeConfig mode_config;
         mode_config.content_report = &content_report;
@@ -143,7 +105,9 @@ int main(int argc, char** argv) {
         mode_config.cooked_asset_root = HEARTSTEAD_GAME_COOKED_ASSET_DIR;
         mode_config.user_data_root = user_data_root;
         mode_config.initial_settings = application_settings;
+        mode_config.initial_launch = options.initial_launch;
         mode_config.headless = options.headless;
+        mode_config.safe_mode = options.safe_mode;
 
         heartstead::game::GameApplication application(std::move(application_config));
         heartstead::game::HeartsteadApplicationMode mode(std::move(mode_config));

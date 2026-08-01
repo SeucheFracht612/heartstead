@@ -152,6 +152,11 @@ struct SessionTeardownReport {
     std::size_t presentation_objects_before = 0;
     std::size_t presentation_objects_after = 0;
     std::size_t server_entities_before = 0;
+    std::size_t server_entities_after = 0;
+    std::size_t physics_bodies_before = 0;
+    std::size_t physics_bodies_after = 0;
+    std::size_t session_jobs_before = 0;
+    std::size_t session_jobs_after = 0;
     std::size_t registered_cleanup_count = 0;
     std::size_t completed_cleanup_count = 0;
     bool rejected_new_commands = false;
@@ -160,6 +165,14 @@ struct SessionTeardownReport {
     bool presentation_cleared = false;
     bool client_destroyed = false;
     bool server_destroyed = false;
+};
+
+struct SessionResourceCounts {
+    std::size_t server_entities = 0;
+    std::size_t physics_bodies = 0;
+    std::size_t presentation_objects = 0;
+    std::size_t registered_cleanup_callbacks = 0;
+    std::size_t active_jobs = 0;
 };
 
 struct RuntimeFrameInput {
@@ -218,6 +231,7 @@ class RuntimeSession final {
     [[nodiscard]] SessionConnectionState connection_state() const noexcept;
     [[nodiscard]] const SessionLaunchRequest& launch_request() const noexcept;
     [[nodiscard]] const SessionTeardownReport& teardown_report() const noexcept;
+    [[nodiscard]] SessionResourceCounts resource_counts() const noexcept;
     [[nodiscard]] ServerRuntime* server() noexcept;
     [[nodiscard]] const ServerRuntime* server() const noexcept;
     [[nodiscard]] ClientRuntime* client() noexcept;

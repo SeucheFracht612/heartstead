@@ -1,8 +1,9 @@
 # Game executable and application lifetime
 
 `heartstead` is the primary player-facing executable. It starts at the main menu and keeps the
-application shell alive while no world exists. `heartstead_dev_game` remains a compatibility and
-diagnostic executable during migration; it is not the normal entry point.
+application shell alive while no world exists. `heartstead_dev_game` remains a standalone
+presentation diagnostic for focused renderer/VFX inspection; it is not a normal gameplay entry
+point and is not required for move/render/edit testing.
 
 ## Ownership
 
@@ -104,3 +105,40 @@ For a windowless application-shell smoke test:
 ```
 
 `--frames` implies headless mode. `--native-frames N` bounds a real windowed run.
+
+## Command-line launches
+
+Command-line launches enter `MainMenu` first and invoke the same launch helpers as the front end.
+Exactly one automatic session selector may be supplied:
+
+```bash
+heartstead --scenario base:scenarios/renderer_proof
+heartstead --world homestead
+heartstead --world /absolute/path/to/save
+heartstead --new-world "CLI Homestead" --seed 1337
+heartstead --connect 127.0.0.1:7777
+heartstead --host homestead
+heartstead --safe-mode
+```
+
+`--safe-mode` selects the low renderer preset and marks created requests with the `safe-mode`
+runtime option. It does not bypass content validation, server authority, save compatibility, or
+the session state machine. `--help` and `--version` are supported. Conflicting selectors and seeds
+attached to load/connect/host requests fail before application mutation.
+
+## Runtime diagnostics
+
+`F3` toggles the application diagnostics panel. It reports application/session/connection state,
+world and save identity, ownership generation, authoritative and fixed ticks, interpolation and
+dropped time, application plus session jobs, loading operations, connections, registered cleanup
+callbacks, entity/physics/presentation/render/audio/asset counts, process RSS/thread/open-file
+counts on Linux, and renderer memory. Vulkan device usage/budget is shown only when
+`VK_EXT_memory_budget` telemetry is valid; otherwise the UI says it is unavailable.
+
+## Extension rules
+
+Add a menu screen to `MainMenuScreen` and `MainMenuNavigation`, then build it through the retained
+widget tree and route its action to `HeartsteadApplicationMode::launch`. Do not construct a runtime
+from a widget callback. Add a session mode by extending `SessionMode`, its launch validation and
+central topology resolution in `GameRuntime::start_session`; then add teardown counters and a
+replacement test before exposing it through the menu or CLI.

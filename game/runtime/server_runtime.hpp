@@ -97,6 +97,7 @@ class ServerRuntime final {
     [[nodiscard]] world::WorldState& world() noexcept;
     [[nodiscard]] const world::WorldState& world() const noexcept;
     [[nodiscard]] const world::VoxelPalette& voxel_palette() const noexcept;
+    [[nodiscard]] std::uint32_t physics_body_count() const noexcept;
     [[nodiscard]] entities::EntityWorld& entities() noexcept;
     [[nodiscard]] const entities::EntityWorld& entities() const noexcept;
     [[nodiscard]] net::HostSession& host() noexcept;

@@ -3842,6 +3842,10 @@ InspectionData Inspector::inspect(const save::SaveSlotSummary& slot) {
         add_issue(data, InspectionSeverity::error, "save_slot.empty_id",
                   "save slot summary has no slot id");
     }
+    if (slot.validation_error.has_value()) {
+        add_issue(data, InspectionSeverity::error, slot.validation_error->code,
+                  slot.validation_error->message);
+    }
     add_status_issue(data, slot.metadata.validate());
     if (!slot.database_stats.has_snapshot) {
         add_issue(data, InspectionSeverity::warning, "save_slot.empty",

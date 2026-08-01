@@ -162,6 +162,6 @@ boundaries above it.
 ## Running and verification
 
 Use `heartstead_dedicated_server --bind ADDRESS:PORT` and
-`heartstead_dev_game --connect ADDRESS:PORT` for the socket-backed composition. The standalone
+`heartstead --connect ADDRESS:PORT` for the socket-backed composition. The standalone
 server currently owns no persistent save lifecycle. See [Running Heartstead](../dev/running.md) and
 [Testing](../dev/testing.md) for exact commands and impaired-network testing.

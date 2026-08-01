@@ -2,6 +2,7 @@
 
 #include "game/application/application_settings.hpp"
 #include "game/application/game_application.hpp"
+#include "game/application/launch_options.hpp"
 
 #include <filesystem>
 #include <memory>
@@ -22,7 +23,9 @@ struct HeartsteadApplicationModeConfig {
     std::filesystem::path cooked_asset_root;
     std::filesystem::path user_data_root;
     ApplicationSettings initial_settings;
+    std::optional<InitialLaunchDirective> initial_launch;
     bool headless = false;
+    bool safe_mode = false;
 };
 
 class HeartsteadApplicationMode final : public IGameApplicationMode {

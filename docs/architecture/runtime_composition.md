@@ -9,7 +9,7 @@ redefine gameplay semantics.
 | Composition | Roles | Transport | Presentation | Persistence |
 | --- | --- | --- | --- | --- |
 | Player-facing Heartstead application | menu, server + client, or remote client | in-memory or POSIX UDP | native X11/Vulkan | persistent saves or scenario policy |
-| Interactive local development game | server + client | in-memory | native X11/Vulkan | default or explicit local save |
+| Standalone presentation diagnostic | server + client | in-memory | native X11/Vulkan | explicit diagnostic save only |
 | Bounded/headless development run | server + client | in-memory | headless or bounded native | only with explicit `--save` |
 | Remote development client | client only | POSIX UDP to numeric IPv4 | native or bounded/headless | none; server owns truth |
 | Dedicated server | server only | POSIX UDP bind | headless | memory-only in the current executable |
@@ -74,11 +74,11 @@ idempotent and performs the remaining work in a fixed order:
    collision/light/fluid worker schedulers;
 8. publish a `SessionTeardownReport` and mark the session stopped.
 
-The player shell registers its renderer cleanup with the session instead of relying on process
-termination. Future session audio, UI, and other application-backed resources use the same cleanup
-registry. The report records generation, pre/post presentation counts, server entity count,
-callback completion, and the major teardown barriers so lifecycle tests and diagnostics can
-detect partial cleanup.
+The player shell registers renderer, model-presentation, and world-audio cleanup with the session
+instead of relying on process termination. The report records generation, pre/post presentation,
+entity, physics, and session-job counts, callback completion, and the major teardown barriers so
+lifecycle tests and diagnostics can detect partial cleanup. Duplicate cleanup callback names are
+rejected.
 
 ## Local frame path
 
@@ -180,10 +180,9 @@ copy the path, and refresh discovery. Invalid metadata or snapshots appear as di
 instead of aborting the whole catalog scan. Newer, older, missing-content, or hash-incompatible
 saves are shown but not silently modified.
 
-A normal unbounded local native `heartstead_dev_game` run opens
-`saves/foundation_slice_0_1` unless overridden. Bounded/headless runs persist only with an explicit
-`--save DIRECTORY`; `--no-save` disables persistence. A remote client cannot use `--save` because
-it has no authoritative world.
+The normal `heartstead` executable owns save discovery and persistence. The standalone
+`heartstead_dev_game` target retains explicit diagnostic save switches only for specialized
+presentation work. A remote client cannot save because it has no authoritative world.
 
 The current `heartstead_dedicated_server` accepts `--bind` and optional `--ticks`, but does not
 construct a save database or expose a save option. Its world is lost when the process exits. This
