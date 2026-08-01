@@ -4,6 +4,7 @@
 #include "engine/world/chunks/chunk_identity.hpp"
 #include "engine/world/chunks/chunk_stage_ledger.hpp"
 #include "engine/world/coords/world_coords.hpp"
+#include "engine/world/voxels/voxel_mask.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -65,6 +66,7 @@ class VoxelChunk {
     [[nodiscard]] std::uint64_t content_revision() const noexcept;
     [[nodiscard]] const ChunkDirtyState& dirty() const noexcept;
     [[nodiscard]] const ChunkStageLedger& stages() const noexcept;
+    [[nodiscard]] const VoxelOccupancyMask& occupancy() const noexcept;
     [[nodiscard]] ChunkStageTicket stage_ticket(ChunkStage stage) const noexcept;
     [[nodiscard]] bool stage_ticket_is_current(ChunkStageTicket ticket) const noexcept;
     [[nodiscard]] std::span<const VoxelCell> cells() const noexcept;
@@ -99,6 +101,7 @@ class VoxelChunk {
 
     ChunkCoord coord_;
     std::vector<VoxelCell> cells_;
+    VoxelOccupancyMask occupancy_;
     ChunkDirtyState dirty_;
     ChunkStageLedger stages_;
     std::uint64_t content_revision_ = 1;

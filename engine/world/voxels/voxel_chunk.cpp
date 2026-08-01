@@ -87,6 +87,10 @@ const ChunkStageLedger& VoxelChunk::stages() const noexcept {
     return stages_;
 }
 
+const VoxelOccupancyMask& VoxelChunk::occupancy() const noexcept {
+    return occupancy_;
+}
+
 ChunkStageTicket VoxelChunk::stage_ticket(ChunkStage stage) const noexcept {
     if (stage == ChunkStage::count) {
         return {};
@@ -118,11 +122,13 @@ core::Status VoxelChunk::set(VoxelCoord coord, VoxelCell cell) {
                                      "voxel coordinate is outside the chunk");
     }
 
-    auto& current = cells_[index_of(coord)];
+    const auto index = index_of(coord);
+    auto& current = cells_[index];
     if (current == cell) {
         return core::Status::ok();
     }
 
+    occupancy_.set_occupied(index, !cell.is_air());
     current = cell;
     advance_content_revision();
     invalidate(ChunkDirtyFlag::mesh);
@@ -139,11 +145,13 @@ core::Status VoxelChunk::apply_saved_cell(VoxelCoord coord, VoxelCell cell) {
                                      "voxel coordinate is outside the chunk");
     }
 
-    auto& current = cells_[index_of(coord)];
+    const auto index = index_of(coord);
+    auto& current = cells_[index];
     if (current == cell) {
         return core::Status::ok();
     }
 
+    occupancy_.set_occupied(index, !cell.is_air());
     current = cell;
     advance_content_revision();
     invalidate(ChunkDirtyFlag::mesh);
@@ -181,6 +189,7 @@ core::Status VoxelChunk::load_generated_cells(std::vector<VoxelCell> cells) {
     }
 
     cells_ = std::move(cells);
+    occupancy_.rebuild(cells_);
     advance_content_revision();
     dirty_.clear_all();
     invalidate(ChunkDirtyFlag::mesh);
@@ -195,6 +204,7 @@ void VoxelChunk::fill(VoxelCell cell) {
     }
 
     std::ranges::fill(cells_, cell);
+    occupancy_.rebuild(cells_);
     advance_content_revision();
     invalidate(ChunkDirtyFlag::mesh);
     invalidate(ChunkDirtyFlag::collision);
@@ -272,6 +282,7 @@ void VoxelChunk::advance_content_revision() noexcept {
         std::terminate();
     }
     ++content_revision_;
+    occupancy_.retag(content_revision_);
     stages_.publish_content(content_revision_);
 }
 

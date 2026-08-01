@@ -230,6 +230,7 @@ target_sources(
     world/world_state.cpp
     world/voxel_change.cpp
     world/voxels/voxel_chunk.cpp
+    world/voxels/voxel_mask.cpp
     world/voxels/voxel_palette.cpp
     world/voxels/voxel_storage_benchmark.cpp
     world/voxels/voxel_storage_experiment.cpp
@@ -470,6 +471,7 @@ target_sources(
       world/world_state.hpp
       world/voxel_change.hpp
       world/voxels/voxel_chunk.hpp
+      world/voxels/voxel_mask.hpp
       world/voxels/voxel_palette.hpp
       world/voxels/voxel_storage_benchmark.hpp
       world/voxels/voxel_storage_experiment.hpp
