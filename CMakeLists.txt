@@ -124,6 +124,12 @@ if(HEARTSTEAD_BUILD_APPS)
   add_subdirectory(apps)
 endif()
 
+# The asset cooker is a build-time dependency of runnable applications, not merely an optional
+# developer tool. Keep it available even in production-only configurations.
+if(HEARTSTEAD_BUILD_APPS OR HEARTSTEAD_BUILD_TOOLS)
+  add_subdirectory(tools/asset_cooker)
+endif()
+
 if(HEARTSTEAD_BUILD_SAMPLES)
   add_subdirectory(samples)
 endif()

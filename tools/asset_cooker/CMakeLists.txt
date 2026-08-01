@@ -6,7 +6,7 @@ target_compile_definitions(
 )
 heartstead_configure_target(heartstead_asset_cooker)
 
-if(TARGET heartstead_dev_game)
+if(TARGET heartstead_dev_game OR TARGET heartstead)
   file(
     GLOB_RECURSE heartstead_dev_game_visual_sources
     CONFIGURE_DEPENDS
@@ -18,27 +18,36 @@ if(TARGET heartstead_dev_game)
     "${PROJECT_SOURCE_DIR}/resource_packs/*/resource_pack.toml"
     "${PROJECT_SOURCE_DIR}/resource_packs/*/assets/*"
   )
-  set(heartstead_dev_game_cooked_root
-      "${CMAKE_BINARY_DIR}/apps/dev_game/assets/cooked")
-  set(heartstead_dev_game_cooked_manifest
-      "${heartstead_dev_game_cooked_root}/asset_manifest.txt")
+endif()
+
+function(heartstead_attach_cooked_assets target cooked_root asset_target)
+  set(cooked_manifest "${cooked_root}/asset_manifest.txt")
   add_custom_command(
-    OUTPUT "${heartstead_dev_game_cooked_manifest}"
+    OUTPUT "${cooked_manifest}"
     COMMAND
       "$<TARGET_FILE:heartstead_asset_cooker>" "${PROJECT_SOURCE_DIR}"
-      "${heartstead_dev_game_cooked_manifest}" production --presentation-assets
+      "${cooked_manifest}" production --presentation-assets
     DEPENDS heartstead_asset_cooker ${heartstead_dev_game_visual_sources}
-    COMMENT "Cooking the dev-game presentation asset set"
+    COMMENT "Cooking presentation assets for ${target}"
     VERBATIM
   )
   add_custom_target(
-    heartstead_dev_game_model_assets
-    DEPENDS "${heartstead_dev_game_cooked_manifest}"
+    ${asset_target}
+    DEPENDS "${cooked_manifest}"
   )
-  add_dependencies(heartstead_dev_game heartstead_dev_game_model_assets)
-  if(TARGET heartstead)
-    add_dependencies(heartstead heartstead_dev_game_model_assets)
-  endif()
+  add_dependencies(${target} ${asset_target})
+endfunction()
+
+if(TARGET heartstead)
+  heartstead_attach_cooked_assets(
+    heartstead "${CMAKE_BINARY_DIR}/apps/heartstead/assets/cooked"
+    heartstead_production_cooked_assets)
+endif()
+
+if(TARGET heartstead_dev_game)
+  heartstead_attach_cooked_assets(
+    heartstead_dev_game "${CMAKE_BINARY_DIR}/apps/dev_game/assets/cooked"
+    heartstead_dev_game_model_assets)
   if(TARGET heartstead_render_benchmark)
     add_dependencies(heartstead_render_benchmark heartstead_dev_game_model_assets)
   endif()

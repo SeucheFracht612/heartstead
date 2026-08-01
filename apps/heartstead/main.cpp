@@ -31,6 +31,24 @@ int fail(const core::Error& error) {
     return 1;
 }
 
+[[nodiscard]] std::filesystem::path executable_directory(const char* argument_zero) {
+#if defined(__linux__)
+    std::error_code error;
+    const auto executable = std::filesystem::read_symlink("/proc/self/exe", error);
+    if (!error && !executable.empty()) {
+        return executable.parent_path();
+    }
+#endif
+    std::error_code fallback_error;
+    auto fallback_executable = std::filesystem::absolute(
+        argument_zero != nullptr ? std::filesystem::path{argument_zero} : std::filesystem::path{},
+        fallback_error);
+    if (fallback_error || fallback_executable.empty()) {
+        return std::filesystem::current_path();
+    }
+    return fallback_executable.parent_path();
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -51,7 +69,8 @@ int main(int argc, char** argv) {
             return 0;
         }
 
-        const auto source_root = std::filesystem::path{HEARTSTEAD_SOURCE_ROOT};
+        const auto application_root = executable_directory(argv[0]);
+        const auto content_root = application_root / HEARTSTEAD_GAME_CONTENT_DIR;
         const auto user_data_root = heartstead::game::default_application_data_root();
         heartstead::game::ApplicationSettings application_settings;
         const heartstead::game::ApplicationSettingsStore settings_store(user_data_root /
@@ -63,7 +82,7 @@ int main(int argc, char** argv) {
             std::cerr << loaded_settings.error().code << ": " << loaded_settings.error().message
                       << " (using defaults)\n";
         }
-        const auto content_report = heartstead::content::ContentValidation::validate(source_root);
+        const auto content_report = heartstead::content::ContentValidation::validate(content_root);
         if (content_report.has_errors()) {
             return fail({"heartstead.content_validation_failed",
                          "content validation reported one or more errors"});
@@ -73,7 +92,7 @@ int main(int argc, char** argv) {
         heartstead::renderer::materials::TerrainMaterialAssetSet terrain_assets;
         if (!options.headless) {
             auto loaded = heartstead::assets::CookedAssetStore::load(
-                std::filesystem::path{HEARTSTEAD_GAME_COOKED_ASSET_DIR});
+                application_root / HEARTSTEAD_GAME_COOKED_ASSET_DIR);
             if (!loaded) {
                 return fail(loaded.error());
             }
@@ -91,8 +110,7 @@ int main(int argc, char** argv) {
         application_config.maximum_frames = options.maximum_frames;
         application_config.window = {"Heartstead", application_settings.window_width,
                                      application_settings.window_height, true};
-        application_config.shader_root =
-            std::filesystem::path{HEARTSTEAD_GAME_ASSET_DIR} / "shaders";
+        application_config.shader_root = application_root / HEARTSTEAD_GAME_ASSET_DIR / "shaders";
         application_config.voxel_palette = &content_report.voxel_palette;
         application_config.terrain_material_assets = std::move(terrain_assets);
         application_config.renderer_quality =

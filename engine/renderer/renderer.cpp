@@ -1,6 +1,7 @@
 #include "engine/renderer/renderer.hpp"
 
 #include "engine/core/hash.hpp"
+#include "engine/core/logging.hpp"
 #include "engine/renderer/terrain/gpu_chunk_vertex.hpp"
 #include "engine/world/worldgen/terrain_generator.hpp"
 
@@ -598,11 +599,12 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         pipeline_status =
             create_far_terrain_pipeline(desc.far_terrain_vertex_spirv, desc.terrain_fragment_spirv);
         if (!pipeline_status) {
-            const auto error = pipeline_status.error();
-            (void)shutdown();
-            return core::Status::failure(error.code, error.message);
+            core::log(core::LogLevel::warning,
+                      "far terrain disabled: " + pipeline_status.error().code + ": " +
+                          pipeline_status.error().message);
+        } else {
+            far_terrain_vertex_spirv_ = desc.far_terrain_vertex_spirv;
         }
-        far_terrain_vertex_spirv_ = desc.far_terrain_vertex_spirv;
     }
     pipeline_status =
         create_scene_pipelines(desc.static_mesh_vertex_spirv, desc.static_mesh_fragment_spirv);
