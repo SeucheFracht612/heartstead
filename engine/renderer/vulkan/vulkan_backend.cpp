@@ -326,6 +326,9 @@ struct SelectedPhysicalDevice {
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties properties{};
     bool sampler_anisotropy = false;
+    bool multi_draw_indirect = false;
+    bool draw_indirect_count = false;
+    bool memory_budget = false;
     std::uint32_t graphics_queue_family = 0;
     std::uint32_t timestamp_valid_bits = 0;
     VkFormat depth_format = VK_FORMAT_UNDEFINED;
@@ -555,9 +558,17 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
         SelectedPhysicalDevice selected;
         selected.physical_device = physical_device;
         vkGetPhysicalDeviceProperties(physical_device, &selected.properties);
-        VkPhysicalDeviceFeatures device_features{};
-        vkGetPhysicalDeviceFeatures(physical_device, &device_features);
-        selected.sampler_anisotropy = device_features.samplerAnisotropy == VK_TRUE;
+        VkPhysicalDeviceVulkan12Features features_12{};
+        features_12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        VkPhysicalDeviceFeatures2 device_features{};
+        device_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        device_features.pNext = &features_12;
+        vkGetPhysicalDeviceFeatures2(physical_device, &device_features);
+        selected.sampler_anisotropy = device_features.features.samplerAnisotropy == VK_TRUE;
+        selected.multi_draw_indirect = device_features.features.multiDrawIndirect == VK_TRUE;
+        selected.draw_indirect_count = features_12.drawIndirectCount == VK_TRUE;
+        selected.memory_budget = physical_device_supports_extension(
+            physical_device, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
         selected.depth_format = choose_supported_depth_format(physical_device);
         if (selected.depth_format == VK_FORMAT_UNDEFINED) {
             continue;
@@ -580,7 +591,8 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
 
 [[nodiscard]] core::Result<VkDevice> create_logical_device(VkPhysicalDevice physical_device,
                                                            std::uint32_t graphics_queue_family,
-                                                           bool enable_swapchain) {
+                                                           bool enable_swapchain,
+                                                           bool enable_memory_budget) {
     constexpr float queue_priority = 1.0F;
     VkDeviceQueueCreateInfo queue_info{};
     queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
@@ -591,22 +603,38 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
     VkPhysicalDeviceVulkan13Features features_13{};
     features_13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     features_13.dynamicRendering = VK_TRUE;
+    VkPhysicalDeviceVulkan12Features features_12{};
+    features_12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    features_12.pNext = &features_13;
     VkPhysicalDeviceFeatures2 features{};
     features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    features.pNext = &features_13;
-    VkPhysicalDeviceFeatures supported_features{};
-    vkGetPhysicalDeviceFeatures(physical_device, &supported_features);
-    features.features.samplerAnisotropy = supported_features.samplerAnisotropy;
+    features.pNext = &features_12;
+    VkPhysicalDeviceVulkan12Features supported_12{};
+    supported_12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    VkPhysicalDeviceFeatures2 supported_features{};
+    supported_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    supported_features.pNext = &supported_12;
+    vkGetPhysicalDeviceFeatures2(physical_device, &supported_features);
+    features.features.samplerAnisotropy = supported_features.features.samplerAnisotropy;
+    features.features.multiDrawIndirect = supported_features.features.multiDrawIndirect;
+    features_12.drawIndirectCount = supported_12.drawIndirectCount;
 
     VkDeviceCreateInfo device_info{};
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     device_info.pNext = &features;
     device_info.queueCreateInfoCount = 1;
     device_info.pQueueCreateInfos = &queue_info;
-    const std::array<const char*, 1> swapchain_extensions{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    std::vector<const char*> device_extensions;
     if (enable_swapchain) {
-        device_info.enabledExtensionCount = static_cast<std::uint32_t>(swapchain_extensions.size());
-        device_info.ppEnabledExtensionNames = swapchain_extensions.data();
+        device_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    }
+    if (enable_memory_budget) {
+        device_extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    }
+    if (!device_extensions.empty()) {
+        device_info.enabledExtensionCount =
+            static_cast<std::uint32_t>(device_extensions.size());
+        device_info.ppEnabledExtensionNames = device_extensions.data();
     }
 
     VkDevice device = VK_NULL_HANDLE;
@@ -717,6 +745,11 @@ find_required_memory_type(VkPhysicalDevice physical_device, std::uint32_t type_b
         return VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | transfer;
     case rhi::RenderBufferUsage::storage:
         return VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | transfer;
+    case rhi::RenderBufferUsage::indirect:
+        return VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | transfer;
+    case rhi::RenderBufferUsage::storage_indirect:
+        return VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+               transfer;
     }
     return VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | transfer;
 }
@@ -1322,6 +1355,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
           debug_utils_enabled_(instance.debug_utils_enabled),
           physical_device_(selected.physical_device), properties_(selected.properties),
           sampler_anisotropy_(selected.sampler_anisotropy),
+          multi_draw_indirect_(selected.multi_draw_indirect),
+          draw_indirect_count_(selected.draw_indirect_count),
+          memory_budget_(selected.memory_budget),
           graphics_queue_family_(selected.graphics_queue_family),
           depth_format_(selected.depth_format), device_(device), queue_(queue),
           timestamp_valid_bits_(selected.timestamp_valid_bits), surface_(surface),
@@ -1443,8 +1479,27 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         result.supports_image_upload = true;
         result.supports_sampler_cache = true;
         result.supports_draw_binding = true;
+        result.supports_multi_draw_indirect = multi_draw_indirect_;
+        result.supports_draw_indirect_count = draw_indirect_count_;
         result.supports_frame_submission = true;
         result.supports_depth = depth_format_ != VK_FORMAT_UNDEFINED;
+        result.supports_memory_budget = memory_budget_;
+        if (memory_budget_) {
+            VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};
+            budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+            VkPhysicalDeviceMemoryProperties2 memory_properties{};
+            memory_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+            memory_properties.pNext = &budget;
+            vkGetPhysicalDeviceMemoryProperties2(physical_device_, &memory_properties);
+            for (std::uint32_t heap = 0;
+                 heap < memory_properties.memoryProperties.memoryHeapCount; ++heap) {
+                if ((memory_properties.memoryProperties.memoryHeaps[heap].flags &
+                     VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) {
+                    result.device_local_memory_budget_bytes += budget.heapBudget[heap];
+                    result.device_local_memory_usage_bytes += budget.heapUsage[heap];
+                }
+            }
+        }
         result.headless = false;
         return result;
     }
@@ -2197,6 +2252,18 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 destination_stages |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
                                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
                                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+                break;
+            case rhi::RenderBufferUsage::indirect:
+                barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+                destination_stages |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+                break;
+            case rhi::RenderBufferUsage::storage_indirect:
+                barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                                        VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+                destination_stages |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                      VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
                 break;
             }
             barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -3026,10 +3093,16 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                     "renderer.unknown_descriptor_resource",
                     "descriptor write resource handle is not owned by this device");
             }
-            const auto required_usage = binding->kind == rhi::RenderDescriptorKind::storage_buffer
-                                            ? rhi::RenderBufferUsage::storage
-                                            : rhi::RenderBufferUsage::uniform;
-            if (resource->second.desc.usage != required_usage) {
+            const auto storage_binding =
+                binding->kind == rhi::RenderDescriptorKind::storage_buffer;
+            const auto compatible_usage = storage_binding
+                                              ? resource->second.desc.usage ==
+                                                        rhi::RenderBufferUsage::storage ||
+                                                    resource->second.desc.usage ==
+                                                        rhi::RenderBufferUsage::storage_indirect
+                                              : resource->second.desc.usage ==
+                                                    rhi::RenderBufferUsage::uniform;
+            if (!compatible_usage) {
                 return core::Result<rhi::RenderDescriptorWriteStats>::failure(
                     "renderer.invalid_descriptor_resource_usage",
                     "buffer descriptor write references an incompatible buffer usage");
@@ -4852,6 +4925,61 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                     }
                 }
 
+                if (!draw.indirect.is_structurally_valid()) {
+                    return core::Status::failure(
+                        "renderer.invalid_indirect_draw",
+                        "render draw has an invalid indirect command binding");
+                }
+                if (draw.indirect.is_valid()) {
+                    if (!draw.index_buffer.is_valid()) {
+                        return core::Status::failure(
+                            "renderer.indirect_draw_requires_index_buffer",
+                            "indexed indirect draw requires an index buffer");
+                    }
+                    const auto command =
+                        buffer_resources_.find(draw.indirect.command_buffer.value);
+                    if (command == buffer_resources_.end() ||
+                        (command->second.desc.usage != rhi::RenderBufferUsage::indirect &&
+                         command->second.desc.usage !=
+                             rhi::RenderBufferUsage::storage_indirect)) {
+                        return core::Status::failure(
+                            "renderer.invalid_indirect_buffer_usage",
+                            "render draw command buffer is missing or lacks indirect usage");
+                    }
+                    const auto available = command->second.byte_size;
+                    const auto command_size = sizeof(rhi::RenderIndexedIndirectCommand);
+                    const auto range_valid = draw.indirect.command_offset <= available &&
+                        command_size <= available - draw.indirect.command_offset &&
+                        static_cast<std::size_t>(draw.indirect.maximum_draw_count - 1U) <=
+                            (available - draw.indirect.command_offset - command_size) /
+                                draw.indirect.stride;
+                    if (!range_valid) {
+                        return core::Status::failure(
+                            "renderer.indirect_range_out_of_bounds",
+                            "render draw indirect command range exceeds its buffer");
+                    }
+                    if (draw.indirect.count_buffer.is_valid()) {
+                        if (!draw_indirect_count_) {
+                            return core::Status::failure(
+                                "renderer.indirect_count_unsupported",
+                                "render draw uses an indirect count buffer unsupported by this device");
+                        }
+                        const auto count =
+                            buffer_resources_.find(draw.indirect.count_buffer.value);
+                        if (count == buffer_resources_.end() ||
+                            (count->second.desc.usage != rhi::RenderBufferUsage::indirect &&
+                             count->second.desc.usage !=
+                                 rhi::RenderBufferUsage::storage_indirect) ||
+                            draw.indirect.count_offset > count->second.byte_size ||
+                            sizeof(std::uint32_t) >
+                                count->second.byte_size - draw.indirect.count_offset) {
+                            return core::Status::failure(
+                                "renderer.invalid_indirect_count_buffer",
+                                "render draw count buffer is missing, incompatible, or too small");
+                        }
+                    }
+                }
+
                 const auto layout =
                     pipeline_layouts_.find(pipeline->second.desc.material_id.value());
                 if (layout == pipeline_layouts_.end()) {
@@ -5611,13 +5739,79 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                                                VK_SHADER_STAGE_FRAGMENT_BIT,
                                            0, sizeof(constants), &constants);
                     }
-                    if (indexed) {
+                    if (draw.indirect.is_valid()) {
+                        auto& indirect =
+                            buffer_resources_.at(draw.indirect.command_buffer.value);
+                        if (draw.indirect.count_buffer.is_valid()) {
+                            auto& count =
+                                buffer_resources_.at(draw.indirect.count_buffer.value);
+                            vkCmdDrawIndexedIndirectCount(
+                                frame_commands, indirect.buffer, draw.indirect.command_offset,
+                                count.buffer, draw.indirect.count_offset,
+                                draw.indirect.maximum_draw_count, draw.indirect.stride);
+                        } else if (multi_draw_indirect_ ||
+                                   draw.indirect.maximum_draw_count == 1U) {
+                            vkCmdDrawIndexedIndirect(
+                                frame_commands, indirect.buffer, draw.indirect.command_offset,
+                                draw.indirect.maximum_draw_count, draw.indirect.stride);
+                        } else {
+                            for (std::uint32_t index = 0;
+                                 index < draw.indirect.maximum_draw_count; ++index) {
+                                vkCmdDrawIndexedIndirect(
+                                    frame_commands, indirect.buffer,
+                                    draw.indirect.command_offset +
+                                        static_cast<std::size_t>(index) * draw.indirect.stride,
+                                    1, draw.indirect.stride);
+                            }
+                        }
+                    } else if (indexed) {
                         vkCmdDrawIndexed(frame_commands, draw.index_count, draw.instance_count,
                                          draw.first_index, draw.vertex_offset, draw.first_instance);
                     } else {
                         vkCmdDraw(frame_commands, draw.vertex_count, draw.instance_count, 0,
                                   draw.first_instance);
                     }
+                }
+            };
+            const auto prepare_indirect_buffers = [&](const rhi::RenderPassDesc& recorded_pass) {
+                const auto* commands = find_commands(recorded_pass.name);
+                if (commands == nullptr) {
+                    return;
+                }
+                std::vector<VkBufferMemoryBarrier> barriers;
+                std::unordered_set<std::uint64_t> prepared;
+                const auto add_barrier = [&](rhi::RenderResourceHandle handle) {
+                    if (!handle.is_valid() || !prepared.insert(handle.value).second) {
+                        return;
+                    }
+                    auto& resource = buffer_resources_.at(handle.value);
+                    if (resource.desc.usage != rhi::RenderBufferUsage::storage_indirect) {
+                        return;
+                    }
+                    VkBufferMemoryBarrier barrier{};
+                    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+                    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                    barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+                    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barrier.buffer = resource.buffer;
+                    barrier.offset = 0;
+                    barrier.size = VK_WHOLE_SIZE;
+                    barriers.push_back(barrier);
+                };
+                for (const auto& draw : commands->draws) {
+                    if (!draw.indirect.is_valid()) {
+                        continue;
+                    }
+                    add_barrier(draw.indirect.command_buffer);
+                    add_barrier(draw.indirect.count_buffer);
+                }
+                if (!barriers.empty()) {
+                    vkCmdPipelineBarrier(
+                        frame_commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 0, nullptr,
+                        static_cast<std::uint32_t>(barriers.size()), barriers.data(), 0, nullptr);
+                    submitted_barrier_count += barriers.size();
                 }
             };
 
@@ -5774,6 +5968,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                             sampled_status.error().code, sampled_status.error().message);
                     }
                 }
+                prepare_indirect_buffers(pass);
 
                 std::vector<VkRenderingAttachmentInfo> colour_attachments;
                 colour_attachments.reserve(colour_names.size());
@@ -5836,16 +6031,38 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                     const auto attachment_layout =
                         depth->layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
                     const auto general_layout = depth->layout == VK_IMAGE_LAYOUT_GENERAL;
+                    const VkAccessFlags shader_write_access =
+                        general_layout ? static_cast<VkAccessFlags>(VK_ACCESS_SHADER_WRITE_BIT)
+                                       : VkAccessFlags{};
+                    const VkPipelineStageFlags compute_stage =
+                        general_layout
+                            ? static_cast<VkPipelineStageFlags>(
+                                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)
+                            : VkPipelineStageFlags{};
+                    VkAccessFlags previous_access{};
+                    if (!undefined) {
+                        previous_access =
+                            attachment_layout
+                                ? static_cast<VkAccessFlags>(
+                                      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
+                                : static_cast<VkAccessFlags>(VK_ACCESS_SHADER_READ_BIT) |
+                                      shader_write_access;
+                    }
+                    VkPipelineStageFlags source_stage =
+                        static_cast<VkPipelineStageFlags>(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+                    if (!undefined) {
+                        source_stage =
+                            attachment_layout
+                                ? static_cast<VkPipelineStageFlags>(
+                                      VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                      VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT)
+                                : static_cast<VkPipelineStageFlags>(
+                                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT) |
+                                      compute_stage;
+                    }
                     VkImageMemoryBarrier to_depth{};
                     to_depth.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                    to_depth.srcAccessMask =
-                        undefined
-                            ? 0
-                            : static_cast<VkAccessFlags>(
-                                  attachment_layout
-                                      ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
-                                      : VK_ACCESS_SHADER_READ_BIT |
-                                            (general_layout ? VK_ACCESS_SHADER_WRITE_BIT : 0U));
+                    to_depth.srcAccessMask = previous_access;
                     to_depth.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                                              VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
                     to_depth.oldLayout = depth->layout;
@@ -5857,14 +6074,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                                                  depth->array_layers};
                     vkCmdPipelineBarrier(
                         frame_commands,
-                        undefined
-                            ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-                            : (attachment_layout
-                                   ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-                                         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT
-                                   : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-                                         (general_layout ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
-                                                         : 0U)),
+                        source_stage,
                         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
                             VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                         0, 0, nullptr, 0, nullptr, 1, &to_depth);
@@ -6171,6 +6381,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         stats.extent = target_extent;
         stats.clear_color = clear_color;
         stats.presented = presented;
+        const auto memory = capabilities();
+        stats.memory_budget_valid = memory.supports_memory_budget;
+        stats.device_local_memory_budget_bytes = memory.device_local_memory_budget_bytes;
+        stats.device_local_memory_usage_bytes = memory.device_local_memory_usage_bytes;
         stats.render_pass_count = execution_plan.value().ordered_passes.size();
         stats.present_pass_count = execution_plan.value().present_pass_count;
         stats.resource_use_count = execution_plan.value().resource_uses.size();
@@ -6185,8 +6399,6 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         attach_latest_gpu_upload_timing(stats);
         for (const auto& commands : frame.pass_commands) {
             const auto& pass = frame.plan.passes[commands.pass_index];
-            stats.draw_count += commands.draws.size();
-            stats.indexed_draw_count += commands.draws.size();
             if (pass.name == "opaque_terrain") {
                 stats.opaque_terrain_draw_count += commands.draws.size();
             } else if (pass.name == "alpha_tested_terrain") {
@@ -6195,8 +6407,16 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 stats.transparent_terrain_draw_count += commands.draws.size();
             }
             for (const auto& draw : commands.draws) {
-                stats.total_indices +=
-                    static_cast<std::size_t>(draw.index_count) * draw.instance_count;
+                const auto submitted = draw.indirect.is_valid()
+                                           ? draw.indirect.maximum_draw_count
+                                           : 1U;
+                stats.draw_count += submitted;
+                stats.indexed_draw_count += draw.index_buffer.is_valid() ? submitted : 0U;
+                stats.indirect_draw_count += draw.indirect.is_valid() ? submitted : 0U;
+                if (!draw.indirect.is_valid()) {
+                    stats.total_indices +=
+                        static_cast<std::size_t>(draw.index_count) * draw.instance_count;
+                }
             }
         }
         return core::Result<rhi::RenderFrameStats>::success(stats);
@@ -6616,6 +6836,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
     VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties properties_{};
     bool sampler_anisotropy_ = false;
+    bool multi_draw_indirect_ = false;
+    bool draw_indirect_count_ = false;
+    bool memory_budget_ = false;
     std::uint32_t graphics_queue_family_ = 0;
     VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
     VkDevice device_ = VK_NULL_HANDLE;
@@ -6728,7 +6951,8 @@ core::Result<std::unique_ptr<rhi::IRenderDevice>> create_device(rhi::RenderDevic
 
     auto device =
         create_logical_device(selected.value().physical_device,
-                              selected.value().graphics_queue_family, surface != VK_NULL_HANDLE);
+                              selected.value().graphics_queue_family, surface != VK_NULL_HANDLE,
+                              selected.value().memory_budget);
     if (!device) {
         if (surface != VK_NULL_HANDLE) {
             vkDestroySurfaceKHR(instance.value().instance, surface, nullptr);

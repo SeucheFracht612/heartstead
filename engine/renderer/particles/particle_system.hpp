@@ -165,6 +165,7 @@ struct ParticleState {
     float velocity_stretch = 0.0F;
     float collision_radius = 0.05F;
     float collision_restitution = 0.25F;
+    std::uint8_t priority = 1;
 
     [[nodiscard]] float normalized_age() const noexcept;
     [[nodiscard]] float size() const noexcept;
@@ -191,6 +192,7 @@ struct ParticleSystemStats {
     std::uint64_t dropped_events = 0;
     std::uint64_t lod_rejected_particles = 0;
     std::uint64_t prototype_budget_rejected_particles = 0;
+    std::uint64_t priority_budget_rejected_particles = 0;
     std::uint64_t collision_count = 0;
     double update_ms = 0.0;
 };

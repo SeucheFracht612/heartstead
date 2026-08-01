@@ -241,9 +241,10 @@ passthrough is supported.
 ## Debug and UI
 
 Debug lines/text and UI triangles are renderer-neutral batches with fixed capacities, rotating
-upload segments, validated vertex ABIs, clipping, and explicit counters. The built-in UI atlas
-provides a white primitive layer and deterministic fallback diagnostic font. Game UI should submit
-presentation data, not backend commands.
+upload segments, validated vertex ABIs, clipping, and explicit counters. The UI atlas provides a
+white primitive layer and a deterministic SDF layer built from the packaged Noto Sans font. Text
+submission fails explicitly when that production font is unavailable; there is no bitmap fallback.
+Game UI submits presentation data, not backend commands.
 
 Mandatory engine diagnostics include coordinates, chunk bounds/revisions, render/collision bounds,
 meshing/residency, controller geometry, rooms, lights, processes, network state, and relevant

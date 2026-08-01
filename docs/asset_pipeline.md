@@ -4,7 +4,7 @@ This guide explains what Heartstead accepts today, what each format is for, wher
 go, and how to get them into the development game. It is for contributors who create models,
 textures, animation, particles, or audio and do not intend to change C++.
 
-The dependable path in the current development runtime is:
+The dependable content path in the current development runtime is:
 
 ```text
 finished source file
@@ -28,8 +28,8 @@ finished source file
 | Generated development sound | `.tone` | Playable, deterministic mono test/prototype audio |
 | Ogg Vorbis audio | `.ogg` | Validated, production-cooked, and playable through a `sound_event` |
 | Particle effect | `particle` prototype TOML | Data-driven billboard or mesh effect using configured material/mesh groups, flipbooks, lighting, blending, LOD, and bounded simulation |
-| Font | `.ttf`, `.otf`, `.ttc` | Production-cookable SFNT data, but the game UI still uses its built-in diagnostic font |
-| UI artwork | Keep source, normally export PNG for handoff | No authored UI atlas/skin import path yet |
+| Font | `.ttf`, `.otf`, `.ttc` | Production-cookable SFNT data; the packaged Noto Sans UI font builds a deterministic SDF atlas at renderer startup |
+| UI artwork | PNG plus `ui_panel` prototype data | Prototype-defined panels/icons use the retained UI atlas contract; arbitrary standalone UI texture binding is not exposed |
 
 For a new model, prefer a self-contained GLB. For recorded audio, prefer WAV for short effects and
 FLAC for long files. PNG is the safest color-texture delivery.
@@ -319,8 +319,14 @@ The production cooker recognizes `.png`, `.jpg`, `.jpeg`, and `.ktx2`.
 
 Terrain materials can bind standalone production-cooked PNG/JPEG assets. The renderer resamples
 each source image into its 16 x 16 sRGB terrain texture array and generates mipmaps. The UI atlas
-remains built in. Particle prototypes select project-configured material groups rather than binding
-an arbitrary standalone logical texture ID directly.
+contains a white primitive layer plus the generated linear SDF font layer. Particle prototypes
+select project-configured material groups rather than binding an arbitrary standalone logical
+texture ID directly.
+
+The base UI font is `mods/base/assets/fonts/heartstead-ui.ttf`, licensed under SIL OFL 1.1. CMake
+stages it beside renderer applications and initialization builds the deterministic SDF atlas. This
+bootstrap path is intentionally explicit; other runtime fonts still go through the catalog/cooker
+contract, and complex shaping or CJK fallback is not implemented.
 
 The checked-in `.txt` files below some texture/UI folders are development placeholders, not image
 formats to copy.

@@ -1,5 +1,6 @@
 #include "game/application/game_application.hpp"
 
+#include "engine/core/file_io.hpp"
 #include "engine/renderer/shaders/spirv_loader.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
 
@@ -365,6 +366,11 @@ core::Status GameApplication::initialize_shell() {
     }
 
     renderer::RendererInitDesc renderer_desc;
+    auto ui_font = core::read_binary_file(config_.shader_root.parent_path() /
+                                          "fonts/heartstead-ui.ttf");
+    if (!ui_font) {
+        return core::Status::failure(ui_font.error().code, ui_font.error().message);
+    }
     renderer_desc.device = std::move(device).value();
     renderer_desc.sky_vertex_spirv = std::move(shaders.value().sky_vertex);
     renderer_desc.sky_fragment_spirv = std::move(shaders.value().sky_fragment);
@@ -385,6 +391,8 @@ core::Status GameApplication::initialize_shell() {
     renderer_desc.bloom_fragment_spirv = std::move(shaders.value().bloom_fragment);
     renderer_desc.ui_vertex_spirv = std::move(shaders.value().ui_vertex);
     renderer_desc.ui_fragment_spirv = std::move(shaders.value().ui_fragment);
+    renderer_desc.ui_font_bytes = std::move(ui_font).value();
+    renderer_desc.quality_preset = config_.renderer_quality;
     renderer_desc.voxel_palette = config_.voxel_palette;
     renderer_desc.terrain_material_assets = std::move(config_.terrain_material_assets);
     return renderer_.initialize(std::move(renderer_desc));

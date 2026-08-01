@@ -4,8 +4,12 @@ add_library(Heartstead::Engine ALIAS heartstead_engine)
 target_sources(
   heartstead_engine
   PRIVATE
+    animation/animation_budget.cpp
+    animation/equipment_attachment.cpp
+    animation/interaction_pose.cpp
     animation/locomotion_animation.cpp
     animation/skeletal_animation.cpp
+    items/equipment_loadout.cpp
     assets/asset_catalog.cpp
     assets/asset_cooker.cpp
     assets/cooked_asset_manifest.cpp
@@ -47,6 +51,7 @@ target_sources(
     items/item_prototype.cpp
     input/input_action.cpp
     ui/widget_tree.cpp
+    ui/map_view.cpp
     ui/ui_skin_prototype.cpp
     jobs/job_system.cpp
     jobs/thread_pool/thread_pool_backend.cpp
@@ -98,6 +103,7 @@ target_sources(
     processes/process_prototype.cpp
     replay/command_replay.cpp
     renderer/benchmark/benchmark_scene.cpp
+    renderer/benchmark/benchmark_coverage.cpp
     renderer/benchmark/benchmark_statistics.cpp
     renderer/assets/sampler_cache.cpp
     renderer/assets/mesh_manager.cpp
@@ -130,9 +136,11 @@ target_sources(
     renderer/lighting/clustered_lighting.cpp
     renderer/lighting/cascaded_shadows.cpp
     renderer/memory/gpu_buffer_arena.cpp
+    renderer/memory/streaming_residency.cpp
     renderer/memory/staging_ring.cpp
     renderer/renderer.cpp
     renderer/renderer_stats.cpp
+    renderer/quality/renderer_quality.cpp
     renderer/render_camera.cpp
     renderer/scene/render_scene.cpp
     renderer/scene/scene_render_system.cpp
@@ -141,8 +149,14 @@ target_sources(
     renderer/shaders/shader_compiler.cpp
     renderer/shaders/spirv_loader.cpp
     renderer/terrain/gpu_chunk_vertex.cpp
+    renderer/terrain/far_terrain_clipmap.cpp
+    renderer/terrain/far_terrain_renderer.cpp
+    renderer/testing/visual_regression.cpp
     renderer/ui/ui_renderer.cpp
+    renderer/ui/ui_font.cpp
     renderer/vegetation/vegetation_renderer.cpp
+    renderer/visibility/visibility_hierarchy.cpp
+    renderer/visibility/hierarchical_depth_occlusion.cpp
     renderer/vegetation/vegetation_species.cpp
     renderer/water/large_water_renderer.cpp
     renderer/vulkan/vulkan_backend.cpp
@@ -261,6 +275,7 @@ target_sources(
       entities/physical_resource.hpp
       input/input_action.hpp
       ui/widget_tree.hpp
+      ui/map_view.hpp
       ui/ui_skin_prototype.hpp
       items/item_stack.hpp
       items/item_prototype.hpp
@@ -323,6 +338,7 @@ target_sources(
       processes/process_prototype.hpp
       replay/command_replay.hpp
       renderer/benchmark/benchmark_scene.hpp
+      renderer/benchmark/benchmark_coverage.hpp
       renderer/benchmark/benchmark_statistics.hpp
       renderer/assets/render_asset_handles.hpp
       renderer/assets/mesh_manager.hpp
@@ -359,6 +375,7 @@ target_sources(
       renderer/renderer.hpp
       renderer/renderer_config.hpp
       renderer/renderer_stats.hpp
+      renderer/quality/renderer_quality.hpp
       renderer/render_camera.hpp
       renderer/scene/render_scene.hpp
       renderer/scene/scene_render_system.hpp
@@ -368,7 +385,9 @@ target_sources(
       renderer/shaders/spirv_loader.hpp
       renderer/terrain/gpu_chunk_vertex.hpp
       renderer/terrain/terrain_mapping.hpp
+      renderer/testing/visual_regression.hpp
       renderer/ui/ui_renderer.hpp
+      renderer/ui/ui_font.hpp
       renderer/vulkan/vulkan_backend.hpp
       renderer/world_render_list.hpp
       rooms/room_descriptor_prototype.hpp

@@ -103,20 +103,15 @@ Built-in shader source and checked-in validated SPIR-V live under
 SPIR-V in the build tree after source changes. Otherwise it stages the checked-in payloads. Normal
 runtime rendering does not compile shader source.
 
-To regenerate the checked-in built-in shaders with Khronos tools:
+To regenerate every checked-in built-in shader with Khronos tools:
 
 ```bash
-for shader in \
-  sky.vert sky.frag \
-  terrain.vert terrain.frag \
-  static_mesh.vert static_mesh.frag \
-  shadow_terrain.frag shadow_static.frag \
-  debug_line.vert debug_line.frag \
-  ui.vert ui.frag \
-  tone_map.vert tone_map.frag \
-  ssao.frag ao_composite.frag fxaa.frag bloom.frag; do
+find engine/renderer/shaders/builtin -maxdepth 1 -type f \
+  \( -name '*.vert' -o -name '*.frag' -o -name '*.comp' \) -print0 |
+while IFS= read -r -d '' source; do
+  shader="${source##*/}"
   glslangValidator -V --target-env vulkan1.0 \
-    "engine/renderer/shaders/builtin/${shader}" \
+    "${source}" \
     -o "engine/renderer/shaders/builtin/${shader}.spv"
   spirv-val "engine/renderer/shaders/builtin/${shader}.spv"
 done

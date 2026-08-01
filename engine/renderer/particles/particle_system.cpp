@@ -427,10 +427,11 @@ void CpuParticleSystem::spawn(const ParticleEmitEvent& event, std::uint32_t& spa
             ? prototype->spawn_budget_per_update - prototype_spawns
             : 0U;
     const auto capacity = config_.maximum_particles - static_cast<std::uint32_t>(particles_.size());
-    const auto accepted =
-        std::min({requested, capacity, spawn_budget, live_remaining,
-                  prototype_budget_remaining});
-    stats_.prototype_budget_rejected_particles += requested - accepted;
+    const auto accepted_without_priority =
+        std::min({requested, capacity, live_remaining, prototype_budget_remaining});
+    const auto accepted = std::min(accepted_without_priority, spawn_budget);
+    stats_.prototype_budget_rejected_particles += requested - accepted_without_priority;
+    stats_.priority_budget_rejected_particles += accepted_without_priority - accepted;
     stats_.dropped_particles += static_cast<std::uint64_t>(event.count - accepted);
     spawn_budget -= accepted;
     prototype_spawns += accepted;
@@ -486,6 +487,7 @@ void CpuParticleSystem::spawn(const ParticleEmitEvent& event, std::uint32_t& spa
         particle.velocity_stretch = prototype->velocity_stretch;
         particle.collision_radius = prototype->collision_radius;
         particle.collision_restitution = prototype->collision_restitution;
+        particle.priority = prototype->priority;
         particles_.push_back(std::move(particle));
     }
     stats_.spawned_this_update += accepted;
@@ -502,11 +504,15 @@ core::Status CpuParticleSystem::update(float delta_seconds) {
     prototype_spawns_this_update_.clear();
     std::uint32_t spawn_budget = config_.maximum_spawns_per_update;
 
+    struct PendingEmission {
+        ParticleEmitEvent event;
+        ParticleEmitterId source_emitter;
+    };
+    std::vector<PendingEmission> pending_emissions;
+    pending_emissions.reserve(queued_events_.size() + emitters_.size());
     for (const auto& event : queued_events_) {
-        spawn(event, spawn_budget);
+        pending_emissions.push_back({event, {}});
     }
-    queued_events_.clear();
-    stats_.queued_events = 0;
 
     std::vector<ParticleEmitterId> expired_emitters;
     for (std::uint32_t index = 0; index < emitters_.size(); ++index) {
@@ -526,21 +532,30 @@ core::Status CpuParticleSystem::update(float delta_seconds) {
         emitter.spawn_accumulator -= static_cast<float>(rate_count);
         count += rate_count;
         if (count != 0) {
-            const ParticleEmitEvent event{
+            pending_emissions.push_back({ParticleEmitEvent{
                 emitter.desc.prototype_id,
                 emitter.desc.position,
                 emitter.desc.direction,
                 emitter.desc.inherited_velocity,
                 count,
                 mix(emitter.desc.seed ^ emitter.emission_serial++),
-            };
-            spawn(event, spawn_budget, {index + 1U, emitter.generation});
+            }, {index + 1U, emitter.generation}});
         }
         emitter.age_seconds += delta_seconds;
         if (emitter.age_seconds >= emitter.desc.lifetime_seconds) {
             expired_emitters.push_back({index + 1U, emitter.generation});
         }
     }
+    std::stable_sort(pending_emissions.begin(), pending_emissions.end(),
+                     [this](const PendingEmission& left, const PendingEmission& right) {
+                         return find_prototype(left.event.prototype_id)->priority >
+                                find_prototype(right.event.prototype_id)->priority;
+                     });
+    for (const auto& pending : pending_emissions) {
+        spawn(pending.event, spawn_budget, pending.source_emitter);
+    }
+    queued_events_.clear();
+    stats_.queued_events = 0;
     for (const auto id : expired_emitters) {
         (void)destroy_emitter(id);
     }

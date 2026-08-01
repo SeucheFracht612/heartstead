@@ -8,6 +8,8 @@
 #include <cmath>
 #include <limits>
 #include <ranges>
+#include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <utility>
 
@@ -367,7 +369,6 @@ ChunkRenderSystem::build_draw_list(const RenderCamera& camera,
     visible_chunks_scratch_.clear();
     visible_chunks_scratch_.reserve(cache_->stats().entry_count);
     result.draws.reserve(cache_->stats().resident_section_count);
-    const auto frustum = RenderFrustum::from_view_projection(camera.view_projection);
     const auto shadow_view_count = std::min<std::size_t>(shadow_view_projections.size(), 64U);
     std::vector<RenderFrustum> shadow_frusta;
     shadow_frusta.reserve(shadow_view_count);
@@ -383,6 +384,8 @@ ChunkRenderSystem::build_draw_list(const RenderCamera& camera,
     {
         profiling::ScopedCpuTimingZone culling_zone(timings_,
                                                     profiling::CpuTimingZone::visibility_culling);
+        std::unordered_set<VisibilityKey> current_keys;
+        current_keys.reserve(cache_->stats().entry_count);
         for (const auto* entry : cache_->entries()) {
             if (entry->state != ChunkGpuState::resident) {
                 continue;
@@ -399,25 +402,76 @@ ChunkRenderSystem::build_draw_list(const RenderCamera& camera,
                 continue;
             }
             const auto bounds = translated_bounds(entry->local_bounds, origin.value());
-            const auto camera_visible = frustum.intersects(bounds);
-            std::uint64_t shadow_visibility_mask = 0;
-            for (std::size_t shadow_view = 0; shadow_view < shadow_frusta.size(); ++shadow_view) {
-                if (shadow_frusta[shadow_view].intersects(bounds)) {
-                    shadow_visibility_mask |= std::uint64_t{1} << shadow_view;
-                }
+            const auto key = static_cast<VisibilityKey>(entry->identity.load_generation);
+            current_keys.insert(key);
+            visibility_hierarchy_.upsert(
+                {key,
+                 {{static_cast<double>(bounds.min.x), static_cast<double>(bounds.min.y),
+                   static_cast<double>(bounds.min.z)},
+                  {static_cast<double>(bounds.max.x), static_cast<double>(bounds.max.y),
+                   static_cast<double>(bounds.max.z)}},
+                 {}, 0.0, 1.0F, true, false});
+            visible_chunks_scratch_.push_back({entry, origin.value(), false, 0});
+        }
+        for (const auto key : visibility_keys_) {
+            if (!current_keys.contains(key)) {
+                static_cast<void>(visibility_hierarchy_.erase(key));
             }
-            if (!camera_visible) {
+        }
+        visibility_keys_ = std::move(current_keys);
+
+        RenderCamera relative_camera = camera;
+        relative_camera.local_position = {};
+        static_cast<void>(relative_camera.update_matrices());
+        std::vector<VisibilityView> views;
+        views.reserve(shadow_frusta.size() + 1U);
+        views.push_back({1U,
+                         VisibilityViewKind::main,
+                         {static_cast<double>(camera.local_position.x),
+                          static_cast<double>(camera.local_position.y),
+                          static_cast<double>(camera.local_position.z)},
+                         RenderFrustum::from_view_projection(relative_camera.view_projection),
+                         1U, camera.vertical_fov_radians, 0.0});
+        for (std::size_t shadow_view = 0; shadow_view < shadow_frusta.size(); ++shadow_view) {
+            views.push_back({static_cast<VisibilityViewId>(shadow_view + 2U),
+                             VisibilityViewKind::directional_shadow, {},
+                             shadow_frusta[shadow_view], 1U,
+                             camera.vertical_fov_radians, 0.0});
+        }
+        const auto visibility = visibility_hierarchy_.query(views);
+        std::unordered_map<VisibilityKey, std::uint64_t> masks;
+        masks.reserve(visibility.selections.size());
+        for (const auto& selected : visibility.selections) {
+            auto& mask = masks[selected.key];
+            if (selected.view_id == 1U) {
+                mask |= std::uint64_t{1} << 63U;
+            } else {
+                mask |= std::uint64_t{1} << (selected.view_id - 2U);
+            }
+        }
+        std::size_t retained = 0;
+        for (auto visible : visible_chunks_scratch_) {
+            const auto key =
+                static_cast<VisibilityKey>(visible.entry->identity.load_generation);
+            const auto found = masks.find(key);
+            const auto mask = found == masks.end() ? std::uint64_t{0} : found->second;
+            visible.camera_visible = (mask & (std::uint64_t{1} << 63U)) != 0;
+            visible.shadow_visibility_mask = mask & ~(std::uint64_t{1} << 63U);
+            if (!visible.camera_visible) {
                 ++result.culled_chunk_count;
                 ++result.frustum_culled_chunk_count;
             }
-            if (!camera_visible && shadow_visibility_mask == 0) {
+            if (!visible.camera_visible && visible.shadow_visibility_mask == 0) {
                 continue;
             }
-            result.visible_chunk_count += camera_visible ? 1U : 0U;
-            cache_->mark_visible(entry->identity, visibility_epoch_);
-            visible_chunks_scratch_.push_back(
-                {entry, origin.value(), camera_visible, shadow_visibility_mask});
+            result.visible_chunk_count += visible.camera_visible ? 1U : 0U;
+            cache_->mark_visible(visible.entry->identity, visibility_epoch_);
+            visible_chunks_scratch_[retained++] = visible;
         }
+        visible_chunks_scratch_.resize(retained);
+        result.visibility_hierarchy_nodes = visibility_hierarchy_.node_count();
+        result.visibility_nodes_tested = visibility.stats.hierarchy_nodes_tested;
+        result.visibility_nodes_culled = visibility.stats.hierarchy_nodes_culled;
     }
 
     {
@@ -498,6 +552,9 @@ ChunkRenderSystem::build_draw_list(const RenderCamera& camera,
     stats_.draw_count = result.draws.size();
     stats_.visible_vertex_count = result.vertex_count;
     stats_.visible_index_count = result.index_count;
+    stats_.visibility_hierarchy_nodes = result.visibility_hierarchy_nodes;
+    stats_.visibility_nodes_tested = result.visibility_nodes_tested;
+    stats_.visibility_nodes_culled = result.visibility_nodes_culled;
     refresh_timing_stats();
     return result;
 }

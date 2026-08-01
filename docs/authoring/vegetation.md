@@ -32,7 +32,7 @@ foliage.transmission = "0.5"
 density.fade_start = "64"
 density.fade_end = "128"
 shadow.lod = "0"
-alpha_to_coverage = "true"
+receives_weather = "true"
 
 growth.states = "young,mature"
 growth.young.scale = "0.45"
@@ -45,7 +45,9 @@ without inspecting model names.
 
 LOD maximum distances must increase. `transition_width` is a dithered overlap; `density` is a
 stable per-instance acceptance fraction. Use lower density in distant LODs so a field becomes
-sparser without a synchronized pop. `shadow.lod` is the furthest LOD permitted to cast shadows.
+sparser without a synchronized pop. `density.fade_start` and `density.fade_end` assign a stable
+per-instance cutoff across the interval, avoiding a hard field edge. `shadow.lod` is the furthest
+LOD permitted to cast shadows.
 Impostor LODs use the same retained-instancing path and are marked for camera-facing presentation.
 
 Patch variation hashes the patch seed and logical instance index. Rebuilding an unrelated chunk,
@@ -56,3 +58,7 @@ height sampler when constructing a patch; height affects Y only and does not res
 The renderer batches matching mesh, material, layer, sidedness, and shadow policy. Authors should
 reuse LOD models and material slots across a species where possible. Alpha-tested foliage should
 be two-sided and should preserve alpha coverage in its cooked mip chain.
+
+`receives_weather` enables the shared lit-material rain wetness and snow accumulation response.
+Disable it only for sheltered or supernatural species. The renderer currently uses a single-sample
+FXAA path, so alpha-to-coverage is not exposed as an inactive authoring switch.

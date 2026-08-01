@@ -10,6 +10,15 @@
 
 namespace heartstead::renderer {
 
+struct FrameImageQualitySettings {
+    float render_scale = 1.0F;
+    bool ambient_occlusion = true;
+    bool anti_aliasing = true;
+    bool bloom = true;
+
+    [[nodiscard]] core::Status validate() const noexcept;
+};
+
 // Pass indices the frame builder assigns. Draw command lists
 // are appended against these, and the backend keys pass execution off them.
 namespace hdr_pass_index {
@@ -50,6 +59,8 @@ class FrameBuilder {
                                      rhi::RenderResourceHandle ao_composite,
                                      rhi::RenderResourceHandle anti_alias,
                                      rhi::RenderResourceHandle bloom) noexcept;
+    [[nodiscard]] core::Status set_image_quality_settings(FrameImageQualitySettings settings);
+    [[nodiscard]] FrameImageQualitySettings image_quality_settings() const noexcept;
     void update_exposure_adaptation(float scene_luminance, float delta_seconds) noexcept;
     [[nodiscard]] core::Status set_shadow_resolution(std::uint32_t resolution);
     [[nodiscard]] rhi::RenderResourceHandle tone_map_pipeline() const noexcept;
@@ -73,6 +84,7 @@ class FrameBuilder {
     std::uint32_t shadow_resolution_ = 2048;
     std::uint32_t local_shadow_resolution_ = 1024;
     float adapted_exposure_stops_ = 0.0F;
+    FrameImageQualitySettings image_quality_{};
 };
 
 } // namespace heartstead::renderer

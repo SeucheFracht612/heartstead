@@ -64,6 +64,7 @@ constexpr std::uint16_t slope_type = 6;
     case BenchmarkSceneKind::forest_cross_planes:
     case BenchmarkSceneKind::terrain_material_preview:
     case BenchmarkSceneKind::starting_biome:
+    case BenchmarkSceneKind::character_workshop:
         return kind;
     case BenchmarkSceneKind::flat_terrain:
     case BenchmarkSceneKind::rapid_voxel_edits:
@@ -113,6 +114,8 @@ std::string_view benchmark_scene_name(BenchmarkSceneKind kind) noexcept {
         return "terrain-materials";
     case BenchmarkSceneKind::starting_biome:
         return "starting-biome";
+    case BenchmarkSceneKind::character_workshop:
+        return "character-workshop";
     }
     return "unknown";
 }
@@ -134,6 +137,7 @@ std::optional<BenchmarkSceneKind> parse_benchmark_scene(std::string_view name) n
         BenchmarkSceneKind::light_heavy_settlement,
         BenchmarkSceneKind::terrain_material_preview,
         BenchmarkSceneKind::starting_biome,
+        BenchmarkSceneKind::character_workshop,
     };
     const auto found = std::ranges::find_if(
         kinds, [name](BenchmarkSceneKind kind) { return benchmark_scene_name(kind) == name; });
@@ -473,6 +477,7 @@ std::vector<world::VoxelCell> BenchmarkScene::generate_cells(world::ChunkCoord c
                 case BenchmarkSceneKind::active_water:
                 case BenchmarkSceneKind::particle_stress:
                 case BenchmarkSceneKind::light_heavy_settlement:
+                case BenchmarkSceneKind::character_workshop:
                     break;
                 }
                 if (type != 0) {
@@ -522,6 +527,7 @@ core::Result<BenchmarkSceneStep> BenchmarkScene::advance(std::uint64_t frame_ind
     case BenchmarkSceneKind::light_heavy_settlement:
     case BenchmarkSceneKind::terrain_material_preview:
     case BenchmarkSceneKind::starting_biome:
+    case BenchmarkSceneKind::character_workshop:
         break;
     }
     if (!status) {

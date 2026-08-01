@@ -123,6 +123,10 @@ void add_dirty_region_count_fields(InspectionData& data, const dirty::DirtyRegio
         return "dropped_item";
     case entities::EntityKind::projectile:
         return "projectile";
+    case entities::EntityKind::machine:
+        return "machine";
+    case entities::EntityKind::container:
+        return "container";
     case entities::EntityKind::temporary_physics:
         return "temporary_physics";
     }

@@ -12,6 +12,8 @@ layout(location = 8) in vec4 fragment_skin_weights;
 layout(location = 9) in vec4 fragment_effect_parameters;
 layout(location = 10) flat in uvec4 fragment_effect_metadata;
 layout(location = 11) in vec4 fragment_effect_parameters2;
+layout(location = 12) noperspective in vec2 fragment_current_ndc;
+layout(location = 13) noperspective in vec2 fragment_previous_ndc;
 
 layout(set = 0, binding = 2) uniform sampler2DArray surface_textures;
 layout(set = 0, binding = 4) uniform sampler2DArray surface_data_textures;
@@ -87,6 +89,7 @@ layout(push_constant) uniform FramePushConstants {
 } frame;
 
 layout(location = 0) out vec4 out_color;
+layout(location = 1) out vec4 out_motion;
 
 const uint LAYER_TRANSPARENT = 2U;
 const uint MATERIAL_ALPHA_TESTED = 1U;
@@ -94,10 +97,12 @@ const uint MATERIAL_TWO_SIDED = 8U;
 const uint MATERIAL_UNLIT = 32U;
 const uint EFFECT_VEGETATION = 1U;
 const uint EFFECT_FOLIAGE_TRANSMISSION = 2U;
+const uint EFFECT_PARTICLE = 8U;
 const uint EFFECT_WATER_SURFACE = 64U;
 const uint EFFECT_UNLIT_PARTICLE = 128U;
 const uint EFFECT_EMISSIVE_PARTICLE = 256U;
 const uint EFFECT_PREMULTIPLIED_PARTICLE = 512U;
+const uint EFFECT_DISABLE_WEATHER_RESPONSE = 1024U;
 const uint EFFECT_SOFT_PARTICLE = 32U;
 const float PI = 3.14159265358979323846;
 
@@ -364,11 +369,11 @@ void main() {
         float time = frame.unused_origin.z * fragment_effect_parameters2.y;
         vec2 first_direction = normalize(vec2(0.82, 0.57));
         vec2 second_direction = normalize(vec2(-0.38, 0.93));
-        float first = cos(dot(fragment_world_position.xz, first_direction) * 0.14 +
+        float first = cos(dot(fragment_uv0, first_direction) * 0.14 +
                           time * 1.1);
-        float second = cos(dot(fragment_world_position.xz, second_direction) * 0.21 -
+        float second = cos(dot(fragment_uv0, second_direction) * 0.21 -
                            time * 0.8);
-        float ripple = sin(dot(fragment_world_position.xz, vec2(0.83, -0.71)) +
+        float ripple = sin(dot(fragment_uv0, vec2(0.83, -0.71)) +
                            time * 3.2) * shadows.weather_parameters.x;
         vec3 water_normal =
             normalize(vec3((first * first_direction.x + second * second_direction.x) *
@@ -467,6 +472,18 @@ void main() {
             1.0,
             sample_binding(surface_data_textures, material.textures[3]).r,
             material.roughness_normal_occlusion_alpha.z);
+        vec3 authored_base_color = base_color.rgb;
+        float authored_roughness = roughness;
+        if ((fragment_effect_metadata.x & EFFECT_PARTICLE) == 0U &&
+            (fragment_effect_metadata.x & EFFECT_DISABLE_WEATHER_RESPONSE) == 0U) {
+            float upward = smoothstep(0.25, 0.85, normalize(fragment_normal).y);
+            float wetness = shadows.weather_parameters.y;
+            base_color.rgb *= mix(1.0, 0.72, wetness);
+            roughness = mix(roughness, 0.16, wetness);
+            float snow = shadows.weather_parameters.z * upward;
+            base_color.rgb = mix(base_color.rgb, vec3(0.78, 0.84, 0.88), snow);
+            roughness = mix(roughness, 0.82, snow);
+        }
 
         vec3 view_direction =
             normalize(shadows.camera_position.xyz - fragment_world_position);
@@ -514,11 +531,11 @@ void main() {
         }
         uint debug_view = uint(shadows.shadow_parameters.w + 0.5);
         if (debug_view == 1U) {
-            color = base_color.rgb;
+            color = authored_base_color;
         } else if (debug_view == 2U) {
             color = normal * 0.5 + 0.5;
         } else if (debug_view == 3U) {
-            color = vec3(roughness);
+            color = vec3(authored_roughness);
         } else if (debug_view == 4U) {
             color = vec3(metallic);
         } else if (debug_view == 5U) {
@@ -596,4 +613,6 @@ void main() {
         color *= alpha;
     }
     out_color = vec4(max(color, vec3(0.0)), alpha);
+    out_motion = vec4((fragment_current_ndc - fragment_previous_ndc) * 0.5,
+                      0.0, alpha);
 }

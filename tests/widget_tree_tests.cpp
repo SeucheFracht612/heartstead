@@ -1,9 +1,12 @@
+#include "engine/core/file_io.hpp"
 #include "engine/renderer/frame/frame_builder.hpp"
+#include "engine/renderer/ui/ui_font.hpp"
 #include "engine/ui/widget_tree.hpp"
 
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -254,7 +257,14 @@ void test_drag_drop_and_slider() {
 
 void test_nine_slice_tooltip_paint_and_batching() {
     auto fixture = make_fixture();
-    renderer::UiRenderer renderer(*fixture.device, fixture.pipeline);
+    const auto font_bytes = core::read_binary_file(
+        std::filesystem::path{HEARTSTEAD_TEST_SOURCE_DIR} /
+        "mods/base/assets/fonts/heartstead-ui.ttf");
+    assert(font_bytes);
+    auto built_font = renderer::UiFont::build(font_bytes.value());
+    assert(built_font);
+    auto font = std::make_shared<renderer::UiFont>(std::move(built_font).value());
+    renderer::UiRenderer renderer(*fixture.device, fixture.pipeline, std::move(font));
     renderer::UiRendererConfig config;
     config.maximum_vertices = 32'768;
     config.maximum_indices = 49'152;

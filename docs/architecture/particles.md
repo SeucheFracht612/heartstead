@@ -13,10 +13,11 @@ than bespoke effect classes.
 
 `CpuParticleSystem` owns a pre-reserved dense pool, a bounded event queue, and generation-safe
 retained emitters. Burst events and lifetime/rate emitters share the same spawn path. Each request
-has an explicit seed, and the system processes events, emitters, particles, and removals in stable
-order. The overflow policy is drop-new: the pool never reallocates past its configured maximum.
-Global and per-prototype live/spawn budgets, LOD rejections, collision counts, and drops remain
-visible in telemetry.
+has an explicit seed. Emissions are processed by validated priority from `3` to `0`, preserving
+original order within each tier. Presentation overflow then retains priority, nearer camera
+contribution, and lower serial in that order. The pool never reallocates past its configured
+maximum. Global and per-prototype live/spawn budgets, priority-budget rejections, LOD rejections,
+collision counts, and drops remain visible in telemetry.
 
 Simulation supports world or emitter-local space, profile wind response, gravity, drag, inherited
 velocity, and optional depth/voxel collision callbacks. Callers own collision queries because the

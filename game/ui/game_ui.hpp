@@ -4,6 +4,8 @@
 #include "engine/items/item_stack.hpp"
 #include "engine/movement/player_controller.hpp"
 #include "engine/platform/platform.hpp"
+#include "engine/player_profiles/map_discovery.hpp"
+#include "engine/ui/map_view.hpp"
 #include "engine/ui/widget_tree.hpp"
 #include "engine/world/world_state.hpp"
 #include "game/runtime/client_runtime.hpp"
@@ -66,6 +68,7 @@ struct GameUiProcessResult {
     std::uint32_t event_count = 0;
     std::optional<std::uint64_t> submitted_inventory_command;
     bool inventory_toggled = false;
+    bool map_toggled = false;
 };
 
 struct GameUiStats {
@@ -77,6 +80,9 @@ struct GameUiStats {
     double layout_ms = 0.0;
     double paint_ms = 0.0;
     bool inventory_open = false;
+    bool map_open = false;
+    ui::MapViewStats minimap;
+    ui::MapViewStats full_map;
 };
 
 class GameUiLayer {
@@ -96,7 +102,13 @@ class GameUiLayer {
           float dpi_scale = 1.0F);
 
     void set_inventory_open(bool open) noexcept;
+    void set_map_open(bool open) noexcept;
+    void set_map_center(player_profiles::MapCellCoord center) noexcept;
+    [[nodiscard]] core::Status set_map_layer(std::string layer_id);
+    void set_map_markers(std::vector<ui::MapMarker> markers);
+    void set_map_discovery(player_profiles::MapDiscovery discovery);
     [[nodiscard]] bool inventory_open() const noexcept;
+    [[nodiscard]] bool map_open() const noexcept;
     [[nodiscard]] bool blocks_gameplay() const noexcept;
     [[nodiscard]] InventoryUiViewModel& inventory() noexcept;
     [[nodiscard]] const InventoryUiViewModel& inventory() const noexcept;
@@ -118,12 +130,18 @@ class GameUiLayer {
     std::span<const entities::EntityDefinition> entity_definitions_;
     InventoryUiViewModel inventory_;
     ui::WidgetTree widgets_;
+    ui::MapViewRenderer map_view_renderer_;
+    player_profiles::MapDiscovery map_discovery_;
+    std::vector<ui::MapMarker> map_markers_;
+    player_profiles::MapCellCoord map_center_{};
+    std::string map_layer_ = "surface";
     std::vector<ui::WidgetId> inventory_slots_;
     std::vector<ui::WidgetId> hotbar_slots_;
     GameUiStats stats_{};
     std::uint64_t player_capacity_grams_ = 1;
     bool initialized_ = false;
     bool inventory_open_ = false;
+    bool map_open_ = false;
 };
 
 } // namespace heartstead::game

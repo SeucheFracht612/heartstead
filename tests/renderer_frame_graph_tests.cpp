@@ -130,6 +130,10 @@ void test_only_tone_map_and_ui_write_the_presentable_image() {
 void test_hdr_pass_order_matches_the_published_indices() {
     const auto plan = build_hdr_plan();
     assert(plan.passes.size() == hdr_pass_index::count);
+    const auto* motion = plan.find_resource(rhi::scene_motion_resource_name);
+    assert(motion != nullptr);
+    assert(motion->format == rhi::RenderImageFormat::rg16_sfloat);
+    assert(motion->lifetime == rhi::RenderResourceLifetime::transient);
 
     assert(pass_index_of(plan, "shadow_cascade_0") == hdr_pass_index::shadow_0);
     assert(pass_index_of(plan, "shadow_cascade_1") == hdr_pass_index::shadow_1);
@@ -156,6 +160,14 @@ void test_hdr_pass_order_matches_the_published_indices() {
     assert(plan.has_present_pass());
     assert(plan.pass_count(rhi::RenderPassKind::post_process) == 5);
     assert(plan.pass_count(rhi::RenderPassKind::present) == 1);
+    for (std::size_t pass = hdr_pass_index::sky; pass <= hdr_pass_index::debug; ++pass) {
+        if (pass == hdr_pass_index::ssao || pass == hdr_pass_index::ao_composite) {
+            continue;
+        }
+        assert(std::ranges::find(plan.passes[pass].writes,
+                                 rhi::scene_motion_resource_name) !=
+               plan.passes[pass].writes.end());
+    }
 
     for (std::size_t shadow_pass = 0; shadow_pass < 6; ++shadow_pass) {
         const auto& pass = plan.passes[shadow_pass];

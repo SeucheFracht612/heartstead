@@ -46,6 +46,9 @@ The deterministic catalog includes static and stress coverage for:
 - a 128-light settlement grid with mixed point/spot lights and shadow selection;
 - the integrated starting biome with rolling terrain, river and large water, instanced meadow,
   forest and crop vegetation, rain, smoke, embers, atmosphere, and a shadowed fire light;
+- active voxel-fluid simulation and presentation;
+- a 50,000-particle stress scene;
+- equipped animated characters plus stateful workshop machines;
 - rapid edits and replacement meshes;
 - high-speed flythrough/streaming;
 - load/unload churn;
@@ -164,7 +167,7 @@ The durable conclusion is structural: greedy merging dramatically reduced flat f
 while total frame time was already dominated by more than raw triangle count. Future optimization
 should use current subsystem measurements instead of assuming the same bottleneck.
 
-## Task 5 integrated environment workload
+## Integrated environment workload
 
 Use `starting-biome` to measure the environmental systems together:
 
@@ -184,6 +187,23 @@ The small Debug/Vulkan closure smoke test on 2026-07-31 used 640×360, radius 1,
 measured frames. It completed with no Vulkan validation messages, approximately 2,700 visible
 vegetation instances in seven instanced draws, and a mean GPU frame time of roughly 7.6 ms. This
 confirms integration and validation only; it is not an optimized performance baseline.
+
+## Large-world runs
+
+The `flythrough`, `churn`, and `large-coordinates` scenes are the authoritative large-world stress
+runs. Their JSON/CSV samples include visibility hierarchy traversal, far-terrain residency and
+uploads, indirect draw counts, GPU arena pressure, and driver-reported memory usage/budget. See
+`docs/architecture/large_world_rendering.md` for the systems exercised by each counter.
+
+## Coverage and visual regression
+
+`renderer/benchmark/benchmark_coverage.*` maps every required workload to a deterministic scene.
+The runner supports `--capture` and `--compare` for Vulkan display-image regression; see
+[Visual regression](../dev/visual_regression.md).
+
+The 320x180 debug Vulkan capture smoke on 2026-08-01 measured 2.536 ms GPU for the 2,367-object
+starting-biome snapshot and 2.922 ms GPU for the 3,072-object character-workshop snapshot. These are
+single startup samples validating instrumentation and capture, not release performance claims.
 
 ## Publishing a new baseline
 

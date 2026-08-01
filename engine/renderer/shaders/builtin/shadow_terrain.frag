@@ -7,6 +7,8 @@ layout(location = 4) flat in uint fragment_state_bits;
 layout(location = 0) in vec3 fragment_normal;
 layout(location = 5) in vec3 fragment_world_position;
 layout(location = 6) in float fragment_voxel_ao;
+layout(location = 7) in float fragment_lod_blend;
+layout(location = 8) flat in uint fragment_coordinate_key;
 
 layout(set = 0, binding = 0) uniform sampler2DArray terrain_textures;
 
@@ -111,7 +113,8 @@ void main() {
     // Keep the shared terrain vertex interface fully consumed. These packed values reserve all
     // bits for valid terrain state, so this conjunction is never produced by the mesher.
     if (fragment_light == 0xffffffffU && fragment_state_bits == 0xffffffffU &&
-        fragment_voxel_ao < 0.0) {
+        fragment_voxel_ao < 0.0 && fragment_lod_blend < 0.0 &&
+        fragment_coordinate_key == 0xffffffffU) {
         discard;
     }
     GpuVoxelMaterial material =
@@ -129,7 +132,7 @@ void main() {
     vec3 local_position = fragment_world_position - chunk.camera_relative_origin.xyz;
     vec3 stable_position =
         stable_periodic_position(local_position,
-                                 floatBitsToUint(chunk.camera_relative_origin.w));
+                                 fragment_coordinate_key);
     uint hash =
         texture_variant_hash(ivec3(floor(stable_position - normal * 0.001)), face);
     uint layer = start + hash % count;

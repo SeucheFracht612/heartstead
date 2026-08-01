@@ -49,10 +49,11 @@ floating-origin shifts without texture swimming.
 `LargeWaterRenderer` supplies lakes, coasts, and oceans that extend beyond ordinary chunk water. A
 single retained quadratic grid uses dense near cells and progressively larger far cells, then
 submits all visible cells through one instanced draw. Fixed bodies retain an exact
-`WorldPosition`; ocean bodies follow a camera-relative, cell-snapped origin. The snap prevents
-sub-pixel horizon crawl while exact anchors and camera-relative transforms preserve precision at
-large coordinates. Geometric waves, rain ripples, profile reflection/scattering/absorption,
-Fresnel, crest foam, and fog use the same environment buffer as voxel water.
+`WorldPosition`; ocean bodies follow a camera-relative, cell-snapped origin. Fractional-safe
+snapping prevents sub-pixel horizon crawl, while a bounded periodic absolute-world phase keeps
+waves invariant under floating-origin rebasing at large coordinates. Geometric waves, rain
+ripples, profile reflection/scattering/absorption, Fresnel, crest foam, and fog use the same
+environment buffer as voxel water.
 
 ## Vegetation
 
@@ -63,9 +64,11 @@ turns deterministic patches into retained scene objects. Matching plant primitiv
 Each GPU instance carries its stable wind phase, species stiffness, foliage transmission, atlas
 frame, and dither visibility. The shared environment wind vector drives foliage and its shadow
 vertex program with the same time and phase, preventing detached shadows. LODs overlap through
-stable dithered transitions, may reduce density deterministically, and stop casting beyond the
-species' shadow LOD. Frustum/distance culling happens in the retained scene; callers may also
-submit conservative camera-relative occluder bounds for patch-level visibility rejection.
+stable dithered transitions, may reduce density deterministically, and use stable per-instance
+cutoffs across the species density-fade interval. They stop casting beyond the species' shadow
+LOD. Lit assets share the terrain wetness and snow response; vegetation may explicitly opt out.
+Frustum/distance culling happens in the retained scene; callers may also submit conservative
+camera-relative occluder bounds for patch-level visibility rejection.
 
 See [vegetation authoring](../authoring/vegetation.md) for the data format.
 

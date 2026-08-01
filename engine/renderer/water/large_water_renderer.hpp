@@ -6,6 +6,7 @@
 #include "engine/world/coords/world_position.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <unordered_map>
 
@@ -42,6 +43,11 @@ struct LargeWaterRendererStats {
     std::uint64_t camera_recenters = 0;
 };
 
+struct LargeWaterBodyDebugState {
+    world::WorldPosition render_center{};
+    math::Vec2f world_wave_phase{};
+};
+
 // Draws geometric, camera-relative large-water coverage beyond editable voxel-water chunks.
 // A quadratic grid distribution keeps tessellation dense near the camera and sparse at the
 // horizon, so each ocean remains a single instanced draw with stable large-coordinate placement.
@@ -57,6 +63,8 @@ class LargeWaterRenderer {
 
     [[nodiscard]] bool is_initialized() const noexcept;
     [[nodiscard]] const LargeWaterRendererStats& stats() const noexcept;
+    [[nodiscard]] std::optional<LargeWaterBodyDebugState>
+    inspect_body(std::uint64_t body_id) const noexcept;
 
   private:
     struct RetainedBody {

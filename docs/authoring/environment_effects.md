@@ -51,7 +51,9 @@ Use `atlas_columns`, `atlas_rows`, `atlas_frame_count`, and `atlas_frames_per_se
 flipbook. `emissive_intensity`, `soft_fade_distance`, `velocity_stretch`, `wind_response`,
 `collision_radius`, and `collision_restitution` are optional effect controls. LOD start/end,
 per-prototype maximum live count, spawn budget, and priority must describe the intended production
-cost. System-wide budgets still take precedence.
+cost. Priority ranges from `0` through `3`; higher-priority gameplay-readability effects consume a
+saturated spawn or presentation budget before ambient effects. Equal-priority ordering remains
+deterministic. System-wide budgets still take precedence.
 
 Every burst carries an explicit deterministic seed. Persistent sources should use retained
 emitters; weather uses `WeatherEffects`, which maps evaluated rain, snow, ash, and spores onto base

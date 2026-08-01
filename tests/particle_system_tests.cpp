@@ -175,8 +175,31 @@ int main() {
     assert(parsed.value().soft_fade_distance == 0.4F);
     assert(parsed.value().maximum_live_particles == 123);
     assert(parsed.value().spawn_budget_per_update == 17);
+    assert(parsed.value().priority == 3);
     generic.fields["start_color"] = "1,2,3";
     assert(!renderer::particle_prototype_from_generic(generic));
+
+    auto ambient = make_prototype("base:particles/ambient");
+    ambient.priority = 0;
+    auto gameplay = make_prototype("base:particles/gameplay");
+    gameplay.priority = 3;
+    renderer::ParticleSystemConfig priority_config;
+    priority_config.maximum_particles = 8;
+    priority_config.maximum_emitters = 1;
+    priority_config.maximum_queued_events = 4;
+    priority_config.maximum_spawns_per_update = 2;
+    auto priority_system =
+        renderer::CpuParticleSystem::create(priority_config, std::vector{ambient, gameplay});
+    assert(priority_system);
+    assert(priority_system.value().queue_event(
+        {ambient.id, world::WorldPosition{}, {0.0F, 1.0F, 0.0F}, {}, 2, 1}));
+    assert(priority_system.value().queue_event(
+        {gameplay.id, world::WorldPosition{}, {0.0F, 1.0F, 0.0F}, {}, 2, 2}));
+    assert(priority_system.value().update(1.0F / 60.0F));
+    assert(priority_system.value().particles().size() == 2);
+    assert(priority_system.value().particles()[0].priority == 3);
+    assert(priority_system.value().particles()[1].priority == 3);
+    assert(priority_system.value().stats().priority_budget_rejected_particles == 2);
 
     std::vector<renderer::ParticlePrototype> weather_prototypes;
     for (const auto id : {"base:particles/rain_drop", "base:particles/snow_flake",

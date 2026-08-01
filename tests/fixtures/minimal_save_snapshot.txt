@@ -2,6 +2,6 @@ heartstead.save_snapshot_text.v1
 schema_version=1
 game_version=0.1.0
 world_seed=12345
-mod=base|0.0.1|7c9951d8ffc8fe3f
+mod=base|0.0.1|43c2153893e5f321
 build=800|base:build_pieces/wall_frame|0~0~0~0~0~0~1~1~1|complete|||wood|wall
 end

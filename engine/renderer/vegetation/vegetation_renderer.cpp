@@ -5,6 +5,7 @@
 #include "engine/assets/cooked_asset_store.hpp"
 #include "engine/assets/model_asset.hpp"
 #include "engine/renderer/renderer.hpp"
+#include "engine/renderer/visibility/hierarchical_depth_occlusion.hpp"
 
 #include <algorithm>
 #include <array>
@@ -70,39 +71,6 @@ load_production_model(const assets::CookedAssetStore& store, std::string_view lo
     return assets::decode_model_asset(payload.value().bytes);
 }
 
-[[nodiscard]] bool ray_segment_intersects_bounds(math::Vec3f origin, math::Vec3f target,
-                                                 const math::Bounds3f& bounds) noexcept {
-    if (!bounds.is_valid()) {
-        return false;
-    }
-    const auto direction = target - origin;
-    float minimum_t = 0.01F;
-    float maximum_t = 0.98F;
-    for (std::size_t axis = 0; axis < 3; ++axis) {
-        const auto source = (&origin.x)[axis];
-        const auto delta = (&direction.x)[axis];
-        const auto minimum = (&bounds.min.x)[axis];
-        const auto maximum = (&bounds.max.x)[axis];
-        if (std::abs(delta) < 0.00001F) {
-            if (source < minimum || source > maximum) {
-                return false;
-            }
-            continue;
-        }
-        auto entry = (minimum - source) / delta;
-        auto exit = (maximum - source) / delta;
-        if (entry > exit) {
-            std::swap(entry, exit);
-        }
-        minimum_t = std::max(minimum_t, entry);
-        maximum_t = std::min(maximum_t, exit);
-        if (minimum_t > maximum_t) {
-            return false;
-        }
-    }
-    return maximum_t >= minimum_t;
-}
-
 } // namespace
 
 struct VegetationRenderer::Impl {
@@ -128,6 +96,7 @@ struct VegetationRenderer::Impl {
     struct RetainedPatch {
         VegetationPatchDesc desc;
         math::Vec3f local_center{};
+        math::Bounds3f local_bounds{};
         std::vector<RetainedObject> objects;
         std::uint32_t logical_instances = 0;
         std::uint32_t density_rejections = 0;
@@ -139,6 +108,7 @@ struct VegetationRenderer::Impl {
     VegetationRendererConfig config{};
     std::unordered_map<std::string, LoadedModel> models;
     std::unordered_map<std::uint64_t, RetainedPatch> patches;
+    HierarchicalDepthOcclusion occlusion;
     VegetationRendererStats stats{};
 
     [[nodiscard]] core::Status load_model(const assets::CookedAssetStore& store,
@@ -231,6 +201,7 @@ struct VegetationRenderer::Impl {
             return status;
         }
         patches.erase(found);
+        occlusion.erase(patch_id);
         refresh_stats();
         return core::Status::ok();
     }
@@ -291,6 +262,10 @@ VegetationRenderer::initialize(Renderer& renderer, const VegetationSpeciesRegist
                                      "vegetation renderer is already initialized");
     }
     auto status = config.validate();
+    if (!status) {
+        return status;
+    }
+    status = impl_->occlusion.initialize();
     if (!status) {
         return status;
     }
@@ -371,6 +346,7 @@ core::Status VegetationRenderer::upsert_patch(VegetationPatchDesc patch,
     retained.local_center = {patch.extent.x * 0.5F, 0.0F, patch.extent.y * 0.5F};
     retained.logical_instances = patch.instance_count;
     const auto growth_scale = growth == nullptr ? 1.0F : growth->scale_multiplier;
+    bool has_local_bounds = false;
 
     const auto rollback = [&]() {
         std::vector<RenderSceneUpdate> updates;
@@ -424,6 +400,11 @@ core::Status VegetationRenderer::upsert_patch(VegetationPatchDesc patch,
         const auto wind_phase =
             random_unit(patch.seed, static_cast<std::uint64_t>(instance_index) * 31U + 6U) *
             2.0F * std::numbers::pi_v<float>;
+        const auto density_cutoff =
+            species->density_fade_start +
+            (species->density_fade_end - species->density_fade_start) *
+                random_unit(patch.seed,
+                            static_cast<std::uint64_t>(instance_index) * 31U + 7U);
 
         float minimum_distance = 0.0F;
         for (std::size_t lod_index = 0; lod_index < species->lods.size(); ++lod_index) {
@@ -432,6 +413,12 @@ core::Status VegetationRenderer::upsert_patch(VegetationPatchDesc patch,
                 random_unit(patch.seed,
                             static_cast<std::uint64_t>(instance_index) * 131U + lod_index + 17U);
             if (density_random > lod.density) {
+                ++retained.density_rejections;
+                minimum_distance = lod.maximum_distance - lod.transition_width;
+                continue;
+            }
+            const auto maximum_distance = std::min(lod.maximum_distance, density_cutoff);
+            if (maximum_distance <= minimum_distance + 0.001F) {
                 ++retained.density_rejections;
                 minimum_distance = lod.maximum_distance - lod.transition_width;
                 continue;
@@ -472,17 +459,50 @@ core::Status VegetationRenderer::upsert_patch(VegetationPatchDesc patch,
                 }
                 object.color = color;
                 object.minimum_view_distance = std::max(0.0F, minimum_distance);
-                object.maximum_view_distance = lod.maximum_distance;
-                object.distance_fade_width = lod.transition_width;
+                object.maximum_view_distance = maximum_distance;
+                object.distance_fade_width =
+                    std::min(lod.transition_width,
+                             maximum_distance - object.minimum_view_distance);
                 object.effect_flags =
                     RenderEffectFlags::vegetation | RenderEffectFlags::foliage_transmission;
                 if (lod.impostor) {
                     object.effect_flags =
                         object.effect_flags | RenderEffectFlags::billboard;
                 }
+                if (!species->receives_weather) {
+                    object.effect_flags =
+                        object.effect_flags | RenderEffectFlags::disable_weather_response;
+                }
                 object.wind_phase = wind_phase;
                 object.wind_stiffness = species->wind_stiffness;
                 object.foliage_transmission = species->foliage_transmission;
+                const auto anchor_relative = position.value().relative_to(patch.origin.anchor) -
+                                             patch.origin.local_offset;
+                const math::Vec3f local_offset{static_cast<float>(anchor_relative.x),
+                                               static_cast<float>(anchor_relative.y),
+                                               static_cast<float>(anchor_relative.z)};
+                auto object_bounds = math::transform_bounds(
+                    math::transform_matrix(object.current_transform) * object.model_transform,
+                    object.local_bounds);
+                object_bounds.min += local_offset;
+                object_bounds.max += local_offset;
+                if (!has_local_bounds) {
+                    retained.local_bounds = object_bounds;
+                    has_local_bounds = true;
+                } else {
+                    retained.local_bounds.min.x =
+                        std::min(retained.local_bounds.min.x, object_bounds.min.x);
+                    retained.local_bounds.min.y =
+                        std::min(retained.local_bounds.min.y, object_bounds.min.y);
+                    retained.local_bounds.min.z =
+                        std::min(retained.local_bounds.min.z, object_bounds.min.z);
+                    retained.local_bounds.max.x =
+                        std::max(retained.local_bounds.max.x, object_bounds.max.x);
+                    retained.local_bounds.max.y =
+                        std::max(retained.local_bounds.max.y, object_bounds.max.y);
+                    retained.local_bounds.max.z =
+                        std::max(retained.local_bounds.max.z, object_bounds.max.z);
+                }
                 auto created = impl_->renderer->create_object(object);
                 if (!created) {
                     rollback();
@@ -515,10 +535,9 @@ VegetationRenderer::update_occlusion(const RenderCamera& camera,
         return core::Status::failure("vegetation_renderer.not_initialized",
                                      "vegetation renderer must be initialized first");
     }
-    if (!std::ranges::all_of(occluders,
-                             [](const auto& bounds) { return bounds.is_valid(); })) {
-        return core::Status::failure("vegetation_renderer.invalid_occluder",
-                                     "vegetation occluders must have finite valid bounds");
+    auto rebuild_status = impl_->occlusion.rebuild(camera, occluders);
+    if (!rebuild_status) {
+        return rebuild_status;
     }
     for (auto& [id, patch] : impl_->patches) {
         (void)id;
@@ -527,10 +546,9 @@ VegetationRenderer::update_occlusion(const RenderCamera& camera,
         if (!origin) {
             continue;
         }
-        const auto target = origin.value() + patch.local_center;
-        const auto occluded = std::ranges::any_of(occluders, [&](const auto& occluder) {
-            return ray_segment_intersects_bounds(camera.local_position, target, occluder);
-        });
+        const math::Bounds3f bounds{patch.local_bounds.min + origin.value(),
+                                    patch.local_bounds.max + origin.value()};
+        const auto occluded = impl_->occlusion.query(patch.desc.id, bounds);
         if (occluded == patch.occluded) {
             continue;
         }
@@ -588,6 +606,7 @@ core::Status VegetationRenderer::shutdown() {
         }
     }
     impl_->patches.clear();
+    impl_->occlusion.reset_history();
     impl_->models.clear();
     impl_->renderer = nullptr;
     impl_->registry = nullptr;

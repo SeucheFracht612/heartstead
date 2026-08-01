@@ -112,6 +112,75 @@ ctest --preset default-debug -R '^smoke\.asset_lab$'
 Install `VK_LAYER_KHRONOS_validation` for meaningful Vulkan validation. Absence of the optional
 layer should be reported, not confused with a successful validation run.
 
+## Renderer V2 checks
+
+Build the warnings-as-errors configuration and run the focused renderer/environment suite:
+
+```bash
+cmake --preset default-debug-werror
+cmake --build --preset default-debug-werror
+
+ctest --test-dir build/default-debug-werror \
+  -R 'renderer|render_scene|vegetation|water|environment_effects|particle|animation|equipment|entity_visual|visibility|hierarchical_depth|far_terrain|streaming_residency|ui_font|map_view|visual_regression|benchmark_coverage' \
+  --output-on-failure
+```
+
+The focused groups cover:
+
+| Area | Representative tests and manual workload |
+| --- | --- |
+| Environment and VFX | `heartstead_vegetation_renderer_tests`, `heartstead_large_water_renderer_tests`, `heartstead_environment_effects_tests`, particle tests, `starting-biome` |
+| Characters and settlement state | animation/equipment/entity-visual tests, `character-workshop` |
+| Large world and scalability | visibility, hierarchical-depth, streaming-residency, far-terrain and renderer-ownership tests; `flythrough`, `churn`, `large-coordinates`, `resize-minimize` |
+| UI and hardening | UI/font/widget/map/quality/visual-regression/benchmark-coverage tests |
+
+Exercise the deterministic integration scenes without a display:
+
+```bash
+mkdir -p build/renderer-checks
+for scene in starting-biome character-workshop flythrough churn large-coordinates resize-minimize; do
+  ./build/default-debug-werror/apps/render_benchmark/heartstead_render_benchmark \
+    --headless --scene "${scene}" --warmup 5 --frames 30 --radius 1 \
+    --output "build/renderer-checks/${scene}.json"
+done
+```
+
+Exercise Vulkan, timestamps, debug labels, and validation on a present-capable machine. Validation
+is requested by default; do not pass `--no-validation` for this check:
+
+```bash
+./build/default-debug-werror/apps/render_benchmark/heartstead_render_benchmark \
+  --vulkan --scene starting-biome --warmup 5 --frames 30 --radius 1 \
+  --width 960 --height 540 --output build/renderer-checks/starting-biome-vulkan.json
+
+./build/default-debug-werror/apps/render_benchmark/heartstead_render_benchmark \
+  --vulkan --scene character-workshop --warmup 5 --frames 30 --radius 1 \
+  --width 960 --height 540 --output build/renderer-checks/character-workshop-vulkan.json
+```
+
+Inspect production assets and state mappings through the real presentation path:
+
+```bash
+./build/default-debug-werror/apps/asset_lab/heartstead_asset_lab \
+  --headless --prefab base:visuals/player --preview character
+
+./build/default-debug-werror/apps/asset_lab/heartstead_asset_lab \
+  --headless --prefab base:visuals/workshop_machine --preview visual-prefab \
+  --state activity=active --state process=finished --state heat=hot
+
+./build/default-debug-werror/apps/asset_lab/heartstead_asset_lab \
+  --headless --prefab base:visuals/stateful_crate --preview visual-prefab \
+  --state fill=full --state access=open --state carry=carried
+```
+
+For interactive sign-off, run `heartstead_dev_game --native-frames 1200 --no-save`. Check the
+always-visible minimap, press `M` for the full map and Escape to close it, resize/minimize the
+window, edit chunk boundaries rapidly, visit water, and inspect `F3` diagnostics. High is the game
+default. Low/Medium/Ultra currently have automated policy coverage but no player-facing selector.
+
+Use [Visual regression](visual_regression.md) for PNG capture/compare and
+[Renderer benchmarks](../performance/renderer_benchmarks.md) for performance methodology.
+
 ## Multiplayer checks
 
 Use two processes for a real socket path rather than relying only on the in-memory transport:

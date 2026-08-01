@@ -20,19 +20,33 @@ namespace {
     return std::copysign(normalized * normalized, normalized);
 }
 
-[[nodiscard]] std::int64_t snap_axis(std::int64_t block, double local,
-                                     float distance) noexcept {
-    const auto position = static_cast<long double>(block) + static_cast<long double>(local);
-    const auto snapped =
-        std::floor(position / static_cast<long double>(distance)) *
-        static_cast<long double>(distance);
-    if (snapped <= static_cast<long double>(std::numeric_limits<std::int64_t>::min())) {
-        return std::numeric_limits<std::int64_t>::min();
+[[nodiscard]] double snapped_local_offset(std::int64_t block, double local,
+                                          float distance) noexcept {
+    const auto period = static_cast<long double>(distance);
+    auto remainder = std::fmod(static_cast<long double>(block), period);
+    if (remainder < 0.0L) {
+        remainder += period;
     }
-    if (snapped >= static_cast<long double>(std::numeric_limits<std::int64_t>::max())) {
-        return std::numeric_limits<std::int64_t>::max();
+    auto wrapped = std::fmod(remainder + static_cast<long double>(local), period);
+    if (wrapped < 0.0L) {
+        wrapped += period;
     }
-    return static_cast<std::int64_t>(snapped);
+    return local - static_cast<double>(wrapped);
+}
+
+[[nodiscard]] float periodic_world_axis(std::int64_t block, double local) noexcept {
+    constexpr std::int64_t period = 4096;
+    auto value = static_cast<double>(block % period) + local;
+    value = std::fmod(value, static_cast<double>(period));
+    if (value < 0.0) {
+        value += static_cast<double>(period);
+    }
+    return static_cast<float>(value);
+}
+
+[[nodiscard]] math::Vec2f water_world_phase(const world::WorldPosition& position) noexcept {
+    return {periodic_world_axis(position.anchor.x, position.local_offset.x),
+            periodic_world_axis(position.anchor.z, position.local_offset.z)};
 }
 
 } // namespace
@@ -156,6 +170,7 @@ LargeWaterRenderer::make_proxy(const LargeWaterBodyDesc& body) const {
     object.water_wave_speed = body.wave_speed;
     object.water_optical_depth = body.optical_depth;
     object.water_foam_strength = body.foam_strength;
+    object.water_world_phase = water_world_phase(body.center);
     object.maximum_view_distance = body.half_extent * 1.45F;
     return core::Result<RenderObjectProxy>::success(std::move(object));
 }
@@ -247,14 +262,16 @@ LargeWaterRenderer::snapped_ocean_center(const LargeWaterBodyDesc& body,
     if (!camera_position) {
         return camera_position;
     }
-    const auto x = snap_axis(camera_position.value().anchor.x,
-                             camera_position.value().local_offset.x,
-                             config_.camera_snap_distance);
-    const auto z = snap_axis(camera_position.value().anchor.z,
-                             camera_position.value().local_offset.z,
-                             config_.camera_snap_distance);
+    const auto x = snapped_local_offset(camera_position.value().anchor.x,
+                                        camera_position.value().local_offset.x,
+                                        config_.camera_snap_distance);
+    const auto z = snapped_local_offset(camera_position.value().anchor.z,
+                                        camera_position.value().local_offset.z,
+                                        config_.camera_snap_distance);
     return world::WorldPosition::from_anchor(
-        {x, body.center.anchor.y, z}, {0.0, body.center.local_offset.y, 0.0});
+        {camera_position.value().anchor.x, body.center.anchor.y,
+         camera_position.value().anchor.z},
+        {x, body.center.local_offset.y, z});
 }
 
 core::Status LargeWaterRenderer::synchronize(const RenderCamera& camera) {
@@ -276,6 +293,7 @@ core::Status LargeWaterRenderer::synchronize(const RenderCamera& camera) {
             continue;
         }
         body.proxy.anchor = center.value();
+        body.proxy.water_world_phase = water_world_phase(center.value());
         RenderSceneUpdate update;
         update.kind = RenderSceneUpdateKind::upsert_object;
         update.object = body.proxy;
@@ -317,6 +335,16 @@ bool LargeWaterRenderer::is_initialized() const noexcept {
 
 const LargeWaterRendererStats& LargeWaterRenderer::stats() const noexcept {
     return stats_;
+}
+
+std::optional<LargeWaterBodyDebugState>
+LargeWaterRenderer::inspect_body(std::uint64_t body_id) const noexcept {
+    const auto found = bodies_.find(body_id);
+    if (found == bodies_.end()) {
+        return std::nullopt;
+    }
+    return LargeWaterBodyDebugState{found->second.proxy.anchor,
+                                    found->second.proxy.water_world_phase};
 }
 
 void LargeWaterRenderer::refresh_stats() noexcept {

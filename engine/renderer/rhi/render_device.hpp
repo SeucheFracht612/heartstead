@@ -39,6 +39,8 @@ enum class RenderBufferUsage {
     index,
     uniform,
     storage,
+    indirect,
+    storage_indirect,
 };
 
 enum class RenderBufferMemory {
@@ -148,6 +150,42 @@ struct RenderResourceHandle {
     friend auto operator<=>(const RenderResourceHandle&, const RenderResourceHandle&) = default;
 };
 
+// Binary-compatible with VkDrawIndexedIndirectCommand and the GLSL indexed indirect layout.
+// Keeping this RHI-owned makes GPU-generated command buffers portable across backends.
+struct RenderIndexedIndirectCommand {
+    std::uint32_t index_count = 0;
+    std::uint32_t instance_count = 0;
+    std::uint32_t first_index = 0;
+    std::int32_t vertex_offset = 0;
+    std::uint32_t first_instance = 0;
+};
+
+static_assert(sizeof(RenderIndexedIndirectCommand) == 20);
+
+struct RenderIndirectDrawBinding {
+    RenderResourceHandle command_buffer;
+    RenderResourceHandle count_buffer;
+    std::size_t command_offset = 0;
+    std::size_t count_offset = 0;
+    std::uint32_t maximum_draw_count = 0;
+    std::uint32_t stride = sizeof(RenderIndexedIndirectCommand);
+
+    [[nodiscard]] bool is_valid() const noexcept {
+        return command_buffer.is_valid() && maximum_draw_count > 0;
+    }
+
+    [[nodiscard]] bool is_structurally_valid() const noexcept {
+        if (!command_buffer.is_valid()) {
+            return !count_buffer.is_valid() && command_offset == 0 && count_offset == 0 &&
+                   maximum_draw_count == 0;
+        }
+        return maximum_draw_count > 0 && stride >= sizeof(RenderIndexedIndirectCommand) &&
+               stride % alignof(std::uint32_t) == 0 &&
+               command_offset % alignof(std::uint32_t) == 0 &&
+               count_offset % alignof(std::uint32_t) == 0;
+    }
+};
+
 struct RenderExtent {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
@@ -195,6 +233,7 @@ struct RenderFrameStats {
     std::size_t submitted_synchronization_barrier_count = 0;
     std::size_t draw_count = 0;
     std::size_t indexed_draw_count = 0;
+    std::size_t indirect_draw_count = 0;
     std::size_t opaque_terrain_draw_count = 0;
     std::size_t alpha_tested_terrain_draw_count = 0;
     std::size_t transparent_terrain_draw_count = 0;
@@ -214,6 +253,9 @@ struct RenderFrameStats {
     double gpu_upload_ms = 0.0;
     double gpu_transfer_ms = 0.0;
     double gpu_final_copy_ms = 0.0;
+    bool memory_budget_valid = false;
+    std::uint64_t device_local_memory_budget_bytes = 0;
+    std::uint64_t device_local_memory_usage_bytes = 0;
 };
 
 struct RenderBufferDesc {
@@ -665,9 +707,14 @@ struct RenderDeviceCapabilities {
     bool supports_image_upload = false;
     bool supports_sampler_cache = false;
     bool supports_draw_binding = false;
+    bool supports_multi_draw_indirect = false;
+    bool supports_draw_indirect_count = false;
     bool supports_frame_submission = false;
     bool supports_depth = false;
     bool headless = true;
+    bool supports_memory_budget = false;
+    std::uint64_t device_local_memory_budget_bytes = 0;
+    std::uint64_t device_local_memory_usage_bytes = 0;
 };
 
 struct RenderBackendCapabilities {
@@ -692,6 +739,8 @@ struct RenderBackendCapabilities {
     bool supports_headless = false;
     std::uint32_t recommended_frames_in_flight = 1;
     std::string_view graphics_api;
+    bool supports_multi_draw_indirect = false;
+    bool supports_draw_indirect_count = false;
 };
 
 class IRenderDevice {

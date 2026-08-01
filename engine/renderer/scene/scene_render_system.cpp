@@ -47,9 +47,9 @@ core::Status SceneRenderConfig::validate() const {
         maximum_instances_per_frame > maximum_size / sizeof(GpuObjectInstance) / buffered_frames ||
         maximum_skin_matrices_per_frame > maximum_size / sizeof(math::Mat4f) / buffered_frames ||
         maximum_morph_weights_per_frame > maximum_size / sizeof(float) / buffered_frames ||
-        static_cast<std::uint64_t>(maximum_skin_matrices_per_frame) * buffered_frames >
+        static_cast<std::uint64_t>(maximum_skin_matrices_per_frame) * 2U * buffered_frames >
             std::numeric_limits<std::uint32_t>::max() ||
-        static_cast<std::uint64_t>(maximum_morph_weights_per_frame) * buffered_frames >
+        static_cast<std::uint64_t>(maximum_morph_weights_per_frame) * 2U * buffered_frames >
             std::numeric_limits<std::uint32_t>::max()) {
         return core::Status::failure(
             "scene_render.invalid_config",
@@ -95,8 +95,8 @@ core::Status SceneRenderSystem::initialize(SceneRenderConfig config) {
         return core::Status::failure(buffer.error().code, buffer.error().message);
     }
     instance_buffer_ = buffer.value().handle;
-    const auto skin_matrix_count =
-        static_cast<std::size_t>(config_.maximum_skin_matrices_per_frame) * config_.buffered_frames;
+    const auto skin_matrix_count = static_cast<std::size_t>(config_.maximum_skin_matrices_per_frame) *
+                                   2U * config_.buffered_frames;
     const auto skin_matrix_byte_size = skin_matrix_count * sizeof(math::Mat4f);
     auto skin_matrix_buffer =
         device_->create_buffer({rhi::RenderBufferUsage::storage, skin_matrix_byte_size,
@@ -108,8 +108,8 @@ core::Status SceneRenderSystem::initialize(SceneRenderConfig config) {
         return core::Status::failure(error.code, error.message);
     }
     skin_matrix_buffer_ = skin_matrix_buffer.value().handle;
-    const auto morph_weight_count =
-        static_cast<std::size_t>(config_.maximum_morph_weights_per_frame) * config_.buffered_frames;
+    const auto morph_weight_count = static_cast<std::size_t>(config_.maximum_morph_weights_per_frame) *
+                                    2U * config_.buffered_frames;
     const auto morph_weight_byte_size = morph_weight_count * sizeof(float);
     auto morph_weight_buffer = device_->create_buffer(
         {rhi::RenderBufferUsage::storage, morph_weight_byte_size, "scene_morph_weight_buffer",
@@ -146,8 +146,10 @@ core::Status SceneRenderSystem::initialize(SceneRenderConfig config) {
         return core::Status::failure(error.code, error.message);
     }
     instance_scratch_.reserve(config_.maximum_instances_per_frame);
-    skin_matrix_scratch_.reserve(config_.maximum_skin_matrices_per_frame);
-    morph_weight_scratch_.reserve(config_.maximum_morph_weights_per_frame);
+    skin_matrix_scratch_.reserve(static_cast<std::size_t>(config_.maximum_skin_matrices_per_frame) *
+                                 2U);
+    morph_weight_scratch_.reserve(static_cast<std::size_t>(config_.maximum_morph_weights_per_frame) *
+                                  2U);
     uploaded_skin_palettes_.reserve(config_.maximum_instances_per_frame);
     stats_.instance_buffer_bytes = byte_size;
     stats_.skin_matrix_buffer_bytes = skin_matrix_byte_size;
@@ -184,23 +186,25 @@ SceneRenderSystem::build_draw_commands(const RenderScene& scene, const RenderCam
     stats_.instance_buffer_bytes = static_cast<std::uint64_t>(config_.maximum_instances_per_frame) *
                                    config_.buffered_frames * sizeof(GpuObjectInstance);
     stats_.skin_matrix_buffer_bytes =
-        static_cast<std::uint64_t>(config_.maximum_skin_matrices_per_frame) *
+        static_cast<std::uint64_t>(config_.maximum_skin_matrices_per_frame) * 2U *
         config_.buffered_frames * sizeof(math::Mat4f);
     stats_.morph_weight_buffer_bytes =
-        static_cast<std::uint64_t>(config_.maximum_morph_weights_per_frame) *
+        static_cast<std::uint64_t>(config_.maximum_morph_weights_per_frame) * 2U *
         config_.buffered_frames * sizeof(float);
 
     const auto frame_slot = frame_number_ % config_.buffered_frames;
     const auto segment_instance_offset =
         static_cast<std::uint64_t>(frame_slot) * config_.maximum_instances_per_frame;
     const auto segment_byte_offset = segment_instance_offset * sizeof(GpuObjectInstance);
-    const auto segment_skin_matrix_offset =
-        static_cast<std::uint64_t>(frame_slot) * config_.maximum_skin_matrices_per_frame;
+    const auto segment_skin_matrix_offset = static_cast<std::uint64_t>(frame_slot) *
+                                            config_.maximum_skin_matrices_per_frame * 2U;
     const auto segment_skin_matrix_byte_offset = segment_skin_matrix_offset * sizeof(math::Mat4f);
-    const auto segment_morph_weight_offset =
-        static_cast<std::uint64_t>(frame_slot) * config_.maximum_morph_weights_per_frame;
+    const auto segment_morph_weight_offset = static_cast<std::uint64_t>(frame_slot) *
+                                             config_.maximum_morph_weights_per_frame * 2U;
     const auto segment_morph_weight_byte_offset = segment_morph_weight_offset * sizeof(float);
 
+    std::size_t submitted_current_skin_matrices = 0;
+    std::size_t submitted_current_morph_weights = 0;
     for (auto& batch : extracted.value().batches) {
         if (instance_scratch_.size() >= config_.maximum_instances_per_frame) {
             stats_.dropped_instances += static_cast<std::uint32_t>(batch.instances.size());
@@ -226,14 +230,24 @@ SceneRenderSystem::build_draw_commands(const RenderScene& scene, const RenderCam
                 ++stats_.dropped_instances;
                 continue;
             }
+            const auto object_history = object_motion_history_.find(instance.id);
+            const auto object_history_valid =
+                !instance.reset_motion_history && object_history != object_motion_history_.end() &&
+                object_history->second.last_seen_frame + 1U == frame_number_ &&
+                object_history->second.morph_weights.size() == instance.morph_weights.size();
+            const auto morph_upload_count =
+                instance.morph_weights.size() * (object_history_valid ? 2U : 1U);
             if (instance.morph_weights.size() != mesh->morph_target_count ||
-                morph_weight_scratch_.size() + instance.morph_weights.size() >
+                submitted_current_morph_weights + instance.morph_weights.size() >
                     config_.maximum_morph_weights_per_frame ||
+                morph_weight_scratch_.size() + morph_upload_count >
+                    static_cast<std::size_t>(config_.maximum_morph_weights_per_frame) * 2U ||
                 mesh->vertex_count > 0x00FF'FFFFU) {
                 ++stats_.dropped_instances;
                 continue;
             }
             std::uint32_t skin_matrix_offset = 0;
+            std::uint32_t previous_skin_matrix_offset = 0;
             std::uint32_t skin_matrix_count = 0;
             if (mesh->skin_joint_count > 0) {
                 const auto* palette = scene.find_skin_palette(instance.skin_palette);
@@ -248,13 +262,22 @@ SceneRenderSystem::build_draw_commands(const RenderScene& scene, const RenderCam
                         return uploaded.id == instance.skin_palette;
                     });
                 if (found != uploaded_skin_palettes_.end()) {
-                    skin_matrix_offset = found->offset;
+                    skin_matrix_offset = found->current_offset;
+                    previous_skin_matrix_offset =
+                        instance.reset_motion_history ? found->current_offset : found->previous_offset;
                     skin_matrix_count = found->count;
                 } else {
-                    const auto remaining =
-                        static_cast<std::size_t>(config_.maximum_skin_matrices_per_frame) -
-                        skin_matrix_scratch_.size();
-                    if (palette->joint_matrices.size() > remaining ||
+                    const auto skin_history = skin_motion_history_.find(instance.skin_palette);
+                    const auto skin_history_valid =
+                        skin_history != skin_motion_history_.end() &&
+                        skin_history->second.last_seen_frame + 1U == frame_number_ &&
+                        skin_history->second.joint_matrices.size() == palette->joint_matrices.size();
+                    const auto matrix_upload_count =
+                        palette->joint_matrices.size() * (skin_history_valid ? 2U : 1U);
+                    if (submitted_current_skin_matrices + palette->joint_matrices.size() >
+                            config_.maximum_skin_matrices_per_frame ||
+                        skin_matrix_scratch_.size() + matrix_upload_count >
+                            static_cast<std::size_t>(config_.maximum_skin_matrices_per_frame) * 2U ||
                         segment_skin_matrix_offset + skin_matrix_scratch_.size() >
                             std::numeric_limits<std::uint32_t>::max()) {
                         ++stats_.dropped_instances;
@@ -267,8 +290,21 @@ SceneRenderSystem::build_draw_commands(const RenderScene& scene, const RenderCam
                     skin_matrix_scratch_.insert(skin_matrix_scratch_.end(),
                                                 palette->joint_matrices.begin(),
                                                 palette->joint_matrices.end());
-                    uploaded_skin_palettes_.push_back(
-                        {instance.skin_palette, skin_matrix_offset, skin_matrix_count});
+                    previous_skin_matrix_offset = skin_matrix_offset;
+                    if (skin_history_valid) {
+                        previous_skin_matrix_offset = static_cast<std::uint32_t>(
+                            segment_skin_matrix_offset + skin_matrix_scratch_.size());
+                        skin_matrix_scratch_.insert(
+                            skin_matrix_scratch_.end(),
+                            skin_history->second.joint_matrices.begin(),
+                            skin_history->second.joint_matrices.end());
+                    }
+                    uploaded_skin_palettes_.push_back({instance.skin_palette, skin_matrix_offset,
+                                                       previous_skin_matrix_offset,
+                                                       skin_matrix_count});
+                    submitted_current_skin_matrices += palette->joint_matrices.size();
+                    skin_motion_history_[instance.skin_palette] =
+                        {palette->joint_matrices, frame_number_};
                     ++stats_.submitted_skin_palettes;
                     stats_.submitted_skin_matrices += skin_matrix_count;
                 }
@@ -278,6 +314,10 @@ SceneRenderSystem::build_draw_commands(const RenderScene& scene, const RenderCam
             }
             GpuObjectInstance gpu;
             gpu.camera_relative_transform = instance.camera_relative_transform;
+            const auto current_clip_transform =
+                camera.view_projection * instance.camera_relative_transform;
+            gpu.previous_clip_transform =
+                object_history_valid ? object_history->second.clip_transform : current_clip_transform;
             std::ranges::copy(instance.color, gpu.color);
             gpu.metadata[0] = static_cast<std::uint32_t>(instance.layer);
             gpu.metadata[1] = skin_matrix_offset;
@@ -296,8 +336,13 @@ SceneRenderSystem::build_draw_commands(const RenderScene& scene, const RenderCam
             gpu.morph_metadata[2] = static_cast<std::uint32_t>(segment_morph_weight_offset +
                                                                morph_weight_scratch_.size());
             gpu.morph_metadata[3] = (mesh->morph_target_count << 24U) | mesh->vertex_count;
-            gpu.effect_parameters[0] = instance.wind_phase;
-            gpu.effect_parameters[1] = instance.wind_stiffness;
+            if (any(instance.effect_flags & RenderEffectFlags::water_surface)) {
+                gpu.effect_parameters[0] = instance.water_world_phase.x;
+                gpu.effect_parameters[1] = instance.water_world_phase.y;
+            } else {
+                gpu.effect_parameters[0] = instance.wind_phase;
+                gpu.effect_parameters[1] = instance.wind_stiffness;
+            }
             gpu.effect_parameters[2] = instance.foliage_transmission;
             gpu.effect_parameters[3] = instance.visibility;
             gpu.effect_metadata[0] = static_cast<std::uint32_t>(instance.effect_flags);
@@ -305,9 +350,22 @@ SceneRenderSystem::build_draw_commands(const RenderScene& scene, const RenderCam
             gpu.effect_metadata[2] = instance.atlas_columns;
             gpu.effect_metadata[3] = instance.atlas_rows;
             std::ranges::copy(instance.effect_parameters2, gpu.effect_parameters2);
+            gpu.history_metadata[0] = previous_skin_matrix_offset;
+            gpu.history_metadata[1] = gpu.morph_metadata[2];
+            gpu.history_metadata[2] = object_history_valid ? 1U : 0U;
             morph_weight_scratch_.insert(morph_weight_scratch_.end(),
                                          instance.morph_weights.begin(),
                                          instance.morph_weights.end());
+            if (object_history_valid) {
+                gpu.history_metadata[1] = static_cast<std::uint32_t>(
+                    segment_morph_weight_offset + morph_weight_scratch_.size());
+                morph_weight_scratch_.insert(morph_weight_scratch_.end(),
+                                             object_history->second.morph_weights.begin(),
+                                             object_history->second.morph_weights.end());
+            }
+            submitted_current_morph_weights += instance.morph_weights.size();
+            object_motion_history_[instance.id] =
+                {current_clip_transform, instance.morph_weights, frame_number_};
             instance_scratch_.push_back(gpu);
         }
         const auto accepted = instance_scratch_.size() - first_instance_in_segment;
@@ -388,6 +446,12 @@ SceneRenderSystem::build_draw_commands(const RenderScene& scene, const RenderCam
         stats_.uploaded_skin_matrix_bytes = skin_matrix_bytes.size();
         stats_.uploaded_morph_weight_bytes = morph_weight_bytes.size();
     }
+    std::erase_if(object_motion_history_, [this](const auto& entry) {
+        return entry.second.last_seen_frame != frame_number_;
+    });
+    std::erase_if(skin_motion_history_, [this](const auto& entry) {
+        return entry.second.last_seen_frame != frame_number_;
+    });
     ++frame_number_;
     scratch.stats = stats_;
     return core::Result<SceneDrawCommands>::success(std::move(scratch));
@@ -407,6 +471,8 @@ core::Status SceneRenderSystem::shutdown() {
     skin_matrix_scratch_.clear();
     morph_weight_scratch_.clear();
     uploaded_skin_palettes_.clear();
+    object_motion_history_.clear();
+    skin_motion_history_.clear();
     stats_ = {};
     frame_number_ = 0;
     auto status = core::Status::ok();

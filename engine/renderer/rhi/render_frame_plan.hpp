@@ -184,6 +184,7 @@ struct RenderDrawCommand {
     // geometry and large-coordinate origin.
     bool view_projection_override_enabled = false;
     math::Mat4f view_projection_override = math::Mat4f::identity();
+    RenderIndirectDrawBinding indirect;
 };
 
 // One compute dispatch recorded into a compute pass.
@@ -215,6 +216,7 @@ struct RenderFrameSubmission {
 // Names the graph uses for the resources every frame owns. Passes and backends refer to these
 // instead of repeating string literals.
 inline constexpr std::string_view scene_color_resource_name = "scene_hdr";
+inline constexpr std::string_view scene_motion_resource_name = "scene_motion";
 inline constexpr std::string_view depth_resource_name = "depth";
 inline constexpr std::string_view output_resource_name = "output";
 

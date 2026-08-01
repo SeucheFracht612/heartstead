@@ -63,7 +63,7 @@ using renderer::LightingDebugView;
 [[nodiscard]] std::string resolved_prefab_model(const entities::EntityVisualDefinition& definition,
                                                 std::span<const entities::VisualStateValue> states,
                                                 std::optional<std::uint32_t> forced_lod) {
-    if (const auto* state = definition.resolve_state_rule(states);
+    if (const auto* state = definition.resolve_model_state_rule(states);
         state != nullptr && !state->model_asset.empty()) {
         return state->model_asset;
     }

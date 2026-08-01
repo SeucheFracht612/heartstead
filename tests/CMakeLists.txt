@@ -48,6 +48,15 @@ heartstead_configure_test_target(heartstead_renderer_compute_tests)
 
 heartstead_register_unit_test(heartstead_renderer_compute_tests)
 
+add_executable(heartstead_renderer_indirect_gpu_tests renderer_indirect_gpu_tests.cpp)
+target_link_libraries(heartstead_renderer_indirect_gpu_tests PRIVATE Heartstead::Engine)
+target_compile_definitions(
+  heartstead_renderer_indirect_gpu_tests
+  PRIVATE HEARTSTEAD_BUILTIN_SHADER_DIR="${PROJECT_SOURCE_DIR}/engine/renderer/shaders/builtin"
+)
+heartstead_configure_test_target(heartstead_renderer_indirect_gpu_tests)
+heartstead_register_unit_test(heartstead_renderer_indirect_gpu_tests)
+
 add_executable(heartstead_renderer_lighting_tests renderer_lighting_tests.cpp)
 target_link_libraries(heartstead_renderer_lighting_tests PRIVATE Heartstead::Engine)
 heartstead_configure_test_target(heartstead_renderer_lighting_tests)
@@ -204,7 +213,11 @@ heartstead_add_foundation_test(heartstead_scripting_runtime_tests
                                scripting_runtime_tests.cpp)
 heartstead_add_foundation_test(heartstead_filesystem_tests filesystem_tests.cpp)
 heartstead_add_foundation_test(heartstead_render_milestone_tests render_milestone_tests.cpp)
+heartstead_add_foundation_test(heartstead_indirect_draw_tests indirect_draw_tests.cpp)
 heartstead_add_foundation_test(heartstead_renderer_frontend_tests renderer_frontend_tests.cpp)
+target_compile_definitions(
+  heartstead_renderer_frontend_tests PRIVATE HEARTSTEAD_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
 heartstead_add_foundation_test(heartstead_chunk_mesh_scheduler_tests
                                chunk_mesh_scheduler_tests.cpp)
 heartstead_add_foundation_test(heartstead_chunk_collision_tests chunk_collision_tests.cpp)
@@ -227,6 +240,12 @@ target_link_libraries(
 )
 heartstead_add_foundation_test(heartstead_texture_asset_tests texture_asset_tests.cpp)
 heartstead_add_foundation_test(heartstead_skeletal_animation_tests skeletal_animation_tests.cpp)
+heartstead_add_foundation_test(heartstead_animation_budget_tests animation_budget_tests.cpp)
+heartstead_add_foundation_test(heartstead_entity_visual_v2_tests entity_visual_v2_tests.cpp)
+heartstead_add_foundation_test(heartstead_equipment_attachment_tests equipment_attachment_tests.cpp)
+heartstead_add_foundation_test(heartstead_equipment_loadout_tests equipment_loadout_tests.cpp)
+heartstead_add_foundation_test(heartstead_entity_motion_visual_state_tests entity_motion_visual_state_tests.cpp)
+heartstead_add_foundation_test(heartstead_animation_interaction_tests animation_interaction_tests.cpp)
 heartstead_add_foundation_test(heartstead_voxel_light_tests voxel_light_tests.cpp)
 heartstead_add_foundation_test(heartstead_voxel_fluid_tests voxel_fluid_tests.cpp)
 heartstead_add_foundation_test(heartstead_chunk_light_system_tests
@@ -236,16 +255,42 @@ heartstead_add_foundation_test(heartstead_day_night_environment_tests
 heartstead_add_foundation_test(heartstead_environment_profile_tests
                                environment_profile_tests.cpp)
 heartstead_add_foundation_test(heartstead_gpu_buffer_arena_tests gpu_buffer_arena_tests.cpp)
+heartstead_add_foundation_test(heartstead_streaming_residency_tests
+                               streaming_residency_tests.cpp)
+heartstead_add_foundation_test(heartstead_renderer_streaming_ownership_tests
+                               renderer_streaming_ownership_tests.cpp)
 heartstead_add_foundation_test(heartstead_renderer_benchmark_tests renderer_benchmark_tests.cpp)
+heartstead_add_foundation_test(heartstead_benchmark_coverage_tests benchmark_coverage_tests.cpp)
 heartstead_add_foundation_test(heartstead_render_runtime_asset_tests
                                render_runtime_asset_tests.cpp)
 heartstead_add_foundation_test(heartstead_greedy_chunk_mesher_tests
                                greedy_chunk_mesher_tests.cpp)
+heartstead_add_foundation_test(heartstead_far_terrain_clipmap_tests
+                               far_terrain_clipmap_tests.cpp)
+heartstead_add_foundation_test(heartstead_far_terrain_renderer_tests
+                               far_terrain_renderer_tests.cpp)
 heartstead_add_foundation_test(heartstead_render_scene_tests render_scene_tests.cpp)
+heartstead_add_foundation_test(heartstead_visibility_hierarchy_tests
+                               visibility_hierarchy_tests.cpp)
+heartstead_add_foundation_test(heartstead_hierarchical_depth_occlusion_tests
+                               hierarchical_depth_occlusion_tests.cpp)
 heartstead_add_foundation_test(heartstead_mesh_manager_tests mesh_manager_tests.cpp)
 heartstead_add_foundation_test(heartstead_debug_renderer_tests debug_renderer_tests.cpp)
 heartstead_add_foundation_test(heartstead_ui_renderer_tests ui_renderer_tests.cpp)
+target_compile_definitions(
+  heartstead_ui_renderer_tests PRIVATE HEARTSTEAD_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+heartstead_add_foundation_test(heartstead_ui_font_tests ui_font_tests.cpp)
+target_compile_definitions(
+  heartstead_ui_font_tests PRIVATE HEARTSTEAD_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+heartstead_add_foundation_test(heartstead_renderer_quality_tests renderer_quality_tests.cpp)
+heartstead_add_foundation_test(heartstead_visual_regression_tests visual_regression_tests.cpp)
 heartstead_add_foundation_test(heartstead_widget_tree_tests widget_tree_tests.cpp)
+target_compile_definitions(
+  heartstead_widget_tree_tests PRIVATE HEARTSTEAD_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+heartstead_add_foundation_test(heartstead_map_view_tests map_view_tests.cpp)
 heartstead_add_foundation_test(heartstead_asset_safety_tests asset_safety_tests.cpp)
 heartstead_add_foundation_test(heartstead_platform_input_edge_tests platform_input_edge_tests.cpp)
 heartstead_add_foundation_test(heartstead_render_device_state_tests render_device_state_tests.cpp)
@@ -365,6 +410,28 @@ heartstead_add_smoke_test(
   3
   --output
   ${CMAKE_CURRENT_BINARY_DIR}/smoke_render_benchmark_terrain_materials.json
+)
+heartstead_add_smoke_test(
+  smoke.render_benchmark_character_workshop
+  heartstead_render_benchmark
+  --scene
+  character-workshop
+  --radius
+  0
+  --warmup
+  1
+  --frames
+  3
+  --output
+  ${CMAKE_CURRENT_BINARY_DIR}/smoke_render_benchmark_character_workshop.json
+)
+# These stress scenes include deterministic chunk-light settlement before and after the
+# measured frames. Debug builds can legitimately exceed the generic smoke-test budget even
+# though the measured renderer workload completes promptly.
+set_tests_properties(
+  smoke.render_benchmark_particles
+  smoke.render_benchmark_character_workshop
+  PROPERTIES TIMEOUT 120
 )
 heartstead_add_smoke_test(
   smoke.ui_benchmark

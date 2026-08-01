@@ -1,0 +1,5 @@
+kind = "entity"
+id = "base:entities/workshop_machine"
+display_name = "Workshop Machine"
+persistent = "true"
+entity_kind = "machine"

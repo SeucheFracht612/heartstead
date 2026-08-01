@@ -8,6 +8,7 @@
 #include <iterator>
 #include <limits>
 #include <ranges>
+#include <unordered_map>
 #include <utility>
 
 namespace heartstead::renderer {
@@ -31,6 +32,10 @@ namespace {
         delta += 360.0F;
     }
     return previous + delta * alpha;
+}
+
+[[nodiscard]] constexpr VisibilityKey visibility_key(RenderObjectId id) noexcept {
+    return (static_cast<std::uint64_t>(id.generation) << 32U) | id.index;
 }
 
 template <typename Slot, typename Id>
@@ -108,7 +113,8 @@ core::Status validate_render_object_proxy(const RenderObjectProxy& object) {
         object.water_wave_speed > 16.0F || !std::isfinite(object.water_optical_depth) ||
         object.water_optical_depth < 0.0F || object.water_optical_depth > 1'024.0F ||
         !std::isfinite(object.water_foam_strength) || object.water_foam_strength < 0.0F ||
-        object.water_foam_strength > 4.0F || !std::isfinite(object.particle_emissive_intensity) ||
+        object.water_foam_strength > 4.0F || !object.water_world_phase.is_finite() ||
+        !std::isfinite(object.particle_emissive_intensity) ||
         object.particle_emissive_intensity < 0.0F || object.particle_emissive_intensity > 64.0F ||
         !std::isfinite(object.particle_soft_fade_distance) ||
         object.particle_soft_fade_distance < 0.0F || object.particle_soft_fade_distance > 64.0F ||
@@ -313,6 +319,7 @@ core::Status RenderScene::remove_object(RenderObjectId id) {
         --parent_slot.child_count;
     }
     slot.child_count = 0;
+    static_cast<void>(visibility_hierarchy_.erase(visibility_key(id)));
     release_slot(objects_, free_objects_, id);
     return core::Status::ok();
 }
@@ -413,7 +420,6 @@ RenderScene::extract(const RenderCamera& camera, float simulation_alpha,
     }
     RenderSceneFrame frame;
     frame.stats = stats();
-    const auto frustum = RenderFrustum::from_view_projection(camera.view_projection);
     if (shadow_view_projections.size() > 64U) {
         return core::Result<RenderSceneFrame>::failure(
             "render_scene.too_many_shadow_views",
@@ -471,6 +477,87 @@ RenderScene::extract(const RenderCamera& camera, float simulation_alpha,
         return core::Result<math::Mat4f>::success(model);
     };
 
+    // Transform resolution is required for animation and parenting even when an object is later
+    // culled. Feed those resolved bounds into the retained hierarchy once, then query all views in
+    // one traversal instead of scanning every object independently for every shadow cascade.
+    for (const auto& slot : objects_) {
+        if (!slot.occupied) {
+            continue;
+        }
+        const auto& object = slot.proxy;
+        const auto key = visibility_key(object.id);
+        if (any(object.flags & RenderObjectFlags::hidden)) {
+            static_cast<void>(visibility_hierarchy_.erase(key));
+            continue;
+        }
+        auto transform = resolve_transform(resolve_transform, object, 0);
+        if (!transform) {
+            return core::Result<RenderSceneFrame>::failure(transform.error().code,
+                                                           transform.error().message);
+        }
+        const auto bounds = math::transform_bounds(transform.value(), object.local_bounds);
+        visibility_hierarchy_.upsert(
+            {key,
+             {{static_cast<double>(bounds.min.x), static_cast<double>(bounds.min.y),
+               static_cast<double>(bounds.min.z)},
+              {static_cast<double>(bounds.max.x), static_cast<double>(bounds.max.y),
+               static_cast<double>(bounds.max.z)}},
+             {},
+             static_cast<double>(object.maximum_view_distance),
+             1.0F,
+             any(object.flags & RenderObjectFlags::cast_shadow) &&
+                 (object.layer == RenderLayer::opaque ||
+                  object.layer == RenderLayer::alpha_tested),
+             false,
+             {static_cast<double>(object_origins[object.id.index - 1U].x),
+              static_cast<double>(object_origins[object.id.index - 1U].y),
+              static_cast<double>(object_origins[object.id.index - 1U].z)},
+             object.use_object_origin_for_view_distance});
+    }
+
+    RenderCamera relative_camera = camera;
+    relative_camera.local_position = {};
+    auto relative_camera_status = relative_camera.update_matrices();
+    if (!relative_camera_status) {
+        return core::Result<RenderSceneFrame>::failure(
+            relative_camera_status.error().code, relative_camera_status.error().message);
+    }
+    std::vector<VisibilityView> visibility_views;
+    visibility_views.reserve(shadow_frusta.size() + 1U);
+    visibility_views.push_back({1U,
+                                VisibilityViewKind::main,
+                                {static_cast<double>(camera.local_position.x),
+                                 static_cast<double>(camera.local_position.y),
+                                 static_cast<double>(camera.local_position.z)},
+                                RenderFrustum::from_view_projection(
+                                    relative_camera.view_projection),
+                                1U,
+                                camera.vertical_fov_radians,
+                                static_cast<double>(camera.far_plane)});
+    for (std::size_t index = 0; index < shadow_frusta.size(); ++index) {
+        visibility_views.push_back(
+            {static_cast<VisibilityViewId>(index + 2U),
+             VisibilityViewKind::directional_shadow, {}, shadow_frusta[index], 1U,
+             camera.vertical_fov_radians, 0.0});
+    }
+    const auto visibility_result = visibility_hierarchy_.query(visibility_views);
+    std::unordered_map<VisibilityKey, std::uint64_t> visibility_masks;
+    visibility_masks.reserve(visibility_result.selections.size());
+    for (const auto& selected : visibility_result.selections) {
+        auto& mask = visibility_masks[selected.key];
+        if (selected.view_id == 1U) {
+            mask |= std::uint64_t{1} << 63U;
+        } else {
+            mask |= std::uint64_t{1} << (selected.view_id - 2U);
+        }
+    }
+    frame.stats.visibility_hierarchy_nodes =
+        static_cast<std::uint32_t>(visibility_hierarchy_.node_count());
+    frame.stats.visibility_nodes_tested =
+        static_cast<std::uint32_t>(visibility_result.stats.hierarchy_nodes_tested);
+    frame.stats.visibility_nodes_culled =
+        static_cast<std::uint32_t>(visibility_result.stats.hierarchy_nodes_culled);
+
     for (const auto& slot : objects_) {
         if (!slot.occupied) {
             continue;
@@ -498,16 +585,12 @@ RenderScene::extract(const RenderCamera& camera, float simulation_alpha,
             ++frame.stats.culled_objects;
             continue;
         }
-        const auto camera_visible = frustum.intersects(bounds);
-        std::uint64_t shadow_visibility_mask = 0;
-        if (any(object.flags & RenderObjectFlags::cast_shadow) &&
-            (object.layer == RenderLayer::opaque || object.layer == RenderLayer::alpha_tested)) {
-            for (std::size_t shadow_view = 0; shadow_view < shadow_frusta.size(); ++shadow_view) {
-                if (shadow_frusta[shadow_view].intersects(bounds)) {
-                    shadow_visibility_mask |= std::uint64_t{1} << shadow_view;
-                }
-            }
-        }
+        const auto selected = visibility_masks.find(visibility_key(object.id));
+        const auto selected_mask =
+            selected == visibility_masks.end() ? std::uint64_t{0} : selected->second;
+        const auto camera_visible = (selected_mask & (std::uint64_t{1} << 63U)) != 0;
+        const auto shadow_visibility_mask =
+            selected_mask & ~(std::uint64_t{1} << 63U);
         if (!camera_visible) {
             ++frame.stats.culled_objects;
         }
@@ -549,6 +632,7 @@ RenderScene::extract(const RenderCamera& camera, float simulation_alpha,
         instance.wind_phase = object.wind_phase;
         instance.wind_stiffness = object.wind_stiffness;
         instance.foliage_transmission = object.foliage_transmission;
+        instance.water_world_phase = object.water_world_phase;
         instance.effect_parameters2 =
             any(object.effect_flags & RenderEffectFlags::particle)
                 ? std::array<float, 4>{object.particle_emissive_intensity,
@@ -559,6 +643,7 @@ RenderScene::extract(const RenderCamera& camera, float simulation_alpha,
         instance.visibility = visibility;
         instance.camera_visible = camera_visible;
         instance.shadow_visibility_mask = shadow_visibility_mask;
+        instance.reset_motion_history = any(object.flags & RenderObjectFlags::teleport);
         auto batch = std::ranges::find_if(
             frame.batches,
             [&object, camera_visible, shadow_visibility_mask](const RenderInstanceBatch& value) {
@@ -626,6 +711,7 @@ std::vector<RenderLightInstance> RenderScene::extract_lights(const RenderCamera&
 }
 
 void RenderScene::clear() noexcept {
+    visibility_hierarchy_.clear();
     free_objects_.clear();
     free_lights_.clear();
     free_skin_palettes_.clear();

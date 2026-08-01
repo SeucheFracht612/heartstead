@@ -39,7 +39,7 @@ It does not create water above sea level.
 The runtime model follows the active-queue approach used by
 [Luanti's `ServerMap::transformLiquids`](https://github.com/luanti-org/luanti/blob/master/src/servermap.cpp):
 edits enqueue local work, a fixed budget advances only active cells, and overflow remains visible
-backlog. Heartbound additionally uses immutable tick input and a sorted two-phase proposal/apply
+backlog. Heartstead additionally uses immutable tick input and a sorted two-phase proposal/apply
 boundary. This mirrors deterministic sort-key playback in
 [Unity's entity command buffers](https://github.com/Unity-Technologies/EntityComponentSystemSamples/blob/master/EntitiesSamples/Docs/entity-command-buffers.md):
 container or worker iteration order cannot decide a tie.

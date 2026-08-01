@@ -1,0 +1,35 @@
+{
+  "asset": {"version": "2.0", "generator": "Heartstead Renderer V2"},
+  "scene": 0,
+  "scenes": [{"name": "Workshop Hammer", "nodes": [0]}],
+  "nodes": [
+    {"name": "Hammer", "children": [1, 2]},
+    {"name": "Grip", "mesh": 0, "translation": [0.0, 0.42, 0.0], "scale": [0.10, 0.48, 0.10]},
+    {"name": "Head", "mesh": 1, "translation": [0.0, 0.94, 0.0], "scale": [0.36, 0.14, 0.16]}
+  ],
+  "meshes": [
+    {"name": "Grip", "primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1}, "indices": 2, "material": 0}]},
+    {"name": "Head", "primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1}, "indices": 2, "material": 1}]}
+  ],
+  "materials": [
+    {"name": "Oiled Wood", "pbrMetallicRoughness": {"baseColorFactor": [0.24, 0.09, 0.025, 1.0], "metallicFactor": 0.0, "roughnessFactor": 0.72}},
+    {"name": "ForgedIron", "pbrMetallicRoughness": {"baseColorFactor": [0.16, 0.19, 0.20, 1.0], "metallicFactor": 0.88, "roughnessFactor": 0.31}}
+  ],
+  "buffers": [{"uri": "production_geometry.bin", "byteLength": 756}],
+  "bufferViews": [
+    {"buffer": 0, "byteOffset": 0, "byteLength": 288, "target": 34962},
+    {"buffer": 0, "byteOffset": 288, "byteLength": 288, "target": 34962},
+    {"buffer": 0, "byteOffset": 576, "byteLength": 72, "target": 34963},
+    {"buffer": 0, "byteOffset": 648, "byteLength": 12},
+    {"buffer": 0, "byteOffset": 660, "byteLength": 48},
+    {"buffer": 0, "byteOffset": 708, "byteLength": 48}
+  ],
+  "accessors": [
+    {"bufferView": 0, "componentType": 5126, "count": 24, "type": "VEC3", "min": [-0.5, -0.5, -0.5], "max": [0.5, 0.5, 0.5]},
+    {"bufferView": 1, "componentType": 5126, "count": 24, "type": "VEC3"},
+    {"bufferView": 2, "componentType": 5123, "count": 36, "type": "SCALAR", "min": [0], "max": [23]},
+    {"bufferView": 3, "componentType": 5126, "count": 3, "type": "SCALAR", "min": [0.0], "max": [1.0]},
+    {"bufferView": 4, "componentType": 5126, "count": 3, "type": "VEC4"},
+    {"bufferView": 5, "componentType": 5126, "count": 3, "type": "VEC4"}
+  ]
+}

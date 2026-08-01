@@ -787,7 +787,7 @@ environment_profile_from_generic(const modding::GenericPrototype& prototype) {
         destination = value.value();
         return core::Status::ok();
     };
-    for (const auto [key, destination] :
+    for (const auto& [key, destination] :
          {std::pair{"selector.underground", &result.selector.underground},
           std::pair{"selector.aerial", &result.selector.aerial},
           std::pair{"selector.ocean", &result.selector.ocean},

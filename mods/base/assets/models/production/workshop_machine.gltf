@@ -1,0 +1,48 @@
+{
+  "asset": {"version": "2.0", "generator": "Heartstead Renderer V2"},
+  "scene": 0,
+  "scenes": [{"name": "Workshop Machine", "nodes": [0]}],
+  "nodes": [
+    {"name": "WorkshopMachine", "children": [1, 2, 3, 4, 5, 6, 7]},
+    {"name": "Body", "mesh": 0, "translation": [0.0, 0.65, 0.0], "scale": [1.15, 0.65, 0.72]},
+    {"name": "Flywheel", "mesh": 1, "translation": [1.18, 0.88, 0.0], "scale": [0.48, 0.10, 0.48]},
+    {"name": "Door", "mesh": 1, "translation": [0.0, 0.66, 0.74], "scale": [0.56, 0.43, 0.08]},
+    {"name": "Input", "mesh": 2, "translation": [-0.74, 1.42, 0.0], "scale": [0.35, 0.16, 0.35]},
+    {"name": "Output", "mesh": 2, "translation": [0.72, 0.24, 0.78], "scale": [0.34, 0.22, 0.34]},
+    {"name": "Ember", "mesh": 3, "translation": [0.0, 0.67, 0.83], "scale": [0.34, 0.24, 0.04]},
+    {"name": "Broken", "mesh": 1, "translation": [-0.72, 1.22, 0.36], "rotation": [0.0, 0.0, 0.3826834, 0.9238795], "scale": [0.46, 0.10, 0.16]}
+  ],
+  "meshes": [
+    {"name": "Clay Body", "primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1}, "indices": 2, "material": 0}]},
+    {"name": "Iron Parts", "primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1}, "indices": 2, "material": 1}]},
+    {"name": "Cargo", "primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1}, "indices": 2, "material": 2}]},
+    {"name": "Heat", "primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1}, "indices": 2, "material": 3}]}
+  ],
+  "materials": [
+    {"name": "Fired Clay", "pbrMetallicRoughness": {"baseColorFactor": [0.42, 0.15, 0.07, 1.0], "metallicFactor": 0.0, "roughnessFactor": 0.78}},
+    {"name": "Worked Iron", "pbrMetallicRoughness": {"baseColorFactor": [0.13, 0.16, 0.17, 1.0], "metallicFactor": 0.82, "roughnessFactor": 0.38}},
+    {"name": "Timber Cargo", "pbrMetallicRoughness": {"baseColorFactor": [0.30, 0.13, 0.035, 1.0], "metallicFactor": 0.0, "roughnessFactor": 0.74}},
+    {"name": "Kiln Heat", "emissiveFactor": [1.0, 0.22, 0.025], "pbrMetallicRoughness": {"baseColorFactor": [0.72, 0.055, 0.008, 1.0], "metallicFactor": 0.0, "roughnessFactor": 0.48}}
+  ],
+  "animations": [
+    {"name": "Idle", "samplers": [{"input": 3, "output": 5, "interpolation": "LINEAR"}], "channels": [{"sampler": 0, "target": {"node": 2, "path": "rotation"}}]},
+    {"name": "Work", "samplers": [{"input": 3, "output": 4, "interpolation": "LINEAR"}], "channels": [{"sampler": 0, "target": {"node": 2, "path": "rotation"}}]}
+  ],
+  "buffers": [{"uri": "production_geometry.bin", "byteLength": 756}],
+  "bufferViews": [
+    {"buffer": 0, "byteOffset": 0, "byteLength": 288, "target": 34962},
+    {"buffer": 0, "byteOffset": 288, "byteLength": 288, "target": 34962},
+    {"buffer": 0, "byteOffset": 576, "byteLength": 72, "target": 34963},
+    {"buffer": 0, "byteOffset": 648, "byteLength": 12},
+    {"buffer": 0, "byteOffset": 660, "byteLength": 48},
+    {"buffer": 0, "byteOffset": 708, "byteLength": 48}
+  ],
+  "accessors": [
+    {"bufferView": 0, "componentType": 5126, "count": 24, "type": "VEC3", "min": [-0.5, -0.5, -0.5], "max": [0.5, 0.5, 0.5]},
+    {"bufferView": 1, "componentType": 5126, "count": 24, "type": "VEC3"},
+    {"bufferView": 2, "componentType": 5123, "count": 36, "type": "SCALAR", "min": [0], "max": [23]},
+    {"bufferView": 3, "componentType": 5126, "count": 3, "type": "SCALAR", "min": [0.0], "max": [1.0]},
+    {"bufferView": 4, "componentType": 5126, "count": 3, "type": "VEC4"},
+    {"bufferView": 5, "componentType": 5126, "count": 3, "type": "VEC4"}
+  ]
+}

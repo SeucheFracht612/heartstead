@@ -1,8 +1,10 @@
 #include "engine/entities/entity_motion_snapshot.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <sstream>
+#include <unordered_set>
 #include <vector>
 
 namespace heartstead::entities {
@@ -94,10 +96,21 @@ struct ParsedTransform {
 } // namespace
 
 core::Status EntityMotionSnapshot::validate() const {
-    if (version != entity_motion_snapshot_version || !entity_net_id.is_valid() ||
+    std::unordered_set<std::string> state_channels;
+    const auto valid_states =
+        visual_states.size() <= 32U &&
+        std::ranges::all_of(visual_states, [&](const VisualStateValue& state) {
+            return !state.channel.empty() && state.channel.size() <= 64U &&
+                   !state.value.empty() && state.value.size() <= 128U &&
+                   state.channel.find('|') == std::string::npos &&
+                   state.value.find('|') == std::string::npos &&
+                   state_channels.insert(state.channel).second;
+        });
+    if ((version != 1U && version != entity_motion_snapshot_version) ||
+        !entity_net_id.is_valid() ||
         !prototype_id.is_valid() || !previous_transform.is_finite() ||
         !previous_transform.has_non_zero_scale() || !current_transform.is_finite() ||
-        !current_transform.has_non_zero_scale()) {
+        !current_transform.has_non_zero_scale() || !valid_states) {
         return core::Status::failure(
             "entity_motion_snapshot.invalid_state",
             "entity motion snapshot identity and transforms must be valid");
@@ -118,20 +131,26 @@ std::string EntityMotionSnapshotTextCodec::encode(const EntityMotionSnapshot& sn
            << static_cast<unsigned>(snapshot.locomotion.transition_from) << '|'
            << snapshot.locomotion.transition_from_phase << '|'
            << snapshot.locomotion.transition_tick << '|' << snapshot.simulation_tick;
+    if (snapshot.version >= 2U) {
+        output << '|' << snapshot.visual_states.size();
+        for (const auto& state : snapshot.visual_states) {
+            output << '|' << state.channel << '|' << state.value;
+        }
+    }
     return output.str();
 }
 
 core::Result<EntityMotionSnapshot> EntityMotionSnapshotTextCodec::decode(std::string_view payload) {
-    if (payload.empty() || payload.size() > 4096) {
+    if (payload.empty() || payload.size() > 16'384) {
         return core::Result<EntityMotionSnapshot>::failure(
             "entity_motion_snapshot.invalid_payload_size",
             "entity motion snapshot payload size is invalid");
     }
     const auto fields = split(payload);
-    if (fields.size() != 33) {
+    if (fields.size() < 33U) {
         return core::Result<EntityMotionSnapshot>::failure(
             "entity_motion_snapshot.invalid_payload",
-            "entity motion snapshot must contain 33 fields");
+            "entity motion snapshot does not contain its fixed fields");
     }
     std::size_t index = 0;
     const auto next_u64 = [&](std::string_view name) {
@@ -198,6 +217,32 @@ core::Result<EntityMotionSnapshot> EntityMotionSnapshotTextCodec::decode(std::st
     snapshot.locomotion.transition_from_phase = transition_phase.value();
     snapshot.locomotion.transition_tick = transition_tick.value();
     snapshot.simulation_tick = simulation_tick.value();
+    if (version.value() == 1U) {
+        if (fields.size() != 33U) {
+            return core::Result<EntityMotionSnapshot>::failure(
+                "entity_motion_snapshot.invalid_payload",
+                "legacy entity motion snapshot must contain 33 fields");
+        }
+    } else if (version.value() == entity_motion_snapshot_version) {
+        if (fields.size() < 34U) {
+            return core::Result<EntityMotionSnapshot>::failure(
+                "entity_motion_snapshot.invalid_payload",
+                "entity motion snapshot is missing visual state count");
+        }
+        auto state_count = parse_number<std::uint32_t>(fields[index++], "visual_state_count");
+        if (!state_count || state_count.value() > 32U ||
+            fields.size() != 34U + static_cast<std::size_t>(state_count.value()) * 2U) {
+            return core::Result<EntityMotionSnapshot>::failure(
+                "entity_motion_snapshot.invalid_payload",
+                "entity motion snapshot visual state fields are invalid");
+        }
+        snapshot.visual_states.reserve(state_count.value());
+        for (std::uint32_t state_index = 0; state_index < state_count.value(); ++state_index) {
+            snapshot.visual_states.push_back(
+                {std::string(fields[index]), std::string(fields[index + 1U])});
+            index += 2U;
+        }
+    }
     auto status = snapshot.validate();
     if (!status) {
         return core::Result<EntityMotionSnapshot>::failure(status.error().code,
@@ -222,7 +267,8 @@ entity_motion_snapshot_from_transport(const net::TransportEnvelope& envelope) {
     if (envelope.message.kind != net::TransportMessageKind::replication ||
         (envelope.message.channel != net::TransportChannel::unreliable &&
          envelope.message.channel != net::TransportChannel::reliable) ||
-        envelope.message.payload_type != entity_motion_snapshot_payload_type) {
+        (envelope.message.payload_type != entity_motion_snapshot_payload_type &&
+         envelope.message.payload_type != legacy_entity_motion_snapshot_payload_type)) {
         return core::Result<EntityMotionSnapshot>::failure(
             "entity_motion_snapshot.invalid_transport",
             "transport envelope is not an entity motion snapshot");

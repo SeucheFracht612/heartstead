@@ -15,7 +15,11 @@ void preserve_monotonic_revision(PresentationObjectUpdate& update,
         return;
     }
     if (update.transform == previous->current_transform &&
-        update.locomotion == previous->current_locomotion) {
+        update.locomotion == previous->current_locomotion &&
+        update.visual_states == previous->visual_states &&
+        update.animation_layers == previous->animation_layers &&
+        update.equipment == previous->equipment &&
+        update.animation_importance == previous->animation_importance) {
         update.source_revision = previous->source_revision;
         return;
     }
@@ -47,6 +51,17 @@ ClientPresentationSynchronizer::synchronize(const ClientRuntime& client,
         update.transform.rotation_degrees = {
             0.0, static_cast<double>(snapshot->state.yaw_centidegrees) * 0.01, 0.0};
         update.locomotion = snapshot->state.locomotion_animation;
+        if (const auto* loadout = client.equipment_loadout(snapshot->player_net_id);
+            loadout != nullptr) {
+            update.equipment.reserve(loadout->entries().size());
+            for (const auto& equipped : loadout->entries()) {
+                update.equipment.push_back({
+                    .slot = equipped.slot,
+                    .variant = equipped.visual_variant,
+                    .stowed = equipped.stowed,
+                });
+            }
+        }
         update.local_bounds = {{-0.3F, 0.0F, -0.3F}, {0.3F, 1.8F, 0.3F}};
         update.source_revision =
             snapshot->state.simulation_tick == std::numeric_limits<std::uint64_t>::max()
@@ -75,6 +90,18 @@ ClientPresentationSynchronizer::synchronize(const ClientRuntime& client,
         update.visual_prototype = snapshot->prototype_id;
         update.transform = snapshot->current_transform;
         update.locomotion = snapshot->locomotion;
+        update.visual_states = snapshot->visual_states;
+        if (const auto* loadout = client.equipment_loadout(snapshot->entity_net_id);
+            loadout != nullptr) {
+            update.equipment.reserve(loadout->entries().size());
+            for (const auto& equipped : loadout->entries()) {
+                update.equipment.push_back({
+                    .slot = equipped.slot,
+                    .variant = equipped.visual_variant,
+                    .stowed = equipped.stowed,
+                });
+            }
+        }
         update.local_bounds = {{-0.5F, 0.0F, -0.5F}, {0.5F, 1.5F, 0.5F}};
         update.source_revision =
             snapshot->simulation_tick == std::numeric_limits<std::uint64_t>::max()

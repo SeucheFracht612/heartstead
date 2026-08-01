@@ -210,7 +210,8 @@ edits coalesce, stale results are rejected, and visible near-player work retains
 Use the production-renderer preview scene for material and state review:
 
 ```sh
-heartstead_render_benchmark --scene terrain-materials --vulkan \
+./build/default-release/apps/render_benchmark/heartstead_render_benchmark \
+  --scene terrain-materials --vulkan \
   --frames 300 --warmup 60 --radius 1 --output terrain-materials.json
 ```
 

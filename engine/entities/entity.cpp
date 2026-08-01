@@ -138,6 +138,12 @@ core::Result<EntityKind> entity_kind_from_name(std::string_view name) {
     if (name == "projectile") {
         return core::Result<EntityKind>::success(EntityKind::projectile);
     }
+    if (name == "machine") {
+        return core::Result<EntityKind>::success(EntityKind::machine);
+    }
+    if (name == "container") {
+        return core::Result<EntityKind>::success(EntityKind::container);
+    }
     if (name == "temporary_physics") {
         return core::Result<EntityKind>::success(EntityKind::temporary_physics);
     }
@@ -154,6 +160,8 @@ bool is_known_entity_kind(EntityKind kind) noexcept {
     case EntityKind::boat:
     case EntityKind::dropped_item:
     case EntityKind::projectile:
+    case EntityKind::machine:
+    case EntityKind::container:
     case EntityKind::temporary_physics:
         return true;
     }
@@ -176,6 +184,10 @@ std::string_view entity_kind_name(EntityKind kind) noexcept {
         return "dropped_item";
     case EntityKind::projectile:
         return "projectile";
+    case EntityKind::machine:
+        return "machine";
+    case EntityKind::container:
+        return "container";
     case EntityKind::temporary_physics:
         return "temporary_physics";
     }

@@ -49,6 +49,8 @@ struct GraphicsPipelineKey {
 
 struct PipelineCacheStats {
     std::size_t resident_pipeline_count = 0;
+    std::size_t resident_pipeline_layout_count = 0;
+    std::size_t descriptor_binding_count = 0;
     std::uint64_t cache_hit_count = 0;
     std::uint64_t cache_miss_count = 0;
     std::uint64_t created_pipeline_count = 0;

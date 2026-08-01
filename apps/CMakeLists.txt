@@ -8,10 +8,12 @@ find_program(
 
 function(heartstead_attach_terrain_shader_assets target)
   set(shader_source_dir "${PROJECT_SOURCE_DIR}/engine/renderer/shaders/builtin")
+  set(ui_font_source "${PROJECT_SOURCE_DIR}/mods/base/assets/fonts/heartstead-ui.ttf")
   set(compiled_shader_dir "${CMAKE_CURRENT_BINARY_DIR}/${target}_compiled_shaders")
   set(sky_vertex_source "${shader_source_dir}/sky.vert")
   set(sky_fragment_source "${shader_source_dir}/sky.frag")
   set(vertex_source "${shader_source_dir}/terrain.vert")
+  set(far_vertex_source "${shader_source_dir}/far_terrain.vert")
   set(fragment_source "${shader_source_dir}/terrain.frag")
   set(static_vertex_source "${shader_source_dir}/static_mesh.vert")
   set(static_fragment_source "${shader_source_dir}/static_mesh.frag")
@@ -32,6 +34,7 @@ function(heartstead_attach_terrain_shader_assets target)
     set(sky_vertex_spirv "${compiled_shader_dir}/sky.vert.spv")
     set(sky_fragment_spirv "${compiled_shader_dir}/sky.frag.spv")
     set(vertex_spirv "${compiled_shader_dir}/terrain.vert.spv")
+    set(far_vertex_spirv "${compiled_shader_dir}/far_terrain.vert.spv")
     set(fragment_spirv "${compiled_shader_dir}/terrain.frag.spv")
     set(static_vertex_spirv "${compiled_shader_dir}/static_mesh.vert.spv")
     set(static_fragment_spirv "${compiled_shader_dir}/static_mesh.frag.spv")
@@ -49,7 +52,7 @@ function(heartstead_attach_terrain_shader_assets target)
     set(bloom_fragment_spirv "${compiled_shader_dir}/bloom.frag.spv")
     add_custom_command(
       OUTPUT "${sky_vertex_spirv}" "${sky_fragment_spirv}"
-             "${vertex_spirv}" "${fragment_spirv}" "${static_vertex_spirv}"
+             "${vertex_spirv}" "${far_vertex_spirv}" "${fragment_spirv}" "${static_vertex_spirv}"
              "${static_fragment_spirv}" "${debug_vertex_spirv}" "${debug_fragment_spirv}"
              "${shadow_terrain_fragment_spirv}" "${shadow_static_fragment_spirv}"
              "${ui_vertex_spirv}" "${ui_fragment_spirv}"
@@ -63,6 +66,8 @@ function(heartstead_attach_terrain_shader_assets target)
               "${sky_fragment_source}" -o "${sky_fragment_spirv}"
       COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
               "${vertex_source}" -o "${vertex_spirv}"
+      COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
+              "${far_vertex_source}" -o "${far_vertex_spirv}"
       COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
               "${fragment_source}" -o "${fragment_spirv}"
       COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
@@ -94,7 +99,7 @@ function(heartstead_attach_terrain_shader_assets target)
       COMMAND "${HEARTSTEAD_GLSLANG_VALIDATOR}" -V --target-env vulkan1.0
               "${bloom_fragment_source}" -o "${bloom_fragment_spirv}"
       DEPENDS "${sky_vertex_source}" "${sky_fragment_source}"
-              "${vertex_source}" "${fragment_source}" "${static_vertex_source}"
+              "${vertex_source}" "${far_vertex_source}" "${fragment_source}" "${static_vertex_source}"
               "${static_fragment_source}" "${shadow_terrain_fragment_source}"
               "${shadow_static_fragment_source}" "${debug_vertex_source}" "${debug_fragment_source}"
               "${ui_vertex_source}" "${ui_fragment_source}"
@@ -108,6 +113,7 @@ function(heartstead_attach_terrain_shader_assets target)
     set(sky_vertex_spirv "${shader_source_dir}/sky.vert.spv")
     set(sky_fragment_spirv "${shader_source_dir}/sky.frag.spv")
     set(vertex_spirv "${shader_source_dir}/terrain.vert.spv")
+    set(far_vertex_spirv "${shader_source_dir}/far_terrain.vert.spv")
     set(fragment_spirv "${shader_source_dir}/terrain.frag.spv")
     set(static_vertex_spirv "${shader_source_dir}/static_mesh.vert.spv")
     set(static_fragment_spirv "${shader_source_dir}/static_mesh.frag.spv")
@@ -128,12 +134,17 @@ function(heartstead_attach_terrain_shader_assets target)
   add_custom_target(
     ${target}_shader_assets ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${target}>/assets/shaders"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${target}>/assets/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ui_font_source}"
+            "$<TARGET_FILE_DIR:${target}>/assets/fonts/heartstead-ui.ttf"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${sky_vertex_source}"
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/sky.vert"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${sky_fragment_source}"
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/sky.frag"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${vertex_source}"
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/terrain.vert"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${far_vertex_source}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/far_terrain.vert"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${fragment_source}"
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/terrain.frag"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${static_vertex_source}"
@@ -158,6 +169,8 @@ function(heartstead_attach_terrain_shader_assets target)
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/sky.frag.spv"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${vertex_spirv}"
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/terrain.vert.spv"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${far_vertex_spirv}"
+            "$<TARGET_FILE_DIR:${target}>/assets/shaders/far_terrain.vert.spv"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${fragment_spirv}"
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/terrain.frag.spv"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${static_vertex_spirv}"
@@ -201,13 +214,13 @@ function(heartstead_attach_terrain_shader_assets target)
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${bloom_fragment_spirv}"
             "$<TARGET_FILE_DIR:${target}>/assets/shaders/bloom.frag.spv"
     DEPENDS "${sky_vertex_spirv}" "${sky_fragment_spirv}"
-            "${vertex_spirv}" "${fragment_spirv}" "${static_vertex_spirv}"
+            "${vertex_spirv}" "${far_vertex_spirv}" "${fragment_spirv}" "${static_vertex_spirv}"
             "${static_fragment_spirv}" "${shadow_terrain_fragment_spirv}"
             "${shadow_static_fragment_spirv}" "${debug_vertex_spirv}" "${debug_fragment_spirv}"
             "${ui_vertex_spirv}" "${ui_fragment_spirv}"
             "${tone_map_vertex_spirv}" "${tone_map_fragment_spirv}"
             "${ssao_fragment_spirv}" "${ao_composite_fragment_spirv}"
-            "${fxaa_fragment_spirv}" "${bloom_fragment_spirv}"
+            "${fxaa_fragment_spirv}" "${bloom_fragment_spirv}" "${ui_font_source}"
     COMMENT "Staging compiled renderer shader assets for ${target}"
     VERBATIM
   )

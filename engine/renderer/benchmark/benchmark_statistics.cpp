@@ -471,7 +471,18 @@ std::string BenchmarkRecorder::to_json() const {
                << ", \"visible_chunks\": " << sample.visible_chunks
                << ", \"culled_chunks\": " << sample.culled_chunks
                << ", \"drawn_chunks\": " << sample.drawn_chunks
+               << ", \"far_terrain_planned_patches\": "
+               << sample.far_terrain_planned_patches
+               << ", \"far_terrain_resident_patches\": "
+               << sample.far_terrain_resident_patches
+               << ", \"far_terrain_visible_patches\": "
+               << sample.far_terrain_visible_patches
+               << ", \"far_terrain_pending_patches\": "
+               << sample.far_terrain_pending_patches
+               << ", \"far_terrain_evicted_patches\": "
+               << sample.far_terrain_evicted_patches
                << ", \"draw_calls\": " << sample.draw_calls
+               << ", \"indirect_draw_calls\": " << sample.indirect_draw_calls
                << ", \"opaque_terrain_draws\": " << sample.opaque_terrain_draws
                << ", \"alpha_tested_terrain_draws\": " << sample.alpha_tested_terrain_draws
                << ", \"transparent_terrain_draws\": " << sample.transparent_terrain_draws
@@ -482,6 +493,10 @@ std::string BenchmarkRecorder::to_json() const {
                << ", \"retained_objects\": " << sample.retained_objects
                << ", \"visible_objects\": " << sample.visible_objects
                << ", \"culled_objects\": " << sample.culled_objects
+               << ", \"visibility_hierarchy_nodes\": "
+               << sample.visibility_hierarchy_nodes
+               << ", \"visibility_nodes_tested\": " << sample.visibility_nodes_tested
+               << ", \"visibility_nodes_culled\": " << sample.visibility_nodes_culled
                << ", \"submitted_instances\": " << sample.submitted_instances
                << ", \"instance_draw_calls\": " << sample.instance_draw_calls
                << ", \"debug_lines\": " << sample.debug_lines
@@ -494,6 +509,16 @@ std::string BenchmarkRecorder::to_json() const {
                << ", \"vertices\": " << sample.vertices << ", \"triangles\": " << sample.triangles
                << ", \"resident_texture_bytes\": " << sample.resident_texture_bytes
                << ", \"resident_mesh_bytes\": " << sample.resident_mesh_bytes
+               << ", \"far_terrain_resident_bytes\": "
+               << sample.far_terrain_resident_bytes
+               << ", \"far_terrain_uploaded_bytes\": "
+               << sample.far_terrain_uploaded_bytes
+               << ", \"device_memory_budget_valid\": "
+               << (sample.device_memory_budget_valid ? "true" : "false")
+               << ", \"device_local_memory_budget_bytes\": "
+               << sample.device_local_memory_budget_bytes
+               << ", \"device_local_memory_usage_bytes\": "
+               << sample.device_local_memory_usage_bytes
                << ", \"gpu_arena_capacity_bytes\": " << sample.gpu_arena_capacity_bytes
                << ", \"gpu_arena_used_bytes\": " << sample.gpu_arena_used_bytes
                << ", \"gpu_arena_free_bytes\": " << sample.gpu_arena_free_bytes
@@ -527,14 +552,20 @@ std::string BenchmarkRecorder::to_csv() const {
               "voxel_fluid_changed_chunks,voxel_fluid_budget_exhaustions,"
               "voxel_fluid_apply_budget_overruns,loaded_chunks,"
               "mesh_pending_chunks,upload_pending_chunks,resident_chunks,visible_chunks,"
-              "culled_chunks,drawn_chunks,draw_calls,opaque_terrain_draws,"
+              "culled_chunks,drawn_chunks,far_terrain_planned_patches,"
+              "far_terrain_resident_patches,far_terrain_visible_patches,"
+              "far_terrain_pending_patches,far_terrain_evicted_patches,"
+              "draw_calls,indirect_draw_calls,opaque_terrain_draws,"
               "alpha_tested_terrain_draws,transparent_terrain_draws,pipeline_switches,"
               "resident_textures,"
               "runtime_materials,resident_pipelines,retained_objects,visible_objects,"
-              "culled_objects,submitted_instances,instance_draw_calls,debug_lines,"
+              "culled_objects,visibility_hierarchy_nodes,visibility_nodes_tested,"
+              "visibility_nodes_culled,submitted_instances,instance_draw_calls,debug_lines,"
               "debug_draw_calls,debug_labels,ui_vertices,ui_glyphs,ui_draw_calls,"
               "ui_clipped_draw_calls,vertices,triangles,resident_texture_bytes,"
-              "resident_mesh_bytes,"
+              "resident_mesh_bytes,far_terrain_resident_bytes,far_terrain_uploaded_bytes,"
+              "device_memory_budget_valid,device_local_memory_budget_bytes,"
+              "device_local_memory_usage_bytes,"
               "gpu_arena_capacity_bytes,gpu_arena_used_bytes,gpu_arena_free_bytes,"
               "gpu_arena_fragmentation,pending_upload_bytes,uploaded_bytes\n";
     for (const auto& sample : samples_) {
@@ -572,18 +603,32 @@ std::string BenchmarkRecorder::to_csv() const {
                << sample.voxel_fluid_apply_budget_overruns << ',' << sample.loaded_chunks << ','
                << sample.mesh_pending_chunks << ',' << sample.upload_pending_chunks << ','
                << sample.resident_chunks << ',' << sample.visible_chunks << ','
-               << sample.culled_chunks << ',' << sample.drawn_chunks << ',' << sample.draw_calls
-               << ',' << sample.opaque_terrain_draws << ',' << sample.alpha_tested_terrain_draws
+               << sample.culled_chunks << ',' << sample.drawn_chunks
+               << ',' << sample.far_terrain_planned_patches << ','
+               << sample.far_terrain_resident_patches << ','
+               << sample.far_terrain_visible_patches << ','
+               << sample.far_terrain_pending_patches << ','
+               << sample.far_terrain_evicted_patches
+               << ',' << sample.draw_calls << ',' << sample.indirect_draw_calls << ','
+               << sample.opaque_terrain_draws << ','
+               << sample.alpha_tested_terrain_draws
                << ',' << sample.transparent_terrain_draws << ',' << sample.pipeline_switches << ','
                << sample.resident_textures << ',' << sample.runtime_materials << ','
                << sample.resident_pipelines << ',' << sample.retained_objects << ','
                << sample.visible_objects << ',' << sample.culled_objects << ','
-               << sample.submitted_instances << ',' << sample.instance_draw_calls << ','
+               << sample.visibility_hierarchy_nodes << ',' << sample.visibility_nodes_tested << ','
+               << sample.visibility_nodes_culled << ',' << sample.submitted_instances << ','
+               << sample.instance_draw_calls << ','
                << sample.debug_lines << ',' << sample.debug_draw_calls << ',' << sample.debug_labels
                << ',' << sample.ui_vertices << ',' << sample.ui_glyphs << ','
                << sample.ui_draw_calls << ',' << sample.ui_clipped_draw_calls << ','
                << sample.vertices << ',' << sample.triangles << ',' << sample.resident_texture_bytes
-               << ',' << sample.resident_mesh_bytes << ',' << sample.gpu_arena_capacity_bytes << ','
+               << ',' << sample.resident_mesh_bytes << ',' << sample.far_terrain_resident_bytes
+               << ',' << sample.far_terrain_uploaded_bytes << ','
+               << (sample.device_memory_budget_valid ? 1 : 0) << ','
+               << sample.device_local_memory_budget_bytes << ','
+               << sample.device_local_memory_usage_bytes << ','
+               << sample.gpu_arena_capacity_bytes << ','
                << sample.gpu_arena_used_bytes << ',' << sample.gpu_arena_free_bytes << ','
                << sample.gpu_arena_fragmentation << ',' << sample.pending_upload_bytes << ','
                << sample.uploaded_bytes_this_frame << '\n';

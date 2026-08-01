@@ -1,0 +1,5 @@
+kind = "entity"
+id = "base:entities/stateful_crate"
+display_name = "Stateful Storage Crate"
+persistent = "true"
+entity_kind = "container"

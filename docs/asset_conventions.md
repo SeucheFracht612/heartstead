@@ -1,8 +1,10 @@
 # Production asset conventions
 
-Heartstead runtime code consumes cooked assets, never general-purpose glTF or source images.
-Source files are catalogued by stable `namespace:path.ext` IDs and production cooking emits a
-schema-v2 manifest plus versioned payloads.
+Heartstead model, texture, animation, and audio runtime paths consume cooked assets, never
+general-purpose glTF or source images. Source files are catalogued by stable
+`namespace:path.ext` IDs and production cooking emits a schema-v2 manifest plus versioned
+payloads. Built-in SPIR-V and the packaged UI font are explicit CMake-staged renderer bootstrap
+assets; they do not establish a general source-asset runtime path.
 
 ## Models
 

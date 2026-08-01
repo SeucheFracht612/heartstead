@@ -66,7 +66,6 @@ struct VegetationSpecies {
     float density_fade_start = 48.0F;
     float density_fade_end = 96.0F;
     std::uint32_t shadow_lod = 0;
-    bool alpha_to_coverage = true;
     bool receives_weather = true;
 
     [[nodiscard]] core::Status validate() const;

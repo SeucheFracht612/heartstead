@@ -235,6 +235,32 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
 
     AnimatedModelPresentationStats frame_stats;
     const auto& model = *config_.model;
+    std::vector<animation::AnimationBudgetCandidate> animation_candidates;
+    animation_candidates.reserve(snapshot.objects.size());
+    for (const auto& source : snapshot.objects) {
+        if (!source.visible || source.visual_prototype != config_.visual_prototype ||
+            (config_.object_filter && !config_.object_filter(source))) {
+            continue;
+        }
+        const auto key = source.source_net_id.value();
+        const auto retained = entities_.find(key);
+        animation_candidates.push_back({
+            .object_id = key,
+            .distance_squared = config_.animation_distance_squared
+                                    ? config_.animation_distance_squared(source)
+                                    : 0.0F,
+            .importance = source.animation_importance,
+            .visible = true,
+            .force_update = retained == entities_.end() || source.teleported,
+        });
+    }
+    const auto budget_decisions = animation::schedule_animation_updates(
+        animation_candidates, config_.animation_budget, snapshot.simulation_tick);
+    std::unordered_map<std::uint64_t, animation::AnimationBudgetDecision> budget_by_entity;
+    budget_by_entity.reserve(budget_decisions.size());
+    for (const auto& decision : budget_decisions) {
+        budget_by_entity.emplace(decision.object_id, decision);
+    }
     std::unordered_set<std::uint64_t> current_entities;
     current_entities.reserve(snapshot.objects.size());
     for (const auto& source : snapshot.objects) {
@@ -258,15 +284,69 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
         const std::vector<math::Mat4f>* node_matrices = &bind_node_matrices_;
         std::optional<animation::NodePose> animated_pose;
         std::optional<std::vector<math::Mat4f>> animated_node_matrices;
-        if (has_active_animation_) {
-            auto sampled = animation::sample_locomotion_animation(model, config_.locomotion_clips,
-                                                                  source.current_locomotion,
-                                                                  snapshot.simulation_tick);
+        const auto budget = budget_by_entity.find(key);
+        const auto evaluate_pose =
+            retained == entities_.end() || budget == budget_by_entity.end() ||
+            budget->second.evaluate_pose;
+        if (has_active_animation_ && evaluate_pose) {
+            const StateAnimationClipBinding* state_animation = nullptr;
+            for (const auto& binding : config_.state_animation_clips) {
+                const auto matches = std::ranges::any_of(
+                    source.visual_states, [&](const entities::VisualStateValue& state) {
+                        return state.channel == binding.channel && state.value == binding.value;
+                    });
+                if (matches &&
+                    (state_animation == nullptr || binding.priority > state_animation->priority ||
+                     (binding.priority == state_animation->priority &&
+                      std::tie(binding.channel, binding.value) >
+                          std::tie(state_animation->channel, state_animation->value)))) {
+                    state_animation = &binding;
+                }
+            }
+            const auto state_key =
+                state_animation == nullptr
+                    ? std::string{}
+                    : state_animation->channel + ":" + state_animation->value;
+            core::Result<animation::NodePose> sampled =
+                state_animation == nullptr
+                    ? animation::sample_locomotion_animation(model, config_.locomotion_clips,
+                                                             source.current_locomotion,
+                                                             snapshot.simulation_tick)
+                    : animation::sample_animation_clip(
+                          model,
+                          {.clip = state_animation->clip,
+                           .time_seconds = static_cast<float>(snapshot.simulation_tick % 216'000U) /
+                                           60.0F,
+                           .looping = true});
             if (!sampled) {
                 return core::Result<AnimatedModelPresentationStats>::failure(
                     sampled.error().code, sampled.error().message);
             }
             animated_pose.emplace(std::move(sampled).value());
+            if (retained != entities_.end() &&
+                retained->second.retained_state_animation != state_key) {
+                retained->second.state_transition_source = retained->second.retained_pose;
+                retained->second.state_transition_start_tick = snapshot.simulation_tick;
+            }
+            if (retained != entities_.end() && config_.state_transition_ticks > 0U &&
+                snapshot.simulation_tick >= retained->second.state_transition_start_tick) {
+                const auto elapsed =
+                    snapshot.simulation_tick - retained->second.state_transition_start_tick;
+                if (elapsed < config_.state_transition_ticks &&
+                    retained->second.state_transition_source.local_transforms.size() ==
+                        model.nodes.size()) {
+                    const auto blend = static_cast<float>(elapsed) /
+                                       static_cast<float>(config_.state_transition_ticks);
+                    auto blended = animation::blend_node_poses(
+                        model, retained->second.state_transition_source, *animated_pose, blend);
+                    if (!blended) {
+                        return core::Result<AnimatedModelPresentationStats>::failure(
+                            blended.error().code, blended.error().message);
+                    }
+                    *animated_pose = std::move(blended).value();
+                    ++frame_stats.interpolated_poses;
+                }
+            }
             if (config_.ignore_horizontal_root_motion) {
                 auto root_motion = animation::apply_root_motion_policy(
                     model, *animated_pose,
@@ -275,6 +355,65 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
                     return core::Result<AnimatedModelPresentationStats>::failure(
                         root_motion.error().code, root_motion.error().message);
                 }
+            }
+            std::vector<animation::AnimationLayer> layers;
+            layers.reserve(source.animation_layers.size());
+            for (const auto& source_layer : source.animation_layers) {
+                const auto clip = config_.animation_clips.find(source_layer.clip_role);
+                if (clip == config_.animation_clips.end() || clip->second >= model.animations.size()) {
+                    return core::Result<AnimatedModelPresentationStats>::failure(
+                        "animated_model_presentation.unknown_layer_clip",
+                        "animation layer references an unmapped clip role");
+                }
+                const animation::AnimationNodeMask* mask = nullptr;
+                if (!source_layer.mask.empty()) {
+                    const auto found_mask = config_.animation_masks.find(source_layer.mask);
+                    if (found_mask == config_.animation_masks.end()) {
+                        return core::Result<AnimatedModelPresentationStats>::failure(
+                            "animated_model_presentation.unknown_layer_mask",
+                            "animation layer references an unmapped node mask");
+                    }
+                    mask = &found_mask->second;
+                }
+                const auto phase = static_cast<float>(source_layer.normalized_phase) / 65535.0F;
+                layers.push_back({
+                    .playback = {
+                        .clip = clip->second,
+                        .time_seconds = model.animations[clip->second].duration_seconds * phase,
+                        .looping = source_layer.looping,
+                    },
+                    .mode = source_layer.additive ? animation::AnimationLayerMode::additive
+                                                  : animation::AnimationLayerMode::override_pose,
+                    .weight = static_cast<float>(source_layer.weight) / 65535.0F,
+                    .mask = mask,
+                    .additive_reference = std::nullopt,
+                });
+
+                if (config_.animation_event_sink && retained != entities_.end()) {
+                    const auto previous =
+                        retained->second.retained_layer_phases.find(source_layer.clip_role);
+                    const auto event_set = config_.animation_events.find(source_layer.clip_role);
+                    if (previous != retained->second.retained_layer_phases.end() &&
+                        event_set != config_.animation_events.end()) {
+                        auto crossed = animation::crossed_animation_events(
+                            event_set->second, previous->second, phase, source_layer.looping);
+                        if (!crossed) {
+                            return core::Result<AnimatedModelPresentationStats>::failure(
+                                crossed.error().code, crossed.error().message);
+                        }
+                        for (const auto& event_name : crossed.value()) {
+                            config_.animation_event_sink(source.source_net_id, event_name);
+                        }
+                    }
+                }
+            }
+            if (!layers.empty()) {
+                auto composed = animation::compose_animation_layers(model, *animated_pose, layers);
+                if (!composed) {
+                    return core::Result<AnimatedModelPresentationStats>::failure(
+                        composed.error().code, composed.error().message);
+                }
+                *animated_pose = std::move(composed).value();
             }
             auto evaluated = animation::evaluate_model_node_matrices(model, *animated_pose);
             if (!evaluated) {
@@ -285,6 +424,25 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
             pose = &*animated_pose;
             node_matrices = &*animated_node_matrices;
             ++frame_stats.evaluated_poses;
+        } else if (has_active_animation_ && retained != entities_.end()) {
+            pose = &retained->second.retained_pose;
+            node_matrices = &retained->second.retained_node_matrices;
+            ++frame_stats.deferred_pose_evaluations;
+        }
+        std::optional<std::vector<math::Mat4f>> overridden_node_matrices;
+        if (config_.node_matrices_override) {
+            auto overridden = config_.node_matrices_override(source);
+            if (!overridden) {
+                return core::Result<AnimatedModelPresentationStats>::failure(
+                    overridden.error().code, overridden.error().message);
+            }
+            if (overridden.value().size() != model.nodes.size()) {
+                return core::Result<AnimatedModelPresentationStats>::failure(
+                    "animated_model_presentation.invalid_node_override",
+                    "external node matrix override must match the attached model node count");
+            }
+            overridden_node_matrices.emplace(std::move(overridden).value());
+            node_matrices = &*overridden_node_matrices;
         }
         auto previous_transform =
             render_transform(source.previous_transform, source.current_transform.position);
@@ -295,9 +453,43 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
                 !previous_transform ? previous_transform.error() : current_transform.error();
             return core::Result<AnimatedModelPresentationStats>::failure(error.code, error.message);
         }
+        math::Mat4f instance_model_transform = math::Mat4f::identity();
+        if (config_.instance_model_transform) {
+            auto resolved_transform = config_.instance_model_transform(source);
+            if (!resolved_transform) {
+                return core::Result<AnimatedModelPresentationStats>::failure(
+                    resolved_transform.error().code, resolved_transform.error().message);
+            }
+            instance_model_transform = resolved_transform.value();
+        }
+        if (config_.pose_sink) {
+            config_.pose_sink(source.source_net_id, *node_matrices);
+        }
 
         if (retained == entities_.end()) {
             EntityVisual entity;
+            entity.retained_pose = *pose;
+            entity.retained_node_matrices = *node_matrices;
+            entity.last_evaluated_tick = snapshot.simulation_tick;
+            const StateAnimationClipBinding* initial_state_animation = nullptr;
+            for (const auto& binding : config_.state_animation_clips) {
+                if (std::ranges::any_of(
+                        source.visual_states, [&](const entities::VisualStateValue& state) {
+                            return state.channel == binding.channel && state.value == binding.value;
+                        }) &&
+                    (initial_state_animation == nullptr ||
+                     binding.priority > initial_state_animation->priority)) {
+                    initial_state_animation = &binding;
+                }
+            }
+            entity.retained_state_animation =
+                initial_state_animation == nullptr
+                    ? std::string{}
+                    : initial_state_animation->channel + ":" + initial_state_animation->value;
+            for (const auto& layer : source.animation_layers) {
+                entity.retained_layer_phases[layer.clip_role] =
+                    static_cast<float>(layer.normalized_phase) / 65535.0F;
+            }
             entity.primitives.reserve(primitives_.size());
             const auto rollback_entity = [&](renderer::RenderSkinPaletteId pending_palette = {}) {
                 std::vector<renderer::RenderSceneUpdate> rollback;
@@ -318,6 +510,9 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
             };
             for (const auto& binding : primitives_) {
                 const auto& primitive = model.primitives[binding.primitive_index];
+                const auto node_visible =
+                    !config_.model_node_visibility ||
+                    config_.model_node_visibility(source, model.nodes[primitive.node].name);
                 renderer::RenderSkinPaletteId palette_id;
                 if (primitive.skin != assets::no_model_index) {
                     auto palette = animation::build_model_space_skinning_palette(
@@ -344,9 +539,10 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
                 object.previous_transform = previous_transform.value();
                 object.current_transform = current_transform.value();
                 object.model_transform =
-                    model_scale_matrix_ * (primitive.skin == assets::no_model_index
-                                               ? (*node_matrices)[primitive.node]
-                                               : math::Mat4f::identity());
+                    model_scale_matrix_ * instance_model_transform *
+                    (primitive.skin == assets::no_model_index
+                         ? (*node_matrices)[primitive.node]
+                         : math::Mat4f::identity());
                 object.mesh = binding.mesh;
                 object.material = binding.material;
                 object.local_bounds = binding.local_bounds;
@@ -360,7 +556,9 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
                 object.color = {
                     config_.color[0] * source.color[0], config_.color[1] * source.color[1],
                     config_.color[2] * source.color[2], config_.color[3] * source.color[3]};
-                object.minimum_view_distance = config_.minimum_view_distance;
+                object.minimum_view_distance =
+                    node_visible ? config_.minimum_view_distance
+                                 : std::numeric_limits<float>::max();
                 object.maximum_view_distance = config_.maximum_view_distance;
                 object.use_object_origin_for_view_distance = true;
                 auto created_object = renderer.create_object(std::move(object));
@@ -382,6 +580,9 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
         for (std::size_t index = 0; index < primitives_.size(); ++index) {
             const auto& binding = primitives_[index];
             const auto& primitive = model.primitives[binding.primitive_index];
+            const auto node_visible =
+                !config_.model_node_visibility ||
+                config_.model_node_visibility(source, model.nodes[primitive.node].name);
             const auto& visual = retained->second.primitives[index];
             if (primitive.skin != assets::no_model_index) {
                 auto palette = animation::build_model_space_skinning_palette(
@@ -406,9 +607,10 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
             object_update.object.previous_transform = previous_transform.value();
             object_update.object.current_transform = current_transform.value();
             object_update.object.model_transform =
-                model_scale_matrix_ * (primitive.skin == assets::no_model_index
-                                           ? (*node_matrices)[primitive.node]
-                                           : math::Mat4f::identity());
+                model_scale_matrix_ * instance_model_transform *
+                (primitive.skin == assets::no_model_index
+                     ? (*node_matrices)[primitive.node]
+                     : math::Mat4f::identity());
             object_update.object.mesh = binding.mesh;
             object_update.object.material = binding.material;
             object_update.object.local_bounds = binding.local_bounds;
@@ -423,7 +625,9 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
             object_update.object.color = {
                 config_.color[0] * source.color[0], config_.color[1] * source.color[1],
                 config_.color[2] * source.color[2], config_.color[3] * source.color[3]};
-            object_update.object.minimum_view_distance = config_.minimum_view_distance;
+            object_update.object.minimum_view_distance =
+                node_visible ? config_.minimum_view_distance
+                             : std::numeric_limits<float>::max();
             object_update.object.maximum_view_distance = config_.maximum_view_distance;
             object_update.object.use_object_origin_for_view_distance = true;
             updates.push_back(std::move(object_update));
@@ -434,6 +638,31 @@ AnimatedModelPresentation::synchronize(renderer::Renderer& renderer,
                                                                          status.error().message);
         }
         retained->second.source_revision = source.source_revision;
+        if (evaluate_pose) {
+            retained->second.retained_pose = *pose;
+            retained->second.retained_node_matrices = *node_matrices;
+            retained->second.last_evaluated_tick = snapshot.simulation_tick;
+            const StateAnimationClipBinding* retained_state_animation = nullptr;
+            for (const auto& binding : config_.state_animation_clips) {
+                if (std::ranges::any_of(
+                        source.visual_states, [&](const entities::VisualStateValue& state) {
+                            return state.channel == binding.channel && state.value == binding.value;
+                        }) &&
+                    (retained_state_animation == nullptr ||
+                     binding.priority > retained_state_animation->priority)) {
+                    retained_state_animation = &binding;
+                }
+            }
+            retained->second.retained_state_animation =
+                retained_state_animation == nullptr
+                    ? std::string{}
+                    : retained_state_animation->channel + ":" + retained_state_animation->value;
+            retained->second.retained_layer_phases.clear();
+            for (const auto& layer : source.animation_layers) {
+                retained->second.retained_layer_phases[layer.clip_role] =
+                    static_cast<float>(layer.normalized_phase) / 65535.0F;
+            }
+        }
         ++frame_stats.updated_entities;
     }
 

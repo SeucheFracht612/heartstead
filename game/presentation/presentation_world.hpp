@@ -18,6 +18,9 @@ struct PresentationObjectUpdate {
     math::Bounds3f local_bounds{};
     std::array<float, 4> color{1.0F, 1.0F, 1.0F, 1.0F};
     std::vector<entities::VisualStateValue> visual_states;
+    std::vector<AnimationLayerSnapshot> animation_layers;
+    std::vector<EquipmentVisualSnapshot> equipment;
+    std::uint8_t animation_importance{128};
     std::uint64_t source_revision = 0;
     bool visible = true;
     bool teleport = false;

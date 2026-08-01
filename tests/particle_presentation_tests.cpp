@@ -33,11 +33,13 @@ void initialize_renderer(heartstead::renderer::Renderer& renderer) {
     assert(renderer.initialize(std::move(init)));
 }
 
-heartstead::renderer::ParticlePrototype prototype(std::string_view id, std::uint8_t group) {
+heartstead::renderer::ParticlePrototype prototype(std::string_view id, std::uint8_t group,
+                                                  std::uint8_t priority) {
     using namespace heartstead;
     renderer::ParticlePrototype result;
     result.id = *core::PrototypeId::parse(id);
     result.material_group = group;
+    result.priority = priority;
     result.lifetime_min_seconds = 2.0F;
     result.lifetime_max_seconds = 2.0F;
     result.speed_max = 0.0F;
@@ -54,9 +56,9 @@ int main() {
     renderer::Renderer renderer;
     initialize_renderer(renderer);
     const std::vector prototypes{
-        prototype("base:particles/one", 0),
-        prototype("base:particles/two", 1),
-        prototype("base:particles/three", 2),
+        prototype("base:particles/one", 0, 0),
+        prototype("base:particles/two", 1, 2),
+        prototype("base:particles/three", 2, 3),
     };
     renderer::ParticleSystemConfig system_config;
     system_config.maximum_particles = 8;
@@ -73,29 +75,32 @@ int main() {
     assert(system.value().update(1.0F / 60.0F));
 
     game::ParticlePresentation presentation;
-    assert(presentation.initialize(renderer));
+    game::ParticlePresentationConfig presentation_config;
+    presentation_config.maximum_presented_particles = 2;
+    assert(presentation.initialize(renderer, presentation_config));
     renderer::RenderCamera camera;
     camera.yaw_radians = 0.4F;
     camera.pitch_radians = -0.2F;
     assert(camera.set_aspect_ratio(640.0F / 360.0F));
     auto synchronized = presentation.synchronize(renderer, system.value(), camera);
     assert(synchronized);
-    assert(synchronized.value().inserted_particles == 3);
-    assert(synchronized.value().material_groups == 3);
+    assert(synchronized.value().inserted_particles == 2);
+    assert(synchronized.value().dropped_particles == 1);
+    assert(synchronized.value().material_groups == 2);
     auto frame = renderer.render(camera);
     assert(frame);
-    assert(renderer.stats().submitted_instances == 3);
+    assert(renderer.stats().submitted_instances == 2);
     assert(renderer.stats().instance_draw_calls == 1);
 
     assert(system.value().update(1.0F / 60.0F));
     synchronized = presentation.synchronize(renderer, system.value(), camera);
     assert(synchronized);
-    assert(synchronized.value().updated_particles == 3);
+    assert(synchronized.value().updated_particles == 2);
 
     system.value().clear();
     synchronized = presentation.synchronize(renderer, system.value(), camera);
     assert(synchronized);
-    assert(synchronized.value().removed_particles == 3);
+    assert(synchronized.value().removed_particles == 2);
     assert(synchronized.value().retained_particles == 0);
 
     assert(presentation.shutdown(renderer));

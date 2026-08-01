@@ -770,7 +770,8 @@ DevGameMode::update(game::GameApplicationServices& services,
             0xFFFF'FF01U, 9'000'002, "diagnostic:entities/missing_animation", 12.0,
             animation::LocomotionAnimationKind::run));
     }
-    auto model_stats = state.model_presentation.synchronize(*renderer, render_snapshot.value());
+    auto model_stats =
+        state.model_presentation.synchronize(*renderer, render_snapshot.value(), &camera);
     if (!model_stats) {
         return core::Result<game::GameApplicationFrameOutput>::failure(model_stats.error().code,
                                                                        model_stats.error().message);

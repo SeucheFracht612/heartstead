@@ -58,6 +58,9 @@ void test_generic_species_parsing() {
         {"growth.young.scale", "0.45"},
         {"wind.stiffness", "0.08"},
         {"foliage.transmission", "0.7"},
+        {"density.fade_start", "25"},
+        {"density.fade_end", "50"},
+        {"receives_weather", "false"},
     };
     const auto parsed = renderer::vegetation_species_from_generic(prototype);
     assert(parsed);
@@ -66,6 +69,9 @@ void test_generic_species_parsing() {
     assert(parsed.value().lods[1].impostor);
     assert(parsed.value().growth_state("young") != nullptr);
     assert(parsed.value().growth_state("young")->scale_multiplier == 0.45F);
+    assert(parsed.value().density_fade_start == 25.0F);
+    assert(parsed.value().density_fade_end == 50.0F);
+    assert(!parsed.value().receives_weather);
 }
 
 void test_production_registry_and_retained_instancing() {
@@ -122,8 +128,10 @@ void test_production_registry_and_retained_instancing() {
     camera.far_plane = 512.0F;
     assert(camera.update_matrices());
     const std::array occluders{
-        math::Bounds3f{{1.0F, -8.0F, 8.0F}, {11.0F, 12.0F, 14.0F}},
+        math::Bounds3f{{-12.0F, -64.0F, 13.0F}, {24.0F, 64.0F, 16.0F}},
     };
+    assert(vegetation.update_occlusion(camera, occluders));
+    assert(vegetation.stats().occluded_patches == 0);
     assert(vegetation.update_occlusion(camera, occluders));
     assert(vegetation.stats().occluded_patches == 1);
     assert(vegetation.stats().visibility_updates == 1);

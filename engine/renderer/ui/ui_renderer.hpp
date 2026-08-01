@@ -3,23 +3,25 @@
 #include "engine/core/result.hpp"
 #include "engine/math/vector.hpp"
 #include "engine/renderer/rhi/render_frame_plan.hpp"
+#include "engine/renderer/ui/ui_font.hpp"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string_view>
 #include <vector>
 
 namespace heartstead::renderer {
 
-// GPU ABI. Locations: 0 position (vec2), 1 UV (vec2), 2 color (vec4), 3 atlas layer (uint).
+// GPU ABI. Locations: 0 position, 1 UV, 2 color, 3 atlas layer, 4 sampling flags.
 struct GpuUiVertex {
     float position[2]{};
     float uv[2]{};
     float color[4]{1.0F, 1.0F, 1.0F, 1.0F};
     std::uint16_t texture_layer = 0;
-    std::uint16_t padding = 0;
+    std::uint16_t flags = 0;
 };
 
 static_assert(sizeof(GpuUiVertex) == 36);
@@ -28,11 +30,12 @@ static_assert(offsetof(GpuUiVertex, uv) == 8);
 static_assert(offsetof(GpuUiVertex, color) == 16);
 static_assert(offsetof(GpuUiVertex, texture_layer) == 32);
 
-inline constexpr std::array<rhi::RenderVertexAttributeDesc, 4> gpu_ui_vertex_attributes{{
+inline constexpr std::array<rhi::RenderVertexAttributeDesc, 5> gpu_ui_vertex_attributes{{
     {0, offsetof(GpuUiVertex, position), rhi::RenderVertexAttributeFormat::float2},
     {1, offsetof(GpuUiVertex, uv), rhi::RenderVertexAttributeFormat::float2},
     {2, offsetof(GpuUiVertex, color), rhi::RenderVertexAttributeFormat::float4},
     {3, offsetof(GpuUiVertex, texture_layer), rhi::RenderVertexAttributeFormat::uint16},
+    {4, offsetof(GpuUiVertex, flags), rhi::RenderVertexAttributeFormat::uint16},
 }};
 
 struct UiVertex {
@@ -56,6 +59,7 @@ struct UiTriangleBatchDesc {
     std::uint16_t texture_layer = 0;
     bool scissor_enabled = false;
     UiScissorRect scissor{};
+    bool distance_field = false;
 };
 
 struct UiQuadDesc {
@@ -87,6 +91,16 @@ struct UiRendererConfig {
     [[nodiscard]] core::Status validate() const;
 };
 
+enum class UiColorVisionMode : std::uint8_t { none, protanopia, deuteranopia, tritanopia };
+
+struct UiAccessibilitySettings {
+    float contrast = 1.0F;
+    float saturation = 1.0F;
+    UiColorVisionMode color_vision_mode = UiColorVisionMode::none;
+
+    [[nodiscard]] core::Status validate() const noexcept;
+};
+
 struct UiRendererStats {
     std::uint32_t submitted_vertices = 0;
     std::uint32_t submitted_indices = 0;
@@ -104,7 +118,8 @@ struct UiFrameCommands {
 
 class UiRenderer {
   public:
-    UiRenderer(rhi::IRenderDevice& device, rhi::RenderResourceHandle pipeline);
+    UiRenderer(rhi::IRenderDevice& device, rhi::RenderResourceHandle pipeline,
+               std::shared_ptr<const UiFont> font = {});
     ~UiRenderer();
 
     UiRenderer(const UiRenderer&) = delete;
@@ -118,6 +133,8 @@ class UiRenderer {
     [[nodiscard]] core::Result<UiFrameCommands> build_frame(UiFrameCommands scratch = {});
     [[nodiscard]] core::Status resize(rhi::RenderExtent extent);
     [[nodiscard]] core::Status set_pipeline(rhi::RenderResourceHandle pipeline) noexcept;
+    [[nodiscard]] core::Status set_accessibility_settings(UiAccessibilitySettings settings);
+    [[nodiscard]] UiAccessibilitySettings accessibility_settings() const noexcept;
     void clear() noexcept;
     [[nodiscard]] core::Status shutdown();
     [[nodiscard]] const UiRendererStats& stats() const noexcept;
@@ -131,14 +148,17 @@ class UiRenderer {
         std::uint16_t texture_layer = 0;
         bool scissor_enabled = false;
         UiScissorRect scissor{};
+        bool distance_field = false;
     };
 
     rhi::IRenderDevice* device_ = nullptr;
     rhi::RenderResourceHandle pipeline_;
+    std::shared_ptr<const UiFont> font_;
     rhi::RenderResourceHandle vertex_buffer_;
     rhi::RenderResourceHandle index_buffer_;
     rhi::RenderExtent extent_{};
     UiRendererConfig config_{};
+    UiAccessibilitySettings accessibility_{};
     std::vector<UiVertex> vertices_;
     std::vector<std::uint32_t> indices_;
     std::vector<PendingBatch> batches_;
@@ -158,5 +178,8 @@ class UiRenderer {
 // Vulkan NDC (-1, -1) to that same top-left corner.
 [[nodiscard]] math::Vec2f ui_pixel_position_to_ndc(math::Vec2f position_pixels,
                                                    rhi::RenderExtent extent) noexcept;
+[[nodiscard]] std::array<float, 4>
+apply_ui_accessibility_color(std::array<float, 4> color,
+                             UiAccessibilitySettings settings) noexcept;
 
 } // namespace heartstead::renderer

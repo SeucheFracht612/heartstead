@@ -2,6 +2,7 @@
 
 layout(location = 0) in vec2 fragment_ndc;
 layout(location = 0) out vec4 out_color;
+layout(location = 1) out vec4 out_motion;
 
 layout(push_constant) uniform ChunkPushConstants {
     mat4 view_projection;
@@ -93,4 +94,5 @@ void main() {
         color = mix(color, cloud_lit, cloud);
     }
     out_color = vec4(max(color, vec3(0.0)), 1.0);
+    out_motion = vec4(0.0, 0.0, 0.0, 1.0);
 }

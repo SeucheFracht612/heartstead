@@ -9,3 +9,6 @@ target_compile_definitions(
 )
 heartstead_configure_target(heartstead_render_benchmark)
 heartstead_attach_terrain_shader_assets(heartstead_render_benchmark)
+if(TARGET heartstead_dev_game_model_assets)
+  add_dependencies(heartstead_render_benchmark heartstead_dev_game_model_assets)
+endif()

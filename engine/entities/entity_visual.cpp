@@ -24,8 +24,11 @@ namespace {
 }
 
 [[nodiscard]] bool supported_animation_role(std::string_view role) noexcept {
-    return role == "idle" || role == "walk" || role == "run" || role == "jump" || role == "fall" ||
-           role == "swim";
+    return !role.empty() && role.size() <= 64U &&
+           std::ranges::all_of(role, [](const char value) {
+               return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
+                      (value >= '0' && value <= '9') || value == '_' || value == '-';
+           });
 }
 
 [[nodiscard]] bool supported_sound_role(std::string_view role) noexcept {
@@ -156,6 +159,29 @@ core::Status EntityVisualDefinition::validate() const {
                 "entity visual animation roles must be supported and name a clip");
         }
     }
+    std::unordered_set<std::string> animation_mask_names;
+    for (const auto& mask : animation_masks) {
+        if (!valid_visual_name(mask.name) || mask.root_nodes.empty() ||
+            !animation_mask_names.insert(mask.name).second ||
+            !std::ranges::all_of(mask.root_nodes, [](const std::string& node) {
+                return valid_visual_name(node);
+            })) {
+            return core::Status::failure(
+                "visual_prefab.invalid_animation_mask",
+                "animation masks require unique names and at least one valid root node");
+        }
+    }
+    std::unordered_set<std::string> animation_event_keys;
+    for (const auto& event : animation_events) {
+        if (!animation_clips.contains(event.animation_role) || !valid_visual_name(event.name) ||
+            !std::isfinite(event.normalized_phase) || event.normalized_phase < 0.0F ||
+            event.normalized_phase >= 1.0F ||
+            !animation_event_keys.insert(event.animation_role + ":" + event.name).second) {
+            return core::Status::failure(
+                "visual_prefab.invalid_animation_event",
+                "animation events require a mapped role, unique name, and phase in [0, 1)");
+        }
+    }
     for (const auto& [role, sound_event] : sound_events) {
         if (!supported_sound_role(role) || !sound_event.is_valid()) {
             return core::Status::failure(
@@ -214,6 +240,30 @@ core::Status EntityVisualDefinition::validate() const {
             return core::Status::failure(
                 "visual_prefab.invalid_visibility_group",
                 "visual prefab visibility groups require unique names and model nodes");
+        }
+    }
+    std::unordered_set<std::string> equipment_keys;
+    for (const auto& equipment : equipment_variants) {
+        std::unordered_set<std::string> equipment_material_slots;
+        const auto sockets_valid =
+            valid_visual_name(equipment.socket) &&
+            (equipment.stowed_socket.empty() || valid_visual_name(equipment.stowed_socket)) &&
+            (equipment.secondary_socket.empty() || valid_visual_name(equipment.secondary_socket));
+        if (!valid_visual_name(equipment.slot) || !valid_visual_name(equipment.variant) ||
+            equipment.model_asset.empty() || !sockets_valid ||
+            (equipment.two_handed && equipment.secondary_socket.empty()) ||
+            !equipment_keys.insert(equipment.slot + ":" + equipment.variant).second ||
+            !std::ranges::all_of(equipment.hidden_body_groups, [&](const std::string& group) {
+                return group_names.contains(group);
+            }) ||
+            !std::ranges::all_of(equipment.material_overrides, [&](const auto& material) {
+                return valid_visual_name(material.slot) && material.material.is_valid() &&
+                       equipment_material_slots.insert(material.slot).second;
+            })) {
+            return core::Status::failure(
+                "visual_prefab.invalid_equipment",
+                "equipment variants require unique slot/variant keys, a model, valid sockets, and "
+                "known hidden body groups");
         }
     }
     std::unordered_set<std::string> state_keys;
@@ -300,9 +350,126 @@ const VisualStateRule* EntityVisualDefinition::resolve_state_rule(
     return selected;
 }
 
+std::vector<const VisualStateRule*> EntityVisualDefinition::resolve_state_rules(
+    const std::span<const VisualStateValue> states) const {
+    std::vector<const VisualStateRule*> matches;
+    matches.reserve(state_rules.size());
+    for (const auto& rule : state_rules) {
+        if (std::ranges::any_of(states, [&](const VisualStateValue& state) {
+                return state.channel == rule.channel && state.value == rule.value;
+            })) {
+            matches.push_back(&rule);
+        }
+    }
+    std::ranges::sort(matches, [](const VisualStateRule* left, const VisualStateRule* right) {
+        return std::tie(left->priority, left->channel, left->value) <
+               std::tie(right->priority, right->channel, right->value);
+    });
+    return matches;
+}
+
+const VisualStateRule* EntityVisualDefinition::resolve_model_state_rule(
+    const std::span<const VisualStateValue> states) const noexcept {
+    const VisualStateRule* selected = nullptr;
+    for (const auto& rule : state_rules) {
+        if (rule.model_asset.empty() ||
+            !std::ranges::any_of(states, [&](const VisualStateValue& state) {
+                return state.channel == rule.channel && state.value == rule.value;
+            })) {
+            continue;
+        }
+        if (selected == nullptr || rule.priority > selected->priority ||
+            (rule.priority == selected->priority &&
+             std::tie(rule.channel, rule.value) > std::tie(selected->channel, selected->value))) {
+            selected = &rule;
+        }
+    }
+    return selected;
+}
+
+const VisualStateRule* EntityVisualDefinition::resolve_animation_state_rule(
+    const std::span<const VisualStateValue> states) const noexcept {
+    const VisualStateRule* selected = nullptr;
+    for (const auto& rule : state_rules) {
+        if (rule.animation_clip.empty() ||
+            !std::ranges::any_of(states, [&](const VisualStateValue& state) {
+                return state.channel == rule.channel && state.value == rule.value;
+            })) {
+            continue;
+        }
+        if (selected == nullptr || rule.priority > selected->priority ||
+            (rule.priority == selected->priority &&
+             std::tie(rule.channel, rule.value) > std::tie(selected->channel, selected->value))) {
+            selected = &rule;
+        }
+    }
+    return selected;
+}
+
+bool EntityVisualDefinition::resolve_group_visibility(
+    const std::span<const VisualStateValue> states,
+    const std::string_view group,
+    const bool fallback) const noexcept {
+    const VisualStateRule* selected = nullptr;
+    bool visibility = fallback;
+    for (const auto& rule : state_rules) {
+        const auto found = rule.group_visibility.find(std::string(group));
+        if (found == rule.group_visibility.end() ||
+            !std::ranges::any_of(states, [&](const VisualStateValue& state) {
+                return state.channel == rule.channel && state.value == rule.value;
+            })) {
+            continue;
+        }
+        if (selected == nullptr || rule.priority > selected->priority ||
+            (rule.priority == selected->priority &&
+             std::tie(rule.channel, rule.value) > std::tie(selected->channel, selected->value))) {
+            selected = &rule;
+            visibility = found->second;
+        }
+    }
+    return visibility;
+}
+
+const core::PrototypeId* EntityVisualDefinition::resolve_material_override(
+    const std::span<const VisualStateValue> states,
+    const std::string_view slot) const noexcept {
+    const VisualStateRule* selected = nullptr;
+    const core::PrototypeId* material = nullptr;
+    for (const auto& rule : state_rules) {
+        const auto found = std::ranges::find(rule.material_overrides, slot,
+                                             &VisualMaterialOverride::slot);
+        if (found == rule.material_overrides.end() ||
+            !std::ranges::any_of(states, [&](const VisualStateValue& state) {
+                return state.channel == rule.channel && state.value == rule.value;
+            })) {
+            continue;
+        }
+        if (selected == nullptr || rule.priority > selected->priority ||
+            (rule.priority == selected->priority &&
+             std::tie(rule.channel, rule.value) > std::tie(selected->channel, selected->value))) {
+            selected = &rule;
+            material = &found->material;
+        }
+    }
+    if (material != nullptr) {
+        return material;
+    }
+    const auto fallback =
+        std::ranges::find(material_overrides, slot, &VisualMaterialOverride::slot);
+    return fallback == material_overrides.end() ? nullptr : &fallback->material;
+}
+
+const VisualEquipmentVariantDefinition* EntityVisualDefinition::equipment_variant(
+    const std::string_view slot, const std::string_view variant) const noexcept {
+    const auto found = std::ranges::find_if(equipment_variants, [&](const auto& equipment) {
+        return equipment.slot == slot && equipment.variant == variant;
+    });
+    return found == equipment_variants.end() ? nullptr : &*found;
+}
+
 std::string_view
 EntityVisualDefinition::resolve_model(std::span<const VisualStateValue> states) const noexcept {
-    const auto* rule = resolve_state_rule(states);
+    const auto* rule = resolve_model_state_rule(states);
     return rule != nullptr && !rule->model_asset.empty() ? std::string_view(rule->model_asset)
                                                          : std::string_view(model_asset);
 }
@@ -393,7 +560,107 @@ entity_visual_definition_from_prototype(const modding::GenericPrototype& prototy
     for (const auto& [key, value] : prototype.fields) {
         constexpr std::string_view animation_prefix = "animations.";
         constexpr std::string_view sound_prefix = "sounds.";
-        if (key.starts_with(animation_prefix)) {
+        if (key.starts_with("animation_masks.")) {
+            definition.animation_masks.push_back(
+                {key.substr(std::string_view{"animation_masks."}.size()), split_names(value)});
+        } else if (key.starts_with("animation_events.")) {
+            const auto suffix = std::string_view(key).substr(17U);
+            const auto separator = suffix.find('.');
+            float phase = 0.0F;
+            if (separator == std::string_view::npos ||
+                !parse_number(value, phase)) {
+                return core::Result<EntityVisualDefinition>::failure(
+                    "visual_prefab.invalid_animation_event",
+                    "animation events must use animation_events.<role>.<name> = <phase>");
+            }
+            definition.animation_events.push_back({
+                .animation_role = std::string(suffix.substr(0, separator)),
+                .name = std::string(suffix.substr(separator + 1U)),
+                .normalized_phase = phase,
+            });
+        } else if (key.starts_with("equipment.")) {
+            const auto suffix = std::string_view(key).substr(10U);
+            const auto slot_end = suffix.find('.');
+            const auto variant_end = slot_end == std::string_view::npos
+                                         ? std::string_view::npos
+                                         : suffix.find('.', slot_end + 1U);
+            if (slot_end == std::string_view::npos || variant_end == std::string_view::npos) {
+                return core::Result<EntityVisualDefinition>::failure(
+                    "visual_prefab.invalid_equipment",
+                    "equipment fields must use equipment.<slot>.<variant>.<property>");
+            }
+            const auto slot = std::string(suffix.substr(0, slot_end));
+            const auto variant =
+                std::string(suffix.substr(slot_end + 1U, variant_end - slot_end - 1U));
+            auto found = std::ranges::find_if(definition.equipment_variants, [&](const auto& item) {
+                return item.slot == slot && item.variant == variant;
+            });
+            if (found == definition.equipment_variants.end()) {
+                definition.equipment_variants.push_back({
+                    .slot = slot,
+                    .variant = variant,
+                    .model_asset = {},
+                    .socket = {},
+                    .stowed_socket = {},
+                    .secondary_socket = {},
+                    .hidden_body_groups = {},
+                    .material_overrides = {},
+                    .skinned = false,
+                    .two_handed = false,
+                });
+                found = std::prev(definition.equipment_variants.end());
+            }
+            const auto property = suffix.substr(variant_end + 1U);
+            if (property == "model") {
+                status = require_model_asset(assets, value, "visual prefab equipment");
+                if (!status) {
+                    return core::Result<EntityVisualDefinition>::failure(status.error().code,
+                                                                         status.error().message);
+                }
+                found->model_asset = value;
+            } else if (property == "socket") {
+                found->socket = value;
+            } else if (property == "stowed_socket") {
+                found->stowed_socket = value;
+            } else if (property == "secondary_socket") {
+                found->secondary_socket = value;
+            } else if (property == "hide_groups") {
+                found->hidden_body_groups = split_names(value);
+            } else if (property.starts_with("materials.")) {
+                auto material = core::PrototypeId::parse(value);
+                if (!material) {
+                    return core::Result<EntityVisualDefinition>::failure(
+                        "visual_prefab.invalid_equipment_material",
+                        "equipment material override must reference a material prototype");
+                }
+                status = prototypes.require_kind(*material, modding::PrototypeKinds::material);
+                if (!status) {
+                    return core::Result<EntityVisualDefinition>::failure(status.error().code,
+                                                                         status.error().message);
+                }
+                found->material_overrides.push_back(
+                    {std::string(property.substr(std::string_view{"materials."}.size())),
+                     *material});
+            } else if (property == "skinned") {
+                auto parsed = parse_bool(value, property);
+                if (!parsed) {
+                    return core::Result<EntityVisualDefinition>::failure(parsed.error().code,
+                                                                         parsed.error().message);
+                }
+                found->skinned = parsed.value();
+            } else if (property == "two_handed") {
+                auto parsed = parse_bool(value, property);
+                if (!parsed) {
+                    return core::Result<EntityVisualDefinition>::failure(parsed.error().code,
+                                                                         parsed.error().message);
+                }
+                found->two_handed = parsed.value();
+            } else {
+                return core::Result<EntityVisualDefinition>::failure(
+                    "visual_prefab.invalid_equipment",
+                    "visual prefab equipment property is not supported");
+            }
+        } else if (key.starts_with(animation_prefix)) {
             definition.animation_clips.emplace(key.substr(animation_prefix.size()), value);
         } else if (key.starts_with(sound_prefix)) {
             auto sound_event = core::PrototypeId::parse(value);
@@ -667,6 +934,14 @@ entity_visual_definition_from_prototype(const modding::GenericPrototype& prototy
         definition.state_rules, [](const VisualStateRule& left, const VisualStateRule& right) {
             return std::tie(left.channel, left.value) < std::tie(right.channel, right.value);
         });
+    std::ranges::sort(definition.animation_masks, {}, &VisualAnimationMaskDefinition::name);
+    std::ranges::sort(definition.animation_events, [](const auto& left, const auto& right) {
+        return std::tie(left.animation_role, left.normalized_phase, left.name) <
+               std::tie(right.animation_role, right.normalized_phase, right.name);
+    });
+    std::ranges::sort(definition.equipment_variants, [](const auto& left, const auto& right) {
+        return std::tie(left.slot, left.variant) < std::tie(right.slot, right.variant);
+    });
     status = definition.validate();
     if (!status) {
         return core::Result<EntityVisualDefinition>::failure(status.error().code,

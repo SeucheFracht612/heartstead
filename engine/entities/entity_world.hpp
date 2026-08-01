@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/animation/locomotion_animation.hpp"
+#include "engine/entities/entity_visual.hpp"
 #include "engine/core/ids.hpp"
 #include "engine/core/result.hpp"
 #include "engine/entities/entity_id.hpp"
@@ -49,6 +50,11 @@ struct NetworkIdentityComponent {
 
 struct LocomotionAnimationComponent {
     animation::ReplicatedLocomotionAnimation state;
+};
+
+struct VisualStateComponent {
+    std::vector<VisualStateValue> states;
+    std::uint64_t revision{0};
 };
 
 struct HealthComponent {

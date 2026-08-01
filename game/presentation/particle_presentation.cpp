@@ -150,14 +150,49 @@ ParticlePresentation::synchronize(renderer::Renderer& renderer,
     ParticlePresentationStats frame_stats;
     std::unordered_set<std::uint64_t> live;
     const auto sources = particles.particles();
+    struct Candidate {
+        std::size_t index = 0;
+        std::uint8_t priority = 0;
+        double camera_distance_squared = 0.0;
+        std::uint64_t serial = 0;
+    };
+    std::vector<Candidate> candidates;
+    candidates.reserve(sources.size());
+    for (std::size_t index = 0; index < sources.size(); ++index) {
+        const auto anchor_relative =
+            sources[index].position.relative_to(camera.floating_origin.block);
+        const math::Vec3d camera_offset{
+            anchor_relative.x - static_cast<double>(camera.local_position.x),
+            anchor_relative.y - static_cast<double>(camera.local_position.y),
+            anchor_relative.z - static_cast<double>(camera.local_position.z)};
+        candidates.push_back({index, sources[index].priority,
+                              math::length_squared(camera_offset), sources[index].serial});
+    }
     const auto accepted_count =
-        std::min<std::size_t>(sources.size(), config_.maximum_presented_particles);
+        std::min<std::size_t>(candidates.size(), config_.maximum_presented_particles);
+    if (accepted_count < candidates.size()) {
+        std::stable_sort(candidates.begin(), candidates.end(),
+                         [](const Candidate& left, const Candidate& right) {
+                             if (left.priority != right.priority) {
+                                 return left.priority > right.priority;
+                             }
+                             if (left.camera_distance_squared != right.camera_distance_squared) {
+                                 return left.camera_distance_squared < right.camera_distance_squared;
+                             }
+                             return left.serial < right.serial;
+                         });
+        candidates.resize(accepted_count);
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const Candidate& left, const Candidate& right) {
+                      return left.serial < right.serial;
+                  });
+    }
     live.reserve(accepted_count);
     std::array<bool, 4> used_groups{};
     std::vector<renderer::RenderSceneUpdate> updates;
     updates.reserve(accepted_count);
-    for (std::size_t index = 0; index < accepted_count; ++index) {
-        const auto& particle = sources[index];
+    for (const auto& candidate : candidates) {
+        const auto& particle = sources[candidate.index];
         live.insert(particle.serial);
         used_groups[particle.material_group] = true;
         const auto current_size = particle.size();

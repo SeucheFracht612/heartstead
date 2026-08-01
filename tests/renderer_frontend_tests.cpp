@@ -1,4 +1,5 @@
 #include "engine/profiling/cpu_timing.hpp"
+#include "engine/core/file_io.hpp"
 #include "engine/renderer/camera/frustum.hpp"
 #include "engine/renderer/chunks/chunk_gpu_cache.hpp"
 #include "engine/renderer/chunks/chunk_render_system.hpp"
@@ -12,6 +13,7 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <ranges>
 #include <thread>
 #include <utility>
@@ -655,6 +657,11 @@ void test_renderer_frontend_submits_headless_frames() {
     init.debug_fragment_spirv = test_spirv;
     init.ui_vertex_spirv = test_spirv;
     init.ui_fragment_spirv = test_spirv;
+    auto ui_font = core::read_binary_file(
+        std::filesystem::path{HEARTSTEAD_TEST_SOURCE_DIR} /
+        "mods/base/assets/fonts/heartstead-ui.ttf");
+    assert(ui_font);
+    init.ui_font_bytes = std::move(ui_font).value();
     init.tone_map_vertex_spirv = test_spirv;
     init.tone_map_fragment_spirv = test_spirv;
     init.development_shader_hot_reload = true;
@@ -975,10 +982,10 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(retained_renderer.stats().debug_lines == 3);
     assert(retained_renderer.stats().debug_draw_calls == 1);
     assert(retained_renderer.stats().debug_labels == 1);
-    assert(retained_renderer.stats().ui_vertices == 32);
+    assert(retained_renderer.stats().ui_vertices == 28);
     assert(retained_renderer.stats().ui_draw_calls == 2);
     assert(retained_renderer.stats().ui_clipped_draw_calls == 1);
-    assert(retained_renderer.stats().ui_glyphs == 7);
+    assert(retained_renderer.stats().ui_glyphs == 6);
 
     renderer::RenderSceneUpdate remove_object;
     remove_object.kind = renderer::RenderSceneUpdateKind::remove_object;

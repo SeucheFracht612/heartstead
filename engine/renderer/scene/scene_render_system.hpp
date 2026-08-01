@@ -9,28 +9,37 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <vector>
 
 namespace heartstead::renderer {
 
 struct alignas(16) GpuObjectInstance {
     math::Mat4f camera_relative_transform = math::Mat4f::identity();
+    // Previous frame's complete clip transform. Combining the previous camera and object
+    // transforms here keeps motion history correct across floating-origin rebases without
+    // increasing the renderer-wide push-constant ABI.
+    math::Mat4f previous_clip_transform = math::Mat4f::identity();
     float color[4]{1.0F, 1.0F, 1.0F, 1.0F};
     std::uint32_t metadata[4]{};
     std::uint32_t morph_metadata[4]{};
     float effect_parameters[4]{};
     std::uint32_t effect_metadata[4]{};
     float effect_parameters2[4]{};
+    // Previous skin offset, previous morph-weight offset, valid-history flag, reserved.
+    std::uint32_t history_metadata[4]{};
 };
 
-static_assert(sizeof(GpuObjectInstance) == 160);
+static_assert(sizeof(GpuObjectInstance) == 240);
 static_assert(offsetof(GpuObjectInstance, camera_relative_transform) == 0);
-static_assert(offsetof(GpuObjectInstance, color) == 64);
-static_assert(offsetof(GpuObjectInstance, metadata) == 80);
-static_assert(offsetof(GpuObjectInstance, morph_metadata) == 96);
-static_assert(offsetof(GpuObjectInstance, effect_parameters) == 112);
-static_assert(offsetof(GpuObjectInstance, effect_metadata) == 128);
-static_assert(offsetof(GpuObjectInstance, effect_parameters2) == 144);
+static_assert(offsetof(GpuObjectInstance, previous_clip_transform) == 64);
+static_assert(offsetof(GpuObjectInstance, color) == 128);
+static_assert(offsetof(GpuObjectInstance, metadata) == 144);
+static_assert(offsetof(GpuObjectInstance, morph_metadata) == 160);
+static_assert(offsetof(GpuObjectInstance, effect_parameters) == 176);
+static_assert(offsetof(GpuObjectInstance, effect_metadata) == 192);
+static_assert(offsetof(GpuObjectInstance, effect_parameters2) == 208);
+static_assert(offsetof(GpuObjectInstance, history_metadata) == 224);
 
 struct ScenePipelineSet {
     rhi::RenderResourceHandle opaque;
@@ -107,8 +116,20 @@ class SceneRenderSystem {
   private:
     struct UploadedSkinPalette {
         RenderSkinPaletteId id;
-        std::uint32_t offset = 0;
+        std::uint32_t current_offset = 0;
+        std::uint32_t previous_offset = 0;
         std::uint32_t count = 0;
+    };
+
+    struct ObjectMotionHistory {
+        math::Mat4f clip_transform = math::Mat4f::identity();
+        std::vector<float> morph_weights;
+        std::uint64_t last_seen_frame = 0;
+    };
+
+    struct SkinMotionHistory {
+        std::vector<math::Mat4f> joint_matrices;
+        std::uint64_t last_seen_frame = 0;
     };
 
     rhi::IRenderDevice* device_ = nullptr;
@@ -125,6 +146,8 @@ class SceneRenderSystem {
     std::vector<math::Mat4f> skin_matrix_scratch_;
     std::vector<float> morph_weight_scratch_;
     std::vector<UploadedSkinPalette> uploaded_skin_palettes_;
+    std::map<RenderObjectId, ObjectMotionHistory> object_motion_history_;
+    std::map<RenderSkinPaletteId, SkinMotionHistory> skin_motion_history_;
     std::uint64_t frame_number_ = 0;
     SceneRenderStats stats_{};
 };

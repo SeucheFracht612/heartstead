@@ -89,3 +89,9 @@ cmake --build --preset default-release --target heartstead_ui_benchmark
   UI-before-gameplay input consumption, and HUD bindings to replicated state.
 - `smoke.ui_benchmark` keeps the benchmark executable and target assertion in the regular test
   matrix.
+
+## Production UI and maps
+
+The production path uses Noto Sans SDF text as described in [UI rendering](ui_rendering.md). The HUD
+paints a discovery-backed minimap; `M` opens a full surface, underground, aerial, or mod-defined map
+layer with gameplay-owned markers. UI is composited after tone mapping at output resolution.

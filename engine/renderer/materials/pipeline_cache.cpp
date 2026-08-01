@@ -51,6 +51,8 @@ PipelineCache::prewarm(GraphicsPipelineKey key, rhi::RenderPipelineLayoutDesc la
     entries_.push_back(Entry{std::move(key), std::move(layout), std::move(pipeline), built.value(),
                              program->revision});
     stats_.resident_pipeline_count = entries_.size();
+    stats_.resident_pipeline_layout_count = entries_.size();
+    stats_.descriptor_binding_count += entries_.back().layout.descriptors.size();
     ++stats_.created_pipeline_count;
     return built;
 }
@@ -122,6 +124,8 @@ core::Status PipelineCache::shutdown() {
     }
     entries_.clear();
     stats_.resident_pipeline_count = 0;
+    stats_.resident_pipeline_layout_count = 0;
+    stats_.descriptor_binding_count = 0;
     return first_failure;
 }
 

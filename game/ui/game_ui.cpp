@@ -540,7 +540,15 @@ GameUiLayer::process_input(const platform::WindowInputSnapshot& input, RuntimeSe
     }
     GameUiProcessResult result;
     const auto toggle = key_pressed(input, platform::KeyCode::tab);
+    const auto map_toggle = key_pressed(input, platform::KeyCode::m);
     const auto cancel = key_pressed(input, platform::KeyCode::escape);
+    if (map_toggle || (cancel && map_open_)) {
+        set_map_open(!map_open_);
+        result.map_toggled = true;
+        result.consumed.keyboard = true;
+        result.consumed.blocks_gameplay = map_open_;
+        return core::Result<GameUiProcessResult>::success(result);
+    }
     if (toggle || (cancel && inventory_open_)) {
         set_inventory_open(!inventory_open_);
         result.inventory_toggled = true;
@@ -640,6 +648,48 @@ GameUiLayer::paint(renderer::UiRenderer& renderer, renderer::rhi::RenderExtent e
     }
     const auto paint_start = std::chrono::steady_clock::now();
     auto painted = widgets_.paint(renderer);
+    if (painted) {
+        const auto scale = std::clamp(dpi_scale, 0.5F, 4.0F);
+        const auto map_size = std::min(196.0F * scale,
+                                       static_cast<float>(std::min(extent.width, extent.height)) *
+                                           0.34F);
+        ui::MapViewDesc minimap;
+        minimap.kind = ui::MapViewKind::minimap;
+        minimap.minimum_pixels = {static_cast<float>(extent.width) - map_size - 16.0F * scale,
+                                  16.0F * scale};
+        minimap.maximum_pixels = {minimap.minimum_pixels.x + map_size,
+                                  minimap.minimum_pixels.y + map_size};
+        minimap.center = map_center_;
+        minimap.layer_id = map_layer_;
+        minimap.cell_radius = 12;
+        auto map_paint = map_view_renderer_.paint(renderer, extent, map_discovery_, minimap,
+                                                  map_markers_);
+        if (!map_paint) {
+            return core::Result<ui::UiPaintStats>::failure(map_paint.error().code,
+                                                           map_paint.error().message);
+        }
+        stats_.minimap = map_paint.value();
+        if (map_open_) {
+            ui::MapViewDesc full_map;
+            full_map.kind = ui::MapViewKind::full_map;
+            full_map.minimum_pixels = {static_cast<float>(extent.width) * 0.08F,
+                                       static_cast<float>(extent.height) * 0.08F};
+            full_map.maximum_pixels = {static_cast<float>(extent.width) * 0.92F,
+                                       static_cast<float>(extent.height) * 0.92F};
+            full_map.center = map_center_;
+            full_map.layer_id = map_layer_;
+            full_map.cell_radius = 32;
+            map_paint = map_view_renderer_.paint(renderer, extent, map_discovery_, full_map,
+                                                 map_markers_);
+            if (!map_paint) {
+                return core::Result<ui::UiPaintStats>::failure(map_paint.error().code,
+                                                               map_paint.error().message);
+            }
+            stats_.full_map = map_paint.value();
+        } else {
+            stats_.full_map = {};
+        }
+    }
     stats_.paint_ms = std::chrono::duration<double, std::milli>(
                           std::chrono::steady_clock::now() - paint_start)
                           .count();
@@ -650,6 +700,7 @@ GameUiLayer::paint(renderer::UiRenderer& renderer, renderer::rhi::RenderExtent e
             static_cast<std::uint32_t>(inventory_.pending_transfers().size());
         stats_.inventory_mass_grams = inventory_.total_mass_grams();
         stats_.inventory_open = inventory_open_;
+        stats_.map_open = map_open_;
     }
     return painted;
 }
@@ -675,6 +726,9 @@ std::uint64_t GameUiLayer::player_capacity_grams(const ClientRuntime& client) co
 }
 
 void GameUiLayer::set_inventory_open(bool open) noexcept {
+    if (open) {
+        map_open_ = false;
+    }
     inventory_open_ = open;
     widgets_.set_visible(ui::widget_id("game.inventory.root"), open);
     if (open && !inventory_slots_.empty()) {
@@ -685,12 +739,45 @@ void GameUiLayer::set_inventory_open(bool open) noexcept {
     stats_.inventory_open = open;
 }
 
+void GameUiLayer::set_map_open(bool open) noexcept {
+    map_open_ = open;
+    if (open) {
+        set_inventory_open(false);
+    }
+    stats_.map_open = open;
+}
+
+void GameUiLayer::set_map_center(player_profiles::MapCellCoord center) noexcept {
+    map_center_ = center;
+}
+
+core::Status GameUiLayer::set_map_layer(std::string layer_id) {
+    if (layer_id.empty() || layer_id.size() > 64U) {
+        return core::Status::failure("game_ui.invalid_map_layer",
+                                     "map layer id must contain one to 64 characters");
+    }
+    map_layer_ = std::move(layer_id);
+    return core::Status::ok();
+}
+
+void GameUiLayer::set_map_markers(std::vector<ui::MapMarker> markers) {
+    map_markers_ = std::move(markers);
+}
+
+void GameUiLayer::set_map_discovery(player_profiles::MapDiscovery discovery) {
+    map_discovery_ = std::move(discovery);
+}
+
 bool GameUiLayer::inventory_open() const noexcept {
     return inventory_open_;
 }
 
+bool GameUiLayer::map_open() const noexcept {
+    return map_open_;
+}
+
 bool GameUiLayer::blocks_gameplay() const noexcept {
-    return inventory_open_;
+    return inventory_open_ || map_open_;
 }
 
 InventoryUiViewModel& GameUiLayer::inventory() noexcept {

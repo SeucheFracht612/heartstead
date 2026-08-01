@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -151,6 +152,42 @@ int main() {
     auto bad_vertex = model.vertices.front();
     bad_vertex.joints[0] = 2;
     assert(!animation::skin_model_vertex(bad_vertex, palette.value().joint_matrices));
+
+    constexpr std::array<std::string_view, 1> mask_roots{"joint"};
+    auto joint_mask = animation::make_descendant_animation_mask(model, mask_roots);
+    assert(joint_mask);
+    assert(joint_mask.value().node_weights == std::vector<float>({0.0F, 1.0F}));
+    const animation::AnimationLayer override_layer{
+        .playback = {0, 1.0F, false},
+        .mode = animation::AnimationLayerMode::override_pose,
+        .weight = 0.5F,
+        .mask = &joint_mask.value(),
+        .additive_reference = std::nullopt,
+    };
+    auto layered = animation::compose_animation_layers(model, bind, {&override_layer, 1});
+    assert(layered);
+    assert(nearly_equal(layered.value().local_transforms[1].translation.y, 1.0F));
+    assert(layered.value().local_transforms[0] == bind.local_transforms[0]);
+
+    const animation::AnimationLayer additive_layer{
+        .playback = {0, 1.0F, false},
+        .mode = animation::AnimationLayerMode::additive,
+        .weight = 0.5F,
+        .mask = &joint_mask.value(),
+        .additive_reference = animation::AnimationClipPlayback{0, 0.0F, false},
+    };
+    auto additive = animation::compose_animation_layers(model, bind, {&additive_layer, 1});
+    assert(additive);
+    assert(nearly_equal(additive.value().local_transforms[1].translation.y, 1.0F));
+
+    const std::array event_markers{
+        animation::AnimationEventMarker{"foot_left", 0.25F},
+        animation::AnimationEventMarker{"foot_right", 0.75F},
+    };
+    auto events = animation::crossed_animation_events(event_markers, 0.7F, 0.3F, true);
+    assert(events);
+    assert(events.value() == std::vector<std::string>({"foot_right", "foot_left"}));
+    assert(!animation::crossed_animation_events(event_markers, 0.7F, 0.3F, false).value().size());
 
     auto translated_model = model;
     translated_model.nodes[0].bind_transform.translation = {5.0F, 0.0F, 0.0F};

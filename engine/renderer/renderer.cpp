@@ -2,6 +2,7 @@
 
 #include "engine/core/hash.hpp"
 #include "engine/renderer/terrain/gpu_chunk_vertex.hpp"
+#include "engine/world/worldgen/terrain_generator.hpp"
 
 #include <algorithm>
 #include <array>
@@ -217,6 +218,25 @@ make_terrain_shader_program(std::span<const std::uint32_t> vertex_spirv,
 }
 
 [[nodiscard]] ShaderProgramDesc
+make_far_terrain_shader_program(std::span<const std::uint32_t> vertex_spirv,
+                                std::span<const std::uint32_t> fragment_spirv) {
+    auto shader_program = make_terrain_shader_program(vertex_spirv, fragment_spirv);
+    shader_program.id = "far_terrain";
+    shader_program.stages[0].source_name = "far_terrain.vert.spv";
+    shader_program.interface.vertex_stride = sizeof(FarTerrainGpuVertex);
+    shader_program.interface.vertex_inputs.clear();
+    for (const auto& attribute : far_terrain_vertex_attributes) {
+        shader_program.interface.vertex_inputs.push_back({attribute.location, attribute.format});
+    }
+    shader_program.interface.descriptors.push_back(
+        {"far_patch_draws", rhi::RenderDescriptorKind::storage_buffer, 15, true,
+         rhi::RenderShaderStageFlags::vertex});
+    shader_program.dependencies = {"far_terrain_vertex_v1", "gpu_voxel_material_v3",
+                                   "chunk_push_constants_v2"};
+    return shader_program;
+}
+
+[[nodiscard]] ShaderProgramDesc
 make_static_mesh_shader_program(std::span<const std::uint32_t> vertex_spirv,
                                 std::span<const std::uint32_t> fragment_spirv) {
     ShaderProgramDesc shader_program;
@@ -418,124 +438,22 @@ make_tone_map_shader_program(std::span<const std::uint32_t> vertex_spirv,
     return shader_program;
 }
 
-[[nodiscard]] std::array<std::uint8_t, 7> fallback_glyph_rows(unsigned char character) {
-    if (character >= 'a' && character <= 'z') {
-        character = static_cast<unsigned char>(character - 'a' + 'A');
-    }
-    switch (character) {
-    case '0':
-        return {14, 17, 19, 21, 25, 17, 14};
-    case '1':
-        return {4, 12, 4, 4, 4, 4, 14};
-    case '2':
-        return {14, 17, 1, 2, 4, 8, 31};
-    case '3':
-        return {30, 1, 1, 14, 1, 1, 30};
-    case '4':
-        return {2, 6, 10, 18, 31, 2, 2};
-    case '5':
-        return {31, 16, 16, 30, 1, 1, 30};
-    case '6':
-        return {14, 16, 16, 30, 17, 17, 14};
-    case '7':
-        return {31, 1, 2, 4, 8, 8, 8};
-    case '8':
-        return {14, 17, 17, 14, 17, 17, 14};
-    case '9':
-        return {14, 17, 17, 15, 1, 1, 14};
-    case 'A':
-        return {14, 17, 17, 31, 17, 17, 17};
-    case 'B':
-        return {30, 17, 17, 30, 17, 17, 30};
-    case 'C':
-        return {15, 16, 16, 16, 16, 16, 15};
-    case 'D':
-        return {30, 17, 17, 17, 17, 17, 30};
-    case 'E':
-        return {31, 16, 16, 30, 16, 16, 31};
-    case 'F':
-        return {31, 16, 16, 30, 16, 16, 16};
-    case 'G':
-        return {15, 16, 16, 23, 17, 17, 14};
-    case 'H':
-        return {17, 17, 17, 31, 17, 17, 17};
-    case 'I':
-        return {14, 4, 4, 4, 4, 4, 14};
-    case 'J':
-        return {7, 2, 2, 2, 18, 18, 12};
-    case 'K':
-        return {17, 18, 20, 24, 20, 18, 17};
-    case 'L':
-        return {16, 16, 16, 16, 16, 16, 31};
-    case 'M':
-        return {17, 27, 21, 21, 17, 17, 17};
-    case 'N':
-        return {17, 25, 21, 19, 17, 17, 17};
-    case 'O':
-        return {14, 17, 17, 17, 17, 17, 14};
-    case 'P':
-        return {30, 17, 17, 30, 16, 16, 16};
-    case 'Q':
-        return {14, 17, 17, 17, 21, 18, 13};
-    case 'R':
-        return {30, 17, 17, 30, 20, 18, 17};
-    case 'S':
-        return {15, 16, 16, 14, 1, 1, 30};
-    case 'T':
-        return {31, 4, 4, 4, 4, 4, 4};
-    case 'U':
-        return {17, 17, 17, 17, 17, 17, 14};
-    case 'V':
-        return {17, 17, 17, 17, 10, 10, 4};
-    case 'W':
-        return {17, 17, 17, 21, 21, 27, 17};
-    case 'X':
-        return {17, 17, 10, 4, 10, 17, 17};
-    case 'Y':
-        return {17, 17, 10, 4, 4, 4, 4};
-    case 'Z':
-        return {31, 1, 2, 4, 8, 16, 31};
-    case '-':
-        return {0, 0, 0, 31, 0, 0, 0};
-    case '_':
-        return {0, 0, 0, 0, 0, 0, 31};
-    case '.':
-        return {0, 0, 0, 0, 0, 12, 12};
-    case ':':
-        return {0, 12, 12, 0, 12, 12, 0};
-    case '/':
-        return {1, 2, 2, 4, 8, 8, 16};
-    case '?':
-        return {14, 17, 1, 2, 4, 0, 4};
-    default:
-        return {};
-    }
-}
-
-[[nodiscard]] std::vector<std::byte> make_ui_atlas() {
-    constexpr std::size_t width = 128;
-    constexpr std::size_t height = 64;
-    constexpr std::size_t layer_size = width * height * 4U;
+[[nodiscard]] std::vector<std::byte> make_ui_atlas(const UiFont* font, std::uint32_t width,
+                                                   std::uint32_t height) {
+    const auto layer_size = static_cast<std::size_t>(width) * height * 4U;
     std::vector<std::byte> pixels(layer_size * 2U, std::byte{0});
     std::fill_n(pixels.begin(), static_cast<std::ptrdiff_t>(layer_size), std::byte{0xff});
-    for (std::uint32_t character = 0; character < 128U; ++character) {
-        const auto rows = fallback_glyph_rows(static_cast<unsigned char>(character));
-        const auto cell_x = (character % 16U) * 8U;
-        const auto cell_y = (character / 16U) * 8U;
-        for (std::uint32_t row = 0; row < rows.size(); ++row) {
-            for (std::uint32_t column = 0; column < 5U; ++column) {
-                if ((rows[row] & (1U << (4U - column))) == 0U) {
-                    continue;
-                }
-                const auto offset =
-                    layer_size +
-                    (static_cast<std::size_t>(cell_y + row) * width + cell_x + column + 1U) * 4U;
-                pixels[offset] = std::byte{0xff};
-                pixels[offset + 1U] = std::byte{0xff};
-                pixels[offset + 2U] = std::byte{0xff};
-                pixels[offset + 3U] = std::byte{0xff};
-            }
-        }
+    if (font == nullptr) {
+        return pixels;
+    }
+    const auto sdf = font->atlas_sdf();
+    for (std::size_t index = 0; index < sdf.size(); ++index) {
+        const auto offset = layer_size + index * 4U;
+        const auto value = static_cast<std::byte>(sdf[index]);
+        pixels[offset] = value;
+        pixels[offset + 1U] = value;
+        pixels[offset + 2U] = value;
+        pixels[offset + 3U] = std::byte{0xff};
     }
     return pixels;
 }
@@ -556,7 +474,30 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
                                      "renderer initialization requires a render device");
     }
     owner_thread_ = std::this_thread::get_id();
-    auto config_status = desc.chunk_config.validate();
+    quality_settings_ = renderer_quality_settings(
+        desc.quality_preset.value_or(RendererQualityPreset::high));
+    auto config_status = quality_settings_.validate();
+    if (!config_status) {
+        return config_status;
+    }
+    if (desc.quality_preset.has_value()) {
+        const auto horizontal = quality_settings_.terrain_chunk_radius;
+        desc.chunk_config.distances.visible_horizontal_radius = horizontal;
+        desc.chunk_config.distances.mesh_horizontal_radius = horizontal + 2U;
+        desc.chunk_config.distances.gpu_resident_horizontal_radius = horizontal + 4U;
+        desc.chunk_config.distances.loaded_horizontal_radius = horizontal + 8U;
+        desc.chunk_config.gpu_terrain_budget_bytes = quality_settings_.texture_budget_bytes / 2U;
+        desc.far_terrain_config.clipmap.maximum_distance =
+            std::max(2'048.0, static_cast<double>(quality_settings_.shadow_distance) * 16.0);
+        desc.far_terrain_config.maximum_resident_bytes = quality_settings_.texture_budget_bytes / 2U;
+        desc.streaming_residency_config.resident_budget_bytes =
+            quality_settings_.texture_budget_bytes;
+        desc.directional_shadow_config.resolution = quality_settings_.shadow_resolution;
+        desc.directional_shadow_config.distance = quality_settings_.shadow_distance;
+        desc.clustered_lighting_config.local_shadow_budget =
+            quality_settings_.local_shadow_budget;
+    }
+    config_status = desc.chunk_config.validate();
     if (!config_status) {
         return config_status;
     }
@@ -653,6 +594,16 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         (void)shutdown();
         return core::Status::failure(error.code, error.message);
     }
+    if (!desc.far_terrain_vertex_spirv.empty()) {
+        pipeline_status = create_far_terrain_pipeline(desc.far_terrain_vertex_spirv,
+                                                      desc.terrain_fragment_spirv);
+        if (!pipeline_status) {
+            const auto error = pipeline_status.error();
+            (void)shutdown();
+            return core::Status::failure(error.code, error.message);
+        }
+        far_terrain_vertex_spirv_ = desc.far_terrain_vertex_spirv;
+    }
     pipeline_status =
         create_scene_pipelines(desc.static_mesh_vertex_spirv, desc.static_mesh_fragment_spirv);
     if (!pipeline_status) {
@@ -682,7 +633,8 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         (void)shutdown();
         return core::Status::failure(error.code, error.message);
     }
-    pipeline_status = create_ui_pipeline(desc.ui_vertex_spirv, desc.ui_fragment_spirv);
+    pipeline_status =
+        create_ui_pipeline(desc.ui_vertex_spirv, desc.ui_fragment_spirv, desc.ui_font_bytes);
     if (!pipeline_status) {
         const auto error = pipeline_status.error();
         (void)shutdown();
@@ -742,6 +694,16 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         const auto error = mesh_status.error();
         (void)shutdown();
         return core::Status::failure(error.code, error.message);
+    }
+    if (desc.streaming_residency_loader) {
+        auto residency = StreamingResidencyManager::create(
+            desc.streaming_residency_config, std::move(desc.streaming_residency_loader));
+        if (!residency) {
+            const auto error = residency.error();
+            (void)shutdown();
+            return core::Status::failure(error.code, error.message);
+        }
+        streaming_residency_ = std::move(residency.value());
     }
     const auto scene_material = core::PrototypeId::parse("base:materials/static_instances");
     const auto transparent_material =
@@ -805,6 +767,17 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
     }
     environment_status =
         environment_lighting_->bind(terrain_lighting_material.value(), "environment_map");
+    const auto far_terrain_lighting_material =
+        core::PrototypeId::parse("base:materials/far_terrain");
+    if (!far_terrain_lighting_material) {
+        (void)shutdown();
+        return core::Status::failure("renderer.invalid_far_terrain_material",
+                                     "internal far terrain material id is invalid");
+    }
+    if (environment_status && far_terrain_pipeline_.is_valid()) {
+        environment_status = environment_lighting_->bind(far_terrain_lighting_material.value(),
+                                                          "environment_map");
+    }
     if (environment_status) {
         environment_status = environment_lighting_->bind(scene_material.value(), "environment_map");
     }
@@ -834,6 +807,10 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
     }
     lighting_status =
         clustered_lighting_->bind(terrain_lighting_material.value(), "local_lights", "light_grid");
+    if (lighting_status && far_terrain_pipeline_.is_valid()) {
+        lighting_status = clustered_lighting_->bind(far_terrain_lighting_material.value(),
+                                                     "local_lights", "light_grid");
+    }
     if (lighting_status) {
         lighting_status =
             clustered_lighting_->bind(scene_material.value(), "local_lights", "light_grid");
@@ -849,6 +826,10 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
     }
     shadow_resource_status =
         cascaded_shadows_->bind(terrain_lighting_material.value(), "shadow_data");
+    if (shadow_resource_status && far_terrain_pipeline_.is_valid()) {
+        shadow_resource_status = cascaded_shadows_->bind(far_terrain_lighting_material.value(),
+                                                         "shadow_data");
+    }
     if (shadow_resource_status) {
         shadow_resource_status = cascaded_shadows_->bind(scene_material.value(), "shadow_data");
     }
@@ -868,7 +849,7 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         (void)shutdown();
         return core::Status::failure(error.code, error.message);
     }
-    ui_renderer_ = std::make_unique<UiRenderer>(*device_, ui_pipeline_);
+    ui_renderer_ = std::make_unique<UiRenderer>(*device_, ui_pipeline_, ui_font_);
     auto ui_status = ui_renderer_->initialize(device_->current_extent(), desc.ui_renderer_config);
     if (!ui_status) {
         const auto error = ui_status.error();
@@ -891,11 +872,31 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         (void)shutdown();
         return core::Status::failure(error.code, error.message);
     }
+    if (far_terrain_pipeline_.is_valid()) {
+        far_terrain_renderer_ = std::make_unique<FarTerrainRenderer>(*device_);
+        auto far_status =
+            far_terrain_renderer_->initialize(desc.far_terrain_config, far_terrain_pipeline_);
+        if (!far_status) {
+            const auto error = far_status.error();
+            (void)shutdown();
+            return core::Status::failure(error.code, error.message);
+        }
+    }
     frame_builder_ = std::make_unique<FrameBuilder>(device_->current_extent(), desc.clear_color);
     frame_builder_->set_tone_map_pipeline(tone_map_pipeline_);
     frame_builder_->set_image_quality_pipelines(
         image_quality_pipelines_[0], image_quality_pipelines_[1], image_quality_pipelines_[2],
         image_quality_pipelines_[3]);
+    auto image_quality_status = frame_builder_->set_image_quality_settings(
+        {.render_scale = quality_settings_.render_scale,
+         .ambient_occlusion = quality_settings_.ambient_occlusion_quality != 0U,
+         .anti_aliasing = quality_settings_.anti_aliasing != RendererAntiAliasing::off,
+         .bloom = quality_settings_.bloom});
+    if (!image_quality_status) {
+        const auto error = image_quality_status.error();
+        (void)shutdown();
+        return core::Status::failure(error.code, error.message);
+    }
     auto shadow_resolution_status =
         frame_builder_->set_shadow_resolution(desc.directional_shadow_config.resolution);
     if (!shadow_resolution_status) {
@@ -924,6 +925,7 @@ core::Status Renderer::shutdown() {
         remember_failure(device_->wait_idle());
     }
     chunk_draw_scratch_.clear();
+    far_terrain_draw_scratch_.clear();
     draw_command_scratch_ = {};
     scene_draw_scratch_ = {};
     debug_frame_scratch_ = {};
@@ -959,6 +961,10 @@ core::Status Renderer::shutdown() {
         remember_failure(scene_render_system_->shutdown());
         scene_render_system_.reset();
     }
+    if (far_terrain_renderer_ != nullptr) {
+        remember_failure(far_terrain_renderer_->shutdown());
+        far_terrain_renderer_.reset();
+    }
     chunk_system_.reset();
     if (chunk_cache_ != nullptr) {
         auto status = chunk_cache_->clear();
@@ -968,6 +974,12 @@ core::Status Renderer::shutdown() {
         chunk_cache_.reset();
     }
     if (mesh_manager_ != nullptr) {
+        if (streaming_residency_ != nullptr) {
+            streaming_residency_->shutdown([this](ResidencyGpuResource resource) {
+                static_cast<void>(device_->release_resource(resource.handle));
+            });
+            streaming_residency_.reset();
+        }
         remember_failure(mesh_manager_->shutdown());
         mesh_manager_.reset();
     }
@@ -1000,6 +1012,8 @@ core::Status Renderer::shutdown() {
         shader_manager_.reset();
     }
     terrain_pipelines_ = {};
+    far_terrain_pipeline_ = {};
+    far_terrain_pipeline_key_ = {};
     sky_pipeline_ = {};
     sky_pipeline_key_ = {};
     terrain_pipeline_keys_ = {};
@@ -1012,6 +1026,8 @@ core::Status Renderer::shutdown() {
     ui_pipeline_ = {};
     ui_pipeline_key_ = {};
     terrain_shader_program_ = {};
+    far_terrain_shader_program_ = {};
+    far_terrain_vertex_spirv_.clear();
     sky_shader_program_ = {};
     scene_shader_program_ = {};
     terrain_shadow_shader_program_ = {};
@@ -1029,6 +1045,7 @@ core::Status Renderer::shutdown() {
     terrain_surface_texture_array_ = {};
     surface_sampler_ = {};
     ui_texture_atlas_ = {};
+    ui_font_.reset();
     fallback_material_ = {};
     terrain_sampler_ = {};
     ui_sampler_ = {};
@@ -1059,6 +1076,26 @@ core::Status Renderer::synchronize_chunks(world::WorldState& world, const Render
         profiling::ScopedCpuTimingZone synchronization_zone(
             cpu_timings_, profiling::CpuTimingZone::chunk_synchronization);
         status = chunk_system_->synchronize(world, camera);
+        if (status && far_terrain_renderer_ != nullptr) {
+            world::TerrainGenerationConfig generation;
+            generation.world_seed = world.metadata().world_seed;
+            const FarTerrainSurfaceSampler sampler = [&generation](double x, double z,
+                                                                    FarTerrainDomain) {
+                const auto block_x = static_cast<std::int64_t>(std::floor(x));
+                const auto block_z = static_cast<std::int64_t>(std::floor(z));
+                return FarTerrainSurfaceSample{
+                    static_cast<double>(world::DeterministicTerrainGenerator::surface_height_at(
+                        generation, block_x, block_z)),
+                    1U,
+                };
+            };
+            const math::Vec3d camera_world{
+                static_cast<double>(camera.floating_origin.block.x) + camera.local_position.x,
+                static_cast<double>(camera.floating_origin.block.y) + camera.local_position.y,
+                static_cast<double>(camera.floating_origin.block.z) + camera.local_position.z,
+            };
+            status = far_terrain_renderer_->update(camera_world, sampler);
+        }
     }
     update_frontend_stats(world.chunks().chunk_count());
     return status;
@@ -1247,6 +1284,13 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
             command_lists.transparent_terrain_draws.push_back(draw);
         }
     }
+    if (far_terrain_renderer_ != nullptr) {
+        far_terrain_draw_scratch_ =
+            far_terrain_renderer_->build_draws(camera, std::move(far_terrain_draw_scratch_));
+        command_lists.opaque_terrain_draws.insert(command_lists.opaque_terrain_draws.end(),
+                                                  far_terrain_draw_scratch_.begin(),
+                                                  far_terrain_draw_scratch_.end());
+    }
 
     auto scene_draws = scene_render_system_->build_draw_commands(
         scene_, camera, simulation_alpha, std::move(scene_draw_scratch_), active_shadow_views);
@@ -1346,6 +1390,18 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
         return core::Result<rhi::RenderFrameStats>::failure(frame.error().code,
                                                             frame.error().message);
     }
+    stats_.render_graph_passes = static_cast<std::uint32_t>(frame.value().plan.passes.size());
+    stats_.render_graph_resources =
+        static_cast<std::uint32_t>(frame.value().plan.resources.size());
+    stats_.render_graph_transient_resources = static_cast<std::uint32_t>(std::ranges::count_if(
+        frame.value().plan.resources, [](const rhi::RenderResourceDesc& resource) {
+            return resource.lifetime == rhi::RenderResourceLifetime::transient;
+        }));
+    stats_.render_graph_persistent_resources = static_cast<std::uint32_t>(std::ranges::count_if(
+        frame.value().plan.resources, [](const rhi::RenderResourceDesc& resource) {
+            return resource.lifetime == rhi::RenderResourceLifetime::external;
+        }));
+    stats_.render_graph_history_resources = 0;
     auto executed = device_->execute_frame(frame.value());
     draw_command_scratch_ = {};
     for (auto& pass : frame.value().pass_commands) {
@@ -1432,6 +1488,17 @@ core::Status Renderer::resize(rhi::RenderExtent extent) {
     if (!status) {
         return status;
     }
+    if (far_terrain_renderer_ != nullptr) {
+        const auto far_material = core::PrototypeId::parse("base:materials/far_terrain");
+        if (!far_material) {
+            return core::Status::failure("renderer.invalid_far_terrain_material",
+                                         "internal far terrain material id is invalid");
+        }
+        status = clustered_lighting_->bind(far_material.value(), "local_lights", "light_grid");
+        if (!status) {
+            return status;
+        }
+    }
     status = clustered_lighting_->bind(scene_material.value(), "local_lights", "light_grid");
     if (!status) {
         return status;
@@ -1468,7 +1535,26 @@ core::Status Renderer::reload_terrain_shaders(std::span<const std::uint32_t> ver
         rebuilt[index] = pipeline.value();
     }
     terrain_pipelines_ = {rebuilt[0], rebuilt[1], rebuilt[2], rebuilt[3]};
-    return chunk_system_->set_terrain_pipelines(terrain_pipelines_);
+    status = chunk_system_->set_terrain_pipelines(terrain_pipelines_);
+    if (!status || far_terrain_renderer_ == nullptr || far_terrain_vertex_spirv_.empty()) {
+        return status;
+    }
+    status = shader_manager_->reload_program(
+        far_terrain_shader_program_,
+        make_far_terrain_shader_program(far_terrain_vertex_spirv_, fragment_spirv));
+    if (!status) {
+        return status;
+    }
+    status = pipeline_cache_->rebuild_program(far_terrain_shader_program_);
+    if (!status) {
+        return status;
+    }
+    auto far_pipeline = pipeline_cache_->find(far_terrain_pipeline_key_);
+    if (!far_pipeline) {
+        return core::Status::failure(far_pipeline.error().code, far_pipeline.error().message);
+    }
+    far_terrain_pipeline_ = far_pipeline.value();
+    return far_terrain_renderer_->set_pipeline(far_terrain_pipeline_);
 }
 
 core::Status Renderer::reload_static_mesh_shaders(std::span<const std::uint32_t> vertex_spirv,
@@ -1562,6 +1648,10 @@ core::Status Renderer::set_exposure(rhi::RenderExposureSettings exposure) {
 
 rhi::RenderExposureSettings Renderer::exposure() const noexcept {
     return frame_builder_ == nullptr ? rhi::RenderExposureSettings{} : frame_builder_->exposure();
+}
+
+const RendererQualitySettings& Renderer::quality_settings() const noexcept {
+    return quality_settings_;
 }
 
 core::Status Renderer::set_lighting_debug_view(LightingDebugView view) {
@@ -2058,6 +2148,14 @@ const rhi::IRenderDevice* Renderer::device() const noexcept {
     return device_.get();
 }
 
+StreamingResidencyManager* Renderer::streaming_residency() noexcept {
+    return streaming_residency_.get();
+}
+
+const StreamingResidencyManager* Renderer::streaming_residency() const noexcept {
+    return streaming_residency_.get();
+}
+
 void Renderer::update_frontend_stats(std::size_t loaded_chunk_count) noexcept {
     const auto saturating_u32 = [](std::size_t value) noexcept {
         return static_cast<std::uint32_t>(
@@ -2086,6 +2184,27 @@ void Renderer::update_frontend_stats(std::size_t loaded_chunk_count) noexcept {
     stats_.visible_chunks = saturating_u32(chunks.visible_chunk_count);
     stats_.culled_chunks = saturating_u32(chunks.culled_chunk_count);
     stats_.drawn_chunks = saturating_u32(chunks.drawn_chunk_count);
+    if (far_terrain_renderer_ != nullptr) {
+        const auto& far = far_terrain_renderer_->stats();
+        stats_.far_terrain_planned_patches = saturating_u32(far.planned_patches);
+        stats_.far_terrain_resident_patches = saturating_u32(far.resident_patches);
+        stats_.far_terrain_visible_patches = saturating_u32(far.visible_patches);
+        stats_.far_terrain_pending_patches = saturating_u32(far.pending_patches);
+        stats_.far_terrain_evicted_patches = saturating_u32(far.evicted_patches);
+        stats_.far_terrain_resident_bytes = far.resident_bytes;
+        stats_.far_terrain_uploaded_bytes = far.uploaded_bytes;
+    } else {
+        stats_.far_terrain_planned_patches = 0;
+        stats_.far_terrain_resident_patches = 0;
+        stats_.far_terrain_visible_patches = 0;
+        stats_.far_terrain_pending_patches = 0;
+        stats_.far_terrain_evicted_patches = 0;
+        stats_.far_terrain_resident_bytes = 0;
+        stats_.far_terrain_uploaded_bytes = 0;
+    }
+    stats_.visibility_hierarchy_nodes = saturating_u32(chunks.visibility_hierarchy_nodes);
+    stats_.visibility_nodes_tested = saturating_u32(chunks.visibility_nodes_tested);
+    stats_.visibility_nodes_culled = saturating_u32(chunks.visibility_nodes_culled);
     stats_.residency_suppressed_chunks = saturating_u32(chunks.residency_suppressed_chunk_count);
     if (texture_manager_ != nullptr) {
         stats_.resident_textures = saturating_u32(texture_manager_->stats().resident_texture_count);
@@ -2104,6 +2223,9 @@ void Renderer::update_frontend_stats(std::size_t loaded_chunk_count) noexcept {
         stats_.retained_skin_palettes = scene.scene.retained_skin_palettes;
         stats_.visible_objects = scene.scene.visible_objects;
         stats_.culled_objects = scene.scene.culled_objects;
+        stats_.visibility_hierarchy_nodes += scene.scene.visibility_hierarchy_nodes;
+        stats_.visibility_nodes_tested += scene.scene.visibility_nodes_tested;
+        stats_.visibility_nodes_culled += scene.scene.visibility_nodes_culled;
         stats_.instance_batches = scene.scene.instance_batches;
         stats_.submitted_instances = scene.submitted_instances;
         stats_.instance_draw_calls = scene.draw_calls;
@@ -2118,6 +2240,22 @@ void Renderer::update_frontend_stats(std::size_t loaded_chunk_count) noexcept {
         const auto meshes = mesh_manager_->stats();
         stats_.resident_static_meshes = saturating_u32(meshes.resident_mesh_count);
         stats_.resident_static_mesh_bytes = meshes.resident_mesh_bytes;
+    }
+    if (streaming_residency_ != nullptr) {
+        const auto& streaming = streaming_residency_->stats();
+        stats_.streaming_tracked_resources = saturating_u32(streaming.tracked_resources);
+        stats_.streaming_queued_resources = saturating_u32(streaming.queued_resources);
+        stats_.streaming_in_flight_loads = saturating_u32(streaming.in_flight_loads);
+        stats_.streaming_pending_resources =
+            saturating_u32(streaming.upload_pending_resources);
+        stats_.streaming_resident_resources = saturating_u32(streaming.resident_resources);
+        stats_.streaming_failed_resources = saturating_u32(streaming.failed_resources);
+        stats_.streaming_resident_bytes = streaming.resident_bytes;
+        stats_.streaming_pending_bytes = streaming.pending_upload_bytes;
+        stats_.streaming_uploaded_bytes = streaming.uploaded_bytes_this_frame;
+        stats_.streaming_stale_loads = streaming.stale_loads_discarded;
+        stats_.streaming_cancelled_loads = streaming.cancelled_loads;
+        stats_.streaming_evicted_resources = streaming.evicted_resources;
     }
     if (debug_renderer_ != nullptr) {
         const auto& debug = debug_renderer_->stats();
@@ -2136,8 +2274,36 @@ void Renderer::update_frontend_stats(std::size_t loaded_chunk_count) noexcept {
         stats_.ui_uploaded_bytes = ui.uploaded_bytes;
         stats_.ui_overflow = ui.overflowed_batches;
     }
+    if (clustered_lighting_ != nullptr) {
+        const auto& lights = clustered_lighting_->stats();
+        stats_.local_lights = lights.submitted_lights;
+        stats_.dropped_local_lights = lights.dropped_lights;
+        stats_.shadowed_local_lights = lights.selected_shadow_lights;
+    }
+    if (shader_manager_ != nullptr) {
+        const auto& shaders = shader_manager_->stats();
+        stats_.resident_shader_programs = static_cast<std::uint32_t>(shaders.resident_program_count);
+        stats_.resident_shader_modules = static_cast<std::uint32_t>(shaders.resident_module_count);
+        stats_.shader_errors = shaders.failed_reload_count;
+    }
+    if (pipeline_cache_ != nullptr) {
+        const auto& pipelines = pipeline_cache_->stats();
+        stats_.resident_pipeline_layouts =
+            static_cast<std::uint32_t>(pipelines.resident_pipeline_layout_count);
+        stats_.descriptor_bindings =
+            static_cast<std::uint32_t>(pipelines.descriptor_binding_count);
+        stats_.pipeline_errors = pipelines.failed_pipeline_count +
+                                 pipelines.unexpected_creation_rejection_count;
+    }
+    if (sampler_cache_ != nullptr) {
+        stats_.resident_samplers =
+            static_cast<std::uint32_t>(sampler_cache_->stats().resident_sampler_count);
+    }
     stats_.vertices = chunks.visible_vertex_count;
     stats_.triangles = chunks.visible_index_count / 3;
+    if (far_terrain_renderer_ != nullptr) {
+        stats_.triangles += far_terrain_renderer_->stats().visible_triangle_count;
+    }
     stats_.resident_mesh_bytes = chunks.cache.resident_bytes;
     stats_.gpu_terrain_budget_bytes = chunks.gpu_terrain_budget_bytes;
     stats_.distance_evicted_meshes = chunks.distance_evicted_mesh_count;
@@ -2164,6 +2330,9 @@ void Renderer::update_backend_stats(const rhi::RenderFrameStats& frame) noexcept
     stats_.completed_submission_serial = frame.completed_submission_serial;
     stats_.draw_calls = static_cast<std::uint32_t>(std::min(
         frame.draw_count, static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
+    stats_.indirect_draw_calls = static_cast<std::uint32_t>(std::min(
+        frame.indirect_draw_count,
+        static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
     stats_.opaque_terrain_draws = static_cast<std::uint32_t>(
         std::min(frame.opaque_terrain_draw_count,
                  static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
@@ -2177,6 +2346,15 @@ void Renderer::update_backend_stats(const rhi::RenderFrameStats& frame) noexcept
         std::min(frame.pipeline_bind_count,
                  static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
     stats_.triangles = frame.total_indices / 3U;
+    if (far_terrain_renderer_ != nullptr) {
+        stats_.triangles += far_terrain_renderer_->stats().visible_triangle_count;
+    }
+    stats_.device_memory_budget_valid = frame.memory_budget_valid;
+    stats_.device_local_memory_budget_bytes = frame.device_local_memory_budget_bytes;
+    stats_.device_local_memory_usage_bytes = frame.device_local_memory_usage_bytes;
+    if (streaming_residency_ != nullptr && frame.memory_budget_valid) {
+        streaming_residency_->set_reported_heap_budget(frame.device_local_memory_budget_bytes);
+    }
     stats_.command_recording_ms = frame.cpu_command_recording_ms;
     stats_.gpu_wait_ms += frame.cpu_gpu_wait_ms;
     stats_.gpu_timing_valid = frame.gpu_timing_valid;
@@ -2199,7 +2377,8 @@ rhi::RenderImageFormat Renderer::scene_color_format() const noexcept {
 
 core::Status Renderer::create_sky_pipeline(std::span<const std::uint32_t> vertex_spirv,
                                            std::span<const std::uint32_t> fragment_spirv) {
-    if (shader_manager_ == nullptr || pipeline_cache_ == nullptr) {
+    if (shader_manager_ == nullptr || pipeline_cache_ == nullptr || texture_manager_ == nullptr ||
+        material_cache_ == nullptr) {
         return core::Status::failure("renderer.runtime_assets_uninitialized",
                                      "sky runtime asset managers must be initialized first");
     }
@@ -2238,6 +2417,7 @@ core::Status Renderer::create_sky_pipeline(std::span<const std::uint32_t> vertex
     pipeline.depth_compare = rhi::RenderCompareOperation::always;
     pipeline.blend_mode = rhi::RenderBlendMode::disabled;
     pipeline.color_target_format = scene_color_format();
+    pipeline.additional_color_target_formats = {rhi::RenderImageFormat::rg16_sfloat};
     pipeline.depth_target_format = rhi::RenderImageFormat::d32_sfloat;
 
     sky_pipeline_key_.shader_program = sky_shader_program_;
@@ -2245,6 +2425,7 @@ core::Status Renderer::create_sky_pipeline(std::span<const std::uint32_t> vertex
         hash_vertex_layout(pipeline.vertex_stride, pipeline.vertex_attributes);
     sky_pipeline_key_.render_phase = RenderPhase::sky;
     sky_pipeline_key_.color_format = pipeline.color_target_format;
+    sky_pipeline_key_.additional_color_formats = pipeline.additional_color_target_formats;
     sky_pipeline_key_.depth_format = pipeline.depth_target_format;
     sky_pipeline_key_.cull_mode = pipeline.cull_mode;
     sky_pipeline_key_.front_face = pipeline.front_face;
@@ -2257,6 +2438,101 @@ core::Status Renderer::create_sky_pipeline(std::span<const std::uint32_t> vertex
         return core::Status::failure(created.error().code, created.error().message);
     }
     sky_pipeline_ = created.value();
+    return core::Status::ok();
+}
+
+core::Status
+Renderer::create_far_terrain_pipeline(std::span<const std::uint32_t> vertex_spirv,
+                                      std::span<const std::uint32_t> fragment_spirv) {
+    if (shader_manager_ == nullptr || pipeline_cache_ == nullptr) {
+        return core::Status::failure("renderer.runtime_assets_uninitialized",
+                                     "far terrain runtime asset managers must be initialized");
+    }
+    const auto material = core::PrototypeId::parse("base:materials/far_terrain");
+    if (!material) {
+        return core::Status::failure("renderer.invalid_terrain_material",
+                                     "internal terrain material prototype id is invalid");
+    }
+    auto program_desc = make_far_terrain_shader_program(vertex_spirv, fragment_spirv);
+    auto shader = shader_manager_->create_program(program_desc);
+    if (!shader) {
+        return core::Status::failure(shader.error().code, shader.error().message);
+    }
+    far_terrain_shader_program_ = shader.value();
+
+    rhi::RenderPipelineLayoutDesc layout;
+    layout.material_id = material.value();
+    layout.shader_template = {"base", "shaders/far_terrain.vert"};
+    layout.descriptors.reserve(program_desc.interface.descriptors.size());
+    for (const auto& descriptor : program_desc.interface.descriptors) {
+        layout.descriptors.push_back({descriptor.name, descriptor.kind, descriptor.slot,
+                                      descriptor.required, descriptor.stages});
+    }
+    layout.push_constant_ranges = program_desc.interface.push_constant_ranges;
+    layout.debug_name = "far_terrain_layout";
+    layout.per_frame_descriptors = true;
+
+    rhi::RenderGraphicsPipelineDesc pipeline;
+    pipeline.material_id = material.value();
+    pipeline.debug_name = "far_terrain_pipeline";
+    pipeline.vertex_stride = sizeof(FarTerrainGpuVertex);
+    pipeline.vertex_attributes.assign(far_terrain_vertex_attributes.begin(),
+                                      far_terrain_vertex_attributes.end());
+    pipeline.topology = rhi::RenderPrimitiveTopology::triangle_list;
+    pipeline.polygon_mode = rhi::RenderPolygonMode::fill;
+    pipeline.cull_mode = rhi::RenderCullMode::back;
+    pipeline.front_face = rhi::RenderFrontFace::counter_clockwise;
+    pipeline.depth_test_enable = true;
+    pipeline.depth_write_enable = true;
+    pipeline.depth_compare = rhi::RenderCompareOperation::less;
+    pipeline.blend_mode = rhi::RenderBlendMode::disabled;
+    pipeline.color_target_format = scene_color_format();
+    pipeline.additional_color_target_formats = {rhi::RenderImageFormat::rg16_sfloat};
+    pipeline.depth_target_format = rhi::RenderImageFormat::d32_sfloat;
+
+    far_terrain_pipeline_key_.shader_program = far_terrain_shader_program_;
+    far_terrain_pipeline_key_.vertex_layout =
+        hash_vertex_layout(pipeline.vertex_stride, pipeline.vertex_attributes);
+    far_terrain_pipeline_key_.render_phase = RenderPhase::opaque_terrain;
+    far_terrain_pipeline_key_.color_format = pipeline.color_target_format;
+    far_terrain_pipeline_key_.additional_color_formats = pipeline.additional_color_target_formats;
+    far_terrain_pipeline_key_.depth_format = pipeline.depth_target_format;
+    far_terrain_pipeline_key_.cull_mode = pipeline.cull_mode;
+    far_terrain_pipeline_key_.front_face = pipeline.front_face;
+    far_terrain_pipeline_key_.depth_test = pipeline.depth_test_enable;
+    far_terrain_pipeline_key_.depth_write = pipeline.depth_write_enable;
+    far_terrain_pipeline_key_.depth_compare = pipeline.depth_compare;
+    far_terrain_pipeline_key_.blend_mode = pipeline.blend_mode;
+    auto created = pipeline_cache_->prewarm(far_terrain_pipeline_key_, layout, std::move(pipeline));
+    if (!created) {
+        return core::Status::failure(created.error().code, created.error().message);
+    }
+    far_terrain_pipeline_ = created.value();
+    const auto* texture_view = texture_manager_->find(terrain_texture_array_);
+    const auto* normal_view = texture_manager_->find(terrain_normal_texture_array_);
+    const auto* surface_view = texture_manager_->find(terrain_surface_texture_array_);
+    if (texture_view == nullptr || normal_view == nullptr || surface_view == nullptr ||
+        !terrain_sampler_.is_valid()) {
+        return core::Status::failure("renderer.far_terrain_texture_missing",
+                                     "far terrain requires initialized terrain texture arrays");
+    }
+    const std::array texture_writes{
+        rhi::RenderDescriptorWrite{material.value(), "terrain_textures", texture_view->image, 0, 0,
+                                   terrain_sampler_},
+        rhi::RenderDescriptorWrite{material.value(), "terrain_normal_textures", normal_view->image,
+                                   0, 0, terrain_sampler_},
+        rhi::RenderDescriptorWrite{material.value(), "terrain_surface_textures", surface_view->image,
+                                   0, 0, terrain_sampler_},
+    };
+    auto texture_binding = device_->write_descriptors(texture_writes);
+    if (!texture_binding) {
+        return core::Status::failure(texture_binding.error().code, texture_binding.error().message);
+    }
+    auto material_status =
+        material_cache_->write_gpu_table_descriptor(material.value(), "voxel_materials");
+    if (!material_status) {
+        return material_status;
+    }
     return core::Status::ok();
 }
 
@@ -2672,6 +2948,7 @@ Renderer::create_terrain_pipeline(std::span<const std::uint32_t> vertex_spirv,
     pipeline.depth_compare = rhi::RenderCompareOperation::less;
     pipeline.blend_mode = rhi::RenderBlendMode::disabled;
     pipeline.color_target_format = scene_color_format();
+    pipeline.additional_color_target_formats = {rhi::RenderImageFormat::rg16_sfloat};
     pipeline.depth_target_format = rhi::RenderImageFormat::d32_sfloat;
     const auto vertex_layout =
         hash_vertex_layout(pipeline.vertex_stride, pipeline.vertex_attributes);
@@ -2683,6 +2960,7 @@ Renderer::create_terrain_pipeline(std::span<const std::uint32_t> vertex_spirv,
         key.vertex_layout = vertex_layout;
         key.render_phase = phase;
         key.color_format = phase_pipeline.color_target_format;
+        key.additional_color_formats = phase_pipeline.additional_color_target_formats;
         key.depth_format = phase_pipeline.depth_target_format;
         key.cull_mode = phase_pipeline.cull_mode;
         key.front_face = phase_pipeline.front_face;
@@ -2829,6 +3107,7 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
     pipeline.depth_compare = rhi::RenderCompareOperation::less;
     pipeline.blend_mode = rhi::RenderBlendMode::disabled;
     pipeline.color_target_format = scene_color_format();
+    pipeline.additional_color_target_formats = {rhi::RenderImageFormat::rg16_sfloat};
     pipeline.depth_target_format = rhi::RenderImageFormat::d32_sfloat;
     const auto* surface_texture = surface_texture_array_->texture_view();
     if (surface_texture == nullptr) {
@@ -2858,6 +3137,7 @@ core::Status Renderer::create_scene_pipelines(std::span<const std::uint32_t> ver
         key.vertex_layout = vertex_layout;
         key.render_phase = phase;
         key.color_format = desc.color_target_format;
+        key.additional_color_formats = desc.additional_color_target_formats;
         key.depth_format = desc.depth_target_format;
         key.cull_mode = desc.cull_mode;
         key.front_face = desc.front_face;
@@ -3245,6 +3525,7 @@ core::Status Renderer::create_debug_pipelines(std::span<const std::uint32_t> ver
     pipeline.depth_compare = rhi::RenderCompareOperation::less_or_equal;
     pipeline.blend_mode = rhi::RenderBlendMode::alpha;
     pipeline.color_target_format = scene_color_format();
+    pipeline.additional_color_target_formats = {rhi::RenderImageFormat::rg16_sfloat};
     pipeline.depth_target_format = rhi::RenderImageFormat::d32_sfloat;
     const auto vertex_layout =
         hash_vertex_layout(pipeline.vertex_stride, pipeline.vertex_attributes);
@@ -3256,6 +3537,7 @@ core::Status Renderer::create_debug_pipelines(std::span<const std::uint32_t> ver
         key.vertex_layout = vertex_layout;
         key.render_phase = RenderPhase::debug;
         key.color_format = desc.color_target_format;
+        key.additional_color_formats = desc.additional_color_target_formats;
         key.depth_format = desc.depth_target_format;
         key.cull_mode = desc.cull_mode;
         key.front_face = desc.front_face;
@@ -3282,7 +3564,8 @@ core::Status Renderer::create_debug_pipelines(std::span<const std::uint32_t> ver
 }
 
 core::Status Renderer::create_ui_pipeline(std::span<const std::uint32_t> vertex_spirv,
-                                          std::span<const std::uint32_t> fragment_spirv) {
+                                          std::span<const std::uint32_t> fragment_spirv,
+                                          std::span<const std::uint8_t> font_bytes) {
     if (shader_manager_ == nullptr || pipeline_cache_ == nullptr || texture_manager_ == nullptr ||
         sampler_cache_ == nullptr) {
         return core::Status::failure("renderer.runtime_assets_uninitialized",
@@ -3295,12 +3578,19 @@ core::Status Renderer::create_ui_pipeline(std::span<const std::uint32_t> vertex_
     }
     TextureUploadDesc atlas_desc;
     atlas_desc.id = "builtin:ui_atlas";
-    atlas_desc.width = 128;
-    atlas_desc.height = 64;
+    if (!font_bytes.empty()) {
+        auto font = UiFont::build(font_bytes);
+        if (!font) {
+            return core::Status::failure(font.error().code, font.error().message);
+        }
+        ui_font_ = std::make_shared<UiFont>(std::move(font).value());
+    }
+    atlas_desc.width = ui_font_ == nullptr ? 128U : ui_font_->atlas_width();
+    atlas_desc.height = ui_font_ == nullptr ? 64U : ui_font_->atlas_height();
     atlas_desc.array_layers = 2;
-    atlas_desc.color_space = TextureColorSpace::srgb;
-    atlas_desc.generate_mipmaps = true;
-    atlas_desc.rgba8 = make_ui_atlas();
+    atlas_desc.color_space = TextureColorSpace::linear;
+    atlas_desc.generate_mipmaps = false;
+    atlas_desc.rgba8 = make_ui_atlas(ui_font_.get(), atlas_desc.width, atlas_desc.height);
     auto atlas = texture_manager_->create_texture(std::move(atlas_desc));
     if (!atlas) {
         return core::Status::failure(atlas.error().code, atlas.error().message);
@@ -3312,9 +3602,9 @@ core::Status Renderer::create_ui_pipeline(std::span<const std::uint32_t> vertex_
                                      "UI atlas disappeared after creation");
     }
     rhi::RenderSamplerDesc ui_sampler_desc;
-    ui_sampler_desc.min_filter = rhi::RenderSamplerFilter::nearest;
-    ui_sampler_desc.mag_filter = rhi::RenderSamplerFilter::nearest;
-    ui_sampler_desc.mipmap_mode = rhi::RenderSamplerMipmapMode::nearest;
+    ui_sampler_desc.min_filter = rhi::RenderSamplerFilter::linear;
+    ui_sampler_desc.mag_filter = rhi::RenderSamplerFilter::linear;
+    ui_sampler_desc.mipmap_mode = rhi::RenderSamplerMipmapMode::linear;
     ui_sampler_desc.max_lod = static_cast<float>(atlas_view->mip_levels - 1U);
     ui_sampler_desc.debug_name = "ui_atlas_sampler";
     auto ui_sampler = sampler_cache_->get(std::move(ui_sampler_desc));
@@ -3459,6 +3749,7 @@ Renderer::create_image_quality_pipelines(std::span<const std::uint32_t> vertex_s
             hash_vertex_layout(0, std::span<const rhi::RenderVertexAttributeDesc>{});
         key.render_phase = RenderPhase::post_process;
         key.color_format = post.format;
+        key.additional_color_formats = pipeline.additional_color_target_formats;
         key.additional_color_formats = pipeline.additional_color_target_formats;
         key.depth_format = pipeline.depth_target_format;
         key.cull_mode = pipeline.cull_mode;

@@ -422,6 +422,21 @@ std::vector<const entities::EntityMotionSnapshot*> ClientRuntime::entity_motion_
     return result;
 }
 
+core::Status ClientRuntime::set_equipment_loadout(core::NetId entity,
+                                                  items::EquipmentLoadout loadout) {
+    if (!entity.is_valid()) {
+        return core::Status::failure("client_runtime.invalid_equipment_entity",
+                                     "equipment loadout requires a valid entity id");
+    }
+    equipment_loadouts_.insert_or_assign(entity.value(), std::move(loadout));
+    return core::Status::ok();
+}
+
+const items::EquipmentLoadout* ClientRuntime::equipment_loadout(core::NetId entity) const noexcept {
+    const auto found = equipment_loadouts_.find(entity.value());
+    return found == equipment_loadouts_.end() ? nullptr : &found->second;
+}
+
 std::span<const core::NetId> ClientRuntime::player_tombstones() const noexcept {
     return player_tombstones_;
 }

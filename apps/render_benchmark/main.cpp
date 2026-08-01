@@ -1,4 +1,5 @@
 #include "engine/content/content_validation.hpp"
+#include "engine/core/file_io.hpp"
 #include "engine/core/logging.hpp"
 #include "engine/core/process_entry.hpp"
 #include "engine/platform/platform.hpp"
@@ -8,11 +9,13 @@
 #include "engine/renderer/particles/particle_system.hpp"
 #include "engine/renderer/renderer.hpp"
 #include "engine/renderer/shaders/spirv_loader.hpp"
+#include "engine/renderer/testing/visual_regression.hpp"
 #include "engine/renderer/vegetation/vegetation_renderer.hpp"
 #include "engine/renderer/water/large_water_renderer.hpp"
 #include "engine/world/fluids/chunk_fluid_system.hpp"
 #include "engine/world/lighting/chunk_light_system.hpp"
 #include "game/presentation/particle_presentation.hpp"
+#include "game/presentation/model_presentation_system.hpp"
 
 #include <charconv>
 #include <chrono>
@@ -49,6 +52,8 @@ struct Options {
     std::uint32_t height = 720;
     OutputFormat format = OutputFormat::json;
     std::filesystem::path output;
+    std::filesystem::path capture_output;
+    std::filesystem::path compare_baseline;
     bool validation = true;
     bool reference_mesher = false;
     bool help = false;
@@ -283,7 +288,7 @@ void print_usage(std::ostream& output) {
               "  --scene NAME       flat, mountains, caves, checkerboard, forest, rapid-edits,\n"
               "                     flythrough, churn, large-coordinates, resize-minimize,\n"
               "                     active-water, particles, light-heavy, terrain-materials,\n"
-              "                     starting-biome\n"
+              "                     starting-biome, character-workshop\n"
               "  --vulkan           Use a native Vulkan window (headless is the default)\n"
               "  --headless         Use the deterministic validation backend\n"
               "  --frames N         Measured frames (default 300)\n"
@@ -294,6 +299,8 @@ void print_usage(std::ostream& output) {
               "  --seed N           Deterministic unsigned 64-bit scene seed\n"
               "  --frame-cap N      Sleep to cap at N FPS; 0 is uncapped (default)\n"
               "  --output PATH      Result path (default benchmark-SCENE.json)\n"
+              "  --capture PATH     Write the final displayed frame as PNG plus metadata\n"
+              "  --compare PATH     Compare the final frame against a baseline PNG\n"
               "  --format json|csv  Result serialization format\n"
               "  --reference-mesher Use the correctness-reference terrain mesher\n"
               "  --no-validation    Do not request Vulkan validation\n"
@@ -319,6 +326,7 @@ void print_scenes() {
         Kind::light_heavy_settlement,
         Kind::terrain_material_preview,
         Kind::starting_biome,
+        Kind::character_workshop,
     };
     for (const auto kind : kinds) {
         std::cout << renderer::benchmark::benchmark_scene_name(kind) << '\n';
@@ -438,6 +446,16 @@ template <typename Integer>
                 return core::Result<Options>::failure(value.error().code, value.error().message);
             }
             options.output = value.value();
+        } else if (argument == "--capture" || argument == "--compare") {
+            auto value = next_value();
+            if (!value) {
+                return core::Result<Options>::failure(value.error().code, value.error().message);
+            }
+            if (argument == "--capture") {
+                options.capture_output = value.value();
+            } else {
+                options.compare_baseline = value.value();
+            }
         } else if (argument == "--format") {
             auto value = next_value();
             if (!value) {
@@ -460,6 +478,12 @@ template <typename Integer>
         options.output = "benchmark-" +
                          std::string(renderer::benchmark::benchmark_scene_name(options.scene)) +
                          (options.format == OutputFormat::json ? ".json" : ".csv");
+    }
+    if (options.backend == renderer::rhi::RenderBackend::headless &&
+        (!options.capture_output.empty() || !options.compare_baseline.empty())) {
+        return core::Result<Options>::failure(
+            "renderer.benchmark_capture_requires_pixels",
+            "--capture and --compare require --vulkan because headless rendering has no pixels");
     }
     return core::Result<Options>::success(options);
 }
@@ -600,6 +624,7 @@ int main(int argc, char** argv) {
         std::vector<std::uint32_t> sky_vertex_spirv;
         std::vector<std::uint32_t> sky_fragment_spirv;
         std::vector<std::uint32_t> vertex_spirv;
+        std::vector<std::uint32_t> far_vertex_spirv;
         std::vector<std::uint32_t> fragment_spirv;
         std::vector<std::uint32_t> static_vertex_spirv;
         std::vector<std::uint32_t> static_fragment_spirv;
@@ -621,6 +646,8 @@ int main(int argc, char** argv) {
             auto sky_vertex = renderer::shaders::load_spirv_file(shader_root / "sky.vert.spv");
             auto sky_fragment = renderer::shaders::load_spirv_file(shader_root / "sky.frag.spv");
             auto vertex = renderer::shaders::load_spirv_file(shader_root / "terrain.vert.spv");
+            auto far_vertex =
+                renderer::shaders::load_spirv_file(shader_root / "far_terrain.vert.spv");
             auto fragment = renderer::shaders::load_spirv_file(shader_root / "terrain.frag.spv");
             auto static_vertex =
                 renderer::shaders::load_spirv_file(shader_root / "static_mesh.vert.spv");
@@ -646,7 +673,7 @@ int main(int argc, char** argv) {
             auto fxaa_fragment = renderer::shaders::load_spirv_file(shader_root / "fxaa.frag.spv");
             auto bloom_fragment =
                 renderer::shaders::load_spirv_file(shader_root / "bloom.frag.spv");
-            if (!sky_vertex || !sky_fragment || !vertex || !fragment || !static_vertex ||
+            if (!sky_vertex || !sky_fragment || !vertex || !far_vertex || !fragment || !static_vertex ||
                 !static_fragment || !shadow_terrain_fragment || !shadow_static_fragment ||
                 !debug_vertex || !debug_fragment || !ui_vertex || !ui_fragment ||
                 !tone_map_vertex || !tone_map_fragment || !ssao_fragment ||
@@ -654,6 +681,7 @@ int main(int argc, char** argv) {
                 const auto& error = !sky_vertex                ? sky_vertex.error()
                                     : !sky_fragment            ? sky_fragment.error()
                                     : !vertex                  ? vertex.error()
+                                    : !far_vertex              ? far_vertex.error()
                                     : !fragment                ? fragment.error()
                                     : !static_vertex           ? static_vertex.error()
                                     : !static_fragment         ? static_fragment.error()
@@ -674,6 +702,7 @@ int main(int argc, char** argv) {
             sky_vertex_spirv = std::move(sky_vertex).value();
             sky_fragment_spirv = std::move(sky_fragment).value();
             vertex_spirv = std::move(vertex).value();
+            far_vertex_spirv = std::move(far_vertex).value();
             fragment_spirv = std::move(fragment).value();
             static_vertex_spirv = std::move(static_vertex).value();
             static_fragment_spirv = std::move(static_fragment).value();
@@ -692,6 +721,7 @@ int main(int argc, char** argv) {
         } else {
             vertex_spirv = {0x07230203, 0x00010000, 0, 1, 0};
             fragment_spirv = vertex_spirv;
+            far_vertex_spirv = vertex_spirv;
             sky_vertex_spirv = vertex_spirv;
             sky_fragment_spirv = vertex_spirv;
             static_vertex_spirv = vertex_spirv;
@@ -711,10 +741,17 @@ int main(int argc, char** argv) {
         }
 
         renderer::RendererInitDesc renderer_init;
+        auto ui_font = core::read_binary_file(
+            std::filesystem::path{HEARTSTEAD_RENDER_BENCHMARK_ASSET_DIR} /
+            "fonts/heartstead-ui.ttf");
+        if (!ui_font) {
+            return fail(ui_font.error().message);
+        }
         renderer_init.device = std::move(device).value();
         renderer_init.sky_vertex_spirv = std::move(sky_vertex_spirv);
         renderer_init.sky_fragment_spirv = std::move(sky_fragment_spirv);
         renderer_init.terrain_vertex_spirv = std::move(vertex_spirv);
+        renderer_init.far_terrain_vertex_spirv = std::move(far_vertex_spirv);
         renderer_init.terrain_fragment_spirv = std::move(fragment_spirv);
         renderer_init.static_mesh_vertex_spirv = std::move(static_vertex_spirv);
         renderer_init.static_mesh_fragment_spirv = std::move(static_fragment_spirv);
@@ -724,6 +761,7 @@ int main(int argc, char** argv) {
         renderer_init.debug_fragment_spirv = std::move(debug_fragment_spirv);
         renderer_init.ui_vertex_spirv = std::move(ui_vertex_spirv);
         renderer_init.ui_fragment_spirv = std::move(ui_fragment_spirv);
+        renderer_init.ui_font_bytes = std::move(ui_font).value();
         renderer_init.tone_map_vertex_spirv = std::move(tone_map_vertex_spirv);
         renderer_init.tone_map_fragment_spirv = std::move(tone_map_fragment_spirv);
         renderer_init.ssao_fragment_spirv = std::move(ssao_fragment_spirv);
@@ -763,6 +801,103 @@ int main(int argc, char** argv) {
                 return fail(status.error().message);
             }
         }
+        std::unique_ptr<content::ContentValidationReport> character_content;
+        std::optional<game::ModelPresentationSystem> character_presentations;
+        game::RenderSnapshot character_snapshot;
+        if (options.scene == renderer::benchmark::BenchmarkSceneKind::character_workshop) {
+            character_content = std::make_unique<content::ContentValidationReport>(
+                content::ContentValidation::validate(
+                    std::filesystem::path{HEARTSTEAD_SOURCE_ROOT}));
+            if (character_content->has_errors()) {
+                return fail("character-workshop content validation failed");
+            }
+            character_presentations.emplace();
+            game::ModelPresentationSystemConfig presentation_config;
+            presentation_config.material_registry = &character_content->material_registry;
+            status = character_presentations->initialize(
+                active_renderer, character_content->visual_definitions,
+                std::filesystem::path{HEARTSTEAD_RENDER_BENCHMARK_COOKED_ASSET_DIR},
+                presentation_config);
+            if (!status) {
+                return fail(status.error().message);
+            }
+            const auto player = core::PrototypeId::parse("base:entities/player");
+            const auto workshop = core::PrototypeId::parse("base:entities/workshop_machine");
+            if (!player || !workshop) {
+                return fail("character-workshop prototype ids are invalid");
+            }
+            character_snapshot.objects.reserve(512);
+            for (std::uint32_t index = 0; index < 512U; ++index) {
+                const auto is_player = index < 128U;
+                const auto column = static_cast<int>(index % 32U) - 16;
+                const auto row = static_cast<int>(index / 32U) - 8;
+                auto position = world::WorldPosition::from_anchor(
+                    scene.value()->camera().floating_origin.block,
+                    {static_cast<double>(column) * 2.4, 1.0,
+                     static_cast<double>(row) * 2.8});
+                if (!position) {
+                    return fail(position.error().message);
+                }
+                game::RenderObjectSnapshot object;
+                object.id = game::PresentationObjectId::from_parts(index, 1);
+                object.source_net_id = core::NetId::from_value(index + 1U);
+                object.visual_prototype = is_player ? *player : *workshop;
+                object.previous_transform.position = position.value();
+                object.current_transform.position = position.value();
+                object.local_bounds = is_player
+                                          ? math::Bounds3f{{-0.35F, 0.0F, -0.35F},
+                                                           {0.35F, 1.9F, 0.35F}}
+                                          : math::Bounds3f{{-1.5F, 0.0F, -1.2F},
+                                                           {1.5F, 1.8F, 1.2F}};
+                object.current_locomotion.kind =
+                    is_player ? animation::LocomotionAnimationKind::walk
+                              : animation::LocomotionAnimationKind::idle;
+                object.previous_locomotion = object.current_locomotion;
+                object.animation_importance = index < 32U ? 255U : 96U;
+                object.source_revision = 1;
+                if (is_player) {
+                    object.equipment.push_back(
+                        {.slot = "main_hand", .variant = "hammer", .stowed = index % 3U == 0U});
+                } else {
+                    object.visual_states = {
+                        {.channel = "activity", .value = "active"},
+                        {.channel = "process", .value = "loaded"},
+                        {.channel = "heat", .value = "hot"},
+                        {.channel = "access", .value = "closed"},
+                        {.channel = "power", .value = "on"},
+                        {.channel = "damage", .value = "intact"},
+                    };
+                }
+                character_snapshot.objects.push_back(std::move(object));
+            }
+        }
+        const auto synchronize_character_workshop = [&](const std::uint64_t tick) -> core::Status {
+            if (!character_presentations.has_value()) {
+                return core::Status::ok();
+            }
+            character_snapshot.simulation_tick = tick;
+            ++character_snapshot.presentation_revision;
+            for (auto& object : character_snapshot.objects) {
+                object.source_revision = tick + 1U;
+                object.previous_locomotion = object.current_locomotion;
+                object.current_locomotion.phase =
+                    static_cast<std::uint16_t>((tick * 997U + object.source_net_id.value() * 131U) %
+                                               65'536U);
+                for (auto& state : object.visual_states) {
+                    if (state.channel == "activity") {
+                        state.value = (tick / 120U) % 2U == 0U ? "active" : "idle";
+                    } else if (state.channel == "heat") {
+                        state.value = (tick / 180U) % 2U == 0U ? "hot" : "cold";
+                    }
+                }
+            }
+            auto synchronized = character_presentations->synchronize(
+                active_renderer, character_snapshot, &scene.value()->camera());
+            return synchronized
+                       ? core::Status::ok()
+                       : core::Status::failure(synchronized.error().code,
+                                               synchronized.error().message);
+        };
         if (options.scene == renderer::benchmark::BenchmarkSceneKind::light_heavy_settlement) {
             for (std::uint32_t index = 0; index < 128U; ++index) {
                 const auto x = static_cast<double>(static_cast<int>(index % 16U) - 8) * 5.0;
@@ -982,6 +1117,10 @@ int main(int argc, char** argv) {
                     return fail(status.error().message);
                 }
             }
+            status = synchronize_character_workshop(settlement_frames);
+            if (!status) {
+                return fail(status.error().message);
+            }
             auto frame = active_renderer.render_frame({scene.value()->camera()});
             if (!frame) {
                 return fail(frame.error().message);
@@ -1114,6 +1253,10 @@ int main(int argc, char** argv) {
                         return fail(status.error().message);
                     }
                 }
+                status = synchronize_character_workshop(simulation_frame);
+                if (!status) {
+                    return fail(status.error().message);
+                }
                 auto frame = active_renderer.render_frame({scene.value()->camera()});
                 if (!frame) {
                     return fail(frame.error().message);
@@ -1137,6 +1280,43 @@ int main(int argc, char** argv) {
             }
         }
 
+        if (!options.capture_output.empty() || !options.compare_baseline.empty()) {
+            auto captured = renderer::testing::capture_output(*active_renderer.device());
+            if (!captured) {
+                return fail(captured.error().message);
+            }
+            if (!options.capture_output.empty()) {
+                status = renderer::testing::write_visual_capture(options.capture_output,
+                                                                  captured.value());
+                if (!status) {
+                    return fail(status.error().message);
+                }
+                core::log(core::LogLevel::info,
+                          "Wrote visual capture to " + options.capture_output.string());
+            }
+            if (!options.compare_baseline.empty()) {
+                auto baseline =
+                    renderer::testing::read_visual_capture(options.compare_baseline);
+                if (!baseline) {
+                    return fail(baseline.error().message);
+                }
+                auto comparison = renderer::testing::compare_visual_captures(
+                    captured.value(), baseline.value());
+                if (!comparison) {
+                    return fail(comparison.error().message);
+                }
+                core::log(core::LogLevel::info,
+                          "Visual regression changed=" +
+                              std::to_string(comparison.value().changed_fraction) +
+                              " rmse=" + std::to_string(comparison.value().rmse) +
+                              " actual=" + comparison.value().actual_hash +
+                              " baseline=" + comparison.value().baseline_hash);
+                if (!comparison.value().passed) {
+                    return fail("visual regression thresholds exceeded");
+                }
+            }
+        }
+
         chunk_lighting.value()->shutdown();
         if (particle_presentation.is_initialized()) {
             status = particle_presentation.shutdown(active_renderer);
@@ -1153,6 +1333,12 @@ int main(int argc, char** argv) {
         }
         if (large_water.is_initialized()) {
             status = large_water.shutdown();
+            if (!status) {
+                return fail(status.error().message);
+            }
+        }
+        if (character_presentations.has_value()) {
+            status = character_presentations->shutdown(active_renderer);
             if (!status) {
                 return fail(status.error().message);
             }

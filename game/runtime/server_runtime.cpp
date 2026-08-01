@@ -1365,6 +1365,11 @@ core::Status ServerRuntime::replicate_entity_motion(std::uint64_t simulation_tic
         snapshot.previous_transform = transform->previous;
         snapshot.current_transform = transform->current;
         snapshot.locomotion = locomotion->state;
+        if (const auto* visual_state =
+                entities_.find_component<entities::VisualStateComponent>(record.id);
+            visual_state != nullptr) {
+            snapshot.visual_states = visual_state->states;
+        }
         snapshot.simulation_tick = simulation_tick;
         auto status = snapshot.validate();
         if (!status) {

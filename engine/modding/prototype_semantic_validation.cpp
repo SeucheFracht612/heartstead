@@ -271,7 +271,7 @@ void validate_cargo(PrototypeSemanticValidationResult& result, const GenericProt
 void validate_entity(PrototypeSemanticValidationResult& result, const GenericPrototype& prototype) {
     (void)validate_enum_field(result, prototype, "entity_kind",
                               {"player", "creature", "animal", "cart", "boat", "dropped_item",
-                               "projectile", "temporary_physics"});
+                               "projectile", "machine", "container", "temporary_physics"});
     (void)validate_bool_field(result, prototype, "persistent", false);
     (void)validate_optional_u64_range(result, prototype, "carry_capacity_grams", 1,
                                       std::numeric_limits<std::uint64_t>::max());

@@ -1,3 +1,4 @@
+#include "engine/core/file_io.hpp"
 #include "engine/core/logging.hpp"
 #include "engine/core/process_entry.hpp"
 #include "engine/platform/platform.hpp"
@@ -109,6 +110,8 @@ int main(int argc, char** argv) {
         auto sky_vertex_spirv = renderer::shaders::load_spirv_file(shader_root / "sky.vert.spv");
         auto sky_fragment_spirv = renderer::shaders::load_spirv_file(shader_root / "sky.frag.spv");
         auto vertex_spirv = renderer::shaders::load_spirv_file(shader_root / "terrain.vert.spv");
+        auto far_vertex_spirv =
+            renderer::shaders::load_spirv_file(shader_root / "far_terrain.vert.spv");
         auto fragment_spirv = renderer::shaders::load_spirv_file(shader_root / "terrain.frag.spv");
         auto static_vertex_spirv =
             renderer::shaders::load_spirv_file(shader_root / "static_mesh.vert.spv");
@@ -141,8 +144,10 @@ int main(int argc, char** argv) {
                         (!sky_vertex_spirv ? sky_vertex_spirv.error().message
                                            : sky_fragment_spirv.error().message));
         }
-        if (!vertex_spirv) {
-            return fail("Vertex shader loading failed visibly: " + vertex_spirv.error().message);
+        if (!vertex_spirv || !far_vertex_spirv) {
+            return fail("Vertex shader loading failed visibly: " +
+                        (!vertex_spirv ? vertex_spirv.error().message
+                                       : far_vertex_spirv.error().message));
         }
         if (!fragment_spirv) {
             return fail("Fragment shader loading failed visibly: " +
@@ -180,10 +185,17 @@ int main(int argc, char** argv) {
         }
 
         renderer::RendererInitDesc renderer_init;
+        auto ui_font = core::read_binary_file(
+            std::filesystem::path{HEARTSTEAD_RENDER_SMOKE_ASSET_DIR} /
+            "fonts/heartstead-ui.ttf");
+        if (!ui_font) {
+            return fail(ui_font.error().message);
+        }
         renderer_init.device = std::move(device).value();
         renderer_init.sky_vertex_spirv = std::move(sky_vertex_spirv).value();
         renderer_init.sky_fragment_spirv = std::move(sky_fragment_spirv).value();
         renderer_init.terrain_vertex_spirv = std::move(vertex_spirv).value();
+        renderer_init.far_terrain_vertex_spirv = std::move(far_vertex_spirv).value();
         renderer_init.terrain_fragment_spirv = std::move(fragment_spirv).value();
         renderer_init.static_mesh_vertex_spirv = std::move(static_vertex_spirv).value();
         renderer_init.static_mesh_fragment_spirv = std::move(static_fragment_spirv).value();
@@ -195,6 +207,8 @@ int main(int argc, char** argv) {
         renderer_init.debug_fragment_spirv = std::move(debug_fragment_spirv).value();
         renderer_init.ui_vertex_spirv = std::move(ui_vertex_spirv).value();
         renderer_init.ui_fragment_spirv = std::move(ui_fragment_spirv).value();
+        renderer_init.ui_font_bytes = std::move(ui_font).value();
+        renderer_init.quality_preset = renderer::RendererQualityPreset::high;
         renderer_init.tone_map_vertex_spirv = std::move(tone_map_vertex_spirv).value();
         renderer_init.tone_map_fragment_spirv = std::move(tone_map_fragment_spirv).value();
         renderer_init.ssao_fragment_spirv = std::move(ssao_fragment_spirv).value();

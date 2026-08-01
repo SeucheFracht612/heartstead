@@ -4,7 +4,10 @@
 #include "engine/core/result.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace heartstead::animation {
@@ -24,6 +27,32 @@ struct AnimationClipPlayback {
     std::uint32_t clip = assets::no_model_index;
     float time_seconds = 0.0F;
     bool looping = true;
+};
+
+enum class AnimationLayerMode : std::uint8_t {
+    override_pose,
+    additive,
+};
+
+struct AnimationNodeMask {
+    std::vector<float> node_weights;
+
+    friend bool operator==(const AnimationNodeMask&, const AnimationNodeMask&) = default;
+};
+
+struct AnimationLayer {
+    AnimationClipPlayback playback;
+    AnimationLayerMode mode = AnimationLayerMode::override_pose;
+    float weight = 1.0F;
+    const AnimationNodeMask* mask = nullptr;
+    std::optional<AnimationClipPlayback> additive_reference;
+};
+
+struct AnimationEventMarker {
+    std::string name;
+    float normalized_phase = 0.0F;
+
+    friend bool operator==(const AnimationEventMarker&, const AnimationEventMarker&) = default;
 };
 
 enum class RootMotionPolicy : std::uint8_t {
@@ -64,6 +93,16 @@ struct CpuSkinnedVertex {
                                                               const AnimationClipPlayback& first,
                                                               const AnimationClipPlayback& second,
                                                               float second_weight);
+[[nodiscard]] core::Result<AnimationNodeMask>
+make_descendant_animation_mask(const assets::ModelAsset& model,
+                               std::span<const std::string_view> root_nodes);
+[[nodiscard]] core::Result<NodePose>
+compose_animation_layers(const assets::ModelAsset& model, const NodePose& base_pose,
+                         std::span<const AnimationLayer> layers);
+[[nodiscard]] core::Result<std::vector<std::string>>
+crossed_animation_events(std::span<const AnimationEventMarker> markers,
+                         float previous_normalized_phase, float current_normalized_phase,
+                         bool looping);
 [[nodiscard]] core::Result<std::vector<math::Mat4f>>
 evaluate_model_node_matrices(const assets::ModelAsset& model, const NodePose& pose);
 [[nodiscard]] core::Result<SkinningPalette> build_skinning_palette(const assets::ModelAsset& model,

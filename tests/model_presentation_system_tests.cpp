@@ -62,7 +62,7 @@ int main() {
     const auto content =
         content::ContentValidation::validate(std::filesystem::path{HEARTSTEAD_TEST_SOURCE_DIR});
     assert(!content.has_errors());
-    assert(content.visual_definitions.size() == 4);
+    assert(content.visual_definitions.size() == 6);
     const auto player = core::PrototypeId::parse("base:entities/player");
     const auto animal = core::PrototypeId::parse("base:entities/test_animal");
     const auto fallback = core::PrototypeId::parse("base:visuals/fallback");
@@ -126,7 +126,7 @@ int main() {
             const auto capabilities = assets::model_capabilities(model.value());
             assert(capabilities.has_animation_clips);
             assert(capabilities.has_animated_nodes);
-            assert(!capabilities.has_skins);
+            assert(capabilities.has_skins);
         }
         if (definition.model_asset == "base:models/props/foundation_material_showcase.gltf") {
             assert(model.value().primitives.size() == 3);
@@ -196,21 +196,43 @@ int main() {
     renderer::Renderer renderer;
     initialize_renderer(renderer);
     game::ModelPresentationSystem models;
+    game::ModelPresentationSystemConfig model_config;
+    model_config.material_registry = &content.material_registry;
     assert(models.initialize(renderer, content.visual_definitions,
-                             std::filesystem::path{HEARTSTEAD_TEST_COOKED_ASSET_DIR}));
-    assert(models.stats().definition_count == 4);
-    assert(models.stats().loaded_model_count == 4);
+                             std::filesystem::path{HEARTSTEAD_TEST_COOKED_ASSET_DIR},
+                             model_config));
+    assert(models.stats().definition_count == 6);
+    assert(models.stats().loaded_model_count == 8);
 
     game::RenderSnapshot snapshot;
     snapshot.simulation_tick = 10;
     snapshot.objects.push_back(make_object(1, "base:entities/player", -0.75));
     snapshot.objects.push_back(make_object(2, "base:entities/test_animal", 0.75));
     snapshot.objects.push_back(make_object(4, "base:entities/foundation_material_showcase", 0.0));
+    auto player_object = std::ranges::find_if(snapshot.objects, [&](const auto& object) {
+        return object.visual_prototype == *player;
+    });
+    assert(player_object != snapshot.objects.end());
+    player_object->equipment.push_back({
+        .slot = "main_hand",
+        .variant = "hammer",
+        .stowed = false,
+    });
+    auto workshop_object = make_object(5, "base:entities/workshop_machine", 4.0);
+    workshop_object.visual_states = {
+        {.channel = "activity", .value = "active"},
+        {.channel = "process", .value = "loaded"},
+        {.channel = "heat", .value = "hot"},
+        {.channel = "access", .value = "closed"},
+        {.channel = "power", .value = "on"},
+        {.channel = "damage", .value = "intact"},
+    };
+    snapshot.objects.push_back(std::move(workshop_object));
     auto synchronized = models.synchronize(renderer, snapshot);
     assert(synchronized);
-    assert(synchronized.value().models.inserted_entities == 3);
-    assert(synchronized.value().models.evaluated_poses == 1);
-    assert(synchronized.value().models.uploaded_palettes == 0);
+    assert(synchronized.value().models.inserted_entities == 5);
+    assert(synchronized.value().models.evaluated_poses == 2);
+    assert(synchronized.value().models.uploaded_palettes == 1);
 
     renderer::RenderCamera camera;
     assert(camera.set_aspect_ratio(640.0F / 360.0F));
@@ -218,9 +240,10 @@ int main() {
     const auto presented_primitive_count =
         visual_primitive_counts.at("base:entities/player") +
         visual_primitive_counts.at("base:entities/test_animal") +
-        visual_primitive_counts.at("base:entities/foundation_material_showcase");
+        visual_primitive_counts.at("base:entities/foundation_material_showcase") +
+        visual_primitive_counts.at("base:entities/workshop_machine") + 2U;
     assert(renderer.stats().retained_objects == presented_primitive_count);
-    assert(renderer.stats().retained_skin_palettes == 0);
+    assert(renderer.stats().retained_skin_palettes == 1);
 
     std::vector<std::string> warnings;
     core::set_log_sink([&](core::LogLevel level, std::string_view message) {
@@ -245,7 +268,7 @@ int main() {
     snapshot.objects.clear();
     synchronized = models.synchronize(renderer, snapshot);
     assert(synchronized);
-    assert(synchronized.value().models.removed_entities == 4);
+    assert(synchronized.value().models.removed_entities == 6);
     assert(models.shutdown(renderer));
     assert(renderer.shutdown());
 
@@ -273,11 +296,14 @@ int main() {
             warnings.emplace_back(message);
         }
     });
+    game::ModelPresentationSystemConfig fallback_config;
+    fallback_config.material_registry = &content.material_registry;
     assert(fallback_models.initialize(fallback_renderer, fallback_probes,
-                                      std::filesystem::path{HEARTSTEAD_TEST_COOKED_ASSET_DIR}));
+                                      std::filesystem::path{HEARTSTEAD_TEST_COOKED_ASSET_DIR},
+                                      fallback_config));
     core::reset_log_sink();
     assert(fallback_models.stats().definition_count == 3);
-    assert(fallback_models.stats().loaded_model_count == 2);
+    assert(fallback_models.stats().loaded_model_count == 4);
     assert(fallback_models.stats().fallback_model_definition_count == 1);
     assert(fallback_models.stats().fallback_animation_mapping_count == 1);
     assert(fallback_models.stats().load_diagnostic_count == 2);
@@ -289,7 +315,7 @@ int main() {
     assert(diagnostics[0].cooked_path == "<missing>");
     assert(diagnostics[0].failing_dependency == "test:models/missing.gltf");
     assert(diagnostics[0].fallback_used == fallback_definition->model_asset);
-    assert(diagnostics[1].logical_id == "base:models/entities/test_player.glb");
+    assert(diagnostics[1].logical_id == "base:models/entities/storybook_player.gltf");
     assert(diagnostics[1].source_path != "<missing>");
     assert(diagnostics[1].cooked_path != "<missing>");
     assert(diagnostics[1].failing_dependency == "test:visuals/missing_animation#animations/walk");

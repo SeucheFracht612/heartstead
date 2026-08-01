@@ -59,6 +59,20 @@ Run the interactive local development game:
 ./build/default-debug/apps/dev_game/heartstead_dev_game
 ```
 
+Run the focused Renderer V2 checks:
+
+```bash
+ctest --test-dir build/default-debug -R \
+  'renderer|vegetation|water|environment_effects|particle|animation|equipment|visibility|far_terrain|streaming_residency|ui_font|map_view|visual_regression' \
+  --output-on-failure
+
+./build/default-debug/apps/render_benchmark/heartstead_render_benchmark \
+  --scene starting-biome --headless --warmup 5 --frames 30 --radius 1
+```
+
+Native Vulkan, Asset Lab, visual-regression, and manual UI/map procedures are in
+[Testing](docs/dev/testing.md).
+
 Inspect a production-cooked visual through Asset Lab:
 
 ```bash
@@ -90,6 +104,7 @@ Common controls:
 | Dash / roll | `Q` / `Left Alt` |
 | Interact | `E` |
 | Inventory | `Tab` |
+| Full map | `M` |
 | Remove / place voxel | Left / right mouse button |
 | Camera / diagnostics / geometry | `F1` / `F3` / `F4` |
 | Close menu / pause | `Escape` |

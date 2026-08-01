@@ -3,6 +3,7 @@
 #include "engine/animation/locomotion_animation.hpp"
 #include "engine/core/ids.hpp"
 #include "engine/core/result.hpp"
+#include "engine/entities/entity_visual.hpp"
 #include "engine/net/transport.hpp"
 #include "engine/world/coords/world_position.hpp"
 
@@ -12,8 +13,10 @@
 
 namespace heartstead::entities {
 
-inline constexpr std::uint16_t entity_motion_snapshot_version = 1;
-inline constexpr std::string_view entity_motion_snapshot_payload_type = "entity.motion_snapshot.v1";
+inline constexpr std::uint16_t entity_motion_snapshot_version = 2;
+inline constexpr std::string_view entity_motion_snapshot_payload_type = "entity.motion_snapshot.v2";
+inline constexpr std::string_view legacy_entity_motion_snapshot_payload_type =
+    "entity.motion_snapshot.v1";
 inline constexpr std::string_view entity_motion_removal_payload_type = "entity.motion_removal.v1";
 
 struct EntityMotionSnapshot {
@@ -23,6 +26,7 @@ struct EntityMotionSnapshot {
     world::WorldTransform previous_transform;
     world::WorldTransform current_transform;
     animation::ReplicatedLocomotionAnimation locomotion;
+    std::vector<VisualStateValue> visual_states;
     std::uint64_t simulation_tick = 0;
 
     [[nodiscard]] core::Status validate() const;

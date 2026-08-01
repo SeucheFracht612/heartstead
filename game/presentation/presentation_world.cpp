@@ -30,11 +30,25 @@ core::Status validate_presentation_object_update(const PresentationObjectUpdate&
             return !state.channel.empty() && state.channel.size() <= 64U && !state.value.empty() &&
                    state.value.size() <= 128U && state_channels.insert(state.channel).second;
         });
+    const auto valid_layers =
+        update.animation_layers.size() <= 8U &&
+        std::ranges::all_of(update.animation_layers, [](const AnimationLayerSnapshot& layer) {
+            return !layer.clip_role.empty() && layer.clip_role.size() <= 64U &&
+                   layer.mask.size() <= 64U;
+        });
+    std::unordered_set<std::string> equipment_slots;
+    const auto valid_equipment =
+        update.equipment.size() <= 32U &&
+        std::ranges::all_of(update.equipment, [&](const EquipmentVisualSnapshot& equipment) {
+            return !equipment.slot.empty() && equipment.slot.size() <= 64U &&
+                   !equipment.variant.empty() && equipment.variant.size() <= 128U &&
+                   equipment_slots.insert(equipment.slot).second;
+        });
     if (!update.source_net_id.is_valid() || !update.visual_prototype.is_valid() ||
         !update.transform.is_finite() || !update.transform.has_non_zero_scale() ||
         !update.local_bounds.is_valid() || !finite_color(update.color) ||
         update.source_revision == 0 || !update.locomotion.validate(simulation_tick) ||
-        !valid_states) {
+        !valid_states || !valid_layers || !valid_equipment) {
         return core::Status::failure(
             "presentation_world.invalid_object",
             "presentation object requires valid identity, visual, transform, bounds, and revision");
@@ -111,6 +125,9 @@ PresentationWorld::upsert_object(const PresentationObjectUpdate& update) {
         slot->object.local_bounds = update.local_bounds;
         slot->object.color = update.color;
         slot->object.visual_states = update.visual_states;
+        slot->object.animation_layers = update.animation_layers;
+        slot->object.equipment = update.equipment;
+        slot->object.animation_importance = update.animation_importance;
         slot->object.source_revision = update.source_revision;
         slot->object.visible = update.visible;
         slot->object.teleported = update.teleport;
@@ -133,6 +150,9 @@ PresentationWorld::upsert_object(const PresentationObjectUpdate& update) {
     slot->object.local_bounds = update.local_bounds;
     slot->object.color = update.color;
     slot->object.visual_states = update.visual_states;
+    slot->object.animation_layers = update.animation_layers;
+    slot->object.equipment = update.equipment;
+    slot->object.animation_importance = update.animation_importance;
     slot->object.source_revision = update.source_revision;
     slot->object.visible = update.visible;
     slot->object.teleported = update.teleport;

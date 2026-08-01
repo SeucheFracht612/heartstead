@@ -299,11 +299,10 @@ vegetation_species_from_generic(const modding::GenericPrototype& prototype) {
     auto density_start = number_field<float>(prototype, "density.fade_start", 48.0F);
     auto density_end = number_field<float>(prototype, "density.fade_end", 96.0F);
     auto shadow_lod = number_field<std::uint32_t>(prototype, "shadow.lod", 0);
-    auto alpha_to_coverage = bool_field(prototype, "alpha_to_coverage", true);
     auto receives_weather = bool_field(prototype, "receives_weather", true);
     if (!kind || !scale_min || !scale_max || !yaw || !mirror || !color_min || !color_max ||
         !stiffness || !transmission || !density_start || !density_end || !shadow_lod ||
-        !alpha_to_coverage || !receives_weather) {
+        !receives_weather) {
         return core::Result<VegetationSpecies>::failure(
             "vegetation_species.invalid_fields",
             "vegetation species contains an invalid kind, variation, wind, density, or shadow "
@@ -327,7 +326,6 @@ vegetation_species_from_generic(const modding::GenericPrototype& prototype) {
     result.density_fade_start = density_start.value();
     result.density_fade_end = density_end.value();
     result.shadow_lod = shadow_lod.value();
-    result.alpha_to_coverage = alpha_to_coverage.value();
     result.receives_weather = receives_weather.value();
 
     for (std::size_t index = 0;; ++index) {

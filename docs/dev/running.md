@@ -65,6 +65,7 @@ Examples:
 | Roll | `Left Alt` |
 | Interact | `E` |
 | Inventory | `Tab` |
+| Full map | `M` |
 | Hotbar | `1`–`9` |
 | Camera mode | `F1` |
 | Diagnostics | `F3` |
@@ -149,6 +150,10 @@ Run a deterministic headless benchmark:
 Use `--list-scenes` to enumerate current workloads and add `--vulkan` for a native run with GPU
 timestamps. See [Renderer benchmarks](../performance/renderer_benchmarks.md) before comparing
 results.
+
+The development game currently selects the High renderer preset. Preset selection is an
+application configuration API rather than a command-line or in-game setting. Use the automated
+quality-policy test to compare the four resolved profiles.
 
 ## Asset Lab
 

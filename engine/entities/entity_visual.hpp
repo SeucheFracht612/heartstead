@@ -104,11 +104,44 @@ struct VisualImpostorData {
     friend bool operator==(const VisualImpostorData&, const VisualImpostorData&) = default;
 };
 
+struct VisualAnimationMaskDefinition {
+    std::string name;
+    std::vector<std::string> root_nodes;
+
+    [[nodiscard]] bool operator==(const VisualAnimationMaskDefinition&) const = default;
+};
+
+struct VisualAnimationEventDefinition {
+    std::string animation_role;
+    std::string name;
+    float normalized_phase{0.0F};
+
+    [[nodiscard]] bool operator==(const VisualAnimationEventDefinition&) const = default;
+};
+
+struct VisualEquipmentVariantDefinition {
+    std::string slot;
+    std::string variant;
+    std::string model_asset;
+    std::string socket;
+    std::string stowed_socket;
+    std::string secondary_socket;
+    std::vector<std::string> hidden_body_groups;
+    std::vector<VisualMaterialOverride> material_overrides;
+    bool skinned{false};
+    bool two_handed{false};
+
+    [[nodiscard]] bool operator==(const VisualEquipmentVariantDefinition&) const = default;
+};
+
 struct EntityVisualDefinition {
     core::PrototypeId id;
     core::PrototypeId entity_prototype;
     std::string model_asset;
     std::unordered_map<std::string, std::string> animation_clips;
+    std::vector<VisualAnimationMaskDefinition> animation_masks;
+    std::vector<VisualAnimationEventDefinition> animation_events;
+    std::vector<VisualEquipmentVariantDefinition> equipment_variants;
     std::unordered_map<std::string, core::PrototypeId> sound_events;
     std::vector<VisualLodDefinition> lods;
     std::vector<VisualMaterialOverride> material_overrides;
@@ -133,6 +166,20 @@ struct EntityVisualDefinition {
     visibility_group(std::string_view name) const noexcept;
     [[nodiscard]] const VisualStateRule*
     resolve_state_rule(std::span<const VisualStateValue> states) const noexcept;
+    [[nodiscard]] std::vector<const VisualStateRule*>
+    resolve_state_rules(std::span<const VisualStateValue> states) const;
+    [[nodiscard]] const VisualStateRule*
+    resolve_model_state_rule(std::span<const VisualStateValue> states) const noexcept;
+    [[nodiscard]] const VisualStateRule*
+    resolve_animation_state_rule(std::span<const VisualStateValue> states) const noexcept;
+    [[nodiscard]] bool resolve_group_visibility(std::span<const VisualStateValue> states,
+                                                std::string_view group,
+                                                bool fallback = true) const noexcept;
+    [[nodiscard]] const core::PrototypeId*
+    resolve_material_override(std::span<const VisualStateValue> states,
+                              std::string_view slot) const noexcept;
+    [[nodiscard]] const VisualEquipmentVariantDefinition*
+    equipment_variant(std::string_view slot, std::string_view variant) const noexcept;
     [[nodiscard]] std::string_view
     resolve_model(std::span<const VisualStateValue> states) const noexcept;
 };

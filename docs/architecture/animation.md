@@ -116,3 +116,7 @@ animated body-part nodes, all 27 named clips survive cooking, and the player map
 approximately 1.80 units while leaving gameplay dimensions authoritative. The existing test animal
 exercises the skinned branch. Both go through the same sampling, blending, hierarchy, morph, and
 presentation code.
+
+Equipment sockets, layered animation, deterministic update budgets, interaction targets, and
+stateful machine/container mappings are documented in
+[Animation, Equipment, and Stateful Visuals](../animation_equipment_and_visual_states.md).

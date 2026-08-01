@@ -1,5 +1,7 @@
 #include "game/presentation/model_presentation_system.hpp"
 
+#include "engine/animation/equipment_attachment.hpp"
+
 #include "engine/assets/asset_cooker.hpp"
 #include "engine/assets/cooked_asset_store.hpp"
 #include "engine/assets/model_asset.hpp"
@@ -176,6 +178,7 @@ core::Status ModelPresentationSystem::initialize(
     }
     stats_ = {};
     load_diagnostics_.clear();
+    animation_camera_ = std::make_shared<renderer::RenderCamera>();
     const auto fallback_visual_id = core::PrototypeId::parse(config.fallback_visual_id);
     const auto* fallback_definition =
         fallback_visual_id ? visual_definitions.find(*fallback_visual_id) : nullptr;
@@ -203,6 +206,8 @@ core::Status ModelPresentationSystem::initialize(
     }
 
     std::unordered_map<std::string, std::shared_ptr<const assets::ModelAsset>> model_cache;
+    auto character_pose_cache =
+        std::make_shared<std::unordered_map<std::uint64_t, std::vector<math::Mat4f>>>();
     auto fallback_model =
         std::make_shared<assets::ModelAsset>(std::move(fallback_model_asset).value());
     model_cache.emplace(fallback_definition->model_asset, fallback_model);
@@ -294,7 +299,9 @@ core::Status ModelPresentationSystem::initialize(
         bool definition_used_fallback = false;
         std::vector<const entities::VisualStateRule*> state_variants{nullptr};
         for (const auto& state_rule : definition.state_rules) {
-            state_variants.push_back(&state_rule);
+            if (!state_rule.model_asset.empty()) {
+                state_variants.push_back(&state_rule);
+            }
         }
         for (const auto* state_rule : state_variants) {
             for (const auto& lod : definition.lods) {
@@ -354,11 +361,56 @@ core::Status ModelPresentationSystem::initialize(
                     using_model_fallback ? fallback_definition->model_asset : material_variant_id;
                 presentation_config.visual_prototype = definition.entity_prototype;
                 presentation_config.model = std::move(model_shared);
+                presentation_config.pose_sink =
+                    [character_pose_cache](const core::NetId id,
+                                           const std::span<const math::Mat4f> matrices) {
+                        (*character_pose_cache)[id.value()] =
+                            std::vector<math::Mat4f>(matrices.begin(), matrices.end());
+                    };
+                presentation_config.animation_distance_squared =
+                    [camera = animation_camera_](const RenderObjectSnapshot& object) {
+                        auto relative = world::to_camera_relative(object.current_transform.position,
+                                                                  camera->floating_origin);
+                        if (!relative) {
+                            return std::numeric_limits<float>::infinity();
+                        }
+                        return math::length_squared(relative.value() - camera->local_position);
+                    };
+                const auto visibility_definition = definition;
+                presentation_config.model_node_visibility =
+                    [visibility_definition](const RenderObjectSnapshot& object,
+                                            const std::string_view node_name) {
+                        for (const auto& group : visibility_definition.visibility_groups) {
+                            if (std::ranges::find(group.nodes, node_name) != group.nodes.end() &&
+                                !visibility_definition.resolve_group_visibility(
+                                    object.visual_states, group.name, true)) {
+                                return false;
+                            }
+                        }
+                        for (const auto& selected_equipment : object.equipment) {
+                            const auto* equipment = visibility_definition.equipment_variant(
+                                selected_equipment.slot, selected_equipment.variant);
+                            if (equipment == nullptr) {
+                                continue;
+                            }
+                            for (const auto& hidden_group : equipment->hidden_body_groups) {
+                                const auto* group =
+                                    visibility_definition.visibility_group(hidden_group);
+                                if (group != nullptr &&
+                                    std::ranges::find(group->nodes, node_name) !=
+                                        group->nodes.end()) {
+                                    return false;
+                                }
+                            }
+                        }
+                        return true;
+                    };
                 presentation_config.animated_bounds =
                     definition.bounds_override.value_or(model.bounds)
                         .expanded(definition.bounds_padding);
                 presentation_config.model_scale = definition.model_scale;
                 presentation_config.bounds_padding = definition.bounds_padding;
+                presentation_config.state_transition_ticks = definition.transition_ticks;
                 presentation_config.minimum_view_distance = lod.minimum_distance;
                 presentation_config.maximum_view_distance = lod.maximum_distance;
                 presentation_config.flags =
@@ -375,7 +427,7 @@ core::Status ModelPresentationSystem::initialize(
                         [definition_copy, selected_channel,
                          selected_value](const RenderObjectSnapshot& object) {
                             const auto* selected =
-                                definition_copy.resolve_state_rule(object.visual_states);
+                                definition_copy.resolve_model_state_rule(object.visual_states);
                             if (selected_channel.empty()) {
                                 return selected == nullptr;
                             }
@@ -393,8 +445,12 @@ core::Status ModelPresentationSystem::initialize(
                                                                       group->nodes.end());
                     }
                 }
-                if ((!definition.animation_clips.empty() ||
-                     (state_rule != nullptr && !state_rule->animation_clip.empty())) &&
+                const auto has_state_animations = std::ranges::any_of(
+                    definition.state_rules,
+                    [](const entities::VisualStateRule& rule) {
+                        return !rule.animation_clip.empty();
+                    });
+                if ((!definition.animation_clips.empty() || has_state_animations) &&
                     !using_model_fallback) {
                     if (!assets::model_capabilities(model).has_animation_clips) {
                         rollback();
@@ -405,11 +461,15 @@ core::Status ModelPresentationSystem::initialize(
                     }
                     const auto* fallback_animation =
                         definition.animation(config.fallback_animation_role);
-                    const auto forced_animation =
-                        state_rule == nullptr ? std::string_view{}
-                                              : std::string_view{state_rule->animation_clip};
-                    if (!forced_animation.empty()) {
-                        fallback_animation = &state_rule->animation_clip;
+                    if (fallback_animation == nullptr) {
+                        const auto fallback_state = std::ranges::find_if(
+                            definition.state_rules,
+                            [](const entities::VisualStateRule& rule) {
+                                return !rule.animation_clip.empty();
+                            });
+                        if (fallback_state != definition.state_rules.end()) {
+                            fallback_animation = &fallback_state->animation_clip;
+                        }
                     }
                     auto fallback_clip =
                         fallback_animation == nullptr
@@ -431,14 +491,13 @@ core::Status ModelPresentationSystem::initialize(
                     std::array<std::uint32_t, locomotion_roles.size()> resolved{};
                     for (std::size_t index = 0; index < locomotion_roles.size(); ++index) {
                         const auto role = locomotion_roles[index];
-                        const auto* mapped = forced_animation.empty() ? definition.animation(role)
-                                                                      : &state_rule->animation_clip;
+                        const auto* mapped = definition.animation(role);
+                        if (mapped == nullptr) {
+                            resolved[index] = fallback_clip.value();
+                            continue;
+                        }
                         auto clip =
-                            mapped == nullptr
-                                ? core::Result<std::uint32_t>::failure(
-                                      "model_presentation.missing_locomotion_mapping",
-                                      "visual does not map locomotion role " + std::string(role))
-                                : assets::resolve_model_animation_clip(model, *mapped);
+                            assets::resolve_model_animation_clip(model, *mapped);
                         if (clip) {
                             resolved[index] = clip.value();
                             continue;
@@ -467,6 +526,72 @@ core::Status ModelPresentationSystem::initialize(
                         return clips_status;
                     }
                     presentation_config.locomotion_clips = clips;
+                    for (const auto& [role, clip_name] : definition.animation_clips) {
+                        auto clip = assets::resolve_model_animation_clip(model, clip_name);
+                        if (!clip) {
+                            const auto locomotion_role =
+                                std::ranges::find(locomotion_roles, std::string_view{role});
+                            if (locomotion_role != locomotion_roles.end()) {
+                                const auto index = static_cast<std::size_t>(
+                                    std::distance(locomotion_roles.begin(), locomotion_role));
+                                presentation_config.animation_clips.emplace(role, resolved[index]);
+                                continue;
+                            }
+                            rollback();
+                            return core::Status::failure(
+                                clip.error().code,
+                                "animated visual '" + definition.id.value() +
+                                    "' cannot resolve clip role '" + role + "': " +
+                                    clip.error().message);
+                        }
+                        presentation_config.animation_clips.emplace(role, clip.value());
+                    }
+                    for (const auto& mask_definition : definition.animation_masks) {
+                        std::vector<std::string_view> roots;
+                        roots.reserve(mask_definition.root_nodes.size());
+                        for (const auto& root : mask_definition.root_nodes) {
+                            roots.push_back(root);
+                        }
+                        auto mask = animation::make_descendant_animation_mask(model, roots);
+                        if (!mask) {
+                            rollback();
+                            return core::Status::failure(
+                                mask.error().code,
+                                "animated visual '" + definition.id.value() +
+                                    "' cannot resolve animation mask '" + mask_definition.name +
+                                    "': " + mask.error().message);
+                        }
+                        presentation_config.animation_masks.emplace(mask_definition.name,
+                                                                    std::move(mask).value());
+                    }
+                    for (const auto& event : definition.animation_events) {
+                        presentation_config.animation_events[event.animation_role].push_back({
+                            .name = event.name,
+                            .normalized_phase = event.normalized_phase,
+                        });
+                    }
+                    for (const auto& animation_state : definition.state_rules) {
+                        if (animation_state.animation_clip.empty()) {
+                            continue;
+                        }
+                        auto clip = assets::resolve_model_animation_clip(
+                            model, animation_state.animation_clip);
+                        if (!clip) {
+                            rollback();
+                            return core::Status::failure(
+                                clip.error().code,
+                                "animated visual '" + definition.id.value() +
+                                    "' cannot resolve state clip '" +
+                                    animation_state.animation_clip + "': " +
+                                    clip.error().message);
+                        }
+                        presentation_config.state_animation_clips.push_back({
+                            .channel = animation_state.channel,
+                            .value = animation_state.value,
+                            .clip = clip.value(),
+                            .priority = animation_state.priority,
+                        });
+                    }
                 }
                 PresentationEntry entry;
                 entry.visual_id = definition.id;
@@ -479,6 +604,153 @@ core::Status ModelPresentationSystem::initialize(
                 }
                 presentations_.push_back(std::move(entry));
                 ++stats_.lod_variant_count;
+
+                if (!using_model_fallback) {
+                    for (const auto& equipment : definition.equipment_variants) {
+                        bool using_equipment_fallback = false;
+                        auto equipment_model =
+                            load_cached_model(equipment.model_asset, using_equipment_fallback);
+                        if (using_equipment_fallback) {
+                            continue;
+                        }
+                        std::string equipment_variant_id = equipment.model_asset;
+                        if (!equipment.material_overrides.empty()) {
+                            equipment_variant_id += "#equipment-materials";
+                            for (const auto& material_override : equipment.material_overrides) {
+                                equipment_variant_id += "/" + material_override.slot + "=" +
+                                                        material_override.material.value();
+                            }
+                            if (const auto existing = model_cache.find(equipment_variant_id);
+                                existing != model_cache.end()) {
+                                equipment_model = existing->second;
+                            } else {
+                                auto overridden_model =
+                                    std::make_shared<assets::ModelAsset>(*equipment_model);
+                                auto override_status = apply_material_overrides(
+                                    *overridden_model, equipment.material_overrides,
+                                    config.material_registry);
+                                if (!override_status) {
+                                    rollback();
+                                    return override_status;
+                                }
+                                equipment_model = overridden_model;
+                                model_cache.emplace(equipment_variant_id,
+                                                    std::move(overridden_model));
+                            }
+                        }
+                        auto held_attachment = animation::resolve_equipment_attachment(
+                            definition, model, equipment, *equipment_model, false);
+                        auto stowed_attachment = animation::resolve_equipment_attachment(
+                            definition, model, equipment, *equipment_model, true);
+                        if (!held_attachment || !stowed_attachment) {
+                            rollback();
+                            const auto& error = !held_attachment ? held_attachment.error()
+                                                                 : stowed_attachment.error();
+                            return core::Status::failure(error.code, error.message);
+                        }
+
+                        AnimatedModelPresentationConfig equipment_config;
+                        equipment_config.asset_id = equipment_variant_id;
+                        equipment_config.visual_prototype = definition.entity_prototype;
+                        equipment_config.model = std::move(equipment_model);
+                        equipment_config.animated_bounds =
+                            equipment_config.model->bounds.expanded(definition.bounds_padding);
+                        equipment_config.model_scale = definition.model_scale;
+                        equipment_config.bounds_padding = definition.bounds_padding;
+                        equipment_config.minimum_view_distance = lod.minimum_distance;
+                        equipment_config.maximum_view_distance = lod.maximum_distance;
+                        equipment_config.flags =
+                            definition.shadow_policy == entities::VisualShadowPolicy::cast
+                                ? renderer::RenderObjectFlags::cast_shadow
+                                : renderer::RenderObjectFlags::none;
+                        const auto definition_copy = definition;
+                        const auto selected_channel =
+                            state_rule == nullptr ? std::string{} : state_rule->channel;
+                        const auto selected_value =
+                            state_rule == nullptr ? std::string{} : state_rule->value;
+                        const auto equipment_slot = equipment.slot;
+                        const auto equipment_variant = equipment.variant;
+                        equipment_config.object_filter =
+                            [definition_copy, selected_channel, selected_value, equipment_slot,
+                             equipment_variant](const RenderObjectSnapshot& object) {
+                                const auto* selected_model = definition_copy.resolve_model_state_rule(
+                                    object.visual_states);
+                                const auto model_matches =
+                                    selected_channel.empty()
+                                        ? selected_model == nullptr
+                                        : selected_model != nullptr &&
+                                              selected_model->channel == selected_channel &&
+                                              selected_model->value == selected_value;
+                                return model_matches &&
+                                       std::ranges::any_of(
+                                           object.equipment,
+                                           [&](const EquipmentVisualSnapshot& selected_equipment) {
+                                               return selected_equipment.slot == equipment_slot &&
+                                                      selected_equipment.variant ==
+                                                          equipment_variant;
+                                           });
+                            };
+                        if (equipment.skinned) {
+                            const auto node_remap =
+                                held_attachment.value().equipment_to_character_nodes;
+                            equipment_config.node_matrices_override =
+                                [character_pose_cache, node_remap](const RenderObjectSnapshot& object) {
+                                    const auto pose = character_pose_cache->find(
+                                        object.source_net_id.value());
+                                    if (pose == character_pose_cache->end()) {
+                                        return core::Result<std::vector<math::Mat4f>>::failure(
+                                            "model_presentation.missing_attachment_pose",
+                                            "skinned equipment requires a retained character pose");
+                                    }
+                                    std::vector<math::Mat4f> matrices;
+                                    matrices.reserve(node_remap.size());
+                                    for (const auto character_node : node_remap) {
+                                        if (character_node >= pose->second.size()) {
+                                            return core::Result<std::vector<math::Mat4f>>::failure(
+                                                "model_presentation.invalid_attachment_remap",
+                                                "skinned equipment node remap exceeds the character pose");
+                                        }
+                                        matrices.push_back(pose->second[character_node]);
+                                    }
+                                    return core::Result<std::vector<math::Mat4f>>::success(
+                                        std::move(matrices));
+                                };
+                        } else {
+                            equipment_config.instance_model_transform =
+                                [character_pose_cache, held = held_attachment.value(),
+                                 stowed = stowed_attachment.value(), equipment_slot,
+                                 equipment_variant](const RenderObjectSnapshot& object) {
+                                const auto selected = std::ranges::find_if(
+                                    object.equipment,
+                                    [&](const EquipmentVisualSnapshot& selected_equipment) {
+                                        return selected_equipment.slot == equipment_slot &&
+                                               selected_equipment.variant == equipment_variant;
+                                    });
+                                const auto pose =
+                                    character_pose_cache->find(object.source_net_id.value());
+                                if (selected == object.equipment.end() ||
+                                    pose == character_pose_cache->end()) {
+                                    return core::Result<math::Mat4f>::failure(
+                                        "model_presentation.missing_attachment_pose",
+                                        "equipment attachment requires a retained character pose");
+                                }
+                                return animation::equipment_socket_matrix(
+                                    pose->second, selected->stowed ? stowed : held);
+                            };
+                        }
+
+                        PresentationEntry equipment_entry;
+                        equipment_entry.visual_id = definition.id;
+                        equipment_entry.is_fallback = false;
+                        auto equipment_status = equipment_entry.presentation.initialize(
+                            renderer, std::move(equipment_config));
+                        if (!equipment_status) {
+                            rollback();
+                            return equipment_status;
+                        }
+                        presentations_.push_back(std::move(equipment_entry));
+                    }
+                }
             }
         }
         stats_.fallback_model_definition_count += definition_used_fallback ? 1U : 0U;
@@ -499,11 +771,15 @@ core::Status ModelPresentationSystem::initialize(
 }
 
 core::Result<ModelPresentationSystemStats>
-ModelPresentationSystem::synchronize(renderer::Renderer& renderer, const RenderSnapshot& snapshot) {
+ModelPresentationSystem::synchronize(renderer::Renderer& renderer, const RenderSnapshot& snapshot,
+                                     const renderer::RenderCamera* camera) {
     if (!initialized_) {
         return core::Result<ModelPresentationSystemStats>::failure(
             "model_presentation.not_initialized",
             "model presentation system must be initialized before synchronization");
+    }
+    if (camera != nullptr && animation_camera_ != nullptr) {
+        *animation_camera_ = *camera;
     }
     ModelPresentationSystemStats frame_stats;
     frame_stats.definition_count = stats_.definition_count;
@@ -555,6 +831,7 @@ core::Status ModelPresentationSystem::shutdown(renderer::Renderer& renderer) {
         }
     }
     presentations_.clear();
+    animation_camera_.reset();
     known_visual_prototypes_.clear();
     unresolved_visuals_.clear();
     load_diagnostics_.clear();

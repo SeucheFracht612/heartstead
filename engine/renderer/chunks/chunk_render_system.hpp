@@ -8,6 +8,7 @@
 #include "engine/renderer/render_camera.hpp"
 #include "engine/renderer/renderer_config.hpp"
 #include "engine/renderer/rhi/render_frame_plan.hpp"
+#include "engine/renderer/visibility/visibility_hierarchy.hpp"
 #include "engine/world/streaming/chunk_streamer.hpp"
 #include "engine/world/world_state.hpp"
 
@@ -15,6 +16,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <unordered_set>
 #include <vector>
 
 namespace heartstead::renderer {
@@ -75,6 +77,9 @@ struct ChunkRenderStats {
     std::size_t memory_pressure_evicted_mesh_bytes = 0;
     std::size_t residency_suppressed_chunk_count = 0;
     std::size_t gpu_terrain_budget_bytes = 0;
+    std::size_t visibility_hierarchy_nodes = 0;
+    std::size_t visibility_nodes_tested = 0;
+    std::size_t visibility_nodes_culled = 0;
 
     double culling_ms = 0.0;
     double draw_list_ms = 0.0;
@@ -95,6 +100,9 @@ struct ChunkDrawList {
     std::size_t drawn_chunk_count = 0;
     std::size_t vertex_count = 0;
     std::size_t index_count = 0;
+    std::size_t visibility_hierarchy_nodes = 0;
+    std::size_t visibility_nodes_tested = 0;
+    std::size_t visibility_nodes_culled = 0;
 };
 
 struct TerrainPipelineSet {
@@ -222,6 +230,8 @@ class ChunkRenderSystem {
     std::vector<PendingUpload> pending_uploads_;
     std::vector<std::vector<terrain::GpuChunkVertex>> gpu_vertex_pool_;
     std::vector<VisibleChunk> visible_chunks_scratch_;
+    VisibilityHierarchy visibility_hierarchy_;
+    std::unordered_set<VisibilityKey> visibility_keys_;
     std::unique_ptr<ChunkMeshScheduler> mesh_scheduler_;
     std::shared_ptr<const world::BlockRenderTableSnapshot> render_table_;
     std::uint64_t next_sequence_ = 1;

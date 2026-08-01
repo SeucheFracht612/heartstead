@@ -33,6 +33,7 @@ enum class BenchmarkSceneKind {
     light_heavy_settlement,
     terrain_material_preview,
     starting_biome,
+    character_workshop,
 };
 
 [[nodiscard]] std::string_view benchmark_scene_name(BenchmarkSceneKind kind) noexcept;

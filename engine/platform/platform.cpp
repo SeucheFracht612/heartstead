@@ -183,6 +183,9 @@ struct X11OutgoingIncrementalClipboardTransfer {
     case XK_r:
     case XK_R:
         return KeyCode::r;
+    case XK_m:
+    case XK_M:
+        return KeyCode::m;
     case XK_Shift_L:
         return KeyCode::left_shift;
     case XK_Control_L:
@@ -2272,6 +2275,8 @@ std::string_view key_code_name(KeyCode key) noexcept {
         return "e";
     case KeyCode::r:
         return "r";
+    case KeyCode::m:
+        return "m";
     case KeyCode::left_shift:
         return "left_shift";
     case KeyCode::left_control:

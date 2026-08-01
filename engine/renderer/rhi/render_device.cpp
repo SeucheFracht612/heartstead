@@ -78,6 +78,8 @@ class HeadlessRenderDevice final : public IRenderDevice {
         result.supports_image_upload = true;
         result.supports_sampler_cache = true;
         result.supports_draw_binding = true;
+        result.supports_multi_draw_indirect = true;
+        result.supports_draw_indirect_count = true;
         result.supports_frame_submission = true;
         result.supports_depth = true;
         result.headless = true;
@@ -229,6 +231,52 @@ class HeadlessRenderDevice final : public IRenderDevice {
                         }
                     }
 
+                    if (!draw.indirect.is_structurally_valid()) {
+                        return core::Result<RenderFrameStats>::failure(
+                            "renderer.invalid_indirect_draw",
+                            "render draw has an invalid indirect command binding");
+                    }
+                    if (draw.indirect.is_valid()) {
+                        if (!draw.index_buffer.is_valid()) {
+                            return core::Result<RenderFrameStats>::failure(
+                                "renderer.indirect_draw_requires_index_buffer",
+                                "indexed indirect draw requires an index buffer");
+                        }
+                        const auto command = resources_.find(draw.indirect.command_buffer.value);
+                        if (command == resources_.end() ||
+                            (command->second.usage != RenderBufferUsage::indirect &&
+                             command->second.usage != RenderBufferUsage::storage_indirect)) {
+                            return core::Result<RenderFrameStats>::failure(
+                                "renderer.invalid_indirect_buffer_usage",
+                                "render draw command buffer is missing or lacks indirect usage");
+                        }
+                        const auto available = command->second.byte_size;
+                        const auto command_size = sizeof(RenderIndexedIndirectCommand);
+                        const auto range_valid = draw.indirect.command_offset <= available &&
+                            command_size <= available - draw.indirect.command_offset &&
+                            static_cast<std::size_t>(draw.indirect.maximum_draw_count - 1U) <=
+                                (available - draw.indirect.command_offset - command_size) /
+                                    draw.indirect.stride;
+                        if (!range_valid) {
+                            return core::Result<RenderFrameStats>::failure(
+                                "renderer.indirect_range_out_of_bounds",
+                                "render draw indirect command range exceeds its buffer");
+                        }
+                        if (draw.indirect.count_buffer.is_valid()) {
+                            const auto count = resources_.find(draw.indirect.count_buffer.value);
+                            if (count == resources_.end() ||
+                                (count->second.usage != RenderBufferUsage::indirect &&
+                                 count->second.usage != RenderBufferUsage::storage_indirect) ||
+                                draw.indirect.count_offset > count->second.byte_size ||
+                                sizeof(std::uint32_t) >
+                                    count->second.byte_size - draw.indirect.count_offset) {
+                                return core::Result<RenderFrameStats>::failure(
+                                    "renderer.invalid_indirect_count_buffer",
+                                    "render draw count buffer is missing, incompatible, or too small");
+                            }
+                        }
+                    }
+
                     const auto layout =
                         pipeline_layouts_.find(pipeline->second.material_id.value());
                     if (layout == pipeline_layouts_.end()) {
@@ -293,11 +341,18 @@ class HeadlessRenderDevice final : public IRenderDevice {
                         bound_pipeline = draw.pipeline;
                         ++stats.pipeline_bind_count;
                     }
-                    ++stats.draw_count;
+                    const auto submitted_draws = draw.indirect.is_valid()
+                                                     ? draw.indirect.maximum_draw_count
+                                                     : 1U;
+                    stats.draw_count += submitted_draws;
+                    stats.indirect_draw_count +=
+                        draw.indirect.is_valid() ? submitted_draws : 0U;
                     if (draw.index_buffer.is_valid()) {
-                        ++stats.indexed_draw_count;
-                        stats.total_indices +=
-                            static_cast<std::size_t>(draw.index_count) * draw.instance_count;
+                        stats.indexed_draw_count += submitted_draws;
+                        if (!draw.indirect.is_valid()) {
+                            stats.total_indices +=
+                                static_cast<std::size_t>(draw.index_count) * draw.instance_count;
+                        }
                     }
                 }
             }
@@ -658,10 +713,16 @@ class HeadlessRenderDevice final : public IRenderDevice {
                     "renderer.unknown_descriptor_resource",
                     "descriptor write resource handle is not owned by this device");
             }
-            const auto required_usage = binding->kind == RenderDescriptorKind::storage_buffer
-                                            ? RenderBufferUsage::storage
-                                            : RenderBufferUsage::uniform;
-            if (resource->second.usage != required_usage) {
+            const auto storage_binding =
+                binding->kind == RenderDescriptorKind::storage_buffer;
+            const auto compatible_usage = storage_binding
+                                              ? resource->second.usage ==
+                                                        RenderBufferUsage::storage ||
+                                                    resource->second.usage ==
+                                                        RenderBufferUsage::storage_indirect
+                                              : resource->second.usage ==
+                                                    RenderBufferUsage::uniform;
+            if (!compatible_usage) {
                 return core::Result<RenderDescriptorWriteStats>::failure(
                     "renderer.invalid_descriptor_resource_usage",
                     "buffer descriptor write references an incompatible buffer usage");
@@ -1143,6 +1204,8 @@ core::Status validate_render_buffer_desc(const RenderBufferDesc& desc) {
     case RenderBufferUsage::index:
     case RenderBufferUsage::uniform:
     case RenderBufferUsage::storage:
+    case RenderBufferUsage::indirect:
+    case RenderBufferUsage::storage_indirect:
         break;
     }
     switch (desc.memory) {
@@ -1723,6 +1786,10 @@ std::string_view render_buffer_usage_name(RenderBufferUsage usage) noexcept {
         return "uniform";
     case RenderBufferUsage::storage:
         return "storage";
+    case RenderBufferUsage::indirect:
+        return "indirect";
+    case RenderBufferUsage::storage_indirect:
+        return "storage_indirect";
     }
     return "unknown";
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/entities/entity_motion_snapshot.hpp"
+#include "engine/items/equipment_loadout.hpp"
 #include "engine/movement/character_collision.hpp"
 #include "engine/movement/movement_prediction.hpp"
 #include "engine/movement/remote_player_interpolation.hpp"
@@ -77,6 +78,10 @@ class ClientRuntime final {
     [[nodiscard]] std::vector<const movement::PlayerControllerSnapshot*> movement_snapshots() const;
     [[nodiscard]] std::vector<const entities::EntityMotionSnapshot*>
     entity_motion_snapshots() const;
+    [[nodiscard]] core::Status set_equipment_loadout(core::NetId entity,
+                                                     items::EquipmentLoadout loadout);
+    [[nodiscard]] const items::EquipmentLoadout*
+    equipment_loadout(core::NetId entity) const noexcept;
     [[nodiscard]] std::span<const core::NetId> player_tombstones() const noexcept;
     [[nodiscard]] std::span<const world::VoxelChangeRecord> accepted_voxel_edits() const noexcept;
     [[nodiscard]] core::Status record_accepted_voxel_edit(world::VoxelChangeRecord change);
@@ -106,6 +111,7 @@ class ClientRuntime final {
     std::unordered_map<std::uint64_t, movement::RemotePlayerInterpolator>
         remote_player_interpolators_;
     std::unordered_map<std::uint64_t, entities::EntityMotionSnapshot> entity_motion_snapshots_;
+    std::unordered_map<std::uint64_t, items::EquipmentLoadout> equipment_loadouts_;
     std::vector<core::NetId> player_tombstones_;
     std::vector<world::VoxelChangeRecord> accepted_voxel_edits_;
     core::NetId local_player_net_id_;

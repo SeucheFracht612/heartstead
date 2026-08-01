@@ -41,6 +41,7 @@ data flow, failure behavior, and extension points rather than repeat every class
 - [Architecture overview](architecture/overview.md)
 - [Runtime composition](architecture/runtime_composition.md)
 - [Platform](architecture/platform.md)
+- [Physics](architecture/physics.md)
 - [Jobs](architecture/jobs.md)
 - [Math](architecture/math.md)
 - [Debug inspection](architecture/debug_inspection.md)
@@ -81,12 +82,20 @@ data flow, failure behavior, and extension points rather than repeat every class
 
 - [Assets](architecture/assets.md)
 - [Rendering](architecture/rendering.md)
+- [Renderer RHI](architecture/rhi.md)
+- [Resource lifetime and synchronization](architecture/resource_lifetime_and_synchronization.md)
+- [Shader and material conventions](architecture/shader_and_material_conventions.md)
+- [Large-world rendering](architecture/large_world_rendering.md)
 - [Environment rendering](architecture/environment_rendering.md)
 - [Chunk meshing](architecture/chunk_meshing.md)
 - [Animation](architecture/animation.md)
+- [Animation, equipment, and stateful visuals](animation_equipment_and_visual_states.md)
 - [Particles](architecture/particles.md)
 - [Audio](architecture/audio.md)
 - [Game UI](architecture/game_ui.md)
+- [UI rendering](architecture/ui_rendering.md)
+- [Quality settings](architecture/quality_settings.md)
+- [Performance budgets](architecture/performance_budgets.md)
 
 **Multiplayer and persistence**
 
@@ -113,7 +122,10 @@ data flow, failure behavior, and extension points rather than repeat every class
 - [Build instructions](dev/build_instructions.md)
 - [Running Heartstead](dev/running.md)
 - [Testing](dev/testing.md)
+- [Renderer debugging](dev/renderer_debugging.md)
+- [Visual regression](dev/visual_regression.md)
 - [Renderer benchmarks](performance/renderer_benchmarks.md)
+- [Known renderer limitations](known_renderer_limitations.md)
 
 ## Maintenance rules
 

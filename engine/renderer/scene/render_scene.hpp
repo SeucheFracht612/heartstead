@@ -4,6 +4,7 @@
 #include "engine/math/matrix.hpp"
 #include "engine/renderer/assets/render_asset_handles.hpp"
 #include "engine/renderer/render_camera.hpp"
+#include "engine/renderer/visibility/visibility_hierarchy.hpp"
 #include "engine/world/coords/world_position.hpp"
 
 #include <array>
@@ -75,6 +76,7 @@ enum class RenderEffectFlags : std::uint32_t {
     unlit_particle = 1U << 7U,
     emissive_particle = 1U << 8U,
     premultiplied_particle = 1U << 9U,
+    disable_weather_response = 1U << 10U,
 };
 
 [[nodiscard]] constexpr RenderEffectFlags operator|(RenderEffectFlags left,
@@ -138,6 +140,7 @@ struct RenderObjectProxy {
     float water_wave_speed = 1.0F;
     float water_optical_depth = 8.0F;
     float water_foam_strength = 0.0F;
+    math::Vec2f water_world_phase{};
     float particle_emissive_intensity = 1.0F;
     float particle_soft_fade_distance = 0.0F;
     float particle_velocity_stretch = 0.0F;
@@ -216,10 +219,12 @@ struct RenderObjectInstance {
     float wind_phase = 0.0F;
     float wind_stiffness = 1.0F;
     float foliage_transmission = 0.0F;
+    math::Vec2f water_world_phase{};
     std::array<float, 4> effect_parameters2{};
     float visibility = 1.0F;
     bool camera_visible = true;
     std::uint64_t shadow_visibility_mask = 0;
+    bool reset_motion_history = false;
 };
 
 struct RenderInstanceBatch {
@@ -257,6 +262,9 @@ struct RenderSceneStats {
     std::uint32_t culled_objects = 0;
     std::uint32_t hidden_objects = 0;
     std::uint32_t instance_batches = 0;
+    std::uint32_t visibility_hierarchy_nodes = 0;
+    std::uint32_t visibility_nodes_tested = 0;
+    std::uint32_t visibility_nodes_culled = 0;
 };
 
 struct RenderSceneFrame {
@@ -321,6 +329,7 @@ class RenderScene {
     std::vector<std::uint32_t> free_objects_;
     std::vector<std::uint32_t> free_lights_;
     std::vector<std::uint32_t> free_skin_palettes_;
+    mutable VisibilityHierarchy visibility_hierarchy_;
 };
 
 [[nodiscard]] core::Status validate_render_object_proxy(const RenderObjectProxy& object);

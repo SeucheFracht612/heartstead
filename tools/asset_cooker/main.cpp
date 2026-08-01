@@ -215,6 +215,20 @@ int main(int argc, char** argv) {
             }
             for (const auto& visual : content_report.visual_definitions.definitions()) {
                 only_logical_ids.push_back(visual.model_asset);
+                for (const auto& lod : visual.lods) {
+                    only_logical_ids.push_back(lod.model_asset);
+                }
+                for (const auto& state : visual.state_rules) {
+                    if (!state.model_asset.empty()) {
+                        only_logical_ids.push_back(state.model_asset);
+                    }
+                }
+                for (const auto& equipment : visual.equipment_variants) {
+                    only_logical_ids.push_back(equipment.model_asset);
+                }
+                if (visual.impostor.enabled()) {
+                    only_logical_ids.push_back(visual.impostor.model_asset);
+                }
             }
             if (include_presentation_assets) {
                 for (const auto& species : content_report.vegetation_species.species()) {

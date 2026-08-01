@@ -5,6 +5,7 @@ layout(set = 0, binding = 0) uniform sampler2DArray ui_atlas;
 layout(location = 0) in vec2 in_uv;
 layout(location = 1) in vec4 in_color;
 layout(location = 2) flat in uint in_texture_layer;
+layout(location = 3) flat in uint in_flags;
 
 layout(location = 0) out vec4 out_color;
 
@@ -15,6 +16,14 @@ vec3 linear_to_srgb(vec3 value) {
 }
 
 void main() {
-    vec4 color = texture(ui_atlas, vec3(in_uv, float(in_texture_layer))) * in_color;
+    vec4 sampled = texture(ui_atlas, vec3(in_uv, float(in_texture_layer)));
+    vec4 color;
+    if ((in_flags & 1u) != 0u) {
+        float width = max(fwidth(sampled.r), 1.0 / 255.0);
+        float coverage = smoothstep(0.5 - width, 0.5 + width, sampled.r);
+        color = vec4(in_color.rgb, in_color.a * coverage);
+    } else {
+        color = sampled * in_color;
+    }
     out_color = vec4(linear_to_srgb(max(color.rgb, vec3(0.0))), color.a);
 }

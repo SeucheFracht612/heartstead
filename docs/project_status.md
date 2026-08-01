@@ -3,9 +3,7 @@
 This page records the maintained implementation status of Heartstead. It is not a roadmap or a
 promise that every architecture target is complete.
 
-**Audit baseline:** repository commit `7ee2cf940ecd3dfdffce48eef2bc0e3be4646260`
-(`docs(rendering): document environmental systems`). Update the baseline when this page is
-re-audited.
+**Audit baseline:** repository state documented and validated on 2026-08-01.
 
 ## What works now
 
@@ -13,7 +11,8 @@ re-audited.
 
 `heartstead_dev_game` composes an authoritative server and a client in one process for local play.
 It can also run as a remote client against `heartstead_dedicated_server`. The development scene
-exercises voxel editing, movement, camera modes, inventory UI, models, animation, audio, particles,
+exercises voxel editing, movement, camera modes, inventory and map UI, models, animation, audio,
+particles,
 profile-driven environment state, lighting, fluids, saves, networking, and diagnostics. The
 selected environment profile is combined with the deterministic solar path, and swimming selects
 the underwater presentation profile.
@@ -41,6 +40,12 @@ The production environment stack includes data-driven atmosphere, clouds, fog, w
 large-body water, vegetation, textured billboard and mesh particles, trails, and surface marks.
 The development game consumes profile-driven environment state; the `starting-biome` renderer
 benchmark composes the broader environment stack into a stable integration workload.
+
+The retained UI path uses a packaged Noto Sans font rendered from a deterministic SDF atlas,
+strict UTF-8 decoding, DPI-scaled widgets, hierarchical clipping/scissors, nine-slice panels,
+atlased icons, inventory previews, accessibility color transforms, and exposure-independent final
+composition. The game includes a discovered-area minimap and a full map with surface,
+underground, aerial, and mod-defined layers plus gameplay-owned markers.
 
 The asset pipeline discovers source assets through mods/resource packs, validates and cooks them,
 and loads versioned runtime payloads. Model v5 retains the project's supported glTF geometry, PBR
@@ -116,9 +121,12 @@ cmake --build --preset default-debug --target help
 - **Networking:** numeric IPv4 only; no DNS discovery, encrypted identity, NAT traversal,
   matchmaking, or public-service hardening.
 - **Dedicated persistence:** the dedicated executable is memory-only.
-- **Renderer:** the current frame graph, resource set, and material binding model are intentionally
-  bounded rather than general-purpose. Local shadowing is budgeted to two spotlight maps; point
-  lights support direct lighting, but their omnidirectional shadow path is not enabled.
+- **Renderer:** local shadowing uses a bounded budget and point lights support direct lighting, but
+  their omnidirectional shadow path is not enabled. The current anti-aliasing path is FXAA rather
+  than temporal AA, so no temporal history image is active. Quality profiles expose the complete
+  policy surface, but vegetation, water, particle, reflection, and asset-LOD values are not yet
+  live-wired and the game has no player-facing quality selector. See
+  [known renderer limitations](known_renderer_limitations.md) for the exact extension boundary.
 - **Assets:** use the [asset pipeline guide](asset_pipeline.md) as the exact supported-format
   contract; do not infer support from what a third-party glTF exporter can produce.
 - **Compatibility:** schemas and binary payloads are versioned, but the project is pre-release and

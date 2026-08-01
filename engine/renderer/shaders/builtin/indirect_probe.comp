@@ -1,0 +1,21 @@
+#version 450
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Commands {
+    uint words[];
+} commands;
+
+layout(set = 0, binding = 1, std430) buffer Count {
+    uint value;
+} count_buffer;
+
+void main() {
+    // VkDrawIndexedIndirectCommand layout.
+    commands.words[0] = 3;
+    commands.words[1] = 1;
+    commands.words[2] = 0;
+    commands.words[3] = 0;
+    commands.words[4] = 0;
+    count_buffer.value = 1;
+}

@@ -6,6 +6,14 @@
 
 namespace heartstead::renderer {
 
+core::Status FrameImageQualitySettings::validate() const noexcept {
+    if (!std::isfinite(render_scale) || render_scale < 0.5F || render_scale > 1.0F) {
+        return core::Status::failure("frame_builder.invalid_render_scale",
+                                     "internal render scale must be in the range 0.5..1.0");
+    }
+    return core::Status::ok();
+}
+
 FrameBuilder::FrameBuilder(rhi::RenderExtent extent, rhi::ClearColor clear_color)
     : extent_(extent), clear_color_(clear_color) {}
 
@@ -49,6 +57,19 @@ void FrameBuilder::set_image_quality_pipelines(rhi::RenderResourceHandle ssao,
     bloom_pipeline_ = bloom;
 }
 
+core::Status FrameBuilder::set_image_quality_settings(FrameImageQualitySettings settings) {
+    auto status = settings.validate();
+    if (!status) {
+        return status;
+    }
+    image_quality_ = settings;
+    return core::Status::ok();
+}
+
+FrameImageQualitySettings FrameBuilder::image_quality_settings() const noexcept {
+    return image_quality_;
+}
+
 void FrameBuilder::update_exposure_adaptation(float scene_luminance, float delta_seconds) noexcept {
     if (!exposure_.automatic_exposure || !std::isfinite(scene_luminance) ||
         !std::isfinite(delta_seconds) || delta_seconds <= 0.0F) {
@@ -84,6 +105,13 @@ core::Result<rhi::RenderFramePlan> FrameBuilder::build_plan() const {
     }
 
     RenderFramePlanBuilder builder(extent_);
+    const rhi::RenderExtent scene_extent{
+        std::max(1U, static_cast<std::uint32_t>(
+                         std::lround(static_cast<double>(extent_.width) *
+                                     image_quality_.render_scale))),
+        std::max(1U, static_cast<std::uint32_t>(
+                         std::lround(static_cast<double>(extent_.height) *
+                                     image_quality_.render_scale)))};
     core::Status status = core::Status::ok();
     const auto fail = [](const core::Status& failed) {
         return core::Result<RenderFramePlan>::failure(failed.error().code, failed.error().message);
@@ -91,8 +119,14 @@ core::Result<rhi::RenderFramePlan> FrameBuilder::build_plan() const {
 
     // Linear radiance target. World shading never touches the swapchain image.
     status =
-        builder.add_resource({std::string(scene_color_resource_name), extent_,
+        builder.add_resource({std::string(scene_color_resource_name), scene_extent,
                               RenderResourceLifetime::transient, RenderImageFormat::rgba16_sfloat});
+    if (!status) {
+        return fail(status);
+    }
+    status = builder.add_resource({std::string(scene_motion_resource_name), scene_extent,
+                                   RenderResourceLifetime::transient,
+                                   RenderImageFormat::rg16_sfloat});
     if (!status) {
         return fail(status);
     }
@@ -115,7 +149,7 @@ core::Result<rhi::RenderFramePlan> FrameBuilder::build_plan() const {
         }
     }
     status =
-        builder.add_resource({std::string(depth_resource_name), extent_,
+        builder.add_resource({std::string(depth_resource_name), scene_extent,
                               RenderResourceLifetime::transient, RenderImageFormat::d32_sfloat});
     if (!status) {
         return fail(status);
@@ -127,25 +161,26 @@ core::Result<rhi::RenderFramePlan> FrameBuilder::build_plan() const {
         return fail(status);
     }
     status = builder.add_resource(
-        {"scene_ao", extent_, RenderResourceLifetime::transient, RenderImageFormat::r8_unorm});
+        {"scene_ao", scene_extent, RenderResourceLifetime::transient, RenderImageFormat::r8_unorm});
     if (!status) {
         return fail(status);
     }
     status = builder.add_resource(
-        {"scene_depth_copy", extent_, RenderResourceLifetime::transient,
+        {"scene_depth_copy", scene_extent, RenderResourceLifetime::transient,
          RenderImageFormat::rg16_sfloat});
     if (!status) {
         return fail(status);
     }
     for (const auto* name : {"scene_grounded", "scene_aa", "bloom_hdr"}) {
         status = builder.add_resource(
-            {name, extent_, RenderResourceLifetime::transient, RenderImageFormat::rgba16_sfloat});
+            {name, scene_extent, RenderResourceLifetime::transient, RenderImageFormat::rgba16_sfloat});
         if (!status) {
             return fail(status);
         }
     }
 
     const std::string scene{scene_color_resource_name};
+    const std::string motion{scene_motion_resource_name};
     const std::string depth{depth_resource_name};
     const std::string output{output_resource_name};
     std::vector<RenderPassSampledResource> shadow_samples;
@@ -173,17 +208,18 @@ core::Result<rhi::RenderFramePlan> FrameBuilder::build_plan() const {
     // radiance; none of them encodes a display transfer function.
     status = builder.add_pass({.name = "sky",
                                .kind = RenderPassKind::clear,
-                               .writes = {scene, depth},
+                               .writes = {scene, motion, depth},
                                .clear_color = clear_color_});
     if (!status) {
         return fail(status);
     }
     auto opaque_reads = world_shadow_reads;
     opaque_reads.push_back(scene);
+    opaque_reads.push_back(motion);
     status = builder.add_pass({.name = "opaque_terrain",
                                .kind = RenderPassKind::world,
                                .reads = std::move(opaque_reads),
-                               .writes = {scene, depth},
+                               .writes = {scene, motion, depth},
                                .sampled_resources = shadow_samples});
     if (!status) {
         return fail(status);
@@ -191,67 +227,94 @@ core::Result<rhi::RenderFramePlan> FrameBuilder::build_plan() const {
     for (const auto* name : {"alpha_tested_terrain", "rich_static_instances"}) {
         auto reads = world_shadow_reads;
         reads.push_back(scene);
+        reads.push_back(motion);
         reads.push_back(depth);
         status = builder.add_pass({.name = name,
                                    .kind = RenderPassKind::world,
                                    .reads = std::move(reads),
-                                   .writes = {scene, depth},
+                                   .writes = {scene, motion, depth},
                                    .sampled_resources = shadow_samples});
         if (!status) {
             return fail(status);
         }
     }
-    status = builder.add_pass({.name = "ssao",
-                               .kind = RenderPassKind::post_process,
-                               .reads = {depth},
-                               .writes = {"scene_ao", "scene_depth_copy"},
-                               .sampled_resources = {{"scene_depth", depth, false}}});
+    status = image_quality_.ambient_occlusion
+                 ? builder.add_pass({.name = "ssao",
+                                     .kind = RenderPassKind::post_process,
+                                     .reads = {depth},
+                                     .writes = {"scene_ao", "scene_depth_copy"},
+                                     .sampled_resources = {{"scene_depth", depth, false}}})
+                 : builder.add_pass({.name = "ssao",
+                                     .kind = RenderPassKind::post_process,
+                                     .reads = {depth}});
     if (!status) {
         return fail(status);
     }
-    status = builder.add_pass(
-        {.name = "ao_composite",
-         .kind = RenderPassKind::post_process,
-         .reads = {scene, "scene_ao"},
-         .writes = {"scene_grounded"},
-         .sampled_resources = {{"scene_hdr", scene, false}, {"scene_ao", "scene_ao", false}}});
+    status = image_quality_.ambient_occlusion
+                 ? builder.add_pass(
+                       {.name = "ao_composite",
+                        .kind = RenderPassKind::post_process,
+                        .reads = {scene, "scene_ao"},
+                        .writes = {"scene_grounded"},
+                        .sampled_resources = {{"scene_hdr", scene, false},
+                                              {"scene_ao", "scene_ao", false}}})
+                 : builder.add_pass({.name = "ao_composite",
+                                     .kind = RenderPassKind::post_process,
+                                     .reads = {scene},
+                                     .writes = {scene}});
     if (!status) {
         return fail(status);
     }
     auto transparent_reads = world_shadow_reads;
-    transparent_reads.push_back("scene_grounded");
+    const std::string grounded = image_quality_.ambient_occlusion ? "scene_grounded" : scene;
+    transparent_reads.push_back(grounded);
     transparent_reads.push_back(depth);
-    transparent_reads.push_back("scene_depth_copy");
+    if (image_quality_.ambient_occlusion) {
+        transparent_reads.push_back("scene_depth_copy");
+    }
+    transparent_reads.push_back(motion);
     auto transparent_samples = shadow_samples;
-    transparent_samples.push_back({"scene_depth", "scene_depth_copy", false});
+    transparent_samples.push_back(
+        {"scene_depth", image_quality_.ambient_occlusion ? "scene_depth_copy" : depth, false});
     status = builder.add_pass({.name = "transparent_terrain",
                                .kind = RenderPassKind::world,
                                .reads = std::move(transparent_reads),
-                               .writes = {"scene_grounded", depth},
+                               .writes = {grounded, motion, depth},
                                .sampled_resources = std::move(transparent_samples)});
     if (!status) {
         return fail(status);
     }
     status = builder.add_pass({.name = "debug",
                                .kind = RenderPassKind::debug,
-                               .reads = {"scene_grounded", depth},
-                               .writes = {"scene_grounded", depth}});
+                               .reads = {grounded, motion, depth},
+                               .writes = {grounded, motion, depth}});
     if (!status) {
         return fail(status);
     }
-    status = builder.add_pass({.name = "anti_alias",
-                               .kind = RenderPassKind::post_process,
-                               .reads = {"scene_grounded"},
-                               .writes = {"scene_aa"},
-                               .sampled_resources = {{"input_hdr", "scene_grounded", false}}});
+    status = image_quality_.anti_aliasing
+                 ? builder.add_pass({.name = "anti_alias",
+                                     .kind = RenderPassKind::post_process,
+                                     .reads = {grounded},
+                                     .writes = {"scene_aa"},
+                                     .sampled_resources = {{"input_hdr", grounded, false}}})
+                 : builder.add_pass({.name = "anti_alias",
+                                     .kind = RenderPassKind::post_process,
+                                     .reads = {grounded},
+                                     .writes = {grounded}});
     if (!status) {
         return fail(status);
     }
-    status = builder.add_pass({.name = "bloom",
-                               .kind = RenderPassKind::post_process,
-                               .reads = {"scene_aa"},
-                               .writes = {"bloom_hdr"},
-                               .sampled_resources = {{"input_hdr", "scene_aa", false}}});
+    const std::string final_scene = image_quality_.anti_aliasing ? "scene_aa" : grounded;
+    status = image_quality_.bloom
+                 ? builder.add_pass({.name = "bloom",
+                                     .kind = RenderPassKind::post_process,
+                                     .reads = {final_scene},
+                                     .writes = {"bloom_hdr"},
+                                     .sampled_resources = {{"input_hdr", final_scene, false}}})
+                 : builder.add_pass({.name = "bloom",
+                                     .kind = RenderPassKind::clear,
+                                     .writes = {"bloom_hdr"},
+                                     .clear_color = {0.0F, 0.0F, 0.0F, 0.0F}});
     if (!status) {
         return fail(status);
     }
@@ -263,9 +326,9 @@ core::Result<rhi::RenderFramePlan> FrameBuilder::build_plan() const {
     status = builder.add_pass(
         {.name = "tone_map",
          .kind = RenderPassKind::post_process,
-         .reads = {"scene_aa", "bloom_hdr"},
+         .reads = {final_scene, "bloom_hdr"},
          .writes = {output},
-         .sampled_resources = {{.binding_name = "scene_hdr", .resource_name = "scene_aa"},
+         .sampled_resources = {{.binding_name = "scene_hdr", .resource_name = final_scene},
                                {.binding_name = "bloom_hdr", .resource_name = "bloom_hdr"}}});
     if (!status) {
         return fail(status);
@@ -328,12 +391,18 @@ FrameBuilder::build(const RenderCamera& camera, RenderCommandLists commands,
         draws.front().vertex_count = 3;
         append(index, draws);
     };
-    append_fullscreen(hdr_pass_index::ssao, ssao_pipeline_);
-    append_fullscreen(hdr_pass_index::ao_composite, ao_composite_pipeline_);
+    if (image_quality_.ambient_occlusion) {
+        append_fullscreen(hdr_pass_index::ssao, ssao_pipeline_);
+        append_fullscreen(hdr_pass_index::ao_composite, ao_composite_pipeline_);
+    }
     append(hdr_pass_index::transparent_terrain, commands.transparent_terrain_draws);
     append(hdr_pass_index::debug, commands.debug_draws);
-    append_fullscreen(hdr_pass_index::anti_alias, anti_alias_pipeline_);
-    append_fullscreen(hdr_pass_index::bloom, bloom_pipeline_);
+    if (image_quality_.anti_aliasing) {
+        append_fullscreen(hdr_pass_index::anti_alias, anti_alias_pipeline_);
+    }
+    if (image_quality_.bloom) {
+        append_fullscreen(hdr_pass_index::bloom, bloom_pipeline_);
+    }
     // The tone mapping pass takes no caller-supplied geometry: it is a fullscreen triangle the
     // graph owns, generated in the vertex shader, so the draw is synthesized here rather than
     // being something every caller has to remember to submit.

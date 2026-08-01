@@ -1,5 +1,6 @@
 #include "engine/renderer/frame/frame_builder.hpp"
 #include "engine/renderer/ui/ui_renderer.hpp"
+#include "engine/core/file_io.hpp"
 
 #include <array>
 #include <cassert>
@@ -11,6 +12,7 @@ using namespace heartstead;
 struct UiFixture {
     std::unique_ptr<renderer::rhi::IRenderDevice> device;
     renderer::rhi::RenderResourceHandle pipeline;
+    std::shared_ptr<const renderer::UiFont> font;
 };
 
 [[nodiscard]] UiFixture make_fixture() {
@@ -48,12 +50,19 @@ struct UiFixture {
     pipeline.blend_mode = RenderBlendMode::alpha;
     auto created = device.value()->create_graphics_pipeline(pipeline);
     assert(created);
-    return {std::move(device).value(), created.value().handle};
+    auto font_bytes = core::read_binary_file(
+        std::filesystem::path{HEARTSTEAD_TEST_SOURCE_DIR} /
+        "mods/base/assets/fonts/heartstead-ui.ttf");
+    assert(font_bytes);
+    auto font = renderer::UiFont::build(font_bytes.value());
+    assert(font);
+    return {std::move(device).value(), created.value().handle,
+            std::make_shared<renderer::UiFont>(std::move(font).value())};
 }
 
 void test_ui_geometry_scissors_and_capacity() {
     auto fixture = make_fixture();
-    renderer::UiRenderer ui(*fixture.device, fixture.pipeline);
+    renderer::UiRenderer ui(*fixture.device, fixture.pipeline, fixture.font);
     renderer::UiRendererConfig config;
     config.maximum_vertices = 8;
     config.maximum_indices = 12;
@@ -132,11 +141,28 @@ void test_ui_pixel_coordinates_use_top_left_origin() {
     assert(bottom_right == math::Vec2f(1.0F, 1.0F));
 }
 
+void test_ui_accessibility_color_transform() {
+    renderer::UiAccessibilitySettings settings;
+    settings.contrast = 1.25F;
+    settings.saturation = 0.8F;
+    settings.color_vision_mode = renderer::UiColorVisionMode::deuteranopia;
+    assert(settings.validate());
+    const auto transformed =
+        renderer::apply_ui_accessibility_color({0.9F, 0.2F, 0.1F, 0.75F}, settings);
+    assert(transformed[0] >= 0.0F && transformed[0] <= 1.0F);
+    assert(transformed[1] >= 0.0F && transformed[1] <= 1.0F);
+    assert(transformed[2] >= 0.0F && transformed[2] <= 1.0F);
+    assert(transformed[3] == 0.75F);
+    settings.contrast = 4.0F;
+    assert(!settings.validate());
+}
+
 } // namespace
 
 int main() {
     test_ui_geometry_scissors_and_capacity();
     test_ui_validation();
     test_ui_pixel_coordinates_use_top_left_origin();
+    test_ui_accessibility_color_transform();
     return 0;
 }

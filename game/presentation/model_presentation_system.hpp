@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <span>
 #include <string>
 #include <unordered_set>
@@ -50,7 +51,8 @@ class ModelPresentationSystem final {
         renderer::Renderer& renderer, const entities::VisualDefinitionRegistry& visual_definitions,
         const std::filesystem::path& cooked_asset_root, ModelPresentationSystemConfig config = {});
     [[nodiscard]] core::Result<ModelPresentationSystemStats>
-    synchronize(renderer::Renderer& renderer, const RenderSnapshot& snapshot);
+    synchronize(renderer::Renderer& renderer, const RenderSnapshot& snapshot,
+                const renderer::RenderCamera* camera = nullptr);
     [[nodiscard]] core::Status shutdown(renderer::Renderer& renderer);
 
     [[nodiscard]] bool is_initialized() const noexcept;
@@ -66,6 +68,7 @@ class ModelPresentationSystem final {
     };
 
     std::vector<PresentationEntry> presentations_;
+    std::shared_ptr<renderer::RenderCamera> animation_camera_;
     std::unordered_set<std::string> known_visual_prototypes_;
     std::unordered_set<std::string> unresolved_visuals_;
     std::vector<PresentationAssetLoadDiagnostic> load_diagnostics_;

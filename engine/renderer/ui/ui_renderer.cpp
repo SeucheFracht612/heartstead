@@ -31,6 +31,49 @@ core::Status UiRendererConfig::validate() const {
     return core::Status::ok();
 }
 
+core::Status UiAccessibilitySettings::validate() const noexcept {
+    if (!std::isfinite(contrast) || contrast < 0.5F || contrast > 2.0F ||
+        !std::isfinite(saturation) || saturation < 0.0F || saturation > 2.0F) {
+        return core::Status::failure("ui_renderer.invalid_accessibility",
+                                     "UI contrast and saturation exceed supported ranges");
+    }
+    return core::Status::ok();
+}
+
+std::array<float, 4>
+apply_ui_accessibility_color(std::array<float, 4> color,
+                             UiAccessibilitySettings settings) noexcept {
+    const auto luminance = color[0] * 0.2126F + color[1] * 0.7152F + color[2] * 0.0722F;
+    for (std::size_t channel = 0; channel < 3U; ++channel) {
+        color[channel] = luminance + (color[channel] - luminance) * settings.saturation;
+        color[channel] = (color[channel] - 0.5F) * settings.contrast + 0.5F;
+    }
+    const auto original = color;
+    switch (settings.color_vision_mode) {
+    case UiColorVisionMode::none:
+        break;
+    case UiColorVisionMode::protanopia:
+        color[0] = original[0] * 0.567F + original[1] * 0.433F;
+        color[1] = original[0] * 0.558F + original[1] * 0.442F;
+        color[2] = original[1] * 0.242F + original[2] * 0.758F;
+        break;
+    case UiColorVisionMode::deuteranopia:
+        color[0] = original[0] * 0.625F + original[1] * 0.375F;
+        color[1] = original[0] * 0.700F + original[1] * 0.300F;
+        color[2] = original[1] * 0.300F + original[2] * 0.700F;
+        break;
+    case UiColorVisionMode::tritanopia:
+        color[0] = original[0] * 0.950F + original[1] * 0.050F;
+        color[1] = original[0] * 0.433F + original[1] * 0.475F + original[2] * 0.092F;
+        color[2] = original[1] * 0.475F + original[2] * 0.525F;
+        break;
+    }
+    for (auto& channel : color) {
+        channel = std::clamp(channel, 0.0F, 1.0F);
+    }
+    return color;
+}
+
 core::Status validate_ui_vertex(const UiVertex& vertex) noexcept {
     if (!vertex.position_pixels.is_finite() || !vertex.uv.is_finite() ||
         !valid_color(vertex.color)) {
@@ -60,8 +103,9 @@ math::Vec2f ui_pixel_position_to_ndc(math::Vec2f position_pixels,
     };
 }
 
-UiRenderer::UiRenderer(rhi::IRenderDevice& device, rhi::RenderResourceHandle pipeline)
-    : device_(&device), pipeline_(pipeline) {}
+UiRenderer::UiRenderer(rhi::IRenderDevice& device, rhi::RenderResourceHandle pipeline,
+                       std::shared_ptr<const UiFont> font)
+    : device_(&device), pipeline_(pipeline), font_(std::move(font)) {}
 
 UiRenderer::~UiRenderer() {
     (void)shutdown();
@@ -163,6 +207,7 @@ core::Status UiRenderer::submit_triangles(const UiTriangleBatchDesc& batch) {
     pending.texture_layer = batch.texture_layer;
     pending.scissor_enabled = batch.scissor_enabled;
     pending.scissor = batch.scissor;
+    pending.distance_field = batch.distance_field;
     vertices_.insert(vertices_.end(), batch.vertices.begin(), batch.vertices.end());
     for (const auto index : batch.indices) {
         indices_.push_back(index + pending.first_vertex);
@@ -191,7 +236,7 @@ core::Status UiRenderer::submit_quad(const UiQuadDesc& quad) {
     };
     constexpr std::array<std::uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
     return submit_triangles({vertices, indices, quad.texture_layer, quad.scissor_enabled,
-                             quad.scissor});
+                             quad.scissor, false});
 }
 
 core::Status UiRenderer::submit_text(const UiTextDesc& text) {
@@ -201,51 +246,42 @@ core::Status UiRenderer::submit_text(const UiTextDesc& text) {
         return core::Status::failure("ui_renderer.invalid_text",
                                      "UI text requires finite position, size, color, and content");
     }
-    if (text.text.size() > config_.maximum_vertices / 4U) {
+    if (font_ == nullptr) {
+        return core::Status::failure("ui_renderer.font_unavailable",
+                                     "UI text requires a production font asset");
+    }
+    auto layout = font_->layout_utf8(text.text, text.position_pixels, text.glyph_size_pixels);
+    if (!layout) {
+        return core::Status::failure(layout.error().code, layout.error().message);
+    }
+    if (layout.value().glyphs.size() > config_.maximum_vertices / 4U) {
         ++overflowed_batches_;
         return core::Status::failure("ui_renderer.capacity_exhausted",
                                      "UI text exceeds the frame vertex capacity");
     }
     text_vertices_.clear();
     text_indices_.clear();
-    auto cursor = text.position_pixels;
-    const auto line_start_x = cursor.x;
     std::uint32_t glyph_count = 0;
-    for (const char raw_character : text.text) {
-        const auto character = static_cast<unsigned char>(raw_character);
-        if (character == '\n') {
-            cursor.x = line_start_x;
-            cursor.y += text.glyph_size_pixels;
-            continue;
-        }
-        const auto glyph = static_cast<std::uint32_t>(character & 0x7fU);
-        const auto column = glyph % 16U;
-        const auto row = glyph / 16U;
-        const auto uv_min = math::Vec2f{static_cast<float>(column) / 16.0F,
-                                        static_cast<float>(row) / 8.0F};
-        const auto uv_max = math::Vec2f{static_cast<float>(column + 1U) / 16.0F,
-                                        static_cast<float>(row + 1U) / 8.0F};
+    for (const auto& placement : layout.value().glyphs) {
+        const auto& glyph = *placement.glyph;
         const auto first_vertex = static_cast<std::uint32_t>(text_vertices_.size());
         text_vertices_.insert(text_vertices_.end(),
-                              {UiVertex{cursor, uv_min, text.color},
-                               UiVertex{{cursor.x + text.glyph_size_pixels, cursor.y},
-                                        {uv_max.x, uv_min.y}, text.color},
-                               UiVertex{{cursor.x + text.glyph_size_pixels,
-                                         cursor.y + text.glyph_size_pixels},
-                                        uv_max, text.color},
-                               UiVertex{{cursor.x, cursor.y + text.glyph_size_pixels},
-                                        {uv_min.x, uv_max.y}, text.color}});
+                              {UiVertex{placement.minimum_pixels, glyph.uv_minimum, text.color},
+                               UiVertex{{placement.maximum_pixels.x, placement.minimum_pixels.y},
+                                        {glyph.uv_maximum.x, glyph.uv_minimum.y}, text.color},
+                               UiVertex{placement.maximum_pixels, glyph.uv_maximum, text.color},
+                               UiVertex{{placement.minimum_pixels.x, placement.maximum_pixels.y},
+                                        {glyph.uv_minimum.x, glyph.uv_maximum.y}, text.color}});
         text_indices_.insert(text_indices_.end(),
                              {first_vertex, first_vertex + 1U, first_vertex + 2U, first_vertex,
                               first_vertex + 2U, first_vertex + 3U});
-        cursor.x += text.glyph_size_pixels * 0.75F;
         ++glyph_count;
     }
     if (glyph_count == 0) {
         return core::Status::ok();
     }
     auto status = submit_triangles({text_vertices_, text_indices_, 1, text.scissor_enabled,
-                                    text.scissor});
+                                    text.scissor, true});
     if (status) {
         pending_glyph_count_ += glyph_count;
     }
@@ -265,10 +301,11 @@ core::Result<UiFrameCommands> UiRenderer::build_frame(UiFrameCommands scratch) {
         for (std::uint32_t index = 0; index < batch.vertex_count; ++index) {
             const auto& vertex = vertices_[batch.first_vertex + index];
             const auto position = ui_pixel_position_to_ndc(vertex.position_pixels, extent_);
+            const auto color = apply_ui_accessibility_color(vertex.color, accessibility_);
             gpu_vertices_.push_back({{position.x, position.y}, {vertex.uv.x, vertex.uv.y},
-                                     {vertex.color[0], vertex.color[1], vertex.color[2],
-                                      vertex.color[3]},
-                                     batch.texture_layer, 0});
+                                     {color[0], color[1], color[2], color[3]},
+                                     batch.texture_layer,
+                                     static_cast<std::uint16_t>(batch.distance_field ? 1U : 0U)});
         }
     }
     const auto frame_slot = frame_number_ % config_.buffered_frames;
@@ -359,6 +396,19 @@ core::Status UiRenderer::set_pipeline(rhi::RenderResourceHandle pipeline) noexce
     }
     pipeline_ = pipeline;
     return core::Status::ok();
+}
+
+core::Status UiRenderer::set_accessibility_settings(UiAccessibilitySettings settings) {
+    auto status = settings.validate();
+    if (!status) {
+        return status;
+    }
+    accessibility_ = settings;
+    return core::Status::ok();
+}
+
+UiAccessibilitySettings UiRenderer::accessibility_settings() const noexcept {
+    return accessibility_;
 }
 
 void UiRenderer::clear() noexcept {

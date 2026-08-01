@@ -22,6 +22,8 @@ enum class EntityKind {
     dropped_item,
     projectile,
     temporary_physics,
+    machine,
+    container,
 };
 
 struct EntityRecord {

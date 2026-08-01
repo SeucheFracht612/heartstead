@@ -25,6 +25,7 @@ struct GameApplicationConfig {
     const world::VoxelPalette* voxel_palette = nullptr;
     renderer::materials::TerrainMaterialAssetSet terrain_material_assets;
     bool enable_render_validation = true;
+    renderer::RendererQualityPreset renderer_quality = renderer::RendererQualityPreset::high;
 
     [[nodiscard]] core::Status validate() const;
 };

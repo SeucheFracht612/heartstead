@@ -171,7 +171,7 @@ Current content, manifest, shader, and cooked-payload hashes use the engine's sh
 a hostile-tamper security boundary; a future stronger digest should be introduced through a
 manifest version or explicit hash algorithm field.
 
-The `production_converters` backend is available but partial. It can currently cook data-like
+The `production_converters` backend implements the current supported delivery matrix. It cooks data-like
 assets (`data`, `localization`, `ui`, and unknown/raw data), material assets, glTF/GLB `model`
 assets, PNG/KTX2/JPEG `texture` assets, `.spv` `shader` assets, WAV/OGG/FLAC `sound` or `music`
 assets, and SFNT `font` assets into deterministic production-profile payload wrappers. Text glTF
@@ -218,7 +218,12 @@ source container on every load. These metadata fields
 remain advisory derived data; the manifest identity, virtual path, source hash, pipeline version,
 cooked payload hash, and payload validation still define compatibility.
 
-Other binary media source formats, such as unsupported compressed audio containers, are not
-converted yet and fail through the relevant format validation error. Future model optimization,
-additional PBR material channels, additional audio conversion, and Slang/HLSL-to-SPIR-V
+Source formats and glTF extensions outside the documented delivery matrix fail through the relevant
+format validation error. Additional material extensions, audio formats, and Slang/HLSL-to-SPIR-V
 production compilation must keep the same virtual path, override, profile, and manifest rules.
+
+Built-in renderer bootstrap assets are explicit exceptions to general cooked presentation loading.
+CMake stages validated built-in SPIR-V and `heartstead-ui.ttf` beside each renderer application; the
+renderer builds the font's deterministic SDF atlas during initialization. The production cooker can
+validate and package SFNT files, but the bootstrap UI font does not currently load from the cooked
+asset store.

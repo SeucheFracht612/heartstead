@@ -389,6 +389,10 @@ template <typename T>
         return core::Result<entities::EntityKind>::success(entities::EntityKind::projectile);
     case 7:
         return core::Result<entities::EntityKind>::success(entities::EntityKind::temporary_physics);
+    case 8:
+        return core::Result<entities::EntityKind>::success(entities::EntityKind::machine);
+    case 9:
+        return core::Result<entities::EntityKind>::success(entities::EntityKind::container);
     }
     return core::Result<entities::EntityKind>::failure("save_binary.invalid_entity_kind",
                                                        "binary save has invalid entity kind");

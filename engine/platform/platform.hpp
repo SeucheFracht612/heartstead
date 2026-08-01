@@ -120,6 +120,7 @@ enum class KeyCode {
     q,
     e,
     r,
+    m,
     left_shift,
     left_control,
     left_alt,

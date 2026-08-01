@@ -60,6 +60,22 @@ constexpr float minimum_affine_determinant = 1.0e-8F;
     });
 }
 
+[[nodiscard]] assets::ModelQuaternion multiply(assets::ModelQuaternion left,
+                                                assets::ModelQuaternion right) noexcept {
+    return normalized({
+        left.w * right.x + left.x * right.w + left.y * right.z - left.z * right.y,
+        left.w * right.y - left.x * right.z + left.y * right.w + left.z * right.x,
+        left.w * right.z + left.x * right.y - left.y * right.x + left.z * right.w,
+        left.w * right.w - left.x * right.x - left.y * right.y - left.z * right.z,
+    });
+}
+
+[[nodiscard]] assets::ModelQuaternion inverse_rotation(
+    assets::ModelQuaternion value) noexcept {
+    value = normalized(value);
+    return {-value.x, -value.y, -value.z, value.w};
+}
+
 [[nodiscard]] math::Vec4f linear(math::Vec4f first, math::Vec4f second, float alpha) noexcept {
     return {
         first.x + (second.x - first.x) * alpha,
@@ -476,6 +492,173 @@ core::Result<NodePose> sample_blended_animation(const assets::ModelAsset& model,
         return second_pose;
     }
     return blend_node_poses(model, first_pose.value(), second_pose.value(), second_weight);
+}
+
+core::Result<AnimationNodeMask>
+make_descendant_animation_mask(const assets::ModelAsset& model,
+                               std::span<const std::string_view> root_nodes) {
+    if (root_nodes.empty()) {
+        return core::Result<AnimationNodeMask>::failure(
+            "skeletal_animation.empty_mask",
+            "animation mask requires at least one named root node");
+    }
+    std::vector<bool> roots(model.nodes.size(), false);
+    for (const auto name : root_nodes) {
+        const auto found = std::ranges::find(model.nodes, name, &assets::ModelNode::name);
+        if (found == model.nodes.end()) {
+            return core::Result<AnimationNodeMask>::failure(
+                "skeletal_animation.missing_mask_node",
+                "animation mask references a missing model node: " + std::string(name));
+        }
+        roots[static_cast<std::size_t>(std::distance(model.nodes.begin(), found))] = true;
+    }
+    AnimationNodeMask result;
+    result.node_weights.resize(model.nodes.size(), 0.0F);
+    for (std::size_t node = 0; node < model.nodes.size(); ++node) {
+        auto ancestor = static_cast<std::uint32_t>(node);
+        while (ancestor != assets::no_model_index) {
+            if (ancestor >= model.nodes.size()) {
+                return core::Result<AnimationNodeMask>::failure(
+                    "skeletal_animation.invalid_mask_hierarchy",
+                    "animation mask encountered an invalid model parent");
+            }
+            if (roots[ancestor]) {
+                result.node_weights[node] = 1.0F;
+                break;
+            }
+            ancestor = model.nodes[ancestor].parent;
+        }
+    }
+    return core::Result<AnimationNodeMask>::success(std::move(result));
+}
+
+core::Result<NodePose>
+compose_animation_layers(const assets::ModelAsset& model, const NodePose& base_pose,
+                         std::span<const AnimationLayer> layers) {
+    auto status = validate_node_pose(model, base_pose);
+    if (!status) {
+        return core::Result<NodePose>::failure(status.error().code, status.error().message);
+    }
+    NodePose result = base_pose;
+    for (const auto& layer : layers) {
+        if (!std::isfinite(layer.weight) || layer.weight < 0.0F || layer.weight > 1.0F ||
+            (layer.mask != nullptr && layer.mask->node_weights.size() != model.nodes.size()) ||
+            (layer.mask != nullptr &&
+             !std::ranges::all_of(layer.mask->node_weights, [](float value) {
+                 return std::isfinite(value) && value >= 0.0F && value <= 1.0F;
+             }))) {
+            return core::Result<NodePose>::failure(
+                "skeletal_animation.invalid_layer",
+                "animation layer requires a finite weight and a model-sized normalized mask");
+        }
+        if (layer.weight == 0.0F) {
+            continue;
+        }
+        auto sampled = sample_animation_clip(model, layer.playback);
+        if (!sampled) {
+            return sampled;
+        }
+        NodePose reference;
+        if (layer.mode == AnimationLayerMode::additive) {
+            if (layer.additive_reference.has_value()) {
+                auto sampled_reference =
+                    sample_animation_clip(model, *layer.additive_reference);
+                if (!sampled_reference) {
+                    return sampled_reference;
+                }
+                reference = std::move(sampled_reference).value();
+            } else {
+                reference = bind_node_pose(model);
+            }
+        }
+        for (std::size_t node = 0; node < model.nodes.size(); ++node) {
+            const auto mask_weight =
+                layer.mask == nullptr ? 1.0F : layer.mask->node_weights[node];
+            const auto weight = layer.weight * mask_weight;
+            if (weight == 0.0F) {
+                continue;
+            }
+            auto& target = result.local_transforms[node];
+            const auto& source = sampled.value().local_transforms[node];
+            if (layer.mode == AnimationLayerMode::override_pose) {
+                target.translation += (source.translation - target.translation) * weight;
+                target.rotation = slerp(target.rotation, source.rotation, weight);
+                target.scale += (source.scale - target.scale) * weight;
+                for (std::size_t morph = 0; morph < result.morph_weights[node].size(); ++morph) {
+                    auto& target_weight = result.morph_weights[node][morph];
+                    target_weight +=
+                        (sampled.value().morph_weights[node][morph] - target_weight) * weight;
+                }
+                continue;
+            }
+
+            const auto& base = reference.local_transforms[node];
+            target.translation += (source.translation - base.translation) * weight;
+            const auto rotation_delta =
+                multiply(inverse_rotation(base.rotation), source.rotation);
+            target.rotation = multiply(
+                target.rotation,
+                slerp(assets::ModelQuaternion{}, rotation_delta, weight));
+            target.scale += (source.scale - base.scale) * weight;
+            for (std::size_t morph = 0; morph < result.morph_weights[node].size(); ++morph) {
+                result.morph_weights[node][morph] +=
+                    (sampled.value().morph_weights[node][morph] -
+                     reference.morph_weights[node][morph]) *
+                    weight;
+            }
+        }
+    }
+    status = validate_node_pose(model, result);
+    if (!status) {
+        return core::Result<NodePose>::failure(status.error().code, status.error().message);
+    }
+    return core::Result<NodePose>::success(std::move(result));
+}
+
+core::Result<std::vector<std::string>>
+crossed_animation_events(std::span<const AnimationEventMarker> markers,
+                         float previous_normalized_phase, float current_normalized_phase,
+                         bool looping) {
+    if (!std::isfinite(previous_normalized_phase) || !std::isfinite(current_normalized_phase) ||
+        previous_normalized_phase < 0.0F || previous_normalized_phase >= 1.0F ||
+        current_normalized_phase < 0.0F || current_normalized_phase >= 1.0F ||
+        std::ranges::any_of(markers, [](const AnimationEventMarker& marker) {
+            return marker.name.empty() || marker.name.size() > 256U ||
+                   !std::isfinite(marker.normalized_phase) || marker.normalized_phase < 0.0F ||
+                   marker.normalized_phase >= 1.0F;
+        })) {
+        return core::Result<std::vector<std::string>>::failure(
+            "skeletal_animation.invalid_events",
+            "animation events require bounded names and normalized phases in [0, 1)");
+    }
+    if (previous_normalized_phase == current_normalized_phase) {
+        return core::Result<std::vector<std::string>>::success({});
+    }
+    std::vector<const AnimationEventMarker*> crossed;
+    crossed.reserve(markers.size());
+    const auto wrapped = looping && current_normalized_phase < previous_normalized_phase;
+    for (const auto& marker : markers) {
+        const auto in_first_segment = marker.normalized_phase > previous_normalized_phase;
+        const auto in_second_segment = marker.normalized_phase <= current_normalized_phase;
+        if ((!wrapped && marker.normalized_phase > previous_normalized_phase &&
+             marker.normalized_phase <= current_normalized_phase) ||
+            (wrapped && (in_first_segment || in_second_segment))) {
+            crossed.push_back(&marker);
+        }
+    }
+    std::ranges::sort(crossed, [wrapped, previous_normalized_phase](const auto* left,
+                                                                   const auto* right) {
+        const auto order = [wrapped, previous_normalized_phase](float phase) {
+            return wrapped && phase <= previous_normalized_phase ? phase + 1.0F : phase;
+        };
+        return order(left->normalized_phase) < order(right->normalized_phase);
+    });
+    std::vector<std::string> result;
+    result.reserve(crossed.size());
+    for (const auto* marker : crossed) {
+        result.push_back(marker->name);
+    }
+    return core::Result<std::vector<std::string>>::success(std::move(result));
 }
 
 core::Result<std::vector<math::Mat4f>> evaluate_model_node_matrices(const assets::ModelAsset& model,

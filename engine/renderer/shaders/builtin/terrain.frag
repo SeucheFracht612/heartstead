@@ -7,6 +7,8 @@ layout(location = 3) flat in uint fragment_light;
 layout(location = 4) flat in uint fragment_state_bits;
 layout(location = 5) in vec3 fragment_world_position;
 layout(location = 6) in float fragment_voxel_ao;
+layout(location = 7) in float fragment_lod_blend;
+layout(location = 8) flat in uint fragment_coordinate_key;
 
 layout(set = 0, binding = 0) uniform sampler2DArray terrain_textures;
 layout(set = 0, binding = 12) uniform sampler2DArray terrain_normal_textures;
@@ -79,6 +81,7 @@ layout(set = 0, binding = 10) uniform sampler2DShadow local_shadow_0;
 layout(set = 0, binding = 11) uniform sampler2DShadow local_shadow_1;
 
 layout(location = 0) out vec4 out_color;
+layout(location = 1) out vec4 out_motion;
 
 layout(push_constant) uniform ChunkPushConstants {
     mat4 view_projection;
@@ -433,6 +436,15 @@ void apply_surface_layers(GpuVoxelMaterial material, uint material_flags,
 }
 
 void main() {
+    if (fragment_lod_blend < 0.999) {
+        uvec2 dither_cell = uvec2(floor(fract(fragment_uv) * 256.0));
+        uint dither_hash = dither_cell.x * 0x9e3779b9U ^ dither_cell.y * 0x85ebca6bU;
+        dither_hash ^= dither_hash >> 16U;
+        float dither_threshold = float(dither_hash & 0xffffU) / 65535.0;
+        if (dither_threshold > fragment_lod_blend) {
+            discard;
+        }
+    }
     uint table_length = uint(voxel_material_table.materials.length());
     uint material_index = min(fragment_voxel_type, max(table_length, 1U) - 1U);
     GpuVoxelMaterial material = voxel_material_table.materials[material_index];
@@ -445,7 +457,7 @@ void main() {
         max(face_table_value(material.face_texture_counts_0,
                              material.face_texture_counts_1, face),
             1U);
-    uint coordinate_key = floatBitsToUint(chunk.camera_relative_origin.w);
+    uint coordinate_key = fragment_coordinate_key;
     vec3 local_position = fragment_world_position - chunk.camera_relative_origin.xyz;
     vec3 stable_position = stable_periodic_position(local_position, coordinate_key);
     ivec3 stable_cell = ivec3(floor(stable_position - geometry_normal * 0.001));
@@ -700,4 +712,5 @@ void main() {
             ? surface_alpha
             : 1.0;
     out_color = vec4(max(color, vec3(0.0)), output_alpha);
+    out_motion = vec4(0.0, 0.0, 0.0, output_alpha);
 }
