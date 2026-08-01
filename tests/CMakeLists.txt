@@ -170,6 +170,16 @@ if(TARGET heartstead)
     PROPERTIES TIMEOUT 60 LABELS "smoke;lifecycle"
                PASS_REGULAR_EXPRESSION "state=InGame"
   )
+  add_test(
+    NAME heartstead_production_lifecycle_smoke
+    COMMAND
+      ${CMAKE_COMMAND}
+      -DHEARTSTEAD=$<TARGET_FILE:heartstead>
+      -DDATA_ROOT=${CMAKE_CURRENT_BINARY_DIR}/heartstead_production_lifecycle_smoke
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/heartstead_production_lifecycle_smoke.cmake
+  )
+  set_tests_properties(heartstead_production_lifecycle_smoke
+                       PROPERTIES TIMEOUT 120 LABELS "smoke;lifecycle;persistence")
 endif()
 
 add_executable(heartstead_client_audio_presentation_tests client_audio_presentation_tests.cpp)
