@@ -7,7 +7,8 @@
 
 namespace heartstead::world {
 class WorldState;
-}
+class VoxelPalette;
+} // namespace heartstead::world
 
 namespace heartstead::scenarios {
 
@@ -18,6 +19,12 @@ struct RendererProofVoxelTypes {
     std::uint16_t dirt = 2;
     std::uint16_t stone = 3;
 };
+
+[[nodiscard]] core::Result<RendererProofVoxelTypes>
+resolve_renderer_proof_voxel_types(const world::VoxelPalette& palette);
+
+[[nodiscard]] core::Result<world::VoxelChunk>
+generate_renderer_proof_chunk(world::ChunkCoord coord, RendererProofVoxelTypes types = {});
 
 [[nodiscard]] core::Status populate_renderer_proof_fixture(world::WorldState& state,
                                                            RendererProofVoxelTypes types = {});

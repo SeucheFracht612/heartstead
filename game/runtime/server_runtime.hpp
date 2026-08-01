@@ -12,6 +12,7 @@
 #include "engine/physics/physics_world.hpp"
 #include "engine/save/save_snapshot.hpp"
 #include "engine/scenarios/scenario.hpp"
+#include "engine/scenarios/scenario_fixture.hpp"
 #include "engine/simulation/simulation_scheduler.hpp"
 #include "engine/simulation/world_time.hpp"
 #include "engine/world/fluids/chunk_fluid_system.hpp"
@@ -39,8 +40,7 @@ enum class ServerRuntimeStartupPhase {
     registering_gameplay_systems,
 };
 
-using ServerRuntimeStartupProgressCallback =
-    std::function<void(ServerRuntimeStartupPhase phase)>;
+using ServerRuntimeStartupProgressCallback = std::function<void(ServerRuntimeStartupPhase phase)>;
 
 struct ServerRuntimeDesc {
     world::WorldStateDesc world;
@@ -166,6 +166,7 @@ class ServerRuntime final {
     [[nodiscard]] core::Status remove_player_connection(core::NetId client_id);
     void process_movement_control_messages(std::span<const net::TransportEnvelope> messages);
     [[nodiscard]] core::Status simulate_players(simulation::SimulationContext& context);
+    [[nodiscard]] core::Status stream_renderer_proof_world();
     [[nodiscard]] core::Status replicate_players();
     [[nodiscard]] core::Status replicate_entity_motion(std::uint64_t simulation_tick);
     [[nodiscard]] core::Status replicate_changed_chunks();
@@ -197,6 +198,7 @@ class ServerRuntime final {
     GameplayModuleRegistry gameplay_modules_;
     std::unordered_map<std::uint64_t, PlayerConnection> player_connections_;
     std::vector<world::VoxelEditRecord> pending_saved_voxel_edits_;
+    std::vector<world::ChunkCoord> pending_streamed_chunks_;
     std::vector<core::NetId> pending_player_removals_;
     std::vector<core::NetId> pending_entity_motion_removals_;
     net::HostSessionTickResult current_commands_;
@@ -220,6 +222,9 @@ class ServerRuntime final {
     bool spawn_area_initialized_ = false;
     std::uint64_t next_custom_replication_sequence_ = 1;
     std::uint64_t transient_replication_cursor_ = 0;
+    std::optional<std::int64_t> renderer_proof_next_generation_time_ms_;
+    scenarios::RendererProofVoxelTypes renderer_proof_voxel_types_;
+    bool renderer_proof_streaming_enabled_ = false;
 };
 
 } // namespace heartstead::game

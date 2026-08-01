@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -46,6 +47,7 @@ void test_discovery_and_browser_data(const content::ContentValidationReport& rep
     assert(!foundation->description.empty() && !renderer->description.empty());
     assert(registry.value().filter(scenarios::ScenarioCategory::rendering).size() == 1);
     assert(registry.value().filter(std::nullopt, "floating-origin").size() == 1);
+    assert(registry.value().filter(std::nullopt, "infinite").size() == 1);
     assert(registry.value().filter(std::nullopt, "renderer proof").size() == 1);
     assert(game::default_scenario_setup_registry().contains("renderer_proof"));
 }
@@ -94,19 +96,36 @@ void test_packaged_renderer_fixture_launch(const content::ContentValidationRepor
     const auto* fixture = world.mod_states().find("engine", "scenario.fixture");
     assert(fixture != nullptr && fixture->encoded_state == "renderer_proof");
     assert(world.chunks().find(scenarios::renderer_proof_center) != nullptr);
+    const auto initial_server_chunk_count = world.chunks().chunk_count();
+    const auto initial_client_chunk_count =
+        runtime.session()->client()->world().chunks().chunk_count();
+    assert(initial_server_chunk_count == 9);
+    assert(initial_client_chunk_count == initial_server_chunk_count);
     const auto* player =
         runtime.session()->server()->player_for_client(runtime.session()->client()->client_id());
     assert(player != nullptr);
     assert(player->state.position.anchor.x > 30'000'000'000LL);
     assert(player->state.position.anchor.z < -30'000'000'000LL);
-    auto frame = runtime.run_frame({16'667, 17});
-    assert(frame);
+    for (std::int64_t frame_index = 1; frame_index <= 60; ++frame_index) {
+        auto frame = runtime.run_frame({16'667, frame_index * 17});
+        assert(frame);
+    }
+    assert(world.chunks().chunk_count() >= initial_server_chunk_count + 4);
+    assert(runtime.session()->client()->world().chunks().chunk_count() ==
+           world.chunks().chunk_count());
+    assert(std::ranges::any_of(world.chunks().records(), [](const auto* chunk) {
+        const auto coord = chunk->coord();
+        return coord.x < scenarios::renderer_proof_center.x - 1 ||
+               coord.x > scenarios::renderer_proof_center.x + 1 ||
+               coord.z < scenarios::renderer_proof_center.z - 1 ||
+               coord.z > scenarios::renderer_proof_center.z + 1;
+    }));
     auto render_snapshot = runtime.capture_render_snapshot();
     assert(render_snapshot);
     assert(std::ranges::all_of(render_snapshot.value().objects, [player](const auto& object) {
-        return static_cast<bool>(world::to_camera_relative(
-            object.current_transform.position,
-            world::FloatingOrigin{player->state.position.anchor}));
+        return static_cast<bool>(
+            world::to_camera_relative(object.current_transform.position,
+                                      world::FloatingOrigin{player->state.position.anchor}));
     }));
     assert(runtime.shutdown());
     assert(runtime.last_teardown_report()->presentation_objects_after == 0);

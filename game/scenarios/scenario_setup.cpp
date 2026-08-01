@@ -1,41 +1,23 @@
 #include "game/scenarios/scenario_setup.hpp"
 
-#include "engine/core/ids.hpp"
 #include "engine/scenarios/scenario_fixture.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
 #include "engine/world/world_state.hpp"
 
 #include <algorithm>
-#include <cstdint>
 #include <utility>
 
 namespace heartstead::game {
 
 namespace {
 
-[[nodiscard]] core::Result<std::uint16_t> voxel_type(const world::VoxelPalette& palette,
-                                                     std::string_view prototype_id) {
-    auto parsed = core::PrototypeId::parse(prototype_id);
-    const auto type = parsed.has_value() ? palette.type_for(*parsed) : std::nullopt;
-    if (!type.has_value()) {
-        return core::Result<std::uint16_t>::failure("scenario_setup.voxel_missing",
-                                                    "scenario setup voxel is not available: " +
-                                                        std::string(prototype_id));
-    }
-    return core::Result<std::uint16_t>::success(*type);
-}
-
 [[nodiscard]] core::Status renderer_proof_fixture(world::WorldState& state,
                                                   const world::VoxelPalette& palette) {
-    auto grass = voxel_type(palette, "base:voxels/grass");
-    auto dirt = voxel_type(palette, "base:voxels/dirt");
-    auto stone = voxel_type(palette, "base:voxels/stone");
-    if (!grass || !dirt || !stone) {
-        const auto& error = !grass ? grass.error() : !dirt ? dirt.error() : stone.error();
-        return core::Status::failure(error.code, error.message);
+    auto types = scenarios::resolve_renderer_proof_voxel_types(palette);
+    if (!types) {
+        return core::Status::failure(types.error().code, types.error().message);
     }
-    auto status = scenarios::populate_renderer_proof_fixture(
-        state, {grass.value(), dirt.value(), stone.value()});
+    auto status = scenarios::populate_renderer_proof_fixture(state, types.value());
     if (!status) {
         return status;
     }
