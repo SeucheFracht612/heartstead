@@ -163,7 +163,8 @@ PlayerCameraRig::PlayerCameraRig(PlayerCameraConfig config) : config_(config) {}
 core::Result<PlayerCameraFrame>
 PlayerCameraRig::evaluate(const PlayerControllerState& player, PlayerCameraPerspective perspective,
                           std::uint32_t viewport_width, std::uint32_t viewport_height,
-                          const PlayerCameraCollisionContext* collision, double delta_seconds) {
+                          const PlayerCameraCollisionContext* collision, double delta_seconds,
+                          bool reduced_motion) {
     auto config_status = config_.validate();
     if (!config_status || !player.position.is_valid() || viewport_width == 0 ||
         viewport_height == 0) {
@@ -185,8 +186,8 @@ PlayerCameraRig::evaluate(const PlayerControllerState& player, PlayerCameraPersp
     const auto eye_height = player.mode == PlayerControllerMode::rolling ? config_.roll_eye_height
                             : player.crouched                            ? config_.crouch_eye_height
                                               : config_.standing_eye_height;
-    auto smoothed_step_offset = vertical_step_offset_;
-    if (last_player_position_.has_value()) {
+    auto smoothed_step_offset = reduced_motion ? 0.0 : vertical_step_offset_;
+    if (!reduced_motion && last_player_position_.has_value()) {
         const auto player_delta = player.position.relative_to(last_player_position_->anchor) -
                                   last_player_position_->local_offset;
         const auto step_height = std::abs(player_delta.y);
@@ -201,11 +202,13 @@ PlayerCameraRig::evaluate(const PlayerControllerState& player, PlayerCameraPersp
             smoothed_step_offset = 0.0;
         }
     }
-    const auto smoothing_delta = config_.step_smoothing_speed * delta_seconds;
-    if (smoothed_step_offset > 0.0) {
-        smoothed_step_offset = std::max(0.0, smoothed_step_offset - smoothing_delta);
-    } else {
-        smoothed_step_offset = std::min(0.0, smoothed_step_offset + smoothing_delta);
+    if (!reduced_motion) {
+        const auto smoothing_delta = config_.step_smoothing_speed * delta_seconds;
+        if (smoothed_step_offset > 0.0) {
+            smoothed_step_offset = std::max(0.0, smoothed_step_offset - smoothing_delta);
+        } else {
+            smoothed_step_offset = std::min(0.0, smoothed_step_offset + smoothing_delta);
+        }
     }
     const auto pivot_offset = math::Vec3d{0.0, eye_height + smoothed_step_offset, 0.0};
     auto camera_offset = pivot_offset;
@@ -246,7 +249,7 @@ PlayerCameraRig::evaluate(const PlayerControllerState& player, PlayerCameraPersp
         if (!boom_initialized_) {
             boom_fraction_ = allowed_boom_fraction;
             boom_initialized_ = true;
-        } else if (allowed_boom_fraction <= boom_fraction_) {
+        } else if (allowed_boom_fraction <= boom_fraction_ || reduced_motion) {
             boom_fraction_ = allowed_boom_fraction;
         } else {
             const auto restore_fraction =

@@ -486,6 +486,26 @@ void test_snapshot_prediction_camera_and_load() {
                                       before_step.value().position.approximate_global().y;
     assert(std::abs(smoothed_camera_rise - 0.5) < 0.0001);
 
+    movement::PlayerCameraRig reduced_step_camera;
+    auto reduced_step_state = state;
+    reduced_step_state.velocity = {};
+    reduced_step_state.grounded = true;
+    auto reduced_before = reduced_step_camera.evaluate(
+        reduced_step_state, movement::PlayerCameraPerspective::first_person, 1280, 720, nullptr,
+        1.0 / 60.0, true);
+    assert(reduced_before);
+    reduced_step_state.position = world::WorldPosition{
+        reduced_step_state.position.approximate_global().x,
+        reduced_step_state.position.approximate_global().y + 0.5,
+        reduced_step_state.position.approximate_global().z};
+    auto reduced_after = reduced_step_camera.evaluate(
+        reduced_step_state, movement::PlayerCameraPerspective::first_person, 1280, 720, nullptr,
+        1.0 / 60.0, true);
+    assert(reduced_after);
+    const auto reduced_camera_rise = reduced_after.value().position.approximate_global().y -
+                                     reduced_before.value().position.approximate_global().y;
+    assert(std::abs(reduced_camera_rise - 0.5) < 0.0001);
+
     auto& camera_chunk = yard.chunks.get_or_create({0, 0, 0});
     assert(camera_chunk.set({2, 1, 1}, {1, 0, 0, 0}));
     assert(camera_chunk.set({2, 2, 1}, {1, 0, 0, 0}));
@@ -502,9 +522,23 @@ void test_snapshot_prediction_camera_and_load() {
            third.value().position.approximate_global().z + 3.0);
     assert(constrained.value().position.approximate_global().z > 2.18);
 
+    movement::PlayerCameraRig reduced_boom_camera;
+    auto reduced_constrained = reduced_boom_camera.evaluate(
+        state, movement::PlayerCameraPerspective::third_person, 1280, 720, &camera_collision,
+        1.0 / 60.0, true);
+    assert(reduced_constrained && reduced_constrained.value().boom_obstructed);
+
     assert(camera_chunk.set({2, 1, 1}, world::VoxelCell::air()));
     assert(camera_chunk.set({2, 2, 1}, world::VoxelCell::air()));
     assert(camera_chunk.set({2, 3, 1}, world::VoxelCell::air()));
+    auto reduced_restored = reduced_boom_camera.evaluate(
+        state, movement::PlayerCameraPerspective::third_person, 1280, 720, &camera_collision,
+        1.0 / 60.0, true);
+    assert(reduced_restored);
+    assert(!reduced_restored.value().boom_obstructed);
+    assert(!reduced_restored.value().boom_restoring);
+    assert(std::abs(reduced_restored.value().actual_boom_distance -
+                    reduced_restored.value().desired_boom_distance) < 0.0001);
     auto restoring = camera.evaluate(state, movement::PlayerCameraPerspective::third_person, 1280,
                                      720, &camera_collision);
     assert(restoring);

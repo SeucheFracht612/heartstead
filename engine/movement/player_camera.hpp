@@ -69,7 +69,7 @@ class PlayerCameraRig {
     evaluate(const PlayerControllerState& player, PlayerCameraPerspective perspective,
              std::uint32_t viewport_width, std::uint32_t viewport_height,
              const PlayerCameraCollisionContext* collision = nullptr,
-             double delta_seconds = 1.0 / 60.0);
+             double delta_seconds = 1.0 / 60.0, bool reduced_motion = false);
 
   private:
     PlayerCameraConfig config_;

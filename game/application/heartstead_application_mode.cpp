@@ -90,6 +90,7 @@ const auto quality_id = ui::widget_id("heartstead.options.quality");
 const auto windowed_id = ui::widget_id("heartstead.options.windowed");
 const auto vsync_id = ui::widget_id("heartstead.options.vsync");
 const auto color_vision_id = ui::widget_id("heartstead.options.color_vision");
+const auto reduced_motion_id = ui::widget_id("heartstead.options.reduced_motion");
 
 [[nodiscard]] ui::WidgetDesc root_widget() {
     ui::WidgetDesc root;
@@ -807,6 +808,9 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 !(status = add(button(color_vision_id,
                                       "Color vision mode: " + std::string(color_vision_name(
                                                                   settings.color_vision_mode))))) ||
+                !(status = add(toggle(reduced_motion_id,
+                                      "Reduced camera motion and smoothing",
+                                      settings.reduced_motion))) ||
                 !(status = add(button(menu_back_id, "Back"))))
                 return status;
             widgets.set_focus(master_volume_id);
@@ -1988,6 +1992,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                     settings.windowed = event.checked;
                 else if (event.target == vsync_id)
                     settings.vsync = event.checked;
+                else if (event.target == reduced_motion_id)
+                    settings.reduced_motion = event.checked;
                 status = apply_settings();
                 if (status && event.kind != ui::UiEventKind::value_changed)
                     status = persist_settings();
@@ -2275,7 +2281,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 client->world().chunks(), config.content_report->voxel_palette};
             auto camera_frame = camera_rig.evaluate(
                 player->state, camera_perspective, current_frame.extent.width,
-                current_frame.extent.height, &collision, current_frame.delta_seconds());
+                current_frame.extent.height, &collision, current_frame.delta_seconds(),
+                settings.reduced_motion);
             if (!camera_frame) {
                 return core::Result<renderer::RenderCamera>::failure(camera_frame.error().code,
                                                                      camera_frame.error().message);
