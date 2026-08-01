@@ -104,6 +104,8 @@ static instances, debug geometry, and UI retain the existing 128-byte frame push
 this stays within Vulkan's portable minimum push-constant size.
 
 The renderer benchmark runs the same `ChunkLightSystem` over every scene, waits for initial
-lighting and meshing to settle, and feeds per-update lighting telemetry into `RendererStats`.
+lighting and meshing to settle, then advances one bounded lighting update per simulation frame and
+feeds that update's telemetry into `RendererStats`. It does not synchronously drain a whole relight
+inside a measured frame.
 JSON/CSV output includes solve/apply p50 and p95, maximum backlog and visited cells, changed chunks,
 stale results, and apply-budget overruns.

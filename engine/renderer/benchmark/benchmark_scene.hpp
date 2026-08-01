@@ -24,6 +24,7 @@ enum class BenchmarkSceneKind {
     checkerboard_geometry,
     forest_cross_planes,
     rapid_voxel_edits,
+    mass_excavation,
     high_speed_flythrough,
     chunk_load_unload_churn,
     large_coordinates,
@@ -79,7 +80,8 @@ class BenchmarkScene {
     [[nodiscard]] core::Status populate_initial_chunks();
     [[nodiscard]] core::Status insert_generated_chunk(world::ChunkCoord coordinate);
     [[nodiscard]] std::vector<world::VoxelCell> generate_cells(world::ChunkCoord coordinate) const;
-    [[nodiscard]] core::Status apply_rapid_edits(std::uint64_t frame_index);
+    [[nodiscard]] core::Status apply_voxel_edits(std::uint64_t frame_index,
+                                                 std::uint16_t edit_count);
     [[nodiscard]] core::Status apply_chunk_churn(std::uint64_t frame_index);
     void update_flythrough_camera(std::uint64_t frame_index) noexcept;
 

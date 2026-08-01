@@ -68,6 +68,7 @@ constexpr std::uint16_t slope_type = 6;
         return kind;
     case BenchmarkSceneKind::flat_terrain:
     case BenchmarkSceneKind::rapid_voxel_edits:
+    case BenchmarkSceneKind::mass_excavation:
     case BenchmarkSceneKind::high_speed_flythrough:
     case BenchmarkSceneKind::chunk_load_unload_churn:
     case BenchmarkSceneKind::large_coordinates:
@@ -96,6 +97,8 @@ std::string_view benchmark_scene_name(BenchmarkSceneKind kind) noexcept {
         return "forest";
     case BenchmarkSceneKind::rapid_voxel_edits:
         return "rapid-edits";
+    case BenchmarkSceneKind::mass_excavation:
+        return "mass-excavation";
     case BenchmarkSceneKind::high_speed_flythrough:
         return "flythrough";
     case BenchmarkSceneKind::chunk_load_unload_churn:
@@ -128,6 +131,7 @@ std::optional<BenchmarkSceneKind> parse_benchmark_scene(std::string_view name) n
         BenchmarkSceneKind::checkerboard_geometry,
         BenchmarkSceneKind::forest_cross_planes,
         BenchmarkSceneKind::rapid_voxel_edits,
+        BenchmarkSceneKind::mass_excavation,
         BenchmarkSceneKind::high_speed_flythrough,
         BenchmarkSceneKind::chunk_load_unload_churn,
         BenchmarkSceneKind::large_coordinates,
@@ -470,6 +474,7 @@ std::vector<world::VoxelCell> BenchmarkScene::generate_cells(world::ChunkCoord c
                     break;
                 }
                 case BenchmarkSceneKind::rapid_voxel_edits:
+                case BenchmarkSceneKind::mass_excavation:
                 case BenchmarkSceneKind::high_speed_flythrough:
                 case BenchmarkSceneKind::chunk_load_unload_churn:
                 case BenchmarkSceneKind::large_coordinates:
@@ -494,7 +499,12 @@ core::Result<BenchmarkSceneStep> BenchmarkScene::advance(std::uint64_t frame_ind
     core::Status status = core::Status::ok();
     switch (config_.kind) {
     case BenchmarkSceneKind::rapid_voxel_edits:
-        status = apply_rapid_edits(frame_index);
+        if ((frame_index & 1U) == 0U) {
+            status = apply_voxel_edits(frame_index / 2U, 1);
+        }
+        break;
+    case BenchmarkSceneKind::mass_excavation:
+        status = apply_voxel_edits(frame_index, 32);
         break;
     case BenchmarkSceneKind::high_speed_flythrough:
     case BenchmarkSceneKind::large_coordinates:
@@ -555,8 +565,9 @@ void BenchmarkScene::activate_fluid_work(world::ChunkFluidSystem& fluids) const 
     }
 }
 
-core::Status BenchmarkScene::apply_rapid_edits(std::uint64_t frame_index) {
-    for (std::uint16_t edit = 0; edit < 32; ++edit) {
+core::Status BenchmarkScene::apply_voxel_edits(std::uint64_t frame_index,
+                                               std::uint16_t edit_count) {
+    for (std::uint16_t edit = 0; edit < edit_count; ++edit) {
         const auto coordinate = managed_chunks_[static_cast<std::size_t>(
             (frame_index + static_cast<std::uint64_t>(edit)) % managed_chunks_.size())];
         const auto boundary = (frame_index + static_cast<std::uint64_t>(edit)) % 8 == 0;
@@ -564,11 +575,15 @@ core::Status BenchmarkScene::apply_rapid_edits(std::uint64_t frame_index) {
                                 : static_cast<std::uint16_t>((frame_index + edit * 7U) % 32);
         const auto y = static_cast<std::uint16_t>(10U + (edit % 8U));
         const auto z = static_cast<std::uint16_t>((frame_index * 3U + edit * 11U) % 32U);
-        const auto filled = ((frame_index + static_cast<std::uint64_t>(edit)) & 1U) == 0;
-        const auto cell =
-            filled ? world::VoxelCell{stone_type, 255, 0, 0} : world::VoxelCell::air();
+        const world::VoxelCoord voxel{x, y, z};
+        const auto current = world_.chunks().get(coordinate, voxel);
+        if (!current) {
+            return core::Status::failure(current.error().code, current.error().message);
+        }
+        const auto cell = current.value().is_air() ? world::VoxelCell{stone_type, 255, 0, 0}
+                                                   : world::VoxelCell::air();
         auto status =
-            world_.chunks().set(coordinate, {x, y, z}, cell, world_.dirty_regions(), palette_);
+            world_.chunks().set(coordinate, voxel, cell, world_.dirty_regions(), palette_);
         if (!status) {
             return status;
         }

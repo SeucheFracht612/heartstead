@@ -73,7 +73,8 @@ The deterministic catalog includes static and stress coverage for:
 - active voxel-fluid simulation and presentation;
 - a 50,000-particle stress scene;
 - equipped animated characters plus stateful workshop machines;
-- rapid edits and replacement meshes;
+- one deterministic single-block edit every two frames, including periodic chunk-boundary edits;
+- a separate 32-edits-per-frame mass-excavation overload for coalescing and stale-work pressure;
 - high-speed flythrough/streaming;
 - load/unload churn;
 - large world coordinates;
@@ -82,7 +83,9 @@ The deterministic catalog includes static and stress coverage for:
 Integer/hash generation and frame-indexed stress schedules make runs reproducible from scene, seed,
 radius, and frame configuration. Before measurement, the runner settles the initially loaded chunks
 to resident meshes so streaming/edit tests measure replacement and churn rather than accidental
-initial starvation.
+initial starvation. Initial voxel lighting is also settled once. During warm-up and measurement the
+lighting system advances exactly one bounded update per simulation frame; the benchmark never waits
+for an entire relight field inside a frame.
 
 ## Timing semantics
 

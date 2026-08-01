@@ -10,8 +10,9 @@ int main() {
     constexpr std::array required{
         "terrain",          "forest",      "crop-fields",      "characters",
         "equipment",        "dense-settlement", "active-workshop", "many-local-lights",
-        "cave",             "rapid-edits", "large-coordinates", "fast-traversal",
-        "streaming",        "water",       "rain",             "fog",
+        "cave",             "rapid-edits", "mass-excavation",  "large-coordinates",
+        "fast-traversal",   "streaming",   "water",             "rain",
+        "fog",
         "night",            "particles",   "transparency",     "animation",
         "resize",
     };

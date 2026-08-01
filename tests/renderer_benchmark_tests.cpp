@@ -302,6 +302,7 @@ void test_all_deterministic_scenes_construct() {
         BenchmarkSceneKind::checkerboard_geometry,
         BenchmarkSceneKind::forest_cross_planes,
         BenchmarkSceneKind::rapid_voxel_edits,
+        BenchmarkSceneKind::mass_excavation,
         BenchmarkSceneKind::high_speed_flythrough,
         BenchmarkSceneKind::chunk_load_unload_churn,
         BenchmarkSceneKind::large_coordinates,
@@ -386,8 +387,21 @@ void test_dynamic_scene_schedules() {
     assert(edits);
     auto* edit_chunk = edits.value()->world().chunks().records().front();
     const auto old_revision = edit_chunk->content_revision();
-    assert(edits.value()->advance(1));
+    assert(edits.value()->advance(0));
     assert(edit_chunk->content_revision() > old_revision);
+    const auto first_edit_revision = edit_chunk->content_revision();
+    assert(edits.value()->advance(1));
+    assert(edit_chunk->content_revision() == first_edit_revision);
+
+    BenchmarkSceneConfig excavation_config;
+    excavation_config.kind = BenchmarkSceneKind::mass_excavation;
+    excavation_config.chunk_radius = 0;
+    auto excavation = BenchmarkScene::create(excavation_config);
+    assert(excavation);
+    auto* excavation_chunk = excavation.value()->world().chunks().records().front();
+    const auto excavation_revision = excavation_chunk->content_revision();
+    assert(excavation.value()->advance(1));
+    assert(excavation_chunk->content_revision() >= excavation_revision + 32U);
 
     BenchmarkSceneConfig churn_config;
     churn_config.kind = BenchmarkSceneKind::chunk_load_unload_churn;

@@ -289,7 +289,8 @@ camera_world_position(const renderer::RenderCamera& camera) {
 void print_usage(std::ostream& output) {
     output << "Usage: heartstead_render_benchmark [options]\n"
               "  --scene NAME       flat, mountains, caves, checkerboard, forest, rapid-edits,\n"
-              "                     flythrough, churn, large-coordinates, resize-minimize,\n"
+              "                     mass-excavation, flythrough, churn, large-coordinates,\n"
+              "                     resize-minimize,\n"
               "                     active-water, particles, light-heavy, terrain-materials,\n"
               "                     starting-biome, character-workshop\n"
               "  --vulkan           Use a native Vulkan window (headless is the default)\n"
@@ -321,6 +322,7 @@ void print_scenes() {
         Kind::checkerboard_geometry,
         Kind::forest_cross_planes,
         Kind::rapid_voxel_edits,
+        Kind::mass_excavation,
         Kind::high_speed_flythrough,
         Kind::chunk_load_unload_churn,
         Kind::large_coordinates,
@@ -1261,12 +1263,13 @@ int main(int argc, char** argv) {
                     particle_system->stats(), presented.value().synchronize_ms,
                     presented.value().material_groups, presented.value().dropped_particles);
             }
-            auto lighting = settle_chunk_lighting(*chunk_lighting.value(), scene.value()->world(),
-                                                  scene.value()->palette());
-            if (!lighting) {
-                return fail(lighting.error().message);
+            status = chunk_lighting.value()->update(scene.value()->world().chunks(),
+                                                    scene.value()->world().dirty_regions(),
+                                                    scene.value()->palette());
+            if (!status) {
+                return fail(status.error().message);
             }
-            active_renderer.set_voxel_lighting_stats(lighting.value());
+            active_renderer.set_voxel_lighting_stats(chunk_lighting.value()->stats());
             if (step.value().requested_extent && step.value().requested_extent->is_valid()) {
                 const auto extent = *step.value().requested_extent;
                 status = active_renderer.resize(extent);
