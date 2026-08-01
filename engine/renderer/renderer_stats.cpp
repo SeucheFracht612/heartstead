@@ -54,6 +54,14 @@ std::string format_renderer_stats(const RendererStats& stats) {
            << stats.far_terrain_uploaded_bytes << " far_evicted="
            << stats.far_terrain_evicted_patches
            << " chunk_queue=" << stats.mesh_pending_chunks << '/' << stats.upload_pending_chunks
+           << " edit_visible=" << stats.edit_to_visible_latest_ms << '/'
+           << stats.edit_to_visible_recent_p95_ms << '/' << stats.edit_to_visible_session_max_ms
+           << "ms edit_samples=" << stats.edit_to_visible_completed << '/'
+           << stats.edit_to_visible_total_completed << '/'
+           << stats.edit_to_visible_recent_samples
+           << " edit_pending=" << stats.edit_to_visible_pending
+           << " edit_coalesced=" << stats.edit_to_visible_total_coalesced
+           << " edit_abandoned=" << stats.edit_to_visible_total_abandoned
            << " chunk_failed=" << stats.mesh_failures << '/' << stats.upload_failures
            << " chunk_stale=" << stats.stale_mesh_results << " draws=" << stats.draw_calls << '/'
            << stats.indirect_draw_calls << '['

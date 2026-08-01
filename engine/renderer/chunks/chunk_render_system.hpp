@@ -12,6 +12,8 @@
 #include "engine/world/streaming/chunk_streamer.hpp"
 #include "engine/world/world_state.hpp"
 
+#include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -59,6 +61,19 @@ struct ChunkRenderStats {
     std::uint64_t total_built_mesh_count = 0;
     std::uint64_t total_published_mesh_count = 0;
     double mesh_builds_per_publication = 0.0;
+    std::size_t edit_to_visible_completed_count = 0;
+    std::size_t pending_edit_to_visible_count = 0;
+    std::size_t recent_edit_to_visible_sample_count = 0;
+    std::uint64_t total_edit_to_visible_completed_count = 0;
+    std::uint64_t total_coalesced_edit_invalidation_count = 0;
+    std::uint64_t total_abandoned_edit_invalidation_count = 0;
+    double edit_to_visible_latest_ms = 0.0;
+    double edit_to_visible_frame_max_ms = 0.0;
+    double edit_to_visible_recent_median_ms = 0.0;
+    double edit_to_visible_recent_p95_ms = 0.0;
+    double edit_to_visible_recent_p99_ms = 0.0;
+    double edit_to_visible_recent_max_ms = 0.0;
+    double edit_to_visible_session_max_ms = 0.0;
     std::size_t in_flight_mesh_count = 0;
     std::size_t snapshot_cells_copied = 0;
     std::size_t pooled_cpu_mesh_buffers = 0;
@@ -187,8 +202,21 @@ class ChunkRenderSystem {
         [[nodiscard]] std::size_t byte_size() const noexcept;
     };
 
+    struct PendingEditLatency {
+        world::ChunkIdentity identity;
+        std::uint64_t target_stage_revision = 0;
+        dirty::DirtyRegionClock::time_point started_at{};
+    };
+
     void enqueue_mesh(world::ChunkIdentity identity, bool forced);
     void remove_pending(world::ChunkIdentity identity);
+    void track_edit_invalidation(world::ChunkIdentity identity, std::uint64_t stage_revision,
+                                 dirty::DirtyRegionClock::time_point started_at);
+    void complete_edit_invalidation(world::ChunkIdentity identity,
+                                    std::uint64_t published_stage_revision,
+                                    dirty::DirtyRegionClock::time_point published_at);
+    void abandon_edit_invalidation(world::ChunkIdentity identity) noexcept;
+    void refresh_edit_latency_distribution() noexcept;
     [[nodiscard]] core::Status reconcile_loaded_chunks(world::WorldState& world,
                                                        const RenderCamera& camera);
     void consume_dirty_regions(world::WorldState& world, const RenderCamera& camera);
@@ -234,6 +262,7 @@ class ChunkRenderSystem {
     ChunkRenderConfig config_{};
     std::vector<PendingMesh> pending_meshes_;
     std::vector<PendingUpload> pending_uploads_;
+    std::vector<PendingEditLatency> pending_edit_latencies_;
     std::vector<std::vector<terrain::GpuChunkVertex>> gpu_vertex_pool_;
     std::vector<VisibleChunk> visible_chunks_scratch_;
     VisibilityHierarchy visibility_hierarchy_;
@@ -242,6 +271,10 @@ class ChunkRenderSystem {
     std::shared_ptr<const world::BlockRenderTableSnapshot> render_table_;
     std::uint64_t next_sequence_ = 1;
     std::uint64_t visibility_epoch_ = 0;
+    static constexpr std::size_t edit_latency_window_size = 256;
+    std::array<double, edit_latency_window_size> edit_latency_samples_ms_{};
+    std::size_t edit_latency_sample_count_ = 0;
+    std::size_t next_edit_latency_sample_ = 0;
     ChunkRenderStats stats_{};
     profiling::CpuTimingRecorder timings_{};
 };

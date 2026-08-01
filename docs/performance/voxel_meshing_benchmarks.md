@@ -1,7 +1,8 @@
 # Voxel meshing experiments
 
-Status: occupancy-assisted source enumeration and measured mesh-capacity tuning are implemented;
-face-mask construction and edit-to-visible work remain open.
+Status: occupancy-assisted source enumeration, measured mesh-capacity tuning, and bounded
+invalidation-to-resident latency instrumentation are implemented; face-mask construction and the
+representative edit-latency gate remain open.
 
 This note records the reproducible 32-cubed meshing baseline and the first M4 decisions. The harness
 measures immutable neighborhood snapshot construction, the complete reference mesher, a fresh
@@ -118,6 +119,32 @@ Compared with the immediately preceding dense-path build, meshing medians moved 
 +2.7% outside the sub-microsecond empty case. That is below the roadmap's 5% investigation trigger
 and buys a large reduction in retained memory. The change is accepted.
 
+## Edit-to-visible mesh latency
+
+Every consumed chunk-mesh dirty region now carries a `steady_clock` timestamp. The renderer tracks
+that timestamp against the exact requested mesh-stage revision for each affected loaded chunk. This
+is intentionally a stage revision rather than only the chunk's content revision: an edit on a chunk
+boundary must also time the neighboring remesh even though that neighbor's own voxels did not
+change.
+
+The interval completes only after the GPU chunk cache accepts the current upload, the matching
+stage ticket is published as resident, and mesh dirty state is cleared. The replacement can then be
+selected by the same frame's draw-list construction. This is a CPU-side
+invalidation-to-resident/eligible-to-draw measure; it does not claim scan-out or photon latency.
+
+Repeated invalidations for one loaded chunk retain the earliest timestamp and newest required
+stage revision. Superseded work therefore cannot prematurely close the interval. Eviction,
+distance suppression, reload, or memory-pressure cancellation abandons the pending interval and is
+counted separately. Derived lighting/fluid mesh invalidations use the same contract, so results are
+best interpreted per benchmark workload rather than as user-input time alone.
+
+Runtime storage is bounded to one pending record per affected chunk and a fixed 256-sample rolling
+window. `ChunkRenderStats` and `RendererStats` expose per-frame completion count/maximum, pending
+count, latest latency, rolling median/P95/P99/maximum, session maximum, and cumulative completed,
+coalesced, and abandoned counts. Tracy plots retain pending count and rolling P95. Renderer
+benchmark JSON and CSV schema v3 preserve those counters and distributions in raw frame output and
+the summary.
+
 ## Decision and next experiment
 
 The versioned occupancy mask and surface-bound reservation remain in production. They preserve
@@ -125,8 +152,10 @@ reference/greedy surface parity, rich-model/fluid/AO behavior, deterministic out
 snapshot immutability. Empty rejection is a decisive latency win and the fixed 4 KiB mask is also
 available to later collision, lighting, and visibility experiments.
 
-The next meshing experiment is a render-table-revision-coupled full-occluder/greedy-cube mask used
-to construct directional face candidates with word operations. It must include snapshot-build cost,
+The next measurement is a clean optimized `rapid-edits` macrobenchmark run that applies the 50 ms
+local-response P95 gate and correlates latency with completed/published amplification. The next
+meshing experiment is a render-table-revision-coupled full-occluder/greedy-cube mask used to
+construct directional face candidates with word operations. It must include snapshot-build cost,
 pool any variable scratch storage, retain directional occlusion and AO semantics, and improve total
-snapshot-plus-mesh P95. Slab or microbrick rebuilds remain deferred until edit-to-visible traces show
-that whole-chunk invalidation, rather than face construction, is the limiting cost.
+snapshot-plus-mesh P95. Slab or microbrick rebuilds remain deferred until the edit traces show that
+whole-chunk invalidation, rather than face construction, is the limiting cost.

@@ -95,15 +95,21 @@ Vulkan timestamps are asynchronous. Every GPU result carries the source frame an
 do not align a delayed GPU sample with the CPU frame that happened to receive it. The headless
 backend reports GPU timing unavailable while preserving the same CPU/counter schema.
 
-JSON and CSV schema v2 carry scene/run configuration plus engine version, Git commit and tracked
+JSON and CSV schema v3 carry scene/run configuration plus engine version, Git commit and tracked
 dirty state, build configuration, compiler, platform, architecture, OS, CPU model/logical CPUs,
 Tracy state, GPU, driver information, and numeric Vulkan API/driver versions. Budget evaluation and
-violations are retained with the raw frames. Keep the raw output with any conclusion.
+violations are retained with the raw frames. Schema v3 also records bounded chunk-mesh
+invalidation-to-resident latency: each event begins at the monotonic dirty-region mark and ends only
+when the exact requested mesh-stage revision is uploaded and published. It includes boundary
+neighbors, reports a fixed 256-completion rolling median/P95/P99, and separates pending, coalesced,
+completed, and abandoned intervals. "Visible" here means resident and eligible for the same frame's
+draw list, not display scan-out. Keep the raw output with any conclusion.
 
 The first permanent trace surface includes runtime/client/server frames, renderer synchronization,
 extraction, visibility, draw construction, command construction/submission, chunk snapshots,
 meshing, upload preparation/copy, worker jobs with name and ID, voxel lighting, collision cooking,
-and chunk streaming. Tracy plots expose general job backlog and chunk mesh/upload queue depth.
+and chunk streaming. Tracy plots expose general job backlog, chunk mesh/upload queue depth, pending
+edit intervals, and rolling edit-to-visible P95.
 Extend this same hierarchy when adding pipeline stages rather than creating one-off timer systems.
 
 ## Comparison procedure

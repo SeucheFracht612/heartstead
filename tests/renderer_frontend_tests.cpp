@@ -631,6 +631,15 @@ void test_chunk_render_system_retains_rebuilds_and_culls() {
                .resident_is_current());
     assert(chunks.stats().total_published_mesh_count > 0);
     assert(chunks.stats().mesh_builds_per_publication <= 1.1);
+    assert(chunks.stats().total_edit_to_visible_completed_count >= 2);
+    assert(chunks.stats().pending_edit_to_visible_count == 0);
+    assert(chunks.stats().recent_edit_to_visible_sample_count >= 2);
+    assert(chunks.stats().edit_to_visible_latest_ms > 0.0);
+    assert(chunks.stats().edit_to_visible_recent_median_ms > 0.0);
+    assert(chunks.stats().edit_to_visible_recent_p95_ms >=
+           chunks.stats().edit_to_visible_recent_median_ms);
+    assert(chunks.stats().edit_to_visible_session_max_ms >=
+           chunks.stats().edit_to_visible_recent_p95_ms);
     assert(device.value()->live_resource_count() == baseline_resources + 2);
 
     const auto intermediate_revision_before = world.chunks().find(origin_coord)->content_revision();
@@ -658,6 +667,8 @@ void test_chunk_render_system_retains_rebuilds_and_culls() {
     assert(!world.chunks().find(origin_coord)->stage_ticket_is_current(intermediate_ticket));
     assert(current_mesh.resident_is_current());
     assert(current_mesh.stale_results + current_mesh.cancelled_results > 0);
+    assert(chunks.stats().total_coalesced_edit_invalidation_count > 0);
+    assert(chunks.stats().pending_edit_to_visible_count == 0);
 
     const world::ChunkCoord empty_coord{far, 3, -far};
     auto& empty = world.chunks().get_or_create(empty_coord);
@@ -681,6 +692,7 @@ void test_chunk_render_system_retains_rebuilds_and_culls() {
     assert(world.chunks().set(empty_coord, {2, 2, 2}, world::VoxelCell{1, 255},
                               world.dirty_regions()));
     assert(chunks.synchronize(world, camera)); // Leaves work for the old generation in flight.
+    assert(chunks.stats().pending_edit_to_visible_count == 1);
     assert(world.chunks().erase(empty_coord));
     auto& reloaded = world.chunks().get_or_create(empty_coord);
     assert(reloaded.set({1, 1, 1}, world::VoxelCell{3, 255}));
@@ -688,6 +700,7 @@ void test_chunk_render_system_retains_rebuilds_and_culls() {
     assert(chunks.synchronize(world, camera));
     assert(!cache.contains(empty_identity));
     assert(cache.contains(reloaded.identity()));
+    assert(chunks.stats().total_abandoned_edit_invalidation_count > 0);
     synchronize_until([&] {
         const auto* entry = cache.find(reloaded.identity());
         return entry != nullptr && entry->state == renderer::ChunkGpuState::resident &&
@@ -1019,6 +1032,7 @@ void test_renderer_frontend_submits_headless_frames() {
     const auto formatted_stats = renderer::format_renderer_stats(renderer_stats);
     assert(formatted_stats.contains("relight_cells=340/2048"));
     assert(formatted_stats.contains("relight_failed=2"));
+    assert(formatted_stats.contains("edit_visible="));
     assert(formatted_stats.contains("chunk_failed=0/0"));
 
     constexpr std::array<renderer::GpuStaticMeshVertex, 3> object_vertices{{

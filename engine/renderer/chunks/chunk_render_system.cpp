@@ -25,6 +25,17 @@ namespace {
            coordinate.z >= region.bounds.min.z && coordinate.z <= region.bounds.max.z;
 }
 
+[[nodiscard]] double percentile(std::span<const double> sorted, double fraction) noexcept {
+    if (sorted.empty()) {
+        return 0.0;
+    }
+    const auto position = fraction * static_cast<double>(sorted.size() - 1U);
+    const auto lower = static_cast<std::size_t>(std::floor(position));
+    const auto upper = static_cast<std::size_t>(std::ceil(position));
+    const auto weight = position - static_cast<double>(lower);
+    return sorted[lower] * (1.0 - weight) + sorted[upper] * weight;
+}
+
 [[nodiscard]] math::Bounds3f translated_bounds(math::Bounds3f bounds, math::Vec3f origin) noexcept {
     if (!bounds.is_valid()) {
         return bounds;
@@ -214,6 +225,7 @@ void ChunkRenderSystem::shutdown() noexcept {
     }
     pending_meshes_.clear();
     pending_uploads_.clear();
+    pending_edit_latencies_.clear();
     gpu_vertex_pool_.clear();
     render_table_.reset();
 }
@@ -299,6 +311,8 @@ core::Status ChunkRenderSystem::synchronize(world::WorldState& world, const Rend
     stats_.cancelled_mesh_count = 0;
     stats_.stale_mesh_result_count = 0;
     stats_.snapshot_cells_copied = 0;
+    stats_.edit_to_visible_completed_count = 0;
+    stats_.edit_to_visible_frame_max_ms = 0.0;
     stats_.meshing_ms = 0.0;
     stats_.gpu_wait_ms = 0.0;
     timings_.reset();
@@ -566,6 +580,9 @@ const ChunkRenderStats& ChunkRenderSystem::stats() const noexcept {
 
 void ChunkRenderSystem::reset_session_stats() noexcept {
     stats_ = {};
+    edit_latency_samples_ms_.fill(0.0);
+    edit_latency_sample_count_ = 0;
+    next_edit_latency_sample_ = 0;
     timings_.reset();
     refresh_queue_stats();
     refresh_timing_stats();
@@ -583,6 +600,81 @@ void ChunkRenderSystem::enqueue_mesh(world::ChunkIdentity identity, bool forced)
     pending_meshes_.push_back({identity, forced, next_sequence_++});
 }
 
+void ChunkRenderSystem::track_edit_invalidation(world::ChunkIdentity identity,
+                                                std::uint64_t stage_revision,
+                                                dirty::DirtyRegionClock::time_point started_at) {
+    if (!identity.is_valid() || stage_revision == 0 ||
+        started_at == dirty::DirtyRegionClock::time_point{}) {
+        return;
+    }
+    const auto found =
+        std::ranges::find(pending_edit_latencies_, identity, &PendingEditLatency::identity);
+    if (found == pending_edit_latencies_.end()) {
+        pending_edit_latencies_.push_back({identity, stage_revision, started_at});
+        return;
+    }
+    if (stage_revision > found->target_stage_revision) {
+        ++stats_.total_coalesced_edit_invalidation_count;
+        found->target_stage_revision = stage_revision;
+    }
+    found->started_at = std::min(found->started_at, started_at);
+}
+
+void ChunkRenderSystem::complete_edit_invalidation(
+    world::ChunkIdentity identity, std::uint64_t published_stage_revision,
+    dirty::DirtyRegionClock::time_point published_at) {
+    const auto found =
+        std::ranges::find(pending_edit_latencies_, identity, &PendingEditLatency::identity);
+    if (found == pending_edit_latencies_.end() ||
+        published_stage_revision < found->target_stage_revision) {
+        return;
+    }
+    const auto elapsed = published_at - found->started_at;
+    const auto milliseconds =
+        std::max(0.0, std::chrono::duration<double, std::milli>(elapsed).count());
+    pending_edit_latencies_.erase(found);
+
+    edit_latency_samples_ms_[next_edit_latency_sample_] = milliseconds;
+    next_edit_latency_sample_ = (next_edit_latency_sample_ + 1U) % edit_latency_window_size;
+    edit_latency_sample_count_ =
+        std::min(edit_latency_sample_count_ + 1U, edit_latency_window_size);
+    ++stats_.edit_to_visible_completed_count;
+    ++stats_.total_edit_to_visible_completed_count;
+    stats_.edit_to_visible_latest_ms = milliseconds;
+    stats_.edit_to_visible_frame_max_ms =
+        std::max(stats_.edit_to_visible_frame_max_ms, milliseconds);
+    stats_.edit_to_visible_session_max_ms =
+        std::max(stats_.edit_to_visible_session_max_ms, milliseconds);
+    refresh_edit_latency_distribution();
+}
+
+void ChunkRenderSystem::abandon_edit_invalidation(world::ChunkIdentity identity) noexcept {
+    const auto removed = std::erase_if(pending_edit_latencies_, [identity](const auto& pending) {
+        return pending.identity == identity;
+    });
+    stats_.total_abandoned_edit_invalidation_count += removed;
+}
+
+void ChunkRenderSystem::refresh_edit_latency_distribution() noexcept {
+    stats_.recent_edit_to_visible_sample_count = edit_latency_sample_count_;
+    if (edit_latency_sample_count_ == 0) {
+        stats_.edit_to_visible_recent_median_ms = 0.0;
+        stats_.edit_to_visible_recent_p95_ms = 0.0;
+        stats_.edit_to_visible_recent_p99_ms = 0.0;
+        stats_.edit_to_visible_recent_max_ms = 0.0;
+        return;
+    }
+    std::array<double, edit_latency_window_size> sorted{};
+    std::copy_n(edit_latency_samples_ms_.begin(), edit_latency_sample_count_, sorted.begin());
+    std::sort(sorted.begin(),
+              sorted.begin() + static_cast<std::ptrdiff_t>(edit_latency_sample_count_));
+    const std::span<const double> values{sorted.data(), edit_latency_sample_count_};
+    stats_.edit_to_visible_recent_median_ms = percentile(values, 0.50);
+    stats_.edit_to_visible_recent_p95_ms = percentile(values, 0.95);
+    stats_.edit_to_visible_recent_p99_ms = percentile(values, 0.99);
+    stats_.edit_to_visible_recent_max_ms = values.back();
+}
+
 void ChunkRenderSystem::remove_pending(world::ChunkIdentity identity) {
     std::erase_if(pending_meshes_,
                   [identity](const PendingMesh& pending) { return pending.identity == identity; });
@@ -596,6 +688,7 @@ void ChunkRenderSystem::remove_pending(world::ChunkIdentity identity) {
     std::erase_if(pending_uploads_, [identity](const PendingUpload& pending) {
         return pending.identity == identity;
     });
+    abandon_edit_invalidation(identity);
 }
 
 core::Status ChunkRenderSystem::reconcile_loaded_chunks(world::WorldState& world,
@@ -683,16 +776,31 @@ void ChunkRenderSystem::consume_dirty_regions(world::WorldState& world,
     if (regions.empty()) {
         return;
     }
+    pending_edit_latencies_.reserve(
+        std::max(pending_edit_latencies_.size(), cache_->stats().entry_count));
     for (const auto identity : world.chunks().identities()) {
         const auto* entry = cache_->find(identity);
         const bool residency_allows_work = entry == nullptr || !entry->residency_suppressed ||
                                            should_restore_suppressed_residency(*entry, camera);
-        if (within_mesh_distance(identity.coordinate, camera) && residency_allows_work &&
-            std::ranges::any_of(regions, [identity](const dirty::DirtyRegion& region) {
-                return region_contains(region, identity.coordinate);
-            })) {
-            enqueue_mesh(identity, true);
+        if (!within_mesh_distance(identity.coordinate, camera) || !residency_allows_work) {
+            continue;
         }
+        auto earliest_mark = dirty::DirtyRegionClock::time_point::max();
+        for (const auto& region : regions) {
+            if (region_contains(region, identity.coordinate)) {
+                earliest_mark = std::min(earliest_mark, region.marked_at);
+            }
+        }
+        if (earliest_mark == dirty::DirtyRegionClock::time_point::max()) {
+            continue;
+        }
+        const auto* chunk = world.chunks().find(identity.coordinate);
+        if (chunk != nullptr && chunk->identity() == identity) {
+            track_edit_invalidation(identity,
+                                    chunk->stages().requested_revision(world::ChunkStage::mesh),
+                                    earliest_mark);
+        }
+        enqueue_mesh(identity, true);
     }
 }
 
@@ -1110,6 +1218,8 @@ core::Status ChunkRenderSystem::process_upload_queue(world::WorldState& world,
             }
             chunk->clear_dirty(world::ChunkDirtyFlag::mesh);
             ++stats_.total_published_mesh_count;
+            complete_edit_invalidation(pending.identity, pending.stage_ticket.revision,
+                                       dirty::DirtyRegionClock::now());
         } else {
             const auto* newest = world.chunks().find(pending.identity.coordinate);
             if (newest != nullptr && cache_->contains(newest->identity())) {
@@ -1419,6 +1529,7 @@ void ChunkRenderSystem::refresh_queue_stats() noexcept {
                   static_cast<double>(stats_.total_published_mesh_count);
     stats_.pending_mesh_count = pending_meshes_.size() + stats_.in_flight_mesh_count;
     stats_.pending_upload_count = pending_uploads_.size();
+    stats_.pending_edit_to_visible_count = pending_edit_latencies_.size();
     stats_.pending_upload_bytes = 0;
     for (const auto& upload : pending_uploads_) {
         stats_.pending_upload_bytes += upload.byte_size();
@@ -1434,6 +1545,9 @@ void ChunkRenderSystem::refresh_queue_stats() noexcept {
     HEARTSTEAD_PROFILE_PLOT("chunks.mesh_published_total", stats_.total_published_mesh_count);
     HEARTSTEAD_PROFILE_PLOT("chunks.mesh_builds_per_publication",
                             stats_.mesh_builds_per_publication);
+    HEARTSTEAD_PROFILE_PLOT("chunks.edit_to_visible_pending", stats_.pending_edit_to_visible_count);
+    HEARTSTEAD_PROFILE_PLOT("chunks.edit_to_visible_recent_p95_ms",
+                            stats_.edit_to_visible_recent_p95_ms);
     HEARTSTEAD_PROFILE_PLOT("chunks.upload_pending", stats_.pending_upload_count);
     HEARTSTEAD_PROFILE_PLOT("chunks.upload_pending_bytes", stats_.pending_upload_bytes);
     HEARTSTEAD_PROFILE_PLOT("chunks.resident", stats_.cache.resident_chunk_count);

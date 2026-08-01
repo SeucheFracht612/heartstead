@@ -2569,12 +2569,25 @@ void Renderer::update_frontend_stats(std::size_t loaded_chunk_count) noexcept {
     stats_.upload_preparation_ms = chunks.upload_preparation_ms;
     stats_.upload_ms = chunks.upload_ms;
     stats_.gpu_wait_ms = chunks.gpu_wait_ms;
+    stats_.edit_to_visible_latest_ms = chunks.edit_to_visible_latest_ms;
+    stats_.edit_to_visible_frame_max_ms = chunks.edit_to_visible_frame_max_ms;
+    stats_.edit_to_visible_recent_median_ms = chunks.edit_to_visible_recent_median_ms;
+    stats_.edit_to_visible_recent_p95_ms = chunks.edit_to_visible_recent_p95_ms;
+    stats_.edit_to_visible_recent_p99_ms = chunks.edit_to_visible_recent_p99_ms;
+    stats_.edit_to_visible_session_max_ms = chunks.edit_to_visible_session_max_ms;
     stats_.loaded_chunks = saturating_u32(loaded_chunk_count);
     stats_.mesh_pending_chunks = saturating_u32(chunks.pending_mesh_count);
     stats_.upload_pending_chunks = saturating_u32(chunks.pending_upload_count);
+    stats_.edit_to_visible_completed = saturating_u32(chunks.edit_to_visible_completed_count);
+    stats_.edit_to_visible_pending = saturating_u32(chunks.pending_edit_to_visible_count);
+    stats_.edit_to_visible_recent_samples =
+        saturating_u32(chunks.recent_edit_to_visible_sample_count);
     stats_.mesh_failures = chunks.total_failed_mesh_count;
     stats_.upload_failures = chunks.total_failed_upload_count;
     stats_.stale_mesh_results = chunks.total_stale_mesh_result_count;
+    stats_.edit_to_visible_total_completed = chunks.total_edit_to_visible_completed_count;
+    stats_.edit_to_visible_total_coalesced = chunks.total_coalesced_edit_invalidation_count;
+    stats_.edit_to_visible_total_abandoned = chunks.total_abandoned_edit_invalidation_count;
     stats_.resident_chunks = saturating_u32(chunks.cache.resident_chunk_count);
     stats_.visible_chunks = saturating_u32(chunks.visible_chunk_count);
     stats_.culled_chunks = saturating_u32(chunks.culled_chunk_count);

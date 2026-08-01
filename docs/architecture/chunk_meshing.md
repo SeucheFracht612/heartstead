@@ -68,6 +68,12 @@ Implemented foundation:
     already running or upload-ready
   - completed jobs, built meshes, published meshes, stale results, and the cumulative
     builds-per-publication amplification ratio are retained and plotted for regression analysis
+  - chunk-mesh dirty regions carry a monotonic invalidation timestamp; the renderer couples the
+    earliest timestamp to the newest exact mesh-stage revision until that revision is resident
+  - boundary-neighbor work is covered even when its content revision is unchanged; superseded
+    revisions cannot complete a newer interval
+  - a fixed 256-sample window reports invalidation-to-resident median/P95/P99/maximum alongside
+    pending, completed, coalesced, and abandoned counters; no unbounded event history is retained
 
 - Terrain mapping and material stability
   - full, partial, authored-box, authored-triangle, greedy, cutout, transparent, and emissive

@@ -25,13 +25,13 @@ requires one.
 | --- | --- | --- |
 | Permanent hierarchical profiling | Partial: retained CPU/GPU timers, counters, raw benchmark frames, and opt-in Tracy zones now cover major runtime, renderer, chunk, worker, lighting, collision, and streaming paths. | Extend zones and attribution as later stages are changed; add allocation ownership and queue-age plots. |
 | Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. | Add teleport, rapid-traversal time-to-visible, server/client, save, cold-start, and long-soak workloads. |
-| Reproducible provenance and gates | Benchmark schema v2 records source/build/CPU/GPU/driver/run metadata. Optional tier gates enforce median, P95, P99, maximum frame, upload, and available GPU limits. | Add calibrated reference-machine baselines, repetitions, relative-regression checks, and non-renderer gates. |
+| Reproducible provenance and gates | Benchmark schema v3 records source/build/CPU/GPU/driver/run metadata plus bounded edit-to-visible mesh latency. Optional tier gates enforce median, P95, P99, maximum frame, upload, and available GPU limits. | Add calibrated reference-machine baselines, repetitions, relative-regression checks, and non-renderer gates. |
 | Bounded jobs and cancellation | Generic and typed schedulers now bound pending/result work, expose backpressure and queue-age telemetry, age priorities, and support reasoned queued/cooperative cancellation. | Attribute per-type saturation in higher-level pipeline counters and tune limits from traces. |
 | Versioned chunk pipeline | An owner-thread ledger now separates content, light, mesh, collision, persistence, and replication request/output revisions and states. Save/replication, mesh/GPU, collision/physics, and whole-field lighting publication are ticket-validated across edit and reload races. | Calibrate stale-work amplification and latency under representative edit/streaming traces. |
 | Compact voxel sections | Chunks remain fixed 32³ with contiguous dense `VoxelCell` production storage. Reproducible 16/32 experiments now cover dense, split, palette-packed, uniform-light, sparse-metadata, and adaptive split-dense fallback candidates. | Retain dense production storage while mask/macro work proceeds; add a medium-diversity crossover sweep before any storage selection. |
 | Occupancy and opacity masks | A fixed 4 KiB occupancy mask is maintained with the exact chunk content revision and copied into immutable meshing snapshots. Opacity remains render-table-dependent. | Prototype derived opacity/face masks keyed by content dependencies and render-table revision; measure total snapshot-plus-consumer cost. |
-| Face culling and greedy meshing | Implemented with immutable neighborhood snapshots, material/render phases, bounded scheduling, stale rejection, buffer reuse, a reproducible isolated benchmark, occupancy-assisted empty/source rejection, and surface-bound output reservation. | Prototype word-level face candidates; add edit-to-visible traces; adopt slab or microbrick rebuilds only if edit P95 requires them. |
-| Dynamic edit propagation | Dirty regions, neighbor dependencies, asynchronous mesh/light/collision work, and upload quotas exist. | Measure edit-to-visible/collision/light convergence and coalesce publication under explicit time budgets. |
+| Face culling and greedy meshing | Implemented with immutable neighborhood snapshots, material/render phases, bounded scheduling, stale rejection, buffer reuse, a reproducible isolated benchmark, occupancy-assisted empty/source rejection, surface-bound output reservation, and bounded invalidation-to-resident traces. | Prototype word-level face candidates; adopt slab or microbrick rebuilds only if measured edit P95 requires them. |
+| Dynamic edit propagation | Dirty regions, neighbor dependencies, asynchronous mesh/light/collision work, upload quotas, exact mesh-stage latency tracking, and edit-burst coalescing telemetry exist. | Apply the 50 ms visual-response gate to clean rapid-edit runs; measure collision/light convergence and enforce explicit time budgets. |
 | Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, delta save/replication, residency budgets, and far clipmaps exist. Loading/generation and parts of save I/O remain synchronous. | Move disk/decode/generation/save stages off latency-critical threads and add journal durability, queue limits, and recovery tests. |
 | Visibility, LOD, and GPU scaling | Frustum/distance/hierarchical visibility, HZB support, far clipmaps, indirect rendering, GPU arenas, upload staging, and pass timestamps already exist. | Tune only from captures; validate total culling benefit and retain broad fallback paths. |
 | Simulation and multiplayer scale | Simulation LOD, server authority, interest management, replication deltas, and fixed-step runtime exist. | Add multi-client spread/convergence benchmarks, byte/time quotas, backlog recovery gates, and soak coverage. |
@@ -44,7 +44,7 @@ Deliverables:
 
 - opt-in optimized Tracy build with permanent no-op call sites in ordinary builds;
 - hierarchical zones and queue plots at the main engine boundaries;
-- benchmark schema v2 with commit, dirty state, build, compiler, OS, CPU, GPU, driver, and run
+- benchmark schema v3 with commit, dirty state, build, compiler, OS, CPU, GPU, driver, run
   configuration;
 - tier profiles and non-zero process exit on an evaluated budget failure;
 - unit and smoke coverage for serialization, provenance, and gate evaluation.
@@ -120,8 +120,10 @@ declared mainstream reference CPU; local edit visual response P95 is at most 50 
 
 Progress: the isolated reference/fresh/reused benchmark, exact output-memory accounting,
 occupancy-assisted empty/source rejection, and surface-bound output reservation are implemented and
-documented in [Voxel meshing experiments](voxel_meshing_benchmarks.md). The sparse-cave and
-checkerboard P95 gates are still missed, and edit-to-visible instrumentation remains open.
+documented in [Voxel meshing experiments](voxel_meshing_benchmarks.md). Exact mesh-stage
+invalidation-to-resident tracking, a fixed rolling percentile window, and benchmark schema v3 are
+also implemented. The sparse-cave and checkerboard P95 gates are still missed, and the 50 ms
+rapid-edit macro gate still needs a clean reference-machine run.
 
 ### M5 — asynchronous dynamic-world pipeline
 

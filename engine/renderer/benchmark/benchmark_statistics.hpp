@@ -106,6 +106,14 @@ struct BenchmarkSummary {
     double mean_upload_preparation_ms = 0.0;
     double mean_upload_ms = 0.0;
     double mean_gpu_wait_ms = 0.0;
+    double maximum_edit_to_visible_ms = 0.0;
+    double final_edit_to_visible_median_ms = 0.0;
+    double final_edit_to_visible_p95_ms = 0.0;
+    double final_edit_to_visible_p99_ms = 0.0;
+    std::uint32_t maximum_pending_edit_to_visible = 0;
+    std::uint64_t final_edit_to_visible_completed = 0;
+    std::uint64_t final_edit_to_visible_coalesced = 0;
+    std::uint64_t final_edit_to_visible_abandoned = 0;
     double mean_gpu_opaque_terrain_ms = 0.0;
     double mean_gpu_alpha_tested_terrain_ms = 0.0;
     double mean_gpu_transparent_terrain_ms = 0.0;
