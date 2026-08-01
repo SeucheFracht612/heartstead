@@ -118,6 +118,7 @@ struct ChunkStreamSaveFlushReport {
     std::vector<ChunkCoord> clean_chunks;
     std::vector<ChunkCoord> missing_chunks;
     std::vector<ChunkCoord> dirty_without_delta_chunks;
+    std::vector<ChunkCoord> stale_chunks;
 
     [[nodiscard]] std::size_t written_count() const noexcept;
 };
@@ -128,6 +129,7 @@ struct ChunkStreamReplicationFlushReport {
     std::vector<ChunkCoord> clean_chunks;
     std::vector<ChunkCoord> missing_chunks;
     std::vector<ChunkCoord> dirty_without_delta_chunks;
+    std::vector<ChunkCoord> stale_chunks;
 
     [[nodiscard]] std::size_t replicated_count() const noexcept;
 };

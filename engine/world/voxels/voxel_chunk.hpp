@@ -2,6 +2,7 @@
 
 #include "engine/core/result.hpp"
 #include "engine/world/chunks/chunk_identity.hpp"
+#include "engine/world/chunks/chunk_stage_ledger.hpp"
 #include "engine/world/coords/world_coords.hpp"
 
 #include <cstddef>
@@ -63,6 +64,9 @@ class VoxelChunk {
     [[nodiscard]] ChunkIdentity identity() const noexcept;
     [[nodiscard]] std::uint64_t content_revision() const noexcept;
     [[nodiscard]] const ChunkDirtyState& dirty() const noexcept;
+    [[nodiscard]] const ChunkStageLedger& stages() const noexcept;
+    [[nodiscard]] ChunkStageTicket stage_ticket(ChunkStage stage) const noexcept;
+    [[nodiscard]] bool stage_ticket_is_current(ChunkStageTicket ticket) const noexcept;
     [[nodiscard]] std::span<const VoxelCell> cells() const noexcept;
     [[nodiscard]] core::Result<VoxelCell> get(VoxelCoord coord) const;
 
@@ -75,18 +79,28 @@ class VoxelChunk {
     void mark_dirty(ChunkDirtyFlag flag) noexcept;
     void clear_dirty(ChunkDirtyFlag flag) noexcept;
     void clear_all_dirty() noexcept;
+    [[nodiscard]] ChunkStageTicket request_stage(ChunkStage stage) noexcept;
+    [[nodiscard]] ChunkStageTicket ensure_stage_requested(ChunkStage stage) noexcept;
+    [[nodiscard]] core::Status mark_stage_running(ChunkStageTicket ticket);
+    [[nodiscard]] core::Status mark_stage_ready(ChunkStageTicket ticket);
+    [[nodiscard]] core::Status publish_stage(ChunkStageTicket ticket, bool output_changed = true);
+    [[nodiscard]] core::Status retry_stage(ChunkStageTicket ticket);
+    [[nodiscard]] core::Status note_stage_stale(ChunkStageTicket ticket);
+    [[nodiscard]] core::Status note_stage_cancelled(ChunkStageTicket ticket);
 
   private:
     friend class ChunkDatabase;
 
     [[nodiscard]] static bool contains(VoxelCoord coord) noexcept;
     [[nodiscard]] static std::size_t index_of(VoxelCoord coord) noexcept;
+    void invalidate(ChunkDirtyFlag flag) noexcept;
     void assign_load_generation(std::uint64_t generation) noexcept;
     void advance_content_revision() noexcept;
 
     ChunkCoord coord_;
     std::vector<VoxelCell> cells_;
     ChunkDirtyState dirty_;
+    ChunkStageLedger stages_;
     std::uint64_t content_revision_ = 1;
     std::uint64_t load_generation_ = 0;
 };

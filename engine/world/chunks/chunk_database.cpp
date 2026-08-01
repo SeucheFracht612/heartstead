@@ -365,6 +365,36 @@ ChunkDatabaseStats ChunkDatabase::stats() const noexcept {
         if (chunk.dirty().contains(ChunkDirtyFlag::replication)) {
             ++result.dirty_replication_count;
         }
+        for (std::size_t index = 0; index < chunk_stage_count; ++index) {
+            const auto stage = static_cast<ChunkStage>(index);
+            const auto& record = chunk.stages().record(stage);
+            auto& counts = result.stages[index];
+            switch (record.state) {
+            case ChunkStageState::requested:
+                ++counts.requested;
+                break;
+            case ChunkStageState::running:
+                ++counts.running;
+                break;
+            case ChunkStageState::ready:
+                ++counts.ready;
+                break;
+            case ChunkStageState::resident:
+                ++counts.resident;
+                break;
+            case ChunkStageState::stale:
+                ++counts.stale;
+                break;
+            case ChunkStageState::cancelled:
+                ++counts.cancelled;
+                break;
+            }
+            if (record.has_resident_output()) {
+                ++counts.available_resident_outputs;
+            }
+            counts.stale_results += record.stale_results;
+            counts.cancelled_results += record.cancelled_results;
+        }
     }
     return result;
 }

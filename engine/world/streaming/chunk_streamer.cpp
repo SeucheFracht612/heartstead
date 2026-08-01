@@ -348,13 +348,44 @@ ChunkStreamer::flush_save_deltas(WorldState& state, std::span<const ChunkCoord> 
         record.coord = coord;
         record.encoded_edit_delta = ChunkEditDeltaTextCodec::encode(coord, found_edits->second);
 
+        const auto ticket = chunk->ensure_stage_requested(ChunkStage::persistence);
+        auto stage_status = chunk->mark_stage_running(ticket);
+        if (!stage_status) {
+            return core::Result<ChunkStreamSaveFlushReport>::failure(stage_status.error().code,
+                                                                     stage_status.error().message);
+        }
+
         auto status = sink.write_chunk_delta(record);
         if (!status) {
+            auto* current = state.chunks().find(coord);
+            if (current != nullptr && current->identity() == ticket.identity &&
+                current->stage_ticket_is_current(ticket)) {
+                static_cast<void>(current->retry_stage(ticket));
+            }
             return core::Result<ChunkStreamSaveFlushReport>::failure(status.error().code,
                                                                      status.error().message);
         }
 
-        chunk->clear_dirty(ChunkDirtyFlag::save);
+        auto* current = state.chunks().find(coord);
+        if (current == nullptr || current->identity() != ticket.identity ||
+            !current->stage_ticket_is_current(ticket)) {
+            if (current != nullptr && current->identity() == ticket.identity) {
+                static_cast<void>(current->note_stage_stale(ticket));
+            }
+            report.stale_chunks.push_back(coord);
+            continue;
+        }
+        stage_status = current->mark_stage_ready(ticket);
+        if (!stage_status) {
+            return core::Result<ChunkStreamSaveFlushReport>::failure(stage_status.error().code,
+                                                                     stage_status.error().message);
+        }
+        stage_status = current->publish_stage(ticket);
+        if (!stage_status) {
+            return core::Result<ChunkStreamSaveFlushReport>::failure(stage_status.error().code,
+                                                                     stage_status.error().message);
+        }
+        current->clear_dirty(ChunkDirtyFlag::save);
         report.written_chunks.push_back(coord);
     }
 
@@ -395,13 +426,44 @@ ChunkStreamer::flush_replication_deltas(WorldState& state,
         record.coord = coord;
         record.encoded_edit_delta = ChunkEditDeltaTextCodec::encode(coord, found_edits->second);
 
+        const auto ticket = chunk->ensure_stage_requested(ChunkStage::replication);
+        auto stage_status = chunk->mark_stage_running(ticket);
+        if (!stage_status) {
+            return core::Result<ChunkStreamReplicationFlushReport>::failure(
+                stage_status.error().code, stage_status.error().message);
+        }
+
         auto status = sink.replicate_chunk_delta(record);
         if (!status) {
+            auto* current = state.chunks().find(coord);
+            if (current != nullptr && current->identity() == ticket.identity &&
+                current->stage_ticket_is_current(ticket)) {
+                static_cast<void>(current->retry_stage(ticket));
+            }
             return core::Result<ChunkStreamReplicationFlushReport>::failure(status.error().code,
                                                                             status.error().message);
         }
 
-        chunk->clear_dirty(ChunkDirtyFlag::replication);
+        auto* current = state.chunks().find(coord);
+        if (current == nullptr || current->identity() != ticket.identity ||
+            !current->stage_ticket_is_current(ticket)) {
+            if (current != nullptr && current->identity() == ticket.identity) {
+                static_cast<void>(current->note_stage_stale(ticket));
+            }
+            report.stale_chunks.push_back(coord);
+            continue;
+        }
+        stage_status = current->mark_stage_ready(ticket);
+        if (!stage_status) {
+            return core::Result<ChunkStreamReplicationFlushReport>::failure(
+                stage_status.error().code, stage_status.error().message);
+        }
+        stage_status = current->publish_stage(ticket);
+        if (!stage_status) {
+            return core::Result<ChunkStreamReplicationFlushReport>::failure(
+                stage_status.error().code, stage_status.error().message);
+        }
+        current->clear_dirty(ChunkDirtyFlag::replication);
         report.replicated_chunks.push_back(coord);
     }
 

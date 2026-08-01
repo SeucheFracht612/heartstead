@@ -202,6 +202,7 @@ target_sources(
     workpieces/workpiece_state.cpp
     world/blocks/block_model.cpp
     world/chunks/chunk_database.cpp
+    world/chunks/chunk_stage_ledger.cpp
     world/chunks/chunk_edit_delta_codec.cpp
     world/chunks/chunk_replication.cpp
     world/collision/chunk_collision.cpp
@@ -435,6 +436,7 @@ target_sources(
       workpieces/workpiece_state.hpp
       world/blocks/block_model.hpp
       world/chunks/chunk_database.hpp
+      world/chunks/chunk_stage_ledger.hpp
       world/chunks/chunk_edit_delta_codec.hpp
       world/chunks/chunk_replication.hpp
       world/chunks/chunk_identity.hpp

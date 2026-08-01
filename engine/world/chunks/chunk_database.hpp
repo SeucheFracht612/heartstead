@@ -5,6 +5,7 @@
 #include "engine/world/chunks/chunk_identity.hpp"
 #include "engine/world/voxels/voxel_chunk.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -29,6 +30,12 @@ struct ChunkDatabaseStats {
     std::size_t dirty_mesh_count = 0;
     std::size_t dirty_save_count = 0;
     std::size_t dirty_replication_count = 0;
+    std::array<ChunkStageCounts, chunk_stage_count> stages{};
+
+    [[nodiscard]] const ChunkStageCounts& stage(ChunkStage chunk_stage) const noexcept {
+        const auto index = static_cast<std::size_t>(chunk_stage);
+        return stages[index < stages.size() ? index : 0];
+    }
 };
 
 class ChunkDatabase {

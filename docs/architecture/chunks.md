@@ -14,6 +14,11 @@ Implemented foundation:
   - dirty flags for mesh, collision, lighting, save, and replication
   - monotonic content revision starting at one, advanced only when stored cells actually change
     (plus generated-cell replacement), so renderer work can prove which content it represents
+  - compact owner-thread stage ledger for content, lighting, mesh, collision, persistence, and
+    replication; each derived stage keeps an independent request epoch, resident request epoch,
+    output revision, lifecycle state, and stale/cancelled totals
+  - generation-counted stage tickets that let asynchronous or re-entrant work prove both the exact
+    chunk residency and the exact stage request it was built to satisfy
   - a process-unique, never-reused load generation assigned only while resident in a
     `ChunkDatabase`; coordinate plus generation forms `ChunkIdentity`
 
@@ -38,6 +43,8 @@ Implemented foundation:
   - palette-aware edits additionally mark every resident chunk reached by the old/new block
     model's declared mesh invalidation radius
   - expose dirty/edit statistics
+  - aggregate requested, running, ready, resident, stale, and cancelled lifecycle counts per stage;
+    runtime inspection exposes the same counters without scanning worker-owned state
   - optionally emit dirty regions for mesh, collision, and lighting rebuild queues
   - preserves signed 64-bit chunk coordinates in dirty-region rebuild queues without clamping
 
@@ -85,6 +92,9 @@ Implemented foundation:
   - flushes requested replication-dirty chunk edit deltas through an abstract replication sink
   - clears only the replication-dirty flag after a successful replication handoff, so eviction can
     proceed only after both persistence and replication have acknowledged the terrain edits
+  - captures immutable save/replication payloads plus stage tickets before invoking a sink, then
+    re-resolves the chunk identity and request epoch before acknowledging; an edit, unload, or reload
+    during a sink call is reported as stale and cannot clear newer dirty state
   - can run one viewer-interest maintenance step that plans chunk interest, optionally flushes
     pinned dirty chunks through save and replication sinks, and then evicts every now-clean
     candidate while reporting chunks that still cannot be unloaded
@@ -103,6 +113,12 @@ data. Save and replication dirtiness remain attached to chunks whose stored data
 Generated chunks and loaded saved edit deltas only mark mesh, collision, and lighting
 rebuild state. They do not mark save or replication dirty until a player/world operation
 changes stored voxel data after load.
+
+Stage transitions are owner-thread operations. `requested -> running -> ready -> resident` is the
+successful path. A new invalidation always advances that stage's request epoch while retaining the
+older resident product until replacement. Obsolete results increment stale/cancelled telemetry but
+cannot change the state of a newer request. Worker payloads contain tickets and immutable snapshots;
+workers never receive a mutable `VoxelChunk` or `ChunkDatabase`.
 
 Current extension areas:
 

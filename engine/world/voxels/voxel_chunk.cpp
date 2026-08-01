@@ -13,6 +13,36 @@ namespace {
     return static_cast<std::uint8_t>(flag);
 }
 
+[[nodiscard]] constexpr ChunkStage stage_for_dirty_flag(ChunkDirtyFlag flag) noexcept {
+    switch (flag) {
+    case ChunkDirtyFlag::mesh:
+        return ChunkStage::mesh;
+    case ChunkDirtyFlag::collision:
+        return ChunkStage::collision;
+    case ChunkDirtyFlag::lighting:
+        return ChunkStage::lighting;
+    case ChunkDirtyFlag::save:
+        return ChunkStage::persistence;
+    case ChunkDirtyFlag::replication:
+        return ChunkStage::replication;
+    }
+    return ChunkStage::count;
+}
+
+[[nodiscard]] core::Status validate_ticket_identity(ChunkIdentity current,
+                                                    ChunkStageTicket ticket) {
+    if (!ticket.is_valid()) {
+        return core::Status::failure(
+            "chunk_stage.invalid_ticket",
+            "chunk stage ticket must contain a valid identity and revision");
+    }
+    if (ticket.identity != current) {
+        return core::Status::failure("chunk_stage.stale_identity",
+                                     "chunk stage ticket names a stale load generation");
+    }
+    return core::Status::ok();
+}
+
 } // namespace
 
 void ChunkDirtyState::mark(ChunkDirtyFlag flag) noexcept {
@@ -53,6 +83,22 @@ const ChunkDirtyState& VoxelChunk::dirty() const noexcept {
     return dirty_;
 }
 
+const ChunkStageLedger& VoxelChunk::stages() const noexcept {
+    return stages_;
+}
+
+ChunkStageTicket VoxelChunk::stage_ticket(ChunkStage stage) const noexcept {
+    if (stage == ChunkStage::count) {
+        return {};
+    }
+    return {identity(), stage, stages_.requested_revision(stage)};
+}
+
+bool VoxelChunk::stage_ticket_is_current(ChunkStageTicket ticket) const noexcept {
+    return ticket.is_valid() && ticket.identity == identity() &&
+           stages_.is_current(ticket.stage, ticket.revision);
+}
+
 std::span<const VoxelCell> VoxelChunk::cells() const noexcept {
     return cells_;
 }
@@ -79,11 +125,11 @@ core::Status VoxelChunk::set(VoxelCoord coord, VoxelCell cell) {
 
     current = cell;
     advance_content_revision();
-    dirty_.mark(ChunkDirtyFlag::mesh);
-    dirty_.mark(ChunkDirtyFlag::collision);
-    dirty_.mark(ChunkDirtyFlag::lighting);
-    dirty_.mark(ChunkDirtyFlag::save);
-    dirty_.mark(ChunkDirtyFlag::replication);
+    invalidate(ChunkDirtyFlag::mesh);
+    invalidate(ChunkDirtyFlag::collision);
+    invalidate(ChunkDirtyFlag::lighting);
+    invalidate(ChunkDirtyFlag::save);
+    invalidate(ChunkDirtyFlag::replication);
     return core::Status::ok();
 }
 
@@ -100,9 +146,9 @@ core::Status VoxelChunk::apply_saved_cell(VoxelCoord coord, VoxelCell cell) {
 
     current = cell;
     advance_content_revision();
-    dirty_.mark(ChunkDirtyFlag::mesh);
-    dirty_.mark(ChunkDirtyFlag::collision);
-    dirty_.mark(ChunkDirtyFlag::lighting);
+    invalidate(ChunkDirtyFlag::mesh);
+    invalidate(ChunkDirtyFlag::collision);
+    invalidate(ChunkDirtyFlag::lighting);
     return core::Status::ok();
 }
 
@@ -122,8 +168,8 @@ core::Result<std::size_t> VoxelChunk::apply_derived_light(std::span<const std::u
     }
     if (changed > 0) {
         advance_content_revision();
-        dirty_.mark(ChunkDirtyFlag::mesh);
-        dirty_.mark(ChunkDirtyFlag::replication);
+        invalidate(ChunkDirtyFlag::mesh);
+        invalidate(ChunkDirtyFlag::replication);
     }
     return core::Result<std::size_t>::success(changed);
 }
@@ -137,9 +183,9 @@ core::Status VoxelChunk::load_generated_cells(std::vector<VoxelCell> cells) {
     cells_ = std::move(cells);
     advance_content_revision();
     dirty_.clear_all();
-    dirty_.mark(ChunkDirtyFlag::mesh);
-    dirty_.mark(ChunkDirtyFlag::collision);
-    dirty_.mark(ChunkDirtyFlag::lighting);
+    invalidate(ChunkDirtyFlag::mesh);
+    invalidate(ChunkDirtyFlag::collision);
+    invalidate(ChunkDirtyFlag::lighting);
     return core::Status::ok();
 }
 
@@ -150,15 +196,15 @@ void VoxelChunk::fill(VoxelCell cell) {
 
     std::ranges::fill(cells_, cell);
     advance_content_revision();
-    dirty_.mark(ChunkDirtyFlag::mesh);
-    dirty_.mark(ChunkDirtyFlag::collision);
-    dirty_.mark(ChunkDirtyFlag::lighting);
-    dirty_.mark(ChunkDirtyFlag::save);
-    dirty_.mark(ChunkDirtyFlag::replication);
+    invalidate(ChunkDirtyFlag::mesh);
+    invalidate(ChunkDirtyFlag::collision);
+    invalidate(ChunkDirtyFlag::lighting);
+    invalidate(ChunkDirtyFlag::save);
+    invalidate(ChunkDirtyFlag::replication);
 }
 
 void VoxelChunk::mark_dirty(ChunkDirtyFlag flag) noexcept {
-    dirty_.mark(flag);
+    invalidate(flag);
 }
 
 void VoxelChunk::clear_dirty(ChunkDirtyFlag flag) noexcept {
@@ -167,6 +213,54 @@ void VoxelChunk::clear_dirty(ChunkDirtyFlag flag) noexcept {
 
 void VoxelChunk::clear_all_dirty() noexcept {
     dirty_.clear_all();
+}
+
+ChunkStageTicket VoxelChunk::request_stage(ChunkStage stage) noexcept {
+    const auto revision = stages_.request(stage);
+    return revision == 0 ? ChunkStageTicket{} : ChunkStageTicket{identity(), stage, revision};
+}
+
+ChunkStageTicket VoxelChunk::ensure_stage_requested(ChunkStage stage) noexcept {
+    const auto revision = stages_.ensure_requested(stage);
+    return revision == 0 ? ChunkStageTicket{} : ChunkStageTicket{identity(), stage, revision};
+}
+
+core::Status VoxelChunk::mark_stage_running(ChunkStageTicket ticket) {
+    auto status = validate_ticket_identity(identity(), ticket);
+    return status ? stages_.mark_running(ticket.stage, ticket.revision) : status;
+}
+
+core::Status VoxelChunk::mark_stage_ready(ChunkStageTicket ticket) {
+    auto status = validate_ticket_identity(identity(), ticket);
+    return status ? stages_.mark_ready(ticket.stage, ticket.revision) : status;
+}
+
+core::Status VoxelChunk::publish_stage(ChunkStageTicket ticket, bool output_changed) {
+    auto status = validate_ticket_identity(identity(), ticket);
+    return status ? stages_.publish(ticket.stage, ticket.revision, output_changed) : status;
+}
+
+core::Status VoxelChunk::retry_stage(ChunkStageTicket ticket) {
+    auto status = validate_ticket_identity(identity(), ticket);
+    return status ? stages_.retry(ticket.stage, ticket.revision) : status;
+}
+
+core::Status VoxelChunk::note_stage_stale(ChunkStageTicket ticket) {
+    auto status = validate_ticket_identity(identity(), ticket);
+    return status ? stages_.note_stale(ticket.stage, ticket.revision) : status;
+}
+
+core::Status VoxelChunk::note_stage_cancelled(ChunkStageTicket ticket) {
+    auto status = validate_ticket_identity(identity(), ticket);
+    return status ? stages_.note_cancelled(ticket.stage, ticket.revision) : status;
+}
+
+void VoxelChunk::invalidate(ChunkDirtyFlag flag) noexcept {
+    dirty_.mark(flag);
+    const auto stage = stage_for_dirty_flag(flag);
+    if (stage != ChunkStage::count) {
+        static_cast<void>(stages_.request(stage));
+    }
 }
 
 void VoxelChunk::assign_load_generation(std::uint64_t generation) noexcept {
@@ -178,6 +272,7 @@ void VoxelChunk::advance_content_revision() noexcept {
         std::terminate();
     }
     ++content_revision_;
+    stages_.publish_content(content_revision_);
 }
 
 bool VoxelChunk::contains(VoxelCoord coord) noexcept {

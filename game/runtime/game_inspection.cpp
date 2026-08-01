@@ -302,6 +302,20 @@ debug::InspectionData GameInspector::inspect(const RuntimeSession& session) {
         add_field(data, "chunk_edit_count", std::to_string(chunk_stats.edit_count));
         add_field(data, "dirty_mesh_chunk_count", std::to_string(chunk_stats.dirty_mesh_count));
         add_field(data, "dirty_save_chunk_count", std::to_string(chunk_stats.dirty_save_count));
+        for (std::size_t index = 0; index < world::chunk_stage_count; ++index) {
+            const auto stage = static_cast<world::ChunkStage>(index);
+            const auto prefix =
+                std::string("chunk_stage_") + std::string(world::chunk_stage_name(stage)) + "_";
+            const auto& counts = chunk_stats.stage(stage);
+            add_field(data, prefix + "requested", std::to_string(counts.requested));
+            add_field(data, prefix + "running", std::to_string(counts.running));
+            add_field(data, prefix + "ready", std::to_string(counts.ready));
+            add_field(data, prefix + "resident", std::to_string(counts.resident));
+            add_field(data, prefix + "stale", std::to_string(counts.stale));
+            add_field(data, prefix + "cancelled", std::to_string(counts.cancelled));
+            add_field(data, prefix + "stale_results", std::to_string(counts.stale_results));
+            add_field(data, prefix + "cancelled_results", std::to_string(counts.cancelled_results));
+        }
         add_field(data, "dirty_region_count", std::to_string(world_stats.dirty_region_count));
         add_field(data, "persistent_entity_count",
                   std::to_string(world_stats.persistent_entity_count));
