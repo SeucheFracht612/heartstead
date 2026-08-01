@@ -170,6 +170,9 @@ ChunkMeshScheduler::create(ChunkMeshSchedulerConfig config) {
     job_desc.max_completed_results = static_cast<std::uint32_t>(
         std::min(config.max_completed_results,
                  static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
+    job_desc.max_pending_jobs = static_cast<std::uint32_t>(
+        std::min(config.max_concurrent_jobs,
+                 static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
     auto job_system = jobs::create_job_system(job_desc);
     if (!job_system) {
         return core::Result<std::unique_ptr<ChunkMeshScheduler>>::failure(
@@ -236,7 +239,11 @@ core::Status ChunkMeshScheduler::submit(ChunkMeshRequest request) {
     auto shared_state = shared_state_;
     jobs::JobDesc job;
     job.name = "chunk_mesh";
+    job.type = "voxel.mesh";
     job.priority = job_priority(priority);
+    job.estimated_cost = static_cast<std::uint32_t>(
+        std::min(request.neighborhood.cells.size(),
+                 static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
     job.work = [request = std::move(request), cancellation, meshing_mode,
                 shared_state](const jobs::JobContext&) mutable {
         ChunkMeshResult result;

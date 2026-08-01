@@ -60,6 +60,7 @@ ChunkLightScheduler::create(ChunkLightSchedulerConfig config) {
     jobs_desc.max_completed_results = static_cast<std::uint32_t>(
         std::min(config.max_completed_results,
                  static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
+    jobs_desc.max_pending_jobs = 1;
     auto jobs = jobs::create_job_system(jobs_desc);
     if (!jobs) {
         return core::Result<std::unique_ptr<ChunkLightScheduler>>::failure(jobs.error().code,
@@ -101,7 +102,11 @@ core::Status ChunkLightScheduler::submit(ChunkLightRequest request) {
     auto shared_state = shared_state_;
     jobs::JobDesc job;
     job.name = "chunk_light";
+    job.type = "voxel.light";
     job.priority = jobs::JobPriority::normal;
+    job.estimated_cost = static_cast<std::uint32_t>(std::max<std::size_t>(
+        1, std::min(request.snapshot.chunks.size(),
+                    static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()))));
     job.work = [request = std::move(request), cancellation,
                 shared_state](const jobs::JobContext&) mutable {
         ChunkLightResult result;

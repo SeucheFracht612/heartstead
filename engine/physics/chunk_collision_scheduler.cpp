@@ -108,6 +108,9 @@ ChunkCollisionScheduler::create(ChunkCollisionSchedulerConfig config) {
     job_desc.max_completed_results = static_cast<std::uint32_t>(
         std::min(config.max_completed_results,
                  static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
+    job_desc.max_pending_jobs = static_cast<std::uint32_t>(
+        std::min(config.max_concurrent_jobs,
+                 static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
     auto jobs = jobs::create_job_system(job_desc);
     if (!jobs) {
         return core::Result<std::unique_ptr<ChunkCollisionScheduler>>::failure(
@@ -164,7 +167,11 @@ core::Status ChunkCollisionScheduler::submit(ChunkCollisionRequest request) {
     auto shared_state = shared_state_;
     jobs::JobDesc job;
     job.name = "chunk_collision";
+    job.type = "voxel.collision";
     job.priority = jobs::JobPriority::normal;
+    job.estimated_cost = static_cast<std::uint32_t>(
+        std::min(request.snapshot.cells.size(),
+                 static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
     job.work = [request = std::move(request), cancellation,
                 shared_state](const jobs::JobContext&) mutable {
         ChunkCollisionResult result;

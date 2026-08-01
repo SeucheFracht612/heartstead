@@ -26,7 +26,7 @@ requires one.
 | Permanent hierarchical profiling | Partial: retained CPU/GPU timers, counters, raw benchmark frames, and opt-in Tracy zones now cover major runtime, renderer, chunk, worker, lighting, collision, and streaming paths. | Extend zones and attribution as later stages are changed; add allocation ownership and queue-age plots. |
 | Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. | Add teleport, rapid-traversal time-to-visible, server/client, save, cold-start, and long-soak workloads. |
 | Reproducible provenance and gates | Benchmark schema v2 records source/build/CPU/GPU/driver/run metadata. Optional tier gates enforce median, P95, P99, maximum frame, upload, and available GPU limits. | Add calibrated reference-machine baselines, repetitions, relative-regression checks, and non-renderer gates. |
-| Bounded jobs and cancellation | Typed mesh, light, and collision schedulers bound in-flight/result work and reject stale versions. The generic pending queue is unbounded and its generic cancellation state is not reachable. | Bound submitted work, expose backpressure, make cancellation cooperative, and measure queue age/cancellation reason. |
+| Bounded jobs and cancellation | Generic and typed schedulers now bound pending/result work, expose backpressure and queue-age telemetry, age priorities, and support reasoned queued/cooperative cancellation. | Attribute per-type saturation in higher-level pipeline counters and tune limits from traces. |
 | Versioned chunk pipeline | Chunk identity, load generation, content revision, mesh dependencies, and typed stale-result checks exist. | Separate content, light, mesh, collision, persistence, and replication versions behind an explicit stage ledger. |
 | Compact voxel sections | Chunks are fixed 32³ and use contiguous dense `VoxelCell` storage. A global palette maps block IDs, but cell storage is not palette-packed. | Benchmark representative bytes, scans, edits, decode cost, and 16/32 section tradeoffs before selecting a packed format. |
 | Occupancy and opacity masks | Not stored with chunk content. | Prototype version-coupled masks and measure empty rejection, face-mask construction, lighting, and memory cost. |
@@ -65,7 +65,8 @@ Deliverables:
 
 Exit gate: all job memory is bounded, urgent work can displace or cancel obsolete speculative work,
 and stress tests return every queue to zero. Cancellation remains cooperative because worker tasks
-are not safely preemptible.
+are not safely preemptible. This milestone is implemented; queue limits remain subject to workload
+calibration as later pipeline stages are added.
 
 ### M2 — explicit chunk-stage versions and publication
 

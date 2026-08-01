@@ -42,7 +42,8 @@ StreamingResidencyManager::create(StreamingResidencyConfig config,
     }
     auto jobs = jobs::create_job_system(
         {config.job_backend, config.worker_count,
-         std::max(config.maximum_in_flight_loads * 4U, 64U), 1});
+         std::max(config.maximum_in_flight_loads * 4U, 64U), 1,
+         config.maximum_in_flight_loads});
     if (!jobs) {
         return core::Result<std::unique_ptr<StreamingResidencyManager>>::failure(
             jobs.error().code, jobs.error().message);
