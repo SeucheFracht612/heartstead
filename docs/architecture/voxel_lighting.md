@@ -23,9 +23,11 @@ both source classes, so it cannot leave an orphan value whose source is no longe
 
 ## Snapshot, solve, and apply
 
-The solver consumes a `VoxelLightSnapshot` containing sorted chunk identities, content revisions,
-and copied cells, plus a compact `VoxelLightBlockTable`. It never reads the live world while
-propagating.
+The solver consumes a `VoxelLightSnapshot` containing sorted chunk identities, lighting-stage
+tickets, content revisions, and copied cells, plus a compact `VoxelLightBlockTable`. The owner
+freezes that metadata for every resident chunk before copying the first cell, so a later edit to an
+as-yet-uncopied chunk invalidates the entire snapshot instead of producing a mixed-time field. The
+worker never reads the live world while propagating.
 
 Sunlight seeding walks each contiguous loaded vertical chunk stack from top to bottom. The upper
 boundary of each loaded stack is treated as sky; a missing chunk elsewhere is a closed propagation
@@ -33,8 +35,12 @@ boundary, not implicit air. A stable highest-light-first queue performs the six-
 for sunlight and block light. Stable chunk/local address ordering makes results independent of
 chunk insertion order.
 
-The result contains complete, revision-tagged chunk patches. The owner thread validates every
-patch before applying any of them. A generation or revision mismatch rejects the result as stale.
+The result contains complete, revision-tagged chunk patches and retains every request ticket even
+when solving is cancelled. The owner thread validates the complete topology, source/table
+revisions, content revisions, and all lighting tickets before applying any patch. It transitions
+every exact ticket through `running` and `ready`, then publishes every patch together as
+`resident`; unchanged light bytes advance the resident request without advancing the lighting
+output revision. A generation or revision mismatch rejects the whole result as stale.
 
 Applying derived light:
 
@@ -63,9 +69,10 @@ output, and applies complete patches on the owner thread. Mesh work remains a se
 
 The default owner-thread snapshot budget is 4,096 cells per simulation update. The solver owns one
 background job at a time and coalesces further edits into a follow-up rebuild. A topology, content,
-palette, or external-source change makes partial snapshots and completed results stale. Complete
-field application is timed against a 2 ms budget and records overruns rather than publishing a
-partially updated connected light field.
+palette, or external-source change advances the field tickets, makes partial snapshots and
+completed results stale, and cooperatively cancels an obsolete solve. Complete field application
+is timed against a 2 ms budget and records overruns rather than publishing a partially updated
+connected light field.
 
 `ChunkLightSystemStats` exposes snapshot backlog, copied cells, queue visits, solve/apply time,
 changed chunks/cells, stale work, and budget overruns. `Renderer::set_voxel_lighting_stats` mirrors

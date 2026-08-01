@@ -181,6 +181,7 @@ void propagate_light(ScratchChunks& chunks, const VoxelLightBlockTable& blocks, 
         }
         const auto* chunk = chunks.find(patch.identity.coordinate);
         if (chunk == nullptr || chunk->identity() != patch.identity ||
+            !chunk->stage_ticket_is_current(patch.stage_ticket) ||
             chunk->content_revision() != patch.source_content_revision) {
             return core::Status::failure(
                 "voxel_light.stale_result",
@@ -242,7 +243,9 @@ VoxelLightBlockTable build_voxel_light_block_table(const VoxelPalette& palette) 
 }
 
 core::Status ChunkLightSnapshot::validate() const {
-    if (!identity.is_valid() || content_revision == 0 || cells.size() != VoxelChunk::total_cells) {
+    if (!identity.is_valid() || !stage_ticket.is_valid() || stage_ticket.identity != identity ||
+        stage_ticket.stage != ChunkStage::lighting || content_revision == 0 ||
+        cells.size() != VoxelChunk::total_cells) {
         return core::Status::failure(
             "voxel_light.invalid_chunk_snapshot",
             "voxel light chunk snapshot requires a valid identity, revision, and complete cells");
@@ -290,14 +293,15 @@ VoxelLightSnapshot build_voxel_light_snapshot(const ChunkDatabase& chunks) {
             continue;
         }
         result.chunks.push_back(
-            {identity, chunk->content_revision(),
+            {identity, chunk->stage_ticket(ChunkStage::lighting), chunk->content_revision(),
              std::vector<VoxelCell>(chunk->cells().begin(), chunk->cells().end())});
     }
     return result;
 }
 
 core::Status ChunkLightPatch::validate() const {
-    if (!identity.is_valid() || source_content_revision == 0 ||
+    if (!identity.is_valid() || !stage_ticket.is_valid() || stage_ticket.identity != identity ||
+        stage_ticket.stage != ChunkStage::lighting || source_content_revision == 0 ||
         lights.size() != VoxelChunk::total_cells) {
         return core::Status::failure(
             "voxel_light.invalid_patch",
@@ -416,6 +420,7 @@ core::Result<VoxelLightSolveResult> solve_voxel_light(const VoxelLightSnapshot& 
     for (auto& [_, chunk] : scratch) {
         ChunkLightPatch patch;
         patch.identity = chunk.source->identity;
+        patch.stage_ticket = chunk.source->stage_ticket;
         patch.source_content_revision = chunk.source->content_revision;
         patch.lights.resize(VoxelChunk::total_cells);
         for (std::size_t index = 0; index < patch.lights.size(); ++index) {

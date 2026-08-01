@@ -87,8 +87,8 @@ core::Status ChunkLightScheduler::submit(ChunkLightRequest request) {
                                      "chunk light scheduler is stopped");
     }
     auto snapshot_status = request.snapshot.validate();
-    if (request.request_id == 0 || !snapshot_status || request.block_table == nullptr ||
-        !request.block_table->validate()) {
+    if (request.request_id == 0 || request.source_revision == 0 || !snapshot_status ||
+        request.block_table == nullptr || !request.block_table->validate()) {
         return core::Status::failure("chunk_light.invalid_request",
                                      "chunk light request metadata is inconsistent");
     }
@@ -111,7 +111,12 @@ core::Status ChunkLightScheduler::submit(ChunkLightRequest request) {
                 shared_state](const jobs::JobContext&) mutable {
         ChunkLightResult result;
         result.request_id = request.request_id;
+        result.source_revision = request.source_revision;
         result.block_table_revision = request.block_table->revision;
+        result.stage_tickets.reserve(request.snapshot.chunks.size());
+        for (const auto& chunk : request.snapshot.chunks) {
+            result.stage_tickets.push_back(chunk.stage_ticket);
+        }
         if (cancellation->load(std::memory_order_acquire)) {
             result.state = ChunkLightResultState::cancelled;
             shared_state->publish(std::move(result));

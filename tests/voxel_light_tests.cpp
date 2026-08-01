@@ -188,12 +188,23 @@ void test_derived_apply_is_revision_checked_and_not_a_save_edit() {
     assert(!chunk->dirty().contains(world::ChunkDirtyFlag::lighting));
     assert(dirty_regions.count(dirty::DirtyRegionKind::chunk_mesh) == 1);
 
-    const auto stale_snapshot = world::build_voxel_light_snapshot(chunks);
-    auto stale =
-        world::solve_voxel_light(stale_snapshot, world::build_voxel_light_block_table(palette));
-    assert(stale);
+    const auto stage_stale_snapshot = world::build_voxel_light_snapshot(chunks);
+    auto stage_stale = world::solve_voxel_light(stage_stale_snapshot,
+                                                world::build_voxel_light_block_table(palette));
+    assert(stage_stale);
+    const auto content_before_stage_invalidation = chunk->content_revision();
+    chunk->mark_dirty(world::ChunkDirtyFlag::lighting);
+    assert(chunk->content_revision() == content_before_stage_invalidation);
+    auto stage_rejected = world::apply_voxel_light(chunks, dirty_regions, stage_stale.value());
+    assert(!stage_rejected);
+    assert(stage_rejected.error().code == "voxel_light.stale_result");
+
+    const auto content_stale_snapshot = world::build_voxel_light_snapshot(chunks);
+    auto content_stale = world::solve_voxel_light(content_stale_snapshot,
+                                                  world::build_voxel_light_block_table(palette));
+    assert(content_stale);
     assert(chunks.set({0, 0, 0}, {1, 1, 1}, world::VoxelCell{1, 0}));
-    auto rejected = world::apply_voxel_light(chunks, dirty_regions, stale.value());
+    auto rejected = world::apply_voxel_light(chunks, dirty_regions, content_stale.value());
     assert(!rejected);
     assert(rejected.error().code == "voxel_light.stale_result");
 }

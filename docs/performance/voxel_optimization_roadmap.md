@@ -27,7 +27,7 @@ requires one.
 | Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. | Add teleport, rapid-traversal time-to-visible, server/client, save, cold-start, and long-soak workloads. |
 | Reproducible provenance and gates | Benchmark schema v2 records source/build/CPU/GPU/driver/run metadata. Optional tier gates enforce median, P95, P99, maximum frame, upload, and available GPU limits. | Add calibrated reference-machine baselines, repetitions, relative-regression checks, and non-renderer gates. |
 | Bounded jobs and cancellation | Generic and typed schedulers now bound pending/result work, expose backpressure and queue-age telemetry, age priorities, and support reasoned queued/cooperative cancellation. | Attribute per-type saturation in higher-level pipeline counters and tune limits from traces. |
-| Versioned chunk pipeline | An owner-thread ledger now separates content, light, mesh, collision, persistence, and replication request/output revisions and states. Save/replication, mesh/GPU, and collision/physics publication are ticket-validated across edit and reload races. | Carry stage tickets through light publication, then calibrate stale-work amplification. |
+| Versioned chunk pipeline | An owner-thread ledger now separates content, light, mesh, collision, persistence, and replication request/output revisions and states. Save/replication, mesh/GPU, collision/physics, and whole-field lighting publication are ticket-validated across edit and reload races. | Calibrate stale-work amplification and latency under representative edit/streaming traces. |
 | Compact voxel sections | Chunks are fixed 32³ and use contiguous dense `VoxelCell` storage. A global palette maps block IDs, but cell storage is not palette-packed. | Benchmark representative bytes, scans, edits, decode cost, and 16/32 section tradeoffs before selecting a packed format. |
 | Occupancy and opacity masks | Not stored with chunk content. | Prototype version-coupled masks and measure empty rejection, face-mask construction, lighting, and memory cost. |
 | Face culling and greedy meshing | Implemented with immutable neighborhood snapshots, material/render phases, bounded scheduling, stale rejection, and buffer reuse. | Add isolated microbenchmarks; use masks where they win; adopt slab or microbrick rebuilds only if edit P95 requires them. |
@@ -80,7 +80,9 @@ Deliverables:
 - deterministic unload/reload/edit race tests.
 
 Exit gate: an obsolete derived result cannot publish, duplicate completed mesh work stays below 1.1
-jobs per published mesh during normal edits, and no worker accesses live mutable world state.
+jobs per published mesh during normal edits, and no worker accesses live mutable world state. This
+milestone is implemented; stale-work amplification and latency remain workload-calibration tasks
+for the later meshing and dynamic-world milestones.
 
 ### M3 — voxel storage experiments
 

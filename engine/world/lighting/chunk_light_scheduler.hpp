@@ -16,6 +16,7 @@ namespace heartstead::world {
 
 struct ChunkLightRequest {
     std::uint64_t request_id = 0;
+    std::uint64_t source_revision = 0;
     VoxelLightSnapshot snapshot;
     std::shared_ptr<const VoxelLightBlockTable> block_table;
 };
@@ -28,7 +29,9 @@ enum class ChunkLightResultState : std::uint8_t {
 
 struct ChunkLightResult {
     std::uint64_t request_id = 0;
+    std::uint64_t source_revision = 0;
     std::uint64_t block_table_revision = 0;
+    std::vector<ChunkStageTicket> stage_tickets;
     ChunkLightResultState state = ChunkLightResultState::failed;
     std::optional<VoxelLightSolveResult> light;
     double solve_ms = 0.0;

@@ -34,6 +34,7 @@ struct VoxelLightBlockTable {
 
 struct ChunkLightSnapshot {
     ChunkIdentity identity{};
+    ChunkStageTicket stage_ticket{};
     std::uint64_t content_revision = 0;
     std::vector<VoxelCell> cells;
 
@@ -58,6 +59,7 @@ struct VoxelLightSnapshot {
 
 struct ChunkLightPatch {
     ChunkIdentity identity{};
+    ChunkStageTicket stage_ticket{};
     std::uint64_t source_content_revision = 0;
     std::vector<std::uint8_t> lights;
 

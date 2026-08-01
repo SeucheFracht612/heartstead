@@ -84,12 +84,14 @@ class ChunkLightSystem {
     ChunkLightSystem(ChunkLightSystemConfig config, std::unique_ptr<ChunkLightScheduler> scheduler,
                      std::shared_ptr<const VoxelLightBlockTable> block_table);
 
-    [[nodiscard]] core::Status refresh_block_table(const VoxelPalette& palette);
-    void collect_dirty(const ChunkDatabase& chunks, dirty::DirtyRegionTracker& dirty_regions);
-    void begin_snapshot(const ChunkDatabase& chunks);
+    [[nodiscard]] core::Status refresh_block_table(const VoxelPalette& palette,
+                                                   ChunkDatabase& chunks);
+    void collect_dirty(ChunkDatabase& chunks, dirty::DirtyRegionTracker& dirty_regions);
+    void invalidate_field(ChunkDatabase& chunks);
+    void begin_snapshot(ChunkDatabase& chunks);
     [[nodiscard]] bool snapshot_still_current(const ChunkDatabase& chunks) const;
-    [[nodiscard]] core::Status advance_snapshot(const ChunkDatabase& chunks);
-    [[nodiscard]] core::Status submit_snapshot();
+    [[nodiscard]] core::Status advance_snapshot(ChunkDatabase& chunks);
+    [[nodiscard]] core::Status submit_snapshot(ChunkDatabase& chunks);
     [[nodiscard]] core::Status apply_completed(ChunkDatabase& chunks,
                                                dirty::DirtyRegionTracker& dirty_regions);
     void refresh_stats() noexcept;
@@ -103,7 +105,6 @@ class ChunkLightSystem {
     std::vector<VoxelLightSource> sources_;
     bool relight_requested_ = false;
     std::uint64_t source_revision_ = 1;
-    std::uint64_t submitted_source_revision_ = 0;
     std::uint64_t next_request_id_ = 1;
     ChunkLightSystemStats stats_{};
 };
