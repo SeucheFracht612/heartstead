@@ -533,8 +533,16 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             if (!save_is_compatible(save_entries[index])) {
                 continue;
             }
-            if (!newest.has_value() || save_entries[index].metadata.last_saved_at_ms >
-                                           save_entries[*newest].metadata.last_saved_at_ms) {
+            const auto recency = save_entries[index].metadata.last_played_at_ms != 0
+                                     ? save_entries[index].metadata.last_played_at_ms
+                                     : save_entries[index].metadata.last_saved_at_ms;
+            const auto newest_recency =
+                newest.has_value()
+                    ? (save_entries[*newest].metadata.last_played_at_ms != 0
+                           ? save_entries[*newest].metadata.last_played_at_ms
+                           : save_entries[*newest].metadata.last_saved_at_ms)
+                    : 0;
+            if (!newest.has_value() || recency > newest_recency) {
                 newest = index;
             }
         }
@@ -682,6 +690,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 if (!(status =
                           add(label("heartstead.load.selected_dates",
                                     "Created: " + timestamp_text(entry.metadata.created_at_ms) +
+                                        " | Last played: " +
+                                        timestamp_text(entry.metadata.last_played_at_ms) +
                                         " | Last saved: " +
                                         timestamp_text(entry.metadata.last_saved_at_ms)))))
                     return status;
@@ -704,7 +714,11 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                                         "Generator preset: " +
                                             (entry.generator_preset.empty()
                                                  ? std::string("legacy save (not recorded)")
-                                                 : entry.generator_preset)))) ||
+                                                 : entry.generator_preset) +
+                                            " | Version: " +
+                                            (entry.generator_version.empty()
+                                                 ? std::string("legacy/unknown")
+                                                 : entry.generator_version)))) ||
                         !(status = add(label("heartstead.load.selected_mods",
                                              "Required mods: " + required_mods_text(metadata)))))
                         return status;
@@ -1146,6 +1160,12 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             }
         }
         if (active_persistence == PersistencePolicy::persistent && !active_save_slot.empty()) {
+            const auto played_status =
+                save_catalog.mark_played(active_save_slot, persisted_timestamp_ms());
+            if (!played_status) {
+                menu_message = "World loaded, but last-played history could not be saved: " +
+                               played_status.error().message;
+            }
             settings.last_world_slot = active_save_slot;
             const auto settings_status = persist_settings();
             if (!settings_status) {

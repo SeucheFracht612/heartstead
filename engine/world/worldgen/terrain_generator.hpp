@@ -12,6 +12,11 @@
 
 namespace heartstead::world {
 
+// Increment when deterministic terrain output changes for identical generation inputs. Saves
+// record this independently from the game and save-schema versions so compatibility diagnostics
+// can explain world-generation differences precisely.
+inline constexpr std::uint32_t deterministic_terrain_generator_version = 1;
+
 struct TerrainGenerationConfig {
     std::uint64_t world_seed = 0;
     std::string region_id;

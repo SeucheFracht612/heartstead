@@ -54,11 +54,14 @@ Implemented behavior:
   upgraded snapshot as a new generation only when migrations apply
 - manages save slots as safe lowercase directory ids without exposing real paths to gameplay code
 - persists save-slot metadata in `slot.txt`, including slot id, display name, created timestamp,
-  and last-saved timestamp
+  last-played timestamp, and last-saved timestamp
 - validates save-slot metadata before writing or listing slots and rejects metadata whose slot id
   does not match its directory name
 - exposes a catalog-level snapshot commit helper that writes the per-slot save database and advances
-  `last_saved_at_ms` only after a successful snapshot commit
+  `last_saved_at_ms` only after a successful snapshot commit; wall-clock corrections never move an
+  existing saved or played timestamp backwards
+- updates `last_played_at_ms` separately when a loaded world becomes active, so Continue ordering
+  does not confuse opening a world with saving it
 - treats missing `slot.txt` files as legacy/default metadata so older slot directories remain
   discoverable
 - lists save-slot summaries with metadata and `SaveDatabaseStats` for each visible slot

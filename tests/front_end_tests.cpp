@@ -226,6 +226,7 @@ void test_save_world_management() {
     snapshot.metadata.game_version = "0.1.0";
     snapshot.metadata.world_seed = 42;
     snapshot.mod_states.push_back({"engine", "world.generator_preset", "base:temperate"});
+    snapshot.mod_states.push_back({"engine", "world.generator_version", "7"});
     assert(catalog.write_snapshot("world_a", snapshot, 100));
     assert(catalog.rename_slot("world_a", "W\xC3\xB6rld A"));
     auto invalid_name = catalog.rename_slot("world_a", " World A");
@@ -238,8 +239,10 @@ void test_save_world_management() {
     assert(listed.value()[0].metadata.display_name == "W\xC3\xB6rld A");
     assert(listed.value()[0].snapshot_metadata.has_value());
     assert(listed.value()[0].generator_preset == "base:temperate");
+    assert(listed.value()[0].generator_version == "7");
     assert(listed.value()[1].metadata.display_name == "World A Copy");
     assert(listed.value()[1].snapshot_metadata.has_value());
+    assert(listed.value()[1].metadata.last_played_at_ms == 0);
 
     assert(catalog.delete_slot("world_a"));
     listed = catalog.list_slots();

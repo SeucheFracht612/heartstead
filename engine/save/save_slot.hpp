@@ -16,6 +16,7 @@ struct SaveSlotMetadata {
     std::string slot_id;
     std::string display_name;
     std::uint64_t created_at_ms = 0;
+    std::uint64_t last_played_at_ms = 0;
     std::uint64_t last_saved_at_ms = 0;
 
     [[nodiscard]] core::Status validate() const;
@@ -28,6 +29,7 @@ struct SaveSlotSummary {
     SaveDatabaseStats database_stats;
     std::optional<SaveMetadata> snapshot_metadata;
     std::string generator_preset;
+    std::string generator_version;
     std::optional<core::Error> validation_error;
 };
 
@@ -50,6 +52,8 @@ class FileSaveSlotCatalog {
     [[nodiscard]] core::Status write_metadata(const SaveSlotMetadata& metadata) const;
     [[nodiscard]] core::Status rename_slot(std::string_view slot_id,
                                            std::string display_name) const;
+    [[nodiscard]] core::Status mark_played(std::string_view slot_id,
+                                           std::uint64_t played_at_ms) const;
     [[nodiscard]] core::Status duplicate_slot(std::string_view source_slot_id,
                                               std::string_view destination_slot_id,
                                               std::string display_name,

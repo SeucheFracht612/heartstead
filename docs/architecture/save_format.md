@@ -36,6 +36,10 @@ chunk deltas separately; future database formats should preserve the same typed-
 boundary.
 The save-slot catalog owns display metadata and timestamp policy; callers that commit through the
 catalog update `last_saved_at_ms` after the underlying slot database accepts the snapshot.
+Opening a world updates the independent `last_played_at_ms` field without forcing a world snapshot
+write. Snapshot mod state also records the terrain generator preset and deterministic generator
+version so the save browser can distinguish world-generation compatibility from game/save schema
+versions.
 
 `dev_game` opens its configured Foundation save when a committed generation exists and creates a
 new deterministic Foundation world when it does not. While an authoritative local session is

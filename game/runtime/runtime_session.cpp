@@ -4,6 +4,7 @@
 #include "engine/net/command_payload.hpp"
 #include "engine/scenarios/scenario_prototype.hpp"
 #include "engine/world/world_snapshot.hpp"
+#include "engine/world/worldgen/terrain_generator.hpp"
 #include "game/foundation/foundation_world.hpp"
 
 #include <algorithm>
@@ -27,6 +28,7 @@ namespace {
 constexpr std::string_view runtime_tick_state_mod = "engine";
 constexpr std::string_view runtime_tick_state_key = "runtime.fixed_step_tick";
 constexpr std::string_view generator_state_key = "world.generator_preset";
+constexpr std::string_view generator_version_state_key = "world.generator_version";
 
 [[nodiscard]] core::Result<std::uint64_t>
 saved_fixed_step_tick(const save::SaveSnapshot& snapshot) {
@@ -727,6 +729,20 @@ core::Result<save::SaveSnapshot> RuntimeSession::capture_save_snapshot() const {
     } else {
         generator_state->encoded_state =
             request_.generator_preset.empty() ? "unknown" : request_.generator_preset;
+    }
+    auto generator_version_state =
+        std::ranges::find_if(snapshot.value().mod_states, [](const auto& state) {
+            return state.mod_id == runtime_tick_state_mod &&
+                   state.state_key == generator_version_state_key;
+        });
+    const auto generator_version =
+        std::to_string(world::deterministic_terrain_generator_version);
+    if (generator_version_state == snapshot.value().mod_states.end()) {
+        snapshot.value().mod_states.push_back(
+            {std::string(runtime_tick_state_mod), std::string(generator_version_state_key),
+             generator_version});
+    } else {
+        generator_version_state->encoded_state = generator_version;
     }
     for (const auto* player : server_->players().records()) {
         if (!player->persistent) {

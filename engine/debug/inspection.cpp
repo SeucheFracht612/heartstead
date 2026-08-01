@@ -3824,7 +3824,10 @@ InspectionData Inspector::inspect(const save::SaveSlotSummary& slot) {
     add_field(data, "slot_id", slot.slot_id);
     add_field(data, "display_name", slot.metadata.display_name);
     add_field(data, "created_at_ms", std::to_string(slot.metadata.created_at_ms));
+    add_field(data, "last_played_at_ms", std::to_string(slot.metadata.last_played_at_ms));
     add_field(data, "last_saved_at_ms", std::to_string(slot.metadata.last_saved_at_ms));
+    add_field(data, "generator_preset", slot.generator_preset);
+    add_field(data, "generator_version", slot.generator_version);
     add_field(data, "path", slot.path.generic_string());
     add_field(data, "layout",
               slot.database_stats.uses_generation_manifest ? "generation" : "legacy");

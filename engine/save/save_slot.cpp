@@ -15,7 +15,8 @@ namespace heartstead::save {
 
 namespace {
 
-constexpr std::string_view slot_metadata_magic = "heartstead.save_slot.v1";
+constexpr std::string_view slot_metadata_magic_v1 = "heartstead.save_slot.v1";
+constexpr std::string_view slot_metadata_magic_v2 = "heartstead.save_slot.v2";
 constexpr std::uintmax_t max_slot_metadata_bytes = 64U * 1024U;
 
 [[nodiscard]] std::filesystem::path slot_path(const std::filesystem::path& root,
@@ -196,10 +197,11 @@ constexpr std::uintmax_t max_slot_metadata_bytes = 64U * 1024U;
 
 [[nodiscard]] std::string encode_metadata(const SaveSlotMetadata& metadata) {
     std::ostringstream output;
-    output << slot_metadata_magic << '\n';
+    output << slot_metadata_magic_v2 << '\n';
     output << "slot_id|" << metadata.slot_id << '\n';
     output << "display_name|" << metadata.display_name << '\n';
     output << "created_at_ms|" << metadata.created_at_ms << '\n';
+    output << "last_played_at_ms|" << metadata.last_played_at_ms << '\n';
     output << "last_saved_at_ms|" << metadata.last_saved_at_ms << '\n';
     output << "end\n";
     return output.str();
@@ -213,15 +215,18 @@ constexpr std::uintmax_t max_slot_metadata_bytes = 64U * 1024U;
 [[nodiscard]] core::Result<SaveSlotMetadata> decode_metadata(std::string_view text) {
     std::istringstream input{std::string(text)};
     std::string line;
-    if (!std::getline(input, line) || line != slot_metadata_magic) {
+    if (!std::getline(input, line) ||
+        (line != slot_metadata_magic_v1 && line != slot_metadata_magic_v2)) {
         return core::Result<SaveSlotMetadata>::failure("save_slot.invalid_metadata",
                                                        "save slot metadata has an invalid header");
     }
+    const auto requires_last_played = line == slot_metadata_magic_v2;
 
     SaveSlotMetadata metadata;
     auto saw_slot_id = false;
     auto saw_display_name = false;
     auto saw_created_at_ms = false;
+    auto saw_last_played_at_ms = false;
     auto saw_last_saved_at_ms = false;
     auto saw_end = false;
 
@@ -271,6 +276,19 @@ constexpr std::uintmax_t max_slot_metadata_bytes = 64U * 1024U;
             }
             metadata.created_at_ms = parsed.value();
             saw_created_at_ms = true;
+        } else if (key == "last_played_at_ms") {
+            if (saw_last_played_at_ms) {
+                const auto status = duplicate_field_failure(key);
+                return core::Result<SaveSlotMetadata>::failure(status.error().code,
+                                                               status.error().message);
+            }
+            auto parsed = parse_u64(value, key);
+            if (!parsed) {
+                return core::Result<SaveSlotMetadata>::failure(parsed.error().code,
+                                                               parsed.error().message);
+            }
+            metadata.last_played_at_ms = parsed.value();
+            saw_last_played_at_ms = true;
         } else if (key == "last_saved_at_ms") {
             if (saw_last_saved_at_ms) {
                 const auto status = duplicate_field_failure(key);
@@ -288,7 +306,7 @@ constexpr std::uintmax_t max_slot_metadata_bytes = 64U * 1024U;
     }
 
     if (!saw_end || !saw_slot_id || !saw_display_name || !saw_created_at_ms ||
-        !saw_last_saved_at_ms) {
+        !saw_last_saved_at_ms || (requires_last_played && !saw_last_played_at_ms)) {
         return core::Result<SaveSlotMetadata>::failure("save_slot.incomplete_metadata",
                                                        "save slot metadata is incomplete");
     }
@@ -297,6 +315,11 @@ constexpr std::uintmax_t max_slot_metadata_bytes = 64U * 1024U;
             "save_slot.trailing_data", "save slot metadata contains data after its end marker");
     }
 
+    if (!requires_last_played) {
+        // Version 1 used the last-save time as a best-effort proxy for recency. Preserve that
+        // ordering until the world is genuinely opened and receives a precise played timestamp.
+        metadata.last_played_at_ms = metadata.last_saved_at_ms;
+    }
     const auto status = metadata.validate();
     if (!status) {
         return core::Result<SaveSlotMetadata>::failure(status.error().code, status.error().message);
@@ -320,6 +343,11 @@ core::Status SaveSlotMetadata::validate() const {
         return core::Status::failure(
             "save_slot.invalid_timestamps",
             "save slot last-saved timestamp must not be older than its created timestamp");
+    }
+    if (created_at_ms != 0 && last_played_at_ms != 0 && last_played_at_ms < created_at_ms) {
+        return core::Status::failure(
+            "save_slot.invalid_timestamps",
+            "save slot last-played timestamp must not be older than its created timestamp");
     }
     return core::Status::ok();
 }
@@ -403,7 +431,9 @@ core::Status FileSaveSlotCatalog::write_snapshot(std::string_view slot_id,
     }
     // Wall clocks can move backwards after an administrator adjustment. Preserve the metadata
     // invariant while still allowing the snapshot itself to be committed safely.
-    metadata.value().last_saved_at_ms = std::max(saved_at_ms, metadata.value().created_at_ms);
+    metadata.value().last_saved_at_ms =
+        std::max({saved_at_ms, metadata.value().created_at_ms,
+                  metadata.value().last_saved_at_ms});
 
     status = metadata.value().validate();
     if (!status) {
@@ -438,6 +468,22 @@ core::Status FileSaveSlotCatalog::rename_slot(std::string_view slot_id,
         return core::Status::failure(metadata.error().code, metadata.error().message);
     }
     metadata.value().display_name = std::move(display_name);
+    return write_metadata(metadata.value());
+}
+
+core::Status FileSaveSlotCatalog::mark_played(std::string_view slot_id,
+                                              std::uint64_t played_at_ms) const {
+    if (played_at_ms == 0) {
+        return core::Status::failure("save_slot.invalid_timestamps",
+                                     "save slot play events require a nonzero timestamp");
+    }
+    auto metadata = read_metadata(slot_id);
+    if (!metadata) {
+        return core::Status::failure(metadata.error().code, metadata.error().message);
+    }
+    metadata.value().last_played_at_ms =
+        std::max({played_at_ms, metadata.value().created_at_ms,
+                  metadata.value().last_played_at_ms});
     return write_metadata(metadata.value());
 }
 
@@ -476,6 +522,7 @@ core::Status FileSaveSlotCatalog::duplicate_slot(std::string_view source_slot_id
     SaveSlotMetadata metadata{.slot_id = std::string(destination_slot_id),
                               .display_name = std::move(display_name),
                               .created_at_ms = saved_at_ms,
+                              .last_played_at_ms = 0,
                               .last_saved_at_ms = saved_at_ms};
     status = write_metadata(metadata);
     if (status) {
@@ -609,6 +656,14 @@ core::Result<std::vector<SaveSlotSummary>> FileSaveSlotCatalog::list_slots() con
                     });
                 if (generator != snapshot.value().mod_states.end()) {
                     summary.generator_preset = generator->encoded_state;
+                }
+                const auto generator_version = std::ranges::find_if(
+                    snapshot.value().mod_states, [](const ModStateSaveRecord& state) {
+                        return state.mod_id == "engine" &&
+                               state.state_key == "world.generator_version";
+                    });
+                if (generator_version != snapshot.value().mod_states.end()) {
+                    summary.generator_version = generator_version->encoded_state;
                 }
                 summary.snapshot_metadata = std::move(snapshot).value().metadata;
             } else {

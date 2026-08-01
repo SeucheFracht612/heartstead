@@ -1,12 +1,15 @@
 #include "engine/content/content_validation.hpp"
 #include "engine/scenarios/scenario_fixture.hpp"
+#include "engine/world/worldgen/terrain_generator.hpp"
 #include "game/foundation/foundation_world.hpp"
 #include "game/runtime/game_runtime.hpp"
 #include "game/scenarios/developer_world_registry.hpp"
 #include "game/scenarios/scenario_setup.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <filesystem>
+#include <string>
 #include <utility>
 
 namespace {
@@ -60,6 +63,15 @@ void test_generated_developer_world_launch(const content::ContentValidationRepor
     const auto* scenario =
         runtime.session()->server()->world().mod_states().find("engine", "scenario.id");
     assert(scenario != nullptr && scenario->encoded_state == "base:scenarios/foundation_slice");
+    auto snapshot = runtime.capture_save_snapshot();
+    assert(snapshot);
+    const auto generator_version = std::ranges::find_if(
+        snapshot.value().mod_states, [](const save::ModStateSaveRecord& state) {
+            return state.mod_id == "engine" && state.state_key == "world.generator_version";
+        });
+    assert(generator_version != snapshot.value().mod_states.end());
+    assert(generator_version->encoded_state ==
+           std::to_string(world::deterministic_terrain_generator_version));
     assert(runtime.shutdown());
 }
 
