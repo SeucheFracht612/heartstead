@@ -19,9 +19,9 @@
 #include "engine/renderer/materials/terrain_material_assets.hpp"
 #include "engine/renderer/memory/streaming_residency.hpp"
 #include "engine/renderer/particles/particle_system.hpp"
+#include "engine/renderer/quality/renderer_quality.hpp"
 #include "engine/renderer/render_camera.hpp"
 #include "engine/renderer/renderer_stats.hpp"
-#include "engine/renderer/quality/renderer_quality.hpp"
 #include "engine/renderer/rhi/render_device.hpp"
 #include "engine/renderer/scene/render_scene.hpp"
 #include "engine/renderer/scene/scene_render_system.hpp"
@@ -141,6 +141,7 @@ class Renderer {
 
     [[nodiscard]] core::Status initialize(RendererInitDesc desc);
     [[nodiscard]] core::Status wait_idle();
+    [[nodiscard]] core::Status clear_session_resources();
     [[nodiscard]] core::Status shutdown();
 
     [[nodiscard]] core::Status synchronize_chunks(world::WorldState& world,

@@ -117,7 +117,15 @@ core::Status GameApplicationConfig::validate() const {
                                      "application frame limit must be greater than zero");
     }
     if (headless) {
+        if (application_worker_count == 0) {
+            return core::Status::failure("game_application.invalid_worker_count",
+                                         "application worker count must be non-zero");
+        }
         return core::Status::ok();
+    }
+    if (application_worker_count == 0) {
+        return core::Status::failure("game_application.invalid_worker_count",
+                                     "application worker count must be non-zero");
     }
     if (window.width == 0 || window.height == 0) {
         return core::Status::failure("game_application.invalid_window_extent",
@@ -159,6 +167,14 @@ audio::IAudioSystem* GameApplicationServices::audio() noexcept {
 
 const audio::IAudioSystem* GameApplicationServices::audio() const noexcept {
     return application_ == nullptr ? nullptr : application_->audio_.get();
+}
+
+jobs::IJobSystem* GameApplicationServices::jobs() noexcept {
+    return application_ == nullptr ? nullptr : application_->jobs_.get();
+}
+
+const jobs::IJobSystem* GameApplicationServices::jobs() const noexcept {
+    return application_ == nullptr ? nullptr : application_->jobs_.get();
 }
 
 core::Status
@@ -323,6 +339,13 @@ core::Result<GameApplicationRunReport> GameApplication::run(IGameApplicationMode
 }
 
 core::Status GameApplication::initialize_shell() {
+    auto created_jobs = jobs::create_job_system(
+        {config_.headless ? jobs::JobBackend::immediate : jobs::JobBackend::thread_pool,
+         config_.application_worker_count});
+    if (!created_jobs) {
+        return core::Status::failure(created_jobs.error().code, created_jobs.error().message);
+    }
+    jobs_ = std::move(created_jobs).value();
     auto created_platform =
         platform::create_platform({config_.headless ? platform::PlatformBackend::headless
                                                     : platform::PlatformBackend::native});
@@ -366,8 +389,8 @@ core::Status GameApplication::initialize_shell() {
     }
 
     renderer::RendererInitDesc renderer_desc;
-    auto ui_font = core::read_binary_file(config_.shader_root.parent_path() /
-                                          "fonts/heartstead-ui.ttf");
+    auto ui_font =
+        core::read_binary_file(config_.shader_root.parent_path() / "fonts/heartstead-ui.ttf");
     if (!ui_font) {
         return core::Status::failure(ui_font.error().code, ui_font.error().message);
     }
@@ -429,6 +452,7 @@ core::Status GameApplication::shutdown_shell() {
     };
 
     audio_.reset();
+    jobs_.reset();
     if (renderer_.is_initialized()) {
         remember_failure(renderer_.shutdown());
     }

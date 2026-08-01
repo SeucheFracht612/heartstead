@@ -40,23 +40,22 @@ core::Status FarTerrainRenderer::initialize(FarTerrainRendererConfig config,
     if (!clipmap) {
         return core::Status::failure(clipmap.error().code, clipmap.error().message);
     }
-    const auto vertex_budget = std::max<std::size_t>(config.maximum_resident_bytes * 2U / 3U,
-                                                     1U * 1024U * 1024U);
-    const auto index_budget = std::max<std::size_t>(config.maximum_resident_bytes -
-                                                        std::min(config.maximum_resident_bytes,
-                                                                 vertex_budget),
-                                                    1U * 1024U * 1024U);
-    auto vertex_arena = GpuBufferArena::create(
-        *device_, {rhi::RenderBufferUsage::vertex,
-                   std::min<std::size_t>(16U * 1024U * 1024U, vertex_budget), vertex_budget,
-                   "far_terrain_vertex_arena"});
+    const auto vertex_budget =
+        std::max<std::size_t>(config.maximum_resident_bytes * 2U / 3U, 1U * 1024U * 1024U);
+    const auto index_budget = std::max<std::size_t>(
+        config.maximum_resident_bytes - std::min(config.maximum_resident_bytes, vertex_budget),
+        1U * 1024U * 1024U);
+    auto vertex_arena =
+        GpuBufferArena::create(*device_, {rhi::RenderBufferUsage::vertex,
+                                          std::min<std::size_t>(16U * 1024U * 1024U, vertex_budget),
+                                          vertex_budget, "far_terrain_vertex_arena"});
     if (!vertex_arena) {
         return core::Status::failure(vertex_arena.error().code, vertex_arena.error().message);
     }
-    auto index_arena = GpuBufferArena::create(
-        *device_, {rhi::RenderBufferUsage::index,
-                   std::min<std::size_t>(8U * 1024U * 1024U, index_budget), index_budget,
-                   "far_terrain_index_arena"});
+    auto index_arena =
+        GpuBufferArena::create(*device_, {rhi::RenderBufferUsage::index,
+                                          std::min<std::size_t>(8U * 1024U * 1024U, index_budget),
+                                          index_budget, "far_terrain_index_arena"});
     if (!index_arena) {
         static_cast<void>(vertex_arena.value()->shutdown());
         return core::Status::failure(index_arena.error().code, index_arena.error().message);
@@ -68,10 +67,9 @@ core::Status FarTerrainRenderer::initialize(FarTerrainRendererConfig config,
     std::array<rhi::RenderResourceHandle, 4> indirect_buffers{};
     std::array<rhi::RenderResourceHandle, 4> draw_data_buffers{};
     for (std::size_t frame = 0; frame < indirect_buffers.size(); ++frame) {
-        auto indirect = device_->create_buffer(
-            {rhi::RenderBufferUsage::indirect, indirect_bytes,
-             "far_terrain_indirect_" + std::to_string(frame),
-             rhi::RenderBufferMemory::device_local});
+        auto indirect = device_->create_buffer({rhi::RenderBufferUsage::indirect, indirect_bytes,
+                                                "far_terrain_indirect_" + std::to_string(frame),
+                                                rhi::RenderBufferMemory::device_local});
         if (!indirect) {
             for (const auto handle : indirect_buffers) {
                 if (handle.is_valid()) {
@@ -83,10 +81,9 @@ core::Status FarTerrainRenderer::initialize(FarTerrainRendererConfig config,
             return core::Status::failure(indirect.error().code, indirect.error().message);
         }
         indirect_buffers[frame] = indirect.value().handle;
-        auto draw_data = device_->create_buffer(
-            {rhi::RenderBufferUsage::storage, draw_data_bytes,
-             "far_terrain_draw_data_" + std::to_string(frame),
-             rhi::RenderBufferMemory::device_local});
+        auto draw_data = device_->create_buffer({rhi::RenderBufferUsage::storage, draw_data_bytes,
+                                                 "far_terrain_draw_data_" + std::to_string(frame),
+                                                 rhi::RenderBufferMemory::device_local});
         if (!draw_data) {
             static_cast<void>(device_->release_resource(indirect_buffers[frame]));
             indirect_buffers[frame] = {};
@@ -227,8 +224,8 @@ core::Status FarTerrainRenderer::upload_patch(const FarTerrainPatch& patch,
     const std::array writes{
         rhi::RenderBufferWrite{vertex.value().buffer,
                                static_cast<std::size_t>(vertex.value().offset), vertex_bytes},
-        rhi::RenderBufferWrite{index.value().buffer,
-                               static_cast<std::size_t>(index.value().offset), index_bytes},
+        rhi::RenderBufferWrite{index.value().buffer, static_cast<std::size_t>(index.value().offset),
+                               index_bytes},
     };
     auto uploaded = device_->upload_buffer_batch(writes);
     if (!uploaded) {
@@ -238,9 +235,9 @@ core::Status FarTerrainRenderer::upload_patch(const FarTerrainPatch& patch,
     }
     resident_.insert_or_assign(
         patch.key,
-        ResidentPatch{patch, mesh.value().world_origin, mesh.value().local_bounds,
-                      vertex.value(), index.value(),
-                      static_cast<std::uint32_t>(mesh.value().indices.size()), byte_size});
+        ResidentPatch{patch, mesh.value().world_origin, mesh.value().local_bounds, vertex.value(),
+                      index.value(), static_cast<std::uint32_t>(mesh.value().indices.size()),
+                      byte_size});
     stats_.uploaded_bytes += byte_size;
     ++stats_.built_patches;
     return core::Status::ok();
@@ -250,8 +247,8 @@ void FarTerrainRenderer::release_patch(
     std::map<FarTerrainPatchKey, ResidentPatch>::iterator iterator) {
     static_cast<void>(vertex_arena_->retire(iterator->second.vertex_allocation,
                                             device_->last_submission_serial()));
-    static_cast<void>(index_arena_->retire(iterator->second.index_allocation,
-                                           device_->last_submission_serial()));
+    static_cast<void>(
+        index_arena_->retire(iterator->second.index_allocation, device_->last_submission_serial()));
     resident_.erase(iterator);
     ++stats_.evicted_patches;
 }
@@ -259,15 +256,13 @@ void FarTerrainRenderer::release_patch(
 void FarTerrainRenderer::enforce_resident_budget() {
     refresh_resident_stats();
     while (stats_.resident_bytes > config_.maximum_resident_bytes && !resident_.empty()) {
-        const auto candidate = std::ranges::min_element(
-            resident_, [](const auto& left, const auto& right) {
-                if (left.second.patch.streaming_priority !=
-                    right.second.patch.streaming_priority) {
-                    return left.second.patch.streaming_priority <
-                           right.second.patch.streaming_priority;
-                }
-                return left.first < right.first;
-            });
+        const auto candidate = std::ranges::min_element(resident_, [](const auto& left,
+                                                                      const auto& right) {
+            if (left.second.patch.streaming_priority != right.second.patch.streaming_priority) {
+                return left.second.patch.streaming_priority < right.second.patch.streaming_priority;
+            }
+            return left.first < right.first;
+        });
         release_patch(candidate);
         refresh_resident_stats();
     }
@@ -410,7 +405,7 @@ FarTerrainRenderer::build_draws(const RenderCamera& camera,
     return reusable;
 }
 
-core::Status FarTerrainRenderer::shutdown() {
+core::Status FarTerrainRenderer::clear() {
     core::Status first_failure = core::Status::ok();
     for (auto iterator = resident_.begin(); iterator != resident_.end();) {
         auto removed = iterator++;
@@ -423,6 +418,13 @@ core::Status FarTerrainRenderer::shutdown() {
         index_arena_->collect(std::numeric_limits<std::uint64_t>::max());
     }
     resident_.clear();
+    plan_ = {};
+    stats_ = {};
+    return first_failure;
+}
+
+core::Status FarTerrainRenderer::shutdown() {
+    core::Status first_failure = clear();
     for (const auto handle : indirect_buffers_) {
         if (handle.is_valid()) {
             auto status = device_->release_resource(handle);

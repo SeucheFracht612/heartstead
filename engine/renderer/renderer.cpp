@@ -228,9 +228,9 @@ make_far_terrain_shader_program(std::span<const std::uint32_t> vertex_spirv,
     for (const auto& attribute : far_terrain_vertex_attributes) {
         shader_program.interface.vertex_inputs.push_back({attribute.location, attribute.format});
     }
-    shader_program.interface.descriptors.push_back(
-        {"far_patch_draws", rhi::RenderDescriptorKind::storage_buffer, 15, true,
-         rhi::RenderShaderStageFlags::vertex});
+    shader_program.interface.descriptors.push_back({"far_patch_draws",
+                                                    rhi::RenderDescriptorKind::storage_buffer, 15,
+                                                    true, rhi::RenderShaderStageFlags::vertex});
     shader_program.dependencies = {"far_terrain_vertex_v1", "gpu_voxel_material_v3",
                                    "chunk_push_constants_v2"};
     return shader_program;
@@ -474,8 +474,8 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
                                      "renderer initialization requires a render device");
     }
     owner_thread_ = std::this_thread::get_id();
-    quality_settings_ = renderer_quality_settings(
-        desc.quality_preset.value_or(RendererQualityPreset::high));
+    quality_settings_ =
+        renderer_quality_settings(desc.quality_preset.value_or(RendererQualityPreset::high));
     auto config_status = quality_settings_.validate();
     if (!config_status) {
         return config_status;
@@ -489,13 +489,13 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         desc.chunk_config.gpu_terrain_budget_bytes = quality_settings_.texture_budget_bytes / 2U;
         desc.far_terrain_config.clipmap.maximum_distance =
             std::max(2'048.0, static_cast<double>(quality_settings_.shadow_distance) * 16.0);
-        desc.far_terrain_config.maximum_resident_bytes = quality_settings_.texture_budget_bytes / 2U;
+        desc.far_terrain_config.maximum_resident_bytes =
+            quality_settings_.texture_budget_bytes / 2U;
         desc.streaming_residency_config.resident_budget_bytes =
             quality_settings_.texture_budget_bytes;
         desc.directional_shadow_config.resolution = quality_settings_.shadow_resolution;
         desc.directional_shadow_config.distance = quality_settings_.shadow_distance;
-        desc.clustered_lighting_config.local_shadow_budget =
-            quality_settings_.local_shadow_budget;
+        desc.clustered_lighting_config.local_shadow_budget = quality_settings_.local_shadow_budget;
     }
     config_status = desc.chunk_config.validate();
     if (!config_status) {
@@ -595,8 +595,8 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         return core::Status::failure(error.code, error.message);
     }
     if (!desc.far_terrain_vertex_spirv.empty()) {
-        pipeline_status = create_far_terrain_pipeline(desc.far_terrain_vertex_spirv,
-                                                      desc.terrain_fragment_spirv);
+        pipeline_status =
+            create_far_terrain_pipeline(desc.far_terrain_vertex_spirv, desc.terrain_fragment_spirv);
         if (!pipeline_status) {
             const auto error = pipeline_status.error();
             (void)shutdown();
@@ -775,8 +775,8 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
                                      "internal far terrain material id is invalid");
     }
     if (environment_status && far_terrain_pipeline_.is_valid()) {
-        environment_status = environment_lighting_->bind(far_terrain_lighting_material.value(),
-                                                          "environment_map");
+        environment_status =
+            environment_lighting_->bind(far_terrain_lighting_material.value(), "environment_map");
     }
     if (environment_status) {
         environment_status = environment_lighting_->bind(scene_material.value(), "environment_map");
@@ -809,7 +809,7 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         clustered_lighting_->bind(terrain_lighting_material.value(), "local_lights", "light_grid");
     if (lighting_status && far_terrain_pipeline_.is_valid()) {
         lighting_status = clustered_lighting_->bind(far_terrain_lighting_material.value(),
-                                                     "local_lights", "light_grid");
+                                                    "local_lights", "light_grid");
     }
     if (lighting_status) {
         lighting_status =
@@ -827,8 +827,8 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
     shadow_resource_status =
         cascaded_shadows_->bind(terrain_lighting_material.value(), "shadow_data");
     if (shadow_resource_status && far_terrain_pipeline_.is_valid()) {
-        shadow_resource_status = cascaded_shadows_->bind(far_terrain_lighting_material.value(),
-                                                         "shadow_data");
+        shadow_resource_status =
+            cascaded_shadows_->bind(far_terrain_lighting_material.value(), "shadow_data");
     }
     if (shadow_resource_status) {
         shadow_resource_status = cascaded_shadows_->bind(scene_material.value(), "shadow_data");
@@ -1063,6 +1063,43 @@ core::Status Renderer::wait_idle() {
     return device_->wait_idle();
 }
 
+core::Status Renderer::clear_session_resources() {
+    if (device_ == nullptr || chunk_system_ == nullptr || chunk_cache_ == nullptr) {
+        return core::Status::failure(
+            "renderer.not_initialized",
+            "renderer must be initialized before clearing session resources");
+    }
+    auto first_failure = wait_idle();
+    std::vector<world::ChunkIdentity> identities;
+    for (const auto* entry : chunk_cache_->entries()) {
+        if (entry != nullptr) {
+            identities.push_back(entry->identity);
+        }
+    }
+    auto status = chunk_system_->process_chunk_evictions(identities);
+    if (!status && first_failure) {
+        first_failure = status;
+    }
+    if (far_terrain_renderer_ != nullptr) {
+        status = far_terrain_renderer_->clear();
+        if (!status && first_failure) {
+            first_failure = status;
+        }
+    }
+    scene_.clear();
+    if (debug_renderer_ != nullptr) {
+        debug_renderer_->clear();
+    }
+    if (ui_renderer_ != nullptr) {
+        ui_renderer_->clear();
+    }
+    stats_.loaded_chunks = 0;
+    stats_.resident_chunks = 0;
+    stats_.retained_objects = 0;
+    stats_.retained_skin_palettes = 0;
+    return first_failure;
+}
+
 core::Status Renderer::synchronize_chunks(world::WorldState& world, const RenderCamera& camera) {
     if (chunk_system_ == nullptr) {
         return core::Status::failure("renderer.not_initialized",
@@ -1080,7 +1117,7 @@ core::Status Renderer::synchronize_chunks(world::WorldState& world, const Render
             world::TerrainGenerationConfig generation;
             generation.world_seed = world.metadata().world_seed;
             const FarTerrainSurfaceSampler sampler = [&generation](double x, double z,
-                                                                    FarTerrainDomain) {
+                                                                   FarTerrainDomain) {
                 const auto block_x = static_cast<std::int64_t>(std::floor(x));
                 const auto block_z = static_cast<std::int64_t>(std::floor(z));
                 return FarTerrainSurfaceSample{
@@ -1391,8 +1428,7 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
                                                             frame.error().message);
     }
     stats_.render_graph_passes = static_cast<std::uint32_t>(frame.value().plan.passes.size());
-    stats_.render_graph_resources =
-        static_cast<std::uint32_t>(frame.value().plan.resources.size());
+    stats_.render_graph_resources = static_cast<std::uint32_t>(frame.value().plan.resources.size());
     stats_.render_graph_transient_resources = static_cast<std::uint32_t>(std::ranges::count_if(
         frame.value().plan.resources, [](const rhi::RenderResourceDesc& resource) {
             return resource.lifetime == rhi::RenderResourceLifetime::transient;
@@ -2246,8 +2282,7 @@ void Renderer::update_frontend_stats(std::size_t loaded_chunk_count) noexcept {
         stats_.streaming_tracked_resources = saturating_u32(streaming.tracked_resources);
         stats_.streaming_queued_resources = saturating_u32(streaming.queued_resources);
         stats_.streaming_in_flight_loads = saturating_u32(streaming.in_flight_loads);
-        stats_.streaming_pending_resources =
-            saturating_u32(streaming.upload_pending_resources);
+        stats_.streaming_pending_resources = saturating_u32(streaming.upload_pending_resources);
         stats_.streaming_resident_resources = saturating_u32(streaming.resident_resources);
         stats_.streaming_failed_resources = saturating_u32(streaming.failed_resources);
         stats_.streaming_resident_bytes = streaming.resident_bytes;
@@ -2282,7 +2317,8 @@ void Renderer::update_frontend_stats(std::size_t loaded_chunk_count) noexcept {
     }
     if (shader_manager_ != nullptr) {
         const auto& shaders = shader_manager_->stats();
-        stats_.resident_shader_programs = static_cast<std::uint32_t>(shaders.resident_program_count);
+        stats_.resident_shader_programs =
+            static_cast<std::uint32_t>(shaders.resident_program_count);
         stats_.resident_shader_modules = static_cast<std::uint32_t>(shaders.resident_module_count);
         stats_.shader_errors = shaders.failed_reload_count;
     }
@@ -2290,10 +2326,9 @@ void Renderer::update_frontend_stats(std::size_t loaded_chunk_count) noexcept {
         const auto& pipelines = pipeline_cache_->stats();
         stats_.resident_pipeline_layouts =
             static_cast<std::uint32_t>(pipelines.resident_pipeline_layout_count);
-        stats_.descriptor_bindings =
-            static_cast<std::uint32_t>(pipelines.descriptor_binding_count);
-        stats_.pipeline_errors = pipelines.failed_pipeline_count +
-                                 pipelines.unexpected_creation_rejection_count;
+        stats_.descriptor_bindings = static_cast<std::uint32_t>(pipelines.descriptor_binding_count);
+        stats_.pipeline_errors =
+            pipelines.failed_pipeline_count + pipelines.unexpected_creation_rejection_count;
     }
     if (sampler_cache_ != nullptr) {
         stats_.resident_samplers =
@@ -2330,9 +2365,9 @@ void Renderer::update_backend_stats(const rhi::RenderFrameStats& frame) noexcept
     stats_.completed_submission_serial = frame.completed_submission_serial;
     stats_.draw_calls = static_cast<std::uint32_t>(std::min(
         frame.draw_count, static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
-    stats_.indirect_draw_calls = static_cast<std::uint32_t>(std::min(
-        frame.indirect_draw_count,
-        static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
+    stats_.indirect_draw_calls = static_cast<std::uint32_t>(
+        std::min(frame.indirect_draw_count,
+                 static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
     stats_.opaque_terrain_draws = static_cast<std::uint32_t>(
         std::min(frame.opaque_terrain_draw_count,
                  static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
@@ -2441,9 +2476,8 @@ core::Status Renderer::create_sky_pipeline(std::span<const std::uint32_t> vertex
     return core::Status::ok();
 }
 
-core::Status
-Renderer::create_far_terrain_pipeline(std::span<const std::uint32_t> vertex_spirv,
-                                      std::span<const std::uint32_t> fragment_spirv) {
+core::Status Renderer::create_far_terrain_pipeline(std::span<const std::uint32_t> vertex_spirv,
+                                                   std::span<const std::uint32_t> fragment_spirv) {
     if (shader_manager_ == nullptr || pipeline_cache_ == nullptr) {
         return core::Status::failure("renderer.runtime_assets_uninitialized",
                                      "far terrain runtime asset managers must be initialized");
@@ -2521,8 +2555,8 @@ Renderer::create_far_terrain_pipeline(std::span<const std::uint32_t> vertex_spir
                                    terrain_sampler_},
         rhi::RenderDescriptorWrite{material.value(), "terrain_normal_textures", normal_view->image,
                                    0, 0, terrain_sampler_},
-        rhi::RenderDescriptorWrite{material.value(), "terrain_surface_textures", surface_view->image,
-                                   0, 0, terrain_sampler_},
+        rhi::RenderDescriptorWrite{material.value(), "terrain_surface_textures",
+                                   surface_view->image, 0, 0, terrain_sampler_},
     };
     auto texture_binding = device_->write_descriptors(texture_writes);
     if (!texture_binding) {

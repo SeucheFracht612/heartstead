@@ -1,7 +1,7 @@
 #pragma once
 
-#include "engine/renderer/render_camera.hpp"
 #include "engine/renderer/memory/gpu_buffer_arena.hpp"
+#include "engine/renderer/render_camera.hpp"
 #include "engine/renderer/rhi/render_frame_plan.hpp"
 #include "engine/renderer/terrain/far_terrain_clipmap.hpp"
 
@@ -33,14 +33,13 @@ struct FarTerrainDrawData {
 
 static_assert(sizeof(FarTerrainDrawData) == 16U);
 
-inline constexpr std::array<rhi::RenderVertexAttributeDesc, 5>
-    far_terrain_vertex_attributes{
-        rhi::RenderVertexAttributeDesc{0, 0, rhi::RenderVertexAttributeFormat::float3},
-        rhi::RenderVertexAttributeDesc{1, 12, rhi::RenderVertexAttributeFormat::float3},
-        rhi::RenderVertexAttributeDesc{2, 24, rhi::RenderVertexAttributeFormat::float2},
-        rhi::RenderVertexAttributeDesc{3, 32, rhi::RenderVertexAttributeFormat::uint16},
-        rhi::RenderVertexAttributeDesc{4, 36, rhi::RenderVertexAttributeFormat::float2},
-    };
+inline constexpr std::array<rhi::RenderVertexAttributeDesc, 5> far_terrain_vertex_attributes{
+    rhi::RenderVertexAttributeDesc{0, 0, rhi::RenderVertexAttributeFormat::float3},
+    rhi::RenderVertexAttributeDesc{1, 12, rhi::RenderVertexAttributeFormat::float3},
+    rhi::RenderVertexAttributeDesc{2, 24, rhi::RenderVertexAttributeFormat::float2},
+    rhi::RenderVertexAttributeDesc{3, 32, rhi::RenderVertexAttributeFormat::uint16},
+    rhi::RenderVertexAttributeDesc{4, 36, rhi::RenderVertexAttributeFormat::float2},
+};
 
 struct FarTerrainRendererConfig {
     FarTerrainClipmapConfig clipmap{};
@@ -73,8 +72,8 @@ class FarTerrainRenderer {
     [[nodiscard]] core::Status update(math::Vec3d camera_world,
                                       const FarTerrainSurfaceSampler& sampler);
     [[nodiscard]] std::vector<rhi::RenderDrawCommand>
-    build_draws(const RenderCamera& camera,
-                std::vector<rhi::RenderDrawCommand> reusable = {});
+    build_draws(const RenderCamera& camera, std::vector<rhi::RenderDrawCommand> reusable = {});
+    [[nodiscard]] core::Status clear();
     [[nodiscard]] core::Status shutdown();
     [[nodiscard]] const FarTerrainRendererStats& stats() const noexcept;
 

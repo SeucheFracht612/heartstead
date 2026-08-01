@@ -14,6 +14,8 @@ class RecordingMode final : public game::IGameApplicationMode {
         assert(services.headless());
         assert(services.renderer() == nullptr);
         assert(services.audio() == nullptr);
+        assert(services.jobs() != nullptr);
+        assert(services.jobs()->backend() == jobs::JobBackend::immediate);
         initialized = true;
         return core::Status::ok();
     }
@@ -57,7 +59,7 @@ class FailingMode final : public game::IGameApplicationMode {
     core::Result<game::GameApplicationFrameOutput>
     update(game::GameApplicationServices&, const game::GameApplicationFrame&) override {
         return core::Result<game::GameApplicationFrameOutput>::failure("test.mode_failure",
-                                                                        "expected mode failure");
+                                                                       "expected mode failure");
     }
 
     core::Status shutdown(game::GameApplicationServices&) override {
@@ -117,11 +119,26 @@ void test_zero_frame_limit_is_rejected() {
     assert(!mode.initialized);
 }
 
+void test_zero_application_workers_are_rejected() {
+    game::GameApplicationConfig config;
+    config.headless = true;
+    config.maximum_frames = 1;
+    config.application_worker_count = 0;
+    game::GameApplication application(config);
+    RecordingMode mode;
+
+    auto report = application.run(mode);
+    assert(!report);
+    assert(report.error().code == "game_application.invalid_worker_count");
+    assert(!mode.initialized);
+}
+
 } // namespace
 
 int main() {
     test_headless_loop_and_lifecycle();
     test_mode_failure_still_shuts_down();
     test_zero_frame_limit_is_rejected();
+    test_zero_application_workers_are_rejected();
     return 0;
 }

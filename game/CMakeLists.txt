@@ -4,7 +4,9 @@ add_library(Heartstead::GameRuntime ALIAS heartstead_game)
 target_sources(
   heartstead_game
   PRIVATE
+    application/application_state.cpp
     application/game_application.cpp
+    application/heartstead_application_mode.cpp
     foundation/foundation_world.cpp
     features/interaction/voxel_raycast.cpp
     features/interaction/voxel_commands.cpp
@@ -31,7 +33,9 @@ target_sources(
     FILE_SET HEADERS
     BASE_DIRS ${PROJECT_SOURCE_DIR}
     FILES
+      application/application_state.hpp
       application/game_application.hpp
+      application/heartstead_application_mode.hpp
       foundation/foundation_world.hpp
       features/interaction/voxel_raycast.hpp
       features/interaction/voxel_commands.hpp

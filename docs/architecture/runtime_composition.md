@@ -8,6 +8,7 @@ redefine gameplay semantics.
 
 | Composition | Roles | Transport | Presentation | Persistence |
 | --- | --- | --- | --- | --- |
+| Player-facing Heartstead application | menu or server + client | in-memory | native X11/Vulkan | temporary developer world in the first shell stage |
 | Interactive local development game | server + client | in-memory | native X11/Vulkan | default or explicit local save |
 | Bounded/headless development run | server + client | in-memory | headless or bounded native | only with explicit `--save` |
 | Remote development client | client only | POSIX UDP to numeric IPv4 | native or bounded/headless | none; server owns truth |
@@ -19,8 +20,10 @@ applications should use one of the explicit ownership shapes above.
 
 ## Lifecycle and ownership
 
-An application owns the top-level `GameApplication` or server loop and constructs only the roles it
-needs. The server role owns authoritative `WorldState`, command dispatch, simulation ticks,
+The player application owns the top-level `GameApplication` across menu and world transitions. A
+session is optional and explicitly unloaded before returning to the menu. Dedicated servers and
+focused tools own their corresponding top-level loop and construct only the roles they need. The
+server role owns authoritative `WorldState`, command dispatch, simulation ticks,
 replication, and any configured save lifecycle. The client role owns input collection, protocol
 state, predicted presentation state, and renderer/audio/UI extraction.
 

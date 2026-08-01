@@ -3,15 +3,32 @@
 This guide covers the maintained applications and their user-facing behavior. Paths below assume a
 `default-debug` build from the repository root.
 
-## Development game
+## Heartstead game
 
-Start the normal local interactive slice:
+Build and start the normal player-facing executable:
+
+```bash
+cmake --build --preset default-debug --target heartstead
+./build/default-debug/apps/heartstead/heartstead
+```
+
+The application starts at the main menu. The current **Start Development World** entry creates a
+temporary local authoritative server and local client. `Escape` opens the pause menu; returning to
+the main menu unloads the session without closing the application.
+
+Supported shell options in this stage are `--headless`, `--frames N`, and `--native-frames N`.
+Run `heartstead --help` for the exact syntax. The broader world/save/connect command line is added
+through the unified launch request rather than a second runtime path.
+
+## Legacy development game
+
+Start the compatibility interactive slice:
 
 ```bash
 ./build/default-debug/apps/dev_game/heartstead_dev_game
 ```
 
-An unbounded local native launch owns both the authoritative server and client and uses
+An unbounded local native compatibility launch owns both the authoritative server and client and uses
 `saves/foundation_slice_0_1` by default. The name is a compatibility path, not an active milestone
 name.
 

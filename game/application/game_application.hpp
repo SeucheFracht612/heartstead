@@ -2,6 +2,7 @@
 
 #include "engine/audio/audio_system.hpp"
 #include "engine/core/result.hpp"
+#include "engine/jobs/job_system.hpp"
 #include "engine/platform/platform.hpp"
 #include "engine/renderer/renderer.hpp"
 
@@ -26,6 +27,7 @@ struct GameApplicationConfig {
     renderer::materials::TerrainMaterialAssetSet terrain_material_assets;
     bool enable_render_validation = true;
     renderer::RendererQualityPreset renderer_quality = renderer::RendererQualityPreset::high;
+    std::uint32_t application_worker_count = 2;
 
     [[nodiscard]] core::Status validate() const;
 };
@@ -59,6 +61,8 @@ class GameApplicationServices {
     [[nodiscard]] const renderer::Renderer* renderer() const noexcept;
     [[nodiscard]] audio::IAudioSystem* audio() noexcept;
     [[nodiscard]] const audio::IAudioSystem* audio() const noexcept;
+    [[nodiscard]] jobs::IJobSystem* jobs() noexcept;
+    [[nodiscard]] const jobs::IJobSystem* jobs() const noexcept;
     [[nodiscard]] core::Status
     install_audio_system(std::unique_ptr<audio::IAudioSystem> audio_system);
 
@@ -107,6 +111,7 @@ class GameApplication {
     renderer::rhi::RenderExtent extent_{};
     renderer::Renderer renderer_;
     std::unique_ptr<audio::IAudioSystem> audio_;
+    std::unique_ptr<jobs::IJobSystem> jobs_;
     bool running_ = false;
 };
 
