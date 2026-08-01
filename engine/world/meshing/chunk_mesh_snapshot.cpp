@@ -321,8 +321,8 @@ build_chunk_neighborhood_snapshot(const ChunkDatabase& chunks, ChunkIdentity cen
                                                       source_y * source_edge + source_x;
                             const auto output_index = output_z * output_side * output_side +
                                                       output_y * output_side + output_x;
-                            std::copy_n(source_cells.begin() + source_index, copy_count,
-                                        result.cells.begin() + output_index);
+                            std::copy_n(source_cells.data() + source_index, copy_count,
+                                        result.cells.data() + output_index);
                         }
                     }
                 }
