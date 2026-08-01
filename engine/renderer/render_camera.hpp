@@ -25,6 +25,10 @@ struct RenderCamera {
 
     [[nodiscard]] core::Status update_matrices() noexcept;
     [[nodiscard]] core::Status set_aspect_ratio(float aspect) noexcept;
+    // Visibility bounds are expressed relative to floating_origin, then translated by
+    // local_position before testing. Preserve the exact supplied view orientation and projection
+    // while moving that test camera to the origin.
+    [[nodiscard]] math::Mat4f camera_relative_view_projection() const noexcept;
     [[nodiscard]] math::Vec3f forward() const noexcept;
     [[nodiscard]] math::Vec3f right() const noexcept;
 };

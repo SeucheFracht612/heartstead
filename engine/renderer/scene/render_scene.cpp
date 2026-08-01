@@ -515,13 +515,6 @@ RenderScene::extract(const RenderCamera& camera, float simulation_alpha,
              object.use_object_origin_for_view_distance});
     }
 
-    RenderCamera relative_camera = camera;
-    relative_camera.local_position = {};
-    auto relative_camera_status = relative_camera.update_matrices();
-    if (!relative_camera_status) {
-        return core::Result<RenderSceneFrame>::failure(
-            relative_camera_status.error().code, relative_camera_status.error().message);
-    }
     std::vector<VisibilityView> visibility_views;
     visibility_views.reserve(shadow_frusta.size() + 1U);
     visibility_views.push_back({1U,
@@ -530,7 +523,7 @@ RenderScene::extract(const RenderCamera& camera, float simulation_alpha,
                                  static_cast<double>(camera.local_position.y),
                                  static_cast<double>(camera.local_position.z)},
                                 RenderFrustum::from_view_projection(
-                                    relative_camera.view_projection),
+                                    camera.camera_relative_view_projection()),
                                 1U,
                                 camera.vertical_fov_radians,
                                 static_cast<double>(camera.far_plane)});

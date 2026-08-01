@@ -420,9 +420,6 @@ ChunkRenderSystem::build_draw_list(const RenderCamera& camera,
         }
         visibility_keys_ = std::move(current_keys);
 
-        RenderCamera relative_camera = camera;
-        relative_camera.local_position = {};
-        static_cast<void>(relative_camera.update_matrices());
         std::vector<VisibilityView> views;
         views.reserve(shadow_frusta.size() + 1U);
         views.push_back({1U,
@@ -430,7 +427,8 @@ ChunkRenderSystem::build_draw_list(const RenderCamera& camera,
                          {static_cast<double>(camera.local_position.x),
                           static_cast<double>(camera.local_position.y),
                           static_cast<double>(camera.local_position.z)},
-                         RenderFrustum::from_view_projection(relative_camera.view_projection),
+                         RenderFrustum::from_view_projection(
+                             camera.camera_relative_view_projection()),
                          1U, camera.vertical_fov_radians, 0.0});
         for (std::size_t shadow_view = 0; shadow_view < shadow_frusta.size(); ++shadow_view) {
             views.push_back({static_cast<VisibilityViewId>(shadow_view + 2U),

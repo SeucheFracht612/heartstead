@@ -38,6 +38,14 @@ core::Status RenderCamera::set_aspect_ratio(float aspect) noexcept {
     return update_matrices();
 }
 
+math::Mat4f RenderCamera::camera_relative_view_projection() const noexcept {
+    auto relative_view = view;
+    relative_view.at(0, 3) = 0.0F;
+    relative_view.at(1, 3) = 0.0F;
+    relative_view.at(2, 3) = 0.0F;
+    return projection * relative_view;
+}
+
 math::Vec3f RenderCamera::forward() const noexcept {
     return math::camera_forward(yaw_radians, pitch_radians);
 }

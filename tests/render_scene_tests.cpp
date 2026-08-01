@@ -327,6 +327,31 @@ void test_light_visible_shadow_casters_survive_camera_culling() {
     assert(extracted.value().batches.front().shadow_visibility_mask == 1U);
 }
 
+void test_visibility_preserves_an_externally_supplied_camera_view() {
+    renderer::RenderScene scene;
+    auto object = make_object(anchored({0, 0, 0}));
+    object.previous_transform.position = {12.0F, 0.0F, 0.0F};
+    object.current_transform = object.previous_transform;
+    assert(scene.create_object(object));
+
+    renderer::RenderCamera camera;
+    camera.local_position = {0.25F, 0.5F, 0.25F};
+    camera.projection = math::perspective_projection(1.35F, 4.0F / 3.0F, 0.05F, 128.0F);
+    // Production player cameras supply exact matrices. Their legacy yaw/pitch/FOV metadata can
+    // differ, so visibility must not reconstruct a different camera from those defaults.
+    camera.view = math::view_matrix(camera.local_position, 1.57079632679F, 0.0F);
+    camera.view_projection = camera.projection * camera.view;
+    auto extracted = scene.extract(camera, 1.0F);
+    assert(extracted);
+    assert(extracted.value().stats.visible_objects == 1U);
+
+    camera.view = math::view_matrix(camera.local_position, -1.57079632679F, 0.0F);
+    camera.view_projection = camera.projection * camera.view;
+    extracted = scene.extract(camera, 1.0F);
+    assert(extracted);
+    assert(extracted.value().stats.visible_objects == 0U);
+}
+
 } // namespace
 
 int main() {
@@ -339,5 +364,6 @@ int main() {
     test_camera_distance_lod_ranges();
     test_prefab_lod_primitives_share_object_origin_distance();
     test_light_visible_shadow_casters_survive_camera_culling();
+    test_visibility_preserves_an_externally_supplied_camera_view();
     return 0;
 }

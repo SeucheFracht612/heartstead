@@ -242,6 +242,45 @@ void test_chunk_draws_use_phase_pipelines_and_transparent_ordering() {
     assert(cache.shutdown());
 }
 
+void test_chunk_visibility_preserves_an_externally_supplied_camera_view() {
+    using namespace heartstead;
+    renderer::rhi::RenderDeviceDesc device_desc;
+    auto device = renderer::rhi::create_render_device(device_desc);
+    assert(device);
+    renderer::ChunkGpuCache cache(*device.value());
+    assert(cache.initialize());
+
+    renderer::ChunkRenderConfig config;
+    renderer::ChunkRenderSystem chunks(cache, {9005}, nullptr, config);
+    assert(chunks.initialize());
+
+    const world::ChunkIdentity identity{{1, 0, 0}, 1};
+    assert(cache.insert(identity));
+    const std::array<renderer::terrain::GpuChunkVertex, 3> vertices{};
+    const std::array<std::uint32_t, 3> indices{0, 1, 2};
+    assert(cache.replace_mesh(identity, 1,
+                              {{0.0F, 0.0F, 0.0F}, {32.0F, 32.0F, 32.0F}}, vertices,
+                              indices));
+
+    renderer::RenderCamera camera;
+    camera.local_position = {0.25F, 16.0F, 0.25F};
+    camera.projection = math::perspective_projection(1.35F, 4.0F / 3.0F, 0.05F, 128.0F);
+    camera.view = math::view_matrix(camera.local_position, 1.57079632679F, 0.0F);
+    camera.view_projection = camera.projection * camera.view;
+    auto draws = chunks.build_draw_list(camera);
+    assert(draws.drawn_chunk_count == 1U);
+    assert(draws.draws.size() == 1U);
+
+    camera.view = math::view_matrix(camera.local_position, -1.57079632679F, 0.0F);
+    camera.view_projection = camera.projection * camera.view;
+    draws = chunks.build_draw_list(camera);
+    assert(draws.drawn_chunk_count == 0U);
+    assert(draws.draws.empty());
+
+    chunks.shutdown();
+    assert(cache.shutdown());
+}
+
 void test_chunk_render_distances_and_residency_hysteresis() {
     using namespace heartstead;
     renderer::rhi::RenderDeviceDesc device_desc;
@@ -1173,6 +1212,7 @@ int main() {
     test_frame_builder_preserves_terrain_phase_commands();
     test_chunk_gpu_cache_lifecycle();
     test_chunk_draws_use_phase_pipelines_and_transparent_ordering();
+    test_chunk_visibility_preserves_an_externally_supplied_camera_view();
     test_chunk_gpu_cache_batches_device_local_arena_uploads();
     test_chunk_render_distances_and_residency_hysteresis();
     test_chunk_gpu_residency_budget_prefers_near_visible_meshes();
