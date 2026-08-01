@@ -61,6 +61,9 @@ void test_main_menu_navigation() {
     assert(navigation.open(game::MainMenuScreen::delete_confirmation));
     assert(navigation.back());
     assert(navigation.screen() == game::MainMenuScreen::load_world);
+    assert(navigation.open(game::MainMenuScreen::rename_world));
+    assert(navigation.back());
+    assert(navigation.screen() == game::MainMenuScreen::load_world);
     assert(navigation.back());
     assert(navigation.screen() == game::MainMenuScreen::root);
     assert(!navigation.back());
@@ -175,15 +178,19 @@ void test_save_world_management() {
     save::SaveSnapshot snapshot;
     snapshot.metadata.game_version = "0.1.0";
     snapshot.metadata.world_seed = 42;
+    snapshot.mod_states.push_back({"engine", "world.generator_preset", "base:temperate"});
     assert(catalog.write_snapshot("world_a", snapshot, 100));
-    assert(catalog.rename_slot("world_a", "World A"));
+    assert(catalog.rename_slot("world_a", "W\xC3\xB6rld A"));
+    auto invalid_name = catalog.rename_slot("world_a", " World A");
+    assert(!invalid_name && invalid_name.error().code == "save_slot.invalid_display_name");
     assert(catalog.duplicate_slot("world_a", "world_a_copy", "World A Copy", 200));
 
     auto listed = catalog.list_slots();
     assert(listed);
     assert(listed.value().size() == 2);
-    assert(listed.value()[0].metadata.display_name == "World A");
+    assert(listed.value()[0].metadata.display_name == "W\xC3\xB6rld A");
     assert(listed.value()[0].snapshot_metadata.has_value());
+    assert(listed.value()[0].generator_preset == "base:temperate");
     assert(listed.value()[1].metadata.display_name == "World A Copy");
     assert(listed.value()[1].snapshot_metadata.has_value());
 
@@ -205,6 +212,37 @@ void test_save_world_management() {
     const auto& corrupt = listed.value().front();
     assert(corrupt.slot_id == "corrupt");
     assert(corrupt.validation_error.has_value());
+}
+
+void test_world_creation_input_helpers() {
+    auto normalized = game::normalize_world_display_name("  H\xC3\xB6mestead  ");
+    assert(normalized && normalized.value() == "H\xC3\xB6mestead");
+    assert(!game::normalize_world_display_name("\x01invalid"));
+
+    const auto spaced = game::world_slot_id("My World");
+    const auto dashed = game::world_slot_id("My-World");
+    const auto unicode = game::world_slot_id("\xE6\x88\x91\xE7\x9A\x84\xE4\xB8\x96\xE7\x95\x8C");
+    assert(spaced != dashed);
+    assert(save::FileSaveSlotCatalog::is_valid_slot_id(spaced));
+    assert(save::FileSaveSlotCatalog::is_valid_slot_id(unicode));
+
+    auto seed = game::parse_world_seed("42");
+    assert(seed && seed.value() == 42);
+    seed = game::parse_world_seed("0x2a");
+    assert(seed && seed.value() == 42);
+    seed = game::parse_world_seed("-42");
+    assert(seed && seed.value() == static_cast<std::uint64_t>(std::int64_t{-42}));
+    const auto text_seed = game::parse_world_seed("Heartstead");
+    assert(text_seed && text_seed.value() == game::parse_world_seed("Heartstead").value());
+    assert(game::parse_world_seed(" "));
+
+    auto endpoint = game::parse_server_endpoint("127.0.0.1:7777");
+    assert(endpoint && endpoint.value().address == "127.0.0.1" &&
+           endpoint.value().port == 7777);
+    endpoint = game::parse_server_endpoint("[::1]:27015");
+    assert(endpoint && endpoint.value().address == "::1" && endpoint.value().port == 27015);
+    assert(!game::parse_server_endpoint("::1:27015"));
+    assert(!game::parse_server_endpoint("[::1]:0"));
 }
 
 void test_command_line_launch_contract() {
@@ -272,6 +310,7 @@ int main() {
     test_main_menu_navigation();
     test_application_settings_round_trip();
     test_save_world_management();
+    test_world_creation_input_helpers();
     test_command_line_launch_contract();
     test_runtime_diagnostics_are_explicit();
     return 0;

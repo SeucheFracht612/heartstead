@@ -1,7 +1,10 @@
 #pragma once
 
 #include "engine/core/result.hpp"
+#include "engine/net/transport.hpp"
 
+#include <cstdint>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -14,6 +17,7 @@ enum class MainMenuScreen {
     multiplayer,
     developer_worlds,
     options,
+    rename_world,
     delete_confirmation,
 };
 
@@ -47,5 +51,10 @@ class MainMenuNavigation final {
 };
 
 [[nodiscard]] std::string_view main_menu_screen_name(MainMenuScreen screen) noexcept;
+[[nodiscard]] core::Result<std::string> normalize_world_display_name(std::string_view name);
+[[nodiscard]] std::string world_slot_id(std::string_view normalized_display_name);
+[[nodiscard]] core::Result<std::uint64_t> parse_world_seed(std::string_view text);
+[[nodiscard]] core::Result<net::TransportEndpoint>
+parse_server_endpoint(std::string_view text);
 
 } // namespace heartstead::game

@@ -603,6 +603,16 @@ core::Status GameRuntime::start_session(SessionLaunchRequest request,
             request.scenario_id = saved_scenario->encoded_state;
         }
     }
+    if (request.generator_preset.empty() && request.initial_snapshot.has_value()) {
+        const auto saved_generator = std::ranges::find_if(
+            request.initial_snapshot->mod_states, [](const save::ModStateSaveRecord& record) {
+                return record.mod_id == "engine" &&
+                       record.state_key == "world.generator_preset";
+            });
+        if (saved_generator != request.initial_snapshot->mod_states.end()) {
+            request.generator_preset = saved_generator->encoded_state;
+        }
+    }
     if (request.scenario_id.empty()) {
         request.scenario_id = startup_report_.selected_scenario_id;
     }

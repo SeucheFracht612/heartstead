@@ -289,6 +289,36 @@ void test_remote_endpoint_challenge_token_and_timeout() {
     assert(!host.value()->is_client_connected(client_id));
 }
 
+void test_remote_ipv6_endpoint_handshake() {
+    if (!net::transport_backend_info(net::TransportBackend::external_library).available) {
+        return;
+    }
+
+    net::TransportHostDesc desc;
+    desc.backend = net::TransportBackend::external_library;
+    desc.external.bind_endpoint = {"::1", 0};
+    desc.external.content_fingerprint = "ipv6-test";
+    auto host = net::create_transport_host(desc);
+    if (!host && (host.error().code == "transport.socket_failed" ||
+                  host.error().code == "transport.bind_failed")) {
+        return;
+    }
+    assert(host && host.value()->local_endpoint().has_value());
+
+    net::ExternalTransportClientConfig config;
+    config.server_endpoint = *host.value()->local_endpoint();
+    config.content_fingerprint = desc.external.content_fingerprint;
+    auto client = net::create_external_transport_client(config);
+    assert(client && client.value()->connect(0));
+    assert(host.value()->poll_maintenance(0));
+    assert(client.value()->poll_maintenance(0));
+    auto accepted = host.value()->poll_maintenance(1);
+    assert(accepted && accepted.value().connected_clients.size() == 1);
+    auto connected = client.value()->poll_maintenance(1);
+    assert(connected && connected.value().connected);
+    assert(client.value()->state() == net::TransportClientState::connected);
+}
+
 void test_remote_endpoint_rejects_content_mismatch() {
     if (!net::transport_backend_info(net::TransportBackend::external_library).available) {
         return;
@@ -668,6 +698,7 @@ int main() {
     test_tracking_can_be_rolled_back_before_retry();
     test_external_capacity_failure_does_not_leak_untracked_datagram();
     test_remote_endpoint_challenge_token_and_timeout();
+    test_remote_ipv6_endpoint_handshake();
     test_remote_endpoint_rejects_content_mismatch();
     test_remote_endpoint_rate_limits_unreliable_input();
     test_fragment_reassembly_is_scoped_and_expires();

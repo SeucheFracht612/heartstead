@@ -2,6 +2,7 @@
 
 #include "engine/core/filesystem.hpp"
 #include "engine/core/ids.hpp"
+#include "engine/core/text.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -83,13 +84,8 @@ constexpr std::uintmax_t max_slot_metadata_bytes = 64U * 1024U;
 }
 
 [[nodiscard]] bool is_safe_display_name(std::string_view display_name) noexcept {
-    if (display_name.empty() || display_name.size() > 96) {
-        return false;
-    }
-    return std::ranges::none_of(display_name, [](char value) {
-        const auto character = static_cast<unsigned char>(value);
-        return character < 0x20 || character > 0x7e;
-    });
+    return core::trim_ascii_whitespace(display_name) == display_name &&
+           core::is_valid_utf8_text(display_name, 96, "|");
 }
 
 [[nodiscard]] SaveSlotMetadata default_metadata(std::string_view slot_id) {
@@ -318,7 +314,7 @@ core::Status SaveSlotMetadata::validate() const {
     if (!is_safe_display_name(display_name)) {
         return core::Status::failure(
             "save_slot.invalid_display_name",
-            "save slot display name must be 1-96 printable ASCII characters");
+            "save slot display name must be 1-96 bytes of valid printable UTF-8 without surrounding whitespace");
     }
     if (created_at_ms != 0 && last_saved_at_ms != 0 && last_saved_at_ms < created_at_ms) {
         return core::Status::failure(
@@ -606,6 +602,14 @@ core::Result<std::vector<SaveSlotSummary>> FileSaveSlotCatalog::list_slots() con
         if (!summary.validation_error.has_value() && summary.database_stats.has_snapshot) {
             auto snapshot = database.read_snapshot();
             if (snapshot) {
+                const auto generator = std::ranges::find_if(
+                    snapshot.value().mod_states, [](const ModStateSaveRecord& state) {
+                        return state.mod_id == "engine" &&
+                               state.state_key == "world.generator_preset";
+                    });
+                if (generator != snapshot.value().mod_states.end()) {
+                    summary.generator_preset = generator->encoded_state;
+                }
                 summary.snapshot_metadata = std::move(snapshot).value().metadata;
             } else {
                 summary.validation_error = snapshot.error();

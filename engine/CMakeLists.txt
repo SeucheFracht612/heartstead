@@ -261,6 +261,7 @@ target_sources(
       core/file_io.hpp
       core/hash.hpp
       core/ids.hpp
+      core/text.hpp
       core/logging.hpp
       core/process_entry.hpp
       core/result.hpp

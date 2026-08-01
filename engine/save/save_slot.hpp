@@ -27,6 +27,7 @@ struct SaveSlotSummary {
     SaveSlotMetadata metadata;
     SaveDatabaseStats database_stats;
     std::optional<SaveMetadata> snapshot_metadata;
+    std::string generator_preset;
     std::optional<core::Error> validation_error;
 };
 

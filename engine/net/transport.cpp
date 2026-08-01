@@ -123,8 +123,8 @@ class PosixDatagramSocket final {
     int fd_ = -1;
 };
 
-[[nodiscard]] core::Result<PosixDatagramSocket> create_datagram_socket() {
-    const auto fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+[[nodiscard]] core::Result<PosixDatagramSocket> create_datagram_socket(int family) {
+    const auto fd = ::socket(family, SOCK_DGRAM, 0);
     if (fd < 0) {
         return core::Result<PosixDatagramSocket>::failure(
             "transport.socket_failed", socket_error_message("failed to create UDP socket"));
@@ -152,59 +152,113 @@ class PosixDatagramSocket final {
     return true;
 }
 
-[[nodiscard]] core::Result<sockaddr_in> ipv4_endpoint_address(const TransportEndpoint& endpoint) {
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_port = htons(endpoint.port);
-    if (::inet_pton(AF_INET, endpoint.address.c_str(), &address.sin_addr) != 1) {
-        return core::Result<sockaddr_in>::failure(
-            "transport.invalid_endpoint_address",
-            "external transport currently requires a numeric IPv4 bind address");
+struct SocketAddress {
+    sockaddr_storage storage{};
+    socklen_t size = 0;
+
+    [[nodiscard]] int family() const noexcept {
+        return storage.ss_family;
     }
-    return core::Result<sockaddr_in>::success(address);
+};
+
+[[nodiscard]] core::Result<SocketAddress>
+numeric_endpoint_address(const TransportEndpoint& endpoint) {
+    SocketAddress result;
+    sockaddr_in ipv4{};
+    ipv4.sin_family = AF_INET;
+    ipv4.sin_port = htons(endpoint.port);
+    if (::inet_pton(AF_INET, endpoint.address.c_str(), &ipv4.sin_addr) == 1) {
+        std::memcpy(&result.storage, &ipv4, sizeof(ipv4));
+        result.size = sizeof(ipv4);
+        return core::Result<SocketAddress>::success(result);
+    }
+
+    sockaddr_in6 ipv6{};
+    ipv6.sin6_family = AF_INET6;
+    ipv6.sin6_port = htons(endpoint.port);
+    if (::inet_pton(AF_INET6, endpoint.address.c_str(), &ipv6.sin6_addr) == 1) {
+        std::memcpy(&result.storage, &ipv6, sizeof(ipv6));
+        result.size = sizeof(ipv6);
+        return core::Result<SocketAddress>::success(result);
+    }
+    return core::Result<SocketAddress>::failure(
+        "transport.invalid_endpoint_address",
+        "external transport requires a numeric IPv4 or IPv6 address");
 }
 
-[[nodiscard]] sockaddr_in loopback_address(std::uint16_t port) noexcept {
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_port = htons(port);
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    return address;
+[[nodiscard]] SocketAddress loopback_address(int family, std::uint16_t port) noexcept {
+    SocketAddress result;
+    if (family == AF_INET6) {
+        sockaddr_in6 address{};
+        address.sin6_family = AF_INET6;
+        address.sin6_port = htons(port);
+        address.sin6_addr = in6addr_loopback;
+        std::memcpy(&result.storage, &address, sizeof(address));
+        result.size = sizeof(address);
+    } else {
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_port = htons(port);
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        std::memcpy(&result.storage, &address, sizeof(address));
+        result.size = sizeof(address);
+    }
+    return result;
 }
 
-[[nodiscard]] core::Result<sockaddr_in> socket_bound_address(int fd) {
-    sockaddr_in address{};
-    socklen_t address_size = sizeof(address);
-    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&address), &address_size) != 0) {
-        return core::Result<sockaddr_in>::failure(
+[[nodiscard]] core::Result<SocketAddress> socket_bound_address(int fd) {
+    SocketAddress address;
+    address.size = sizeof(address.storage);
+    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&address.storage), &address.size) != 0) {
+        return core::Result<SocketAddress>::failure(
             "transport.socket_address_failed",
             socket_error_message("failed to query UDP socket address"));
     }
-    return core::Result<sockaddr_in>::success(address);
+    return core::Result<SocketAddress>::success(address);
 }
 
-[[nodiscard]] std::uint16_t port_from_address(const sockaddr_in& address) noexcept {
-    return ntohs(address.sin_port);
+[[nodiscard]] std::uint16_t port_from_address(const SocketAddress& address) noexcept {
+    if (address.family() == AF_INET6) {
+        return ntohs(reinterpret_cast<const sockaddr_in6*>(&address.storage)->sin6_port);
+    }
+    return ntohs(reinterpret_cast<const sockaddr_in*>(&address.storage)->sin_port);
 }
 
-[[nodiscard]] bool same_socket_endpoint(const sockaddr_in& lhs, const sockaddr_in& rhs) noexcept {
-    return lhs.sin_family == rhs.sin_family && lhs.sin_port == rhs.sin_port &&
-           lhs.sin_addr.s_addr == rhs.sin_addr.s_addr;
+[[nodiscard]] bool same_socket_endpoint(const SocketAddress& lhs,
+                                        const SocketAddress& rhs) noexcept {
+    if (lhs.family() != rhs.family() || port_from_address(lhs) != port_from_address(rhs)) {
+        return false;
+    }
+    if (lhs.family() == AF_INET6) {
+        const auto* left = reinterpret_cast<const sockaddr_in6*>(&lhs.storage);
+        const auto* right = reinterpret_cast<const sockaddr_in6*>(&rhs.storage);
+        return left->sin6_scope_id == right->sin6_scope_id &&
+               std::memcmp(&left->sin6_addr, &right->sin6_addr, sizeof(in6_addr)) == 0;
+    }
+    const auto* left = reinterpret_cast<const sockaddr_in*>(&lhs.storage);
+    const auto* right = reinterpret_cast<const sockaddr_in*>(&rhs.storage);
+    return left->sin_addr.s_addr == right->sin_addr.s_addr;
 }
 
 [[nodiscard]] bool would_block() noexcept {
     return errno == EAGAIN || errno == EWOULDBLOCK;
 }
 
-[[nodiscard]] std::uint64_t fragment_source_scope(const sockaddr_in& address) noexcept {
-    return (static_cast<std::uint64_t>(ntohl(address.sin_addr.s_addr)) << 16U) |
-           static_cast<std::uint64_t>(ntohs(address.sin_port));
+[[nodiscard]] std::uint64_t fragment_source_scope(const SocketAddress& address) noexcept {
+    constexpr std::uint64_t offset = 14695981039346656037ULL;
+    constexpr std::uint64_t prime = 1099511628211ULL;
+    std::uint64_t hash = offset;
+    const auto* bytes = reinterpret_cast<const unsigned char*>(&address.storage);
+    for (socklen_t index = 0; index < address.size; ++index) {
+        hash = (hash ^ bytes[index]) * prime;
+    }
+    return hash;
 }
 
 class PosixDatagramTransportHost final : public ITransportHost {
   private:
     struct ClientEndpoint {
-        ClientEndpoint(std::optional<PosixDatagramSocket> socket_value, sockaddr_in address_value,
+        ClientEndpoint(std::optional<PosixDatagramSocket> socket_value, SocketAddress address_value,
                        TransportPacketFragmentCodecConfig fragment_config, core::NetId server_id,
                        core::NetId client_id, TransportReliabilityConfig reliability_config,
                        TransportSessionToken token_value, bool remote_value,
@@ -217,7 +271,7 @@ class PosixDatagramTransportHost final : public ITransportHost {
               last_sent_ms(connected_at_ms), inbound_window_started_ms(connected_at_ms) {}
 
         std::optional<PosixDatagramSocket> socket;
-        sockaddr_in address{};
+        SocketAddress address{};
         TransportPacketReassembler reassembler;
         TransportReliabilityTracker server_reliability;
         TransportReliabilityTracker client_reliability;
@@ -243,19 +297,19 @@ class PosixDatagramTransportHost final : public ITransportHost {
                                                                           status.error().message);
         }
 
-        auto server_socket = create_datagram_socket();
-        if (!server_socket) {
-            return core::Result<std::unique_ptr<ITransportHost>>::failure(
-                server_socket.error().code, server_socket.error().message);
-        }
-        auto bind_address = ipv4_endpoint_address(config.bind_endpoint);
+        auto bind_address = numeric_endpoint_address(config.bind_endpoint);
         if (!bind_address) {
             return core::Result<std::unique_ptr<ITransportHost>>::failure(
                 bind_address.error().code, bind_address.error().message);
         }
+        auto server_socket = create_datagram_socket(bind_address.value().family());
+        if (!server_socket) {
+            return core::Result<std::unique_ptr<ITransportHost>>::failure(
+                server_socket.error().code, server_socket.error().message);
+        }
         if (::bind(server_socket.value().fd(),
-                   reinterpret_cast<const sockaddr*>(&bind_address.value()),
-                   sizeof(bind_address.value())) != 0) {
+                   reinterpret_cast<const sockaddr*>(&bind_address.value().storage),
+                   bind_address.value().size) != 0) {
             return core::Result<std::unique_ptr<ITransportHost>>::failure(
                 "transport.bind_failed",
                 socket_error_message("failed to bind external transport endpoint " +
@@ -334,15 +388,15 @@ class PosixDatagramTransportHost final : public ITransportHost {
                                                       "transport client limit has been reached");
         }
 
-        auto client_socket = create_datagram_socket();
+        auto client_socket = create_datagram_socket(server_bound_address_.family());
         if (!client_socket) {
             return core::Result<core::NetId>::failure(client_socket.error().code,
                                                       client_socket.error().message);
         }
-        auto client_bind_address = loopback_address(0);
+        auto client_bind_address = loopback_address(server_bound_address_.family(), 0);
         if (::bind(client_socket.value().fd(),
-                   reinterpret_cast<const sockaddr*>(&client_bind_address),
-                   sizeof(client_bind_address)) != 0) {
+                   reinterpret_cast<const sockaddr*>(&client_bind_address.storage),
+                   client_bind_address.size) != 0) {
             return core::Result<core::NetId>::failure(
                 "transport.client_bind_failed",
                 socket_error_message("failed to bind external transport loopback client"));
@@ -563,7 +617,7 @@ class PosixDatagramTransportHost final : public ITransportHost {
         }
         drain_socket(endpoint->socket->fd(), endpoint->reassembler,
                      [this, client_id, endpoint, &result](TransportEnvelope envelope,
-                                                          const sockaddr_in& remote) {
+                                                          const SocketAddress& remote) {
                          if (envelope.sender != config_.server_id ||
                              envelope.recipient != client_id ||
                              !same_socket_endpoint(remote, server_address_for_local_clients_) ||
@@ -598,12 +652,13 @@ class PosixDatagramTransportHost final : public ITransportHost {
 
   private:
     PosixDatagramTransportHost(ExternalTransportHostConfig config,
-                               PosixDatagramSocket server_socket, sockaddr_in server_bound_address,
+                               PosixDatagramSocket server_socket, SocketAddress server_bound_address,
                                TransportSessionToken security_secret)
         : config_(std::move(config)), server_socket_(std::move(server_socket)),
           server_bound_address_(server_bound_address),
           server_address_for_local_clients_(
-              loopback_address(port_from_address(server_bound_address))),
+              loopback_address(server_bound_address.family(),
+                               port_from_address(server_bound_address))),
           fragment_config_{datagram_payload_bytes, 1024u * 1024u, 1024},
           server_reassembler_(fragment_config_), security_secret_(security_secret) {}
 
@@ -709,7 +764,7 @@ class PosixDatagramTransportHost final : public ITransportHost {
         return true;
     }
 
-    [[nodiscard]] ClientEndpoint* remote_client_at(const sockaddr_in& address) noexcept {
+    [[nodiscard]] ClientEndpoint* remote_client_at(const SocketAddress& address) noexcept {
         for (auto& [_, client] : clients_) {
             if (client.connected && client.remote &&
                 same_socket_endpoint(client.address, address)) {
@@ -719,7 +774,7 @@ class PosixDatagramTransportHost final : public ITransportHost {
         return nullptr;
     }
 
-    [[nodiscard]] core::Status send_handshake(const sockaddr_in& recipient,
+    [[nodiscard]] core::Status send_handshake(const SocketAddress& recipient,
                                               const TransportHandshakePacket& packet) {
         auto encoded = TransportHandshakeCodec::encode(packet);
         if (!encoded) {
@@ -728,7 +783,7 @@ class PosixDatagramTransportHost final : public ITransportHost {
         return send_datagram(server_socket_.fd(), recipient, encoded.value());
     }
 
-    void reject_handshake(const sockaddr_in& remote, TransportSessionToken nonce,
+    void reject_handshake(const SocketAddress& remote, TransportSessionToken nonce,
                           std::string reason_code) {
         (void)send_handshake(remote, TransportHandshakePacket{
                                          TransportHandshakeKind::server_reject,
@@ -744,7 +799,7 @@ class PosixDatagramTransportHost final : public ITransportHost {
                                      });
     }
 
-    void accept_handshake(const TransportHandshakePacket& packet, const sockaddr_in& remote,
+    void accept_handshake(const TransportHandshakePacket& packet, const SocketAddress& remote,
                           std::size_t received_bytes) {
         const auto scope = fragment_source_scope(remote);
         if (packet.kind == TransportHandshakeKind::client_hello) {
@@ -840,7 +895,7 @@ class PosixDatagramTransportHost final : public ITransportHost {
         pending_connected_clients_.push_back(id);
     }
 
-    void accept_server_envelope(TransportEnvelope envelope, const sockaddr_in& remote) {
+    void accept_server_envelope(TransportEnvelope envelope, const SocketAddress& remote) {
         if (envelope.recipient != config_.server_id) {
             ++pending_rejected_datagram_count_;
             return;
@@ -928,10 +983,11 @@ class PosixDatagramTransportHost final : public ITransportHost {
     void pump_server_socket() {
         std::array<char, max_datagram_bytes> buffer{};
         for (;;) {
-            sockaddr_in remote{};
-            socklen_t remote_size = sizeof(remote);
+            SocketAddress remote;
+            remote.size = sizeof(remote.storage);
             const auto received = ::recvfrom(server_socket_.fd(), buffer.data(), buffer.size(), 0,
-                                             reinterpret_cast<sockaddr*>(&remote), &remote_size);
+                                             reinterpret_cast<sockaddr*>(&remote.storage),
+                                             &remote.size);
             if (received < 0) {
                 if (would_block()) {
                     return;
@@ -964,7 +1020,7 @@ class PosixDatagramTransportHost final : public ITransportHost {
         }
     }
 
-    [[nodiscard]] core::Status send_envelope(int fd, const sockaddr_in& recipient,
+    [[nodiscard]] core::Status send_envelope(int fd, const SocketAddress& recipient,
                                              TransportEnvelope envelope,
                                              TransportSessionToken token) {
         envelope.session_token = token;
@@ -989,11 +1045,11 @@ class PosixDatagramTransportHost final : public ITransportHost {
         return core::Status::ok();
     }
 
-    [[nodiscard]] core::Status send_datagram(int fd, const sockaddr_in& recipient,
+    [[nodiscard]] core::Status send_datagram(int fd, const SocketAddress& recipient,
                                              std::string_view datagram) {
         const auto sent =
             ::sendto(fd, datagram.data(), datagram.size(), 0,
-                     reinterpret_cast<const sockaddr*>(&recipient), sizeof(recipient));
+                     reinterpret_cast<const sockaddr*>(&recipient.storage), recipient.size);
         if (sent < 0 || static_cast<std::size_t>(sent) != datagram.size()) {
             return core::Status::failure(
                 "transport.send_failed",
@@ -1010,10 +1066,11 @@ class PosixDatagramTransportHost final : public ITransportHost {
     void drain_socket(int fd, TransportPacketReassembler& reassembler, Callback&& callback) {
         std::array<char, max_datagram_bytes> buffer{};
         for (;;) {
-            sockaddr_in remote{};
-            socklen_t remote_size = sizeof(remote);
+            SocketAddress remote;
+            remote.size = sizeof(remote.storage);
             const auto received = ::recvfrom(fd, buffer.data(), buffer.size(), 0,
-                                             reinterpret_cast<sockaddr*>(&remote), &remote_size);
+                                             reinterpret_cast<sockaddr*>(&remote.storage),
+                                             &remote.size);
             if (received < 0) {
                 if (would_block()) {
                     return;
@@ -1064,8 +1121,8 @@ class PosixDatagramTransportHost final : public ITransportHost {
 
     ExternalTransportHostConfig config_;
     PosixDatagramSocket server_socket_;
-    sockaddr_in server_bound_address_{};
-    sockaddr_in server_address_for_local_clients_{};
+    SocketAddress server_bound_address_{};
+    SocketAddress server_address_for_local_clients_{};
     TransportPacketFragmentCodecConfig fragment_config_{};
     TransportPacketReassembler server_reassembler_;
     std::uint64_t next_client_id_ = 2;
