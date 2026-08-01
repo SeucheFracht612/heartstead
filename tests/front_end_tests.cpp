@@ -87,6 +87,7 @@ void test_application_settings_round_trip() {
     settings.window_height = 1080;
     settings.windowed = false;
     settings.vsync = false;
+    settings.first_person_camera = true;
     settings.rendering_quality = heartstead::renderer::RendererQualityPreset::ultra;
     settings.master_volume = 0.75F;
     settings.music_volume = 0.25F;
@@ -108,6 +109,7 @@ void test_application_settings_round_trip() {
     assert(loaded.value().window_width == 1920);
     assert(!loaded.value().windowed);
     assert(!loaded.value().vsync);
+    assert(loaded.value().first_person_camera);
     assert(loaded.value().rendering_quality == heartstead::renderer::RendererQualityPreset::ultra);
     assert(loaded.value().master_volume == 0.75F);
     assert(loaded.value().controller_sensitivity == 1.5F);

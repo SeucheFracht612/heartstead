@@ -30,6 +30,22 @@ constexpr std::int32_t hud_vital_pool_milli = 100'000;
            input.down_mouse_buttons.end();
 }
 
+[[nodiscard]] std::optional<std::size_t>
+pressed_hotbar_slot(const platform::WindowInputSnapshot& input) noexcept {
+    constexpr std::array keys{
+        platform::KeyCode::digit_1, platform::KeyCode::digit_2, platform::KeyCode::digit_3,
+        platform::KeyCode::digit_4, platform::KeyCode::digit_5, platform::KeyCode::digit_6,
+        platform::KeyCode::digit_7, platform::KeyCode::digit_8, platform::KeyCode::digit_9,
+    };
+    const auto found = std::ranges::find_if(keys, [&input](platform::KeyCode key) {
+        return key_pressed(input, key);
+    });
+    return found == keys.end()
+               ? std::nullopt
+               : std::optional<std::size_t>{
+                     static_cast<std::size_t>(std::distance(keys.begin(), found))};
+}
+
 [[nodiscard]] std::string item_label(const items::ItemStack& stack) {
     const auto local = stack.prototype_id.local_id();
     const auto slash = local.rfind('/');
@@ -476,9 +492,12 @@ core::Status GameUiLayer::update_inventory_widgets() {
     }
     for (std::size_t index = 0; index < hotbar_slots_.size(); ++index) {
         auto status = update_widget(widgets_, hotbar_slots_[index],
-                                    [record, index](ui::WidgetDesc& slot) {
+                                    [this, record, index](ui::WidgetDesc& slot) {
             slot.text = index < record->stacks.size() ? item_label(record->stacks[index])
                                                       : std::string{};
+            slot.color = index == selected_hotbar_slot_
+                             ? std::array{0.66F, 0.43F, 0.12F, 0.96F}
+                             : std::array{0.18F, 0.09F, 0.035F, 0.94F};
         });
         if (!status) {
             return status;
@@ -556,6 +575,22 @@ GameUiLayer::process_input(const platform::WindowInputSnapshot& input, RuntimeSe
         result.consumed.blocks_gameplay = inventory_open_;
         return core::Result<GameUiProcessResult>::success(result);
     }
+    if (!blocks_gameplay()) {
+        auto selected = pressed_hotbar_slot(input);
+        if (!selected.has_value() && input.wheel_delta_y != 0) {
+            const auto direction = input.wheel_delta_y > 0 ? hotbar_slot_count - 1 : 1;
+            selected = (selected_hotbar_slot_ + direction) % hotbar_slot_count;
+        }
+        if (selected.has_value() && *selected != selected_hotbar_slot_) {
+            auto status = set_selected_hotbar_slot(*selected);
+            if (!status) {
+                return core::Result<GameUiProcessResult>::failure(status.error().code,
+                                                                  status.error().message);
+            }
+            result.hotbar_selection_changed = true;
+            result.consumed.keyboard = true;
+        }
+    }
     auto ui_input = ui::UiInputFrame::from_platform(input);
     if (!inventory_open_ && cancel) {
         ui_input.navigation = ui::UiNavigation::none;
@@ -564,7 +599,12 @@ GameUiLayer::process_input(const platform::WindowInputSnapshot& input, RuntimeSe
         ui_input.navigation = ui::UiNavigation::none;
     }
     auto routed = widgets_.route_input(ui_input);
-    result.consumed = routed.consumed;
+    result.consumed.pointer = result.consumed.pointer || routed.consumed.pointer;
+    result.consumed.keyboard = result.consumed.keyboard || routed.consumed.keyboard;
+    result.consumed.text = result.consumed.text || routed.consumed.text;
+    result.consumed.gamepad = result.consumed.gamepad || routed.consumed.gamepad;
+    result.consumed.blocks_gameplay =
+        result.consumed.blocks_gameplay || routed.consumed.blocks_gameplay;
     result.event_count = static_cast<std::uint32_t>(routed.events.size());
     auto command = handle_widget_events(
         routed.events, mouse_down(input, platform::MouseButton::right), runtime, now_ms);
@@ -778,6 +818,26 @@ bool GameUiLayer::map_open() const noexcept {
 
 bool GameUiLayer::blocks_gameplay() const noexcept {
     return inventory_open_ || map_open_;
+}
+
+std::size_t GameUiLayer::selected_hotbar_slot() const noexcept {
+    return selected_hotbar_slot_;
+}
+
+const items::ItemStack* GameUiLayer::selected_hotbar_item() const noexcept {
+    const auto* record = inventory_.displayed_inventory();
+    return record != nullptr && selected_hotbar_slot_ < record->stacks.size()
+               ? &record->stacks[selected_hotbar_slot_]
+               : nullptr;
+}
+
+core::Status GameUiLayer::set_selected_hotbar_slot(std::size_t slot) {
+    if (slot >= hotbar_slot_count) {
+        return core::Status::failure("game_ui.invalid_hotbar_slot",
+                                     "hotbar selection must be between zero and eight");
+    }
+    selected_hotbar_slot_ = slot;
+    return update_inventory_widgets();
 }
 
 InventoryUiViewModel& GameUiLayer::inventory() noexcept {

@@ -16,6 +16,7 @@ struct ApplicationSettings {
     std::uint32_t window_height = 720;
     bool windowed = true;
     bool vsync = true;
+    bool first_person_camera = false;
     renderer::RendererQualityPreset rendering_quality = renderer::RendererQualityPreset::high;
     float master_volume = 1.0F;
     float music_volume = 1.0F;

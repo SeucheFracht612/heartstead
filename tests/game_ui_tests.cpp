@@ -170,6 +170,34 @@ void test_hud_is_bound_to_replicated_vitals_and_inventory_mass() {
     assert(fixture.harness->shutdown());
 }
 
+void test_hotbar_selection_tracks_keyboard_and_wheel() {
+    auto fixture = make_fixture();
+    auto* session = fixture.harness->runtime().session();
+    assert(session != nullptr && session->client() != nullptr);
+    game::GameUiLayer ui_layer(fixture.content.item_definitions,
+                               fixture.content.entity_definitions, fixture.content.ui_skin);
+    assert(ui_layer.initialize());
+    assert(ui_layer.synchronize(*session->client()));
+    assert(ui_layer.selected_hotbar_slot() == 0);
+    assert(ui_layer.selected_hotbar_item() != nullptr);
+
+    platform::WindowInputSnapshot number;
+    number.pressed_keys = {platform::KeyCode::digit_2};
+    auto processed = ui_layer.process_input(number, *session, 40);
+    assert(processed && processed.value().hotbar_selection_changed);
+    assert(ui_layer.selected_hotbar_slot() == 1);
+    assert(ui_layer.selected_hotbar_item() != nullptr);
+
+    platform::WindowInputSnapshot wheel;
+    wheel.wheel_delta_y = -1;
+    processed = ui_layer.process_input(wheel, *session, 41);
+    assert(processed && processed.value().hotbar_selection_changed);
+    assert(ui_layer.selected_hotbar_slot() == 2);
+    assert(ui_layer.selected_hotbar_item() == nullptr);
+    assert(!ui_layer.set_selected_hotbar_slot(9));
+    assert(fixture.harness->shutdown());
+}
+
 } // namespace
 
 int main() {
@@ -177,5 +205,6 @@ int main() {
     test_rejected_transfer_rolls_back_to_replicated_inventory();
     test_inventory_modal_consumes_input_before_gameplay();
     test_hud_is_bound_to_replicated_vitals_and_inventory_mass();
+    test_hotbar_selection_tracks_keyboard_and_wheel();
     return 0;
 }

@@ -238,8 +238,8 @@ core::Result<ApplicationSettings> ApplicationSettingsStore::load() const {
             auto parsed = parse_number<std::uint32_t>(value, key);
             if (parsed)
                 settings.window_height = parsed.value();
-        } else if (key == "windowed" || key == "vsync" || key == "controller_enabled" ||
-                   key == "reduced_motion") {
+        } else if (key == "windowed" || key == "vsync" || key == "first_person_camera" ||
+                   key == "controller_enabled" || key == "reduced_motion") {
             auto parsed = parse_bool(value, key);
             if (!parsed) {
                 continue;
@@ -248,6 +248,8 @@ core::Result<ApplicationSettings> ApplicationSettingsStore::load() const {
                 settings.windowed = parsed.value();
             else if (key == "vsync")
                 settings.vsync = parsed.value();
+            else if (key == "first_person_camera")
+                settings.first_person_camera = parsed.value();
             else if (key == "controller_enabled")
                 settings.controller_enabled = parsed.value();
             else
@@ -341,6 +343,8 @@ core::Status ApplicationSettingsStore::save(const ApplicationSettings& settings)
                << "window_height|" << settings.window_height << '\n'
                << "windowed|" << (settings.windowed ? "true" : "false") << '\n'
                << "vsync|" << (settings.vsync ? "true" : "false") << '\n'
+               << "first_person_camera|" << (settings.first_person_camera ? "true" : "false")
+               << '\n'
                << "rendering_quality|" << quality_name(settings.rendering_quality) << '\n'
                << "master_volume|" << settings.master_volume << '\n'
                << "music_volume|" << settings.music_volume << '\n'

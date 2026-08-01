@@ -39,8 +39,8 @@ core::Status VoxelInteractionModule::register_commands(GameplayRegistrationConte
             if (!decoded) {
                 return core::Status::failure(decoded.error().code, decoded.error().message);
             }
-            return execute_place_voxel(decoded.value(), player->state, command, command_context,
-                                       operation, validate_placement);
+            return execute_place_voxel(decoded.value(), player->state, player->save_id, command,
+                                       command_context, operation, validate_placement);
         },
     });
     if (!status) {
@@ -76,8 +76,12 @@ core::Status VoxelInteractionModule::register_serializers(SerializationRegistry&
 core::Status VoxelInteractionModule::register_replication(ReplicationRegistry& registry) {
     auto status = registry.register_replication(
         {std::string(world::voxel_changed_event_type), 1, true, true, {}});
+    if (status) {
+        status = registry.register_replication(
+            {std::string(voxel_resource_granted_event_type), 1, true, true, {}});
+    }
     return status ? registry.register_replication(
-                        {std::string(voxel_resource_granted_event_type), 1, true, true, {}})
+                        {std::string(voxel_resource_consumed_event_type), 1, true, true, {}})
                   : status;
 }
 

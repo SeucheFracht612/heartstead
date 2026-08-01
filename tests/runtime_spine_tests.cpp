@@ -925,7 +925,18 @@ void test_boundary_voxel_edit_rebuilds_collision_and_removes_support() {
     player->state.mode = movement::PlayerControllerMode::grounded;
     player->state.grounded = true;
     const auto stone = core::PrototypeId::parse("base:voxels/stone");
+    const auto stone_chunk = core::PrototypeId::parse("base:items/stone_chunk");
     assert(stone.has_value());
+    assert(stone_chunk.has_value());
+    auto* inventory = session->server()->world().inventories().find(player->save_id);
+    assert(inventory != nullptr);
+    const auto stone_definition =
+        std::ranges::find(report.item_definitions, *stone_chunk,
+                          &items::ItemDefinition::prototype_id);
+    assert(stone_definition != report.item_definitions.end());
+    auto stone_stack = stone_definition->create_stack(1);
+    assert(stone_stack);
+    inventory->stacks.push_back(std::move(stone_stack).value());
     assert(session->submit_place_voxel(
         {game::foundation::boundary_edit_upper, *stone}, now_ms));
     now_ms += 17;
@@ -1289,10 +1300,19 @@ void test_typed_voxel_commands_validate_and_replicate() {
     assert(authoritative && replicated);
     assert(!authoritative.value().is_air());
     assert(replicated.value() == authoritative.value());
-    assert(placed.value().client.replication.total_applied_record_count == 1);
+    assert(placed.value().client.replication.total_applied_record_count == 3);
     assert(session->client()->accepted_voxel_edits().size() == 1);
     assert(session->client()->accepted_voxel_edits().front().position == place.position);
     assert(session->client()->accepted_voxel_edits().front().current == replicated.value());
+    const auto* inventory_after_placement =
+        session->server()->world().inventories().find(player->save_id);
+    assert(inventory_after_placement != nullptr);
+    assert(item_count(*inventory_after_placement, *raw_clay) == starting_raw_clay - 1);
+    assert(std::ranges::any_of(
+        placed.value().server_ticks.front().commands.command_reports.front().events,
+        [](const auto& event) {
+            return event.type == game::interaction::voxel_resource_consumed_event_type;
+        }));
 
     assert(session->submit_place_voxel(place, 20));
     auto duplicate = runtime.run_frame({16'667, 34});
@@ -1342,8 +1362,8 @@ void test_typed_voxel_commands_validate_and_replicate() {
     const auto* replicated_inventory =
         session->client()->world().inventories().find(player->save_id);
     assert(authoritative_inventory != nullptr && replicated_inventory != nullptr);
-    assert(item_count(*authoritative_inventory, *raw_clay) == starting_raw_clay + 1);
-    assert(item_count(*replicated_inventory, *raw_clay) == starting_raw_clay + 1);
+    assert(item_count(*authoritative_inventory, *raw_clay) == starting_raw_clay);
+    assert(item_count(*replicated_inventory, *raw_clay) == starting_raw_clay);
 
     assert(session->submit_remove_voxel({place.position}, 60));
     auto duplicate_removal = runtime.run_frame({16'667, 102});
@@ -1358,7 +1378,7 @@ void test_typed_voxel_commands_validate_and_replicate() {
     authoritative_inventory =
         session->server()->world().inventories().find(player->save_id);
     assert(authoritative_inventory != nullptr);
-    assert(item_count(*authoritative_inventory, *raw_clay) == starting_raw_clay + 1);
+    assert(item_count(*authoritative_inventory, *raw_clay) == starting_raw_clay);
 
     player = session->server()->player_for_client(session->client()->client_id());
     assert(player != nullptr);
@@ -1828,7 +1848,7 @@ void test_gameplay_modules_extend_runtime_through_registration_contract() {
     assert(module_report.system_count == 1);
     assert(module_report.serializer_count == 3);
     assert(module_report.persistence_count == 1);
-    assert(module_report.replication_count == 3);
+    assert(module_report.replication_count == 4);
     assert(module_report.presentation_adapter_count == 1);
     const auto* service = server->domain_services().find<ITestFeatureService>();
     assert(service != nullptr && service->value() == 42);

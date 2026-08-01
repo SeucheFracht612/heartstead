@@ -69,6 +69,7 @@ struct GameUiProcessResult {
     std::optional<std::uint64_t> submitted_inventory_command;
     bool inventory_toggled = false;
     bool map_toggled = false;
+    bool hotbar_selection_changed = false;
 };
 
 struct GameUiStats {
@@ -110,6 +111,9 @@ class GameUiLayer {
     [[nodiscard]] bool inventory_open() const noexcept;
     [[nodiscard]] bool map_open() const noexcept;
     [[nodiscard]] bool blocks_gameplay() const noexcept;
+    [[nodiscard]] std::size_t selected_hotbar_slot() const noexcept;
+    [[nodiscard]] const items::ItemStack* selected_hotbar_item() const noexcept;
+    [[nodiscard]] core::Status set_selected_hotbar_slot(std::size_t slot);
     [[nodiscard]] InventoryUiViewModel& inventory() noexcept;
     [[nodiscard]] const InventoryUiViewModel& inventory() const noexcept;
     [[nodiscard]] ui::WidgetTree& widgets() noexcept;
@@ -142,6 +146,7 @@ class GameUiLayer {
     bool initialized_ = false;
     bool inventory_open_ = false;
     bool map_open_ = false;
+    std::size_t selected_hotbar_slot_ = 0;
 };
 
 } // namespace heartstead::game

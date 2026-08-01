@@ -81,6 +81,60 @@ struct PreparedResourceGrant {
     std::optional<std::size_t> merge_index;
 };
 
+struct PreparedPlacementItem {
+    world::InventoryRecord* inventory = nullptr;
+    std::size_t stack_index = 0;
+    core::PrototypeId item;
+};
+
+[[nodiscard]] core::Result<PreparedPlacementItem>
+prepare_placement_item(const PlaceVoxelCommand& command, core::SaveId inventory_owner,
+                       const net::CommandExecutionContext& context) {
+    if (context.voxel_palette == nullptr || context.world_state == nullptr) {
+        return core::Result<PreparedPlacementItem>::failure(
+            "voxel_command.missing_inventory_context",
+            "voxel placement requires authoritative palette and inventory state");
+    }
+    const auto* voxel = context.voxel_palette->find_by_prototype(command.voxel);
+    if (voxel == nullptr || !voxel->interaction.break_resource_item.has_value()) {
+        return core::Result<PreparedPlacementItem>::failure(
+            "voxel_command.voxel_not_placeable",
+            "selected voxel has no corresponding inventory resource item");
+    }
+    auto* inventory = context.world_state->inventories().find(inventory_owner);
+    if (inventory == nullptr) {
+        return core::Result<PreparedPlacementItem>::failure(
+            "voxel_command.missing_inventory",
+            "voxel placement requires the connected player's inventory");
+    }
+    const auto stack = std::ranges::find(inventory->stacks,
+                                         *voxel->interaction.break_resource_item,
+                                         &items::ItemStack::prototype_id);
+    if (stack == inventory->stacks.end() || stack->count == 0) {
+        return core::Result<PreparedPlacementItem>::failure(
+            "voxel_command.resource_item_missing",
+            "player inventory does not contain the item required to place this voxel");
+    }
+    return core::Result<PreparedPlacementItem>::success(
+        {inventory, static_cast<std::size_t>(std::distance(inventory->stacks.begin(), stack)),
+         *voxel->interaction.break_resource_item});
+}
+
+void commit_placement_item(PreparedPlacementItem item, core::SaveId inventory_owner,
+                           world::BlockCoord position, world::WorldOperation& operation) {
+    auto& stack = item.inventory->stacks[item.stack_index];
+    --stack.count;
+    if (stack.count == 0) {
+        item.inventory->stacks.erase(
+            item.inventory->stacks.begin() +
+            static_cast<std::vector<items::ItemStack>::difference_type>(item.stack_index));
+    }
+    (void)operation.record_mutation("consume voxel placement resource item");
+    operation.record_derived_update("Inventory");
+    operation.emit_event({std::string(voxel_resource_consumed_event_type), inventory_owner,
+                          item.item.value() + '@' + encode_position(position)});
+}
+
 [[nodiscard]] core::Result<std::optional<PreparedResourceGrant>>
 prepare_resource_grant(world::VoxelCell previous, core::SaveId inventory_owner,
                        const net::CommandExecutionContext& context) {
@@ -268,6 +322,7 @@ core::Result<RemoveVoxelCommand> VoxelCommandTextCodec::decode_remove(std::strin
 
 core::Status execute_place_voxel(const PlaceVoxelCommand& command,
                                  const movement::PlayerControllerState& player,
+                                 core::SaveId inventory_owner,
                                  const net::CommandEnvelope& envelope,
                                  const net::CommandExecutionContext& context,
                                  world::WorldOperation& operation,
@@ -307,7 +362,16 @@ core::Status execute_place_voxel(const PlaceVoxelCommand& command,
             return status;
         }
     }
-    return commit_voxel(command.position, cell.value(), envelope, context, operation);
+    auto item = prepare_placement_item(command, inventory_owner, context);
+    if (!item) {
+        return core::Status::failure(item.error().code, item.error().message);
+    }
+    status = commit_voxel(command.position, cell.value(), envelope, context, operation);
+    if (!status) {
+        return status;
+    }
+    commit_placement_item(std::move(item).value(), inventory_owner, command.position, operation);
+    return core::Status::ok();
 }
 
 core::Status execute_remove_voxel(const RemoveVoxelCommand& command,

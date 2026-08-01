@@ -19,6 +19,7 @@
 #include "game/presentation/model_presentation_system.hpp"
 #include "game/runtime/game_runtime.hpp"
 #include "game/scenarios/developer_world_registry.hpp"
+#include "game/ui/game_ui.hpp"
 
 #include <algorithm>
 #include <array>
@@ -214,12 +215,6 @@ const auto color_vision_id = ui::widget_id("heartstead.options.color_vision");
     return std::ranges::find(input.pressed_keys, key) != input.pressed_keys.end();
 }
 
-[[nodiscard]] bool mouse_pressed(const platform::WindowInputSnapshot& input,
-                                 platform::MouseButton button) noexcept {
-    return std::ranges::find(input.pressed_mouse_buttons, button) !=
-           input.pressed_mouse_buttons.end();
-}
-
 [[nodiscard]] std::optional<scenarios::ScenarioCategory>
 next_scenario_category(std::optional<scenarios::ScenarioCategory> category) noexcept {
     constexpr std::array categories{
@@ -317,7 +312,11 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
           widgets(config.content_report == nullptr ? ui::UiSkin::storybook_default()
                                                    : config.content_report->ui_skin),
           settings(config.initial_settings), settings_store(config.user_data_root / "settings.txt"),
-          save_catalog(config.user_data_root / "saves") {}
+          save_catalog(config.user_data_root / "saves") {
+        camera_perspective = settings.first_person_camera
+                                 ? movement::PlayerCameraPerspective::first_person
+                                 : movement::PlayerCameraPerspective::third_person;
+    }
 
     HeartsteadApplicationModeConfig config;
     ApplicationStateMachine states;
@@ -357,13 +356,17 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     std::string developer_search;
     std::string menu_message;
     movement::PlayerCameraRig camera_rig;
+    movement::PlayerCameraPerspective camera_perspective =
+        movement::PlayerCameraPerspective::third_person;
     movement::FixedStepPlayerInputScheduler input_scheduler;
+    input::InputActionMap actions = input::InputActionMap::gameplay_defaults();
     bool input_orientation_initialized = false;
+    bool gameplay_input_enabled = true;
+    std::unique_ptr<GameUiLayer> game_ui;
     ClientAudioPresentation audio_presentation;
     bool audio_presentation_initialized = false;
     ModelPresentationSystem model_presentation;
     bool model_presentation_initialized = false;
-    core::PrototypeId placement_voxel;
     std::optional<movement::PlayerCameraFrame> player_camera_frame;
     std::optional<RuntimeFrameStats> runtime_stats;
     std::uint64_t frame_count = 0;
@@ -968,6 +971,34 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         return core::Status::ok();
     }
 
+    [[nodiscard]] core::Status transition_after_unload(ApplicationState failure_state,
+                                                       std::string reason,
+                                                       core::Error error) {
+        auto cleanup = unload_session();
+        if (!cleanup) {
+            error.message += "; session cleanup also failed: " + cleanup.error().code + ": " +
+                             cleanup.error().message;
+        }
+        return states.transition(failure_state, std::move(reason), std::move(error));
+    }
+
+    [[nodiscard]] core::Status dismiss_recoverable_error(ApplicationState current_state) {
+        if (session_runtime.has_value()) {
+            auto cleanup = unload_session();
+            if (!cleanup) {
+                display_error = cleanup.error();
+                return rebuild_ui(current_state);
+            }
+        }
+        menu_navigation.reset();
+        auto status = refresh_saves();
+        if (!status) {
+            display_error = status.error();
+            return rebuild_ui(current_state);
+        }
+        return states.transition(ApplicationState::main_menu, "error message dismissed");
+    }
+
     [[nodiscard]] core::Status activate_loaded_session() {
         if (!session_runtime.has_value() || session_runtime->session() == nullptr) {
             return core::Status::failure("heartstead.loaded_session_missing",
@@ -979,10 +1010,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         if (creating_persistent_world) {
             auto snapshot = session_runtime->capture_save_snapshot();
             if (!snapshot) {
-                const auto error = snapshot.error();
-                (void)unload_session();
-                return states.transition(ApplicationState::load_failure,
-                                         "initial world save failed", error);
+                return transition_after_unload(ApplicationState::load_failure,
+                                               "initial world save failed", snapshot.error());
             }
             auto status = save_catalog.write_snapshot(active_save_slot, snapshot.value(),
                                                       persisted_timestamp_ms());
@@ -990,10 +1019,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 status = save_catalog.rename_slot(active_save_slot, active_world_name);
             }
             if (!status) {
-                const auto error = status.error();
-                (void)unload_session();
-                return states.transition(ApplicationState::load_failure,
-                                         "initial world save failed", error);
+                return transition_after_unload(ApplicationState::load_failure,
+                                               "initial world save failed", status.error());
             }
         }
         if (active_persistence == PersistencePolicy::persistent && !active_save_slot.empty()) {
@@ -1024,6 +1051,28 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         input_scheduler.set_look_sensitivity(static_cast<double>(settings.mouse_sensitivity) *
                                              12.0);
         input_orientation_initialized = false;
+        gameplay_input_enabled = true;
+        if (!config.headless && session_runtime->session()->client() != nullptr) {
+            auto ui_layer = std::make_unique<GameUiLayer>(
+                config.content_report->item_definitions,
+                config.content_report->entity_definitions, config.content_report->ui_skin);
+            auto ui_status = ui_layer->initialize();
+            if (ui_status) {
+                auto synchronized =
+                    ui_layer->synchronize(*session_runtime->session()->client());
+                if (!synchronized) {
+                    ui_status = core::Status::failure(synchronized.error().code,
+                                                      synchronized.error().message);
+                }
+            }
+            if (ui_status) {
+                game_ui = std::move(ui_layer);
+            } else {
+                core::log(core::LogLevel::warning,
+                          "In-game UI disabled: " + ui_status.error().message);
+                menu_message = "In-game UI could not start: " + ui_status.error().message;
+            }
+        }
         if (loading_progress != nullptr) {
             loading_progress->phase.store(SessionStartupPhase::ready, std::memory_order_relaxed);
         }
@@ -1075,8 +1124,16 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 "application renderer session resources",
                 [renderer]() { return renderer->clear_session_resources(); });
             if (!status) {
-                (void)runtime.shutdown();
-                return status;
+                auto error = status.error();
+                auto cleanup = runtime.shutdown();
+                if (!cleanup) {
+                    error.message += "; loaded runtime cleanup also failed: " +
+                                     cleanup.error().code + ": " + cleanup.error().message;
+                }
+                return states.transition(loading_mode == SessionMode::remote_multiplayer
+                                             ? ApplicationState::connection_failure
+                                             : ApplicationState::load_failure,
+                                         "renderer cleanup registration failed", error);
             }
         }
         session_runtime.emplace(std::move(runtime));
@@ -1089,24 +1146,25 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             auto* audio = services->audio();
             auto status = audio_presentation.initialize(*audio);
             if (!status) {
-                (void)unload_session();
-                return states.transition(ApplicationState::load_failure,
-                                         "session audio startup failed", status.error());
-            }
-            audio_presentation_initialized = true;
-            status = session_runtime->session()->register_cleanup(
-                "application session audio", [this, audio]() {
-                    auto cleanup = audio_presentation.shutdown(*audio);
+                core::log(core::LogLevel::warning,
+                          "Session audio presentation disabled: " + status.error().message);
+                menu_message = "Audio presentation disabled: " + status.error().message;
+            } else {
+                audio_presentation_initialized = true;
+                status = session_runtime->session()->register_cleanup(
+                    "application session audio", [this, audio]() {
+                        auto cleanup = audio_presentation.shutdown(*audio);
+                        audio_presentation_initialized = false;
+                        return cleanup;
+                    });
+                if (!status) {
+                    (void)audio_presentation.shutdown(*audio);
                     audio_presentation_initialized = false;
-                    return cleanup;
-                });
-            if (!status) {
-                (void)audio_presentation.shutdown(*audio);
-                audio_presentation_initialized = false;
-                (void)unload_session();
-                return states.transition(ApplicationState::load_failure,
-                                         "session audio cleanup registration failed",
-                                         status.error());
+                    core::log(core::LogLevel::warning,
+                              "Session audio cleanup registration failed: " +
+                                  status.error().message);
+                    menu_message = "Audio presentation disabled: " + status.error().message;
+                }
             }
         }
         if (!config.headless && services != nullptr && services->renderer() != nullptr) {
@@ -1116,26 +1174,26 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 *services->renderer(), config.content_report->visual_definitions,
                 config.cooked_asset_root, presentation_config);
             if (!status) {
-                (void)unload_session();
-                return states.transition(ApplicationState::load_failure,
-                                         "session model presentation startup failed",
-                                         status.error());
-            }
-            model_presentation_initialized = true;
-            auto* renderer = services->renderer();
-            status = session_runtime->session()->register_cleanup(
-                "application model presentation", [this, renderer]() {
-                    auto cleanup = model_presentation.shutdown(*renderer);
+                core::log(core::LogLevel::warning,
+                          "Session model presentation disabled: " + status.error().message);
+                menu_message = "Model presentation disabled: " + status.error().message;
+            } else {
+                model_presentation_initialized = true;
+                auto* renderer = services->renderer();
+                status = session_runtime->session()->register_cleanup(
+                    "application model presentation", [this, renderer]() {
+                        auto cleanup = model_presentation.shutdown(*renderer);
+                        model_presentation_initialized = false;
+                        return cleanup;
+                    });
+                if (!status) {
+                    (void)model_presentation.shutdown(*renderer);
                     model_presentation_initialized = false;
-                    return cleanup;
-                });
-            if (!status) {
-                (void)model_presentation.shutdown(*renderer);
-                model_presentation_initialized = false;
-                (void)unload_session();
-                return states.transition(ApplicationState::load_failure,
-                                         "session model cleanup registration failed",
-                                         status.error());
+                    core::log(core::LogLevel::warning,
+                              "Session model cleanup registration failed: " +
+                                  status.error().message);
+                    menu_message = "Model presentation disabled: " + status.error().message;
+                }
             }
         }
         if (session_runtime->session()->connection_state() == SessionConnectionState::connecting) {
@@ -1156,6 +1214,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 first_failure = status;
             }
             if (status) {
+                game_ui.reset();
                 session_runtime.reset();
                 runtime_stats.reset();
                 player_camera_frame.reset();
@@ -1172,6 +1231,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         active_session_mode = SessionMode::local_single_player;
         input_scheduler.reset();
         input_orientation_initialized = false;
+        gameplay_input_enabled = true;
         return first_failure;
     }
 
@@ -1216,15 +1276,16 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         }
         std::optional<movement::FixedStepPlayerInputFrame> scheduled_input;
         auto* client = session_runtime->session()->client();
-        if (gameplay_input && frame->input != nullptr && client != nullptr) {
+        if (states.state() == ApplicationState::in_game && frame->input != nullptr &&
+            client != nullptr) {
             const auto* player = client->local_player_snapshot();
             if (player != nullptr && !input_orientation_initialized) {
                 input_scheduler.set_orientation(player->state.yaw_centidegrees,
                                                 player->state.pitch_centidegrees);
                 input_orientation_initialized = true;
             }
-            auto scheduled =
-                input_scheduler.advance(*frame->input, frame->delta_microseconds, true);
+            auto scheduled = input_scheduler.advance(*frame->input, frame->delta_microseconds,
+                                                      gameplay_input);
             if (!scheduled) {
                 return core::Result<RuntimeFrameStats>::failure(scheduled.error().code,
                                                                 scheduled.error().message);
@@ -1260,17 +1321,10 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     [[nodiscard]] core::Status recover_runtime_failure(const core::Error& error,
                                                        std::string reason) {
         const auto failed_mode = active_session_mode;
-        auto status = unload_session();
-        if (!status) {
-            return states.transition(session_mode_is_multiplayer(failed_mode)
-                                         ? ApplicationState::connection_failure
-                                         : ApplicationState::load_failure,
-                                     "session teardown failed while recovering", status.error());
-        }
-        return states.transition(session_mode_is_multiplayer(failed_mode)
-                                     ? ApplicationState::connection_failure
-                                     : ApplicationState::load_failure,
-                                 std::move(reason), error);
+        return transition_after_unload(session_mode_is_multiplayer(failed_mode)
+                                           ? ApplicationState::connection_failure
+                                           : ApplicationState::load_failure,
+                                       std::move(reason), error);
     }
 
     core::Status enter_state(ApplicationState state,
@@ -1347,11 +1401,23 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                                              "in-game state requires an active runtime session");
             }
             {
-                auto advanced = advance_runtime(true);
+                auto advanced = advance_runtime(gameplay_input_enabled);
                 if (!advanced) {
                     return recover_runtime_failure(advanced.error(), "runtime session failed");
                 }
                 runtime_stats = std::move(advanced).value();
+                if (game_ui != nullptr && session_runtime->session()->client() != nullptr) {
+                    auto synchronized =
+                        game_ui->synchronize(*session_runtime->session()->client());
+                    if (!synchronized) {
+                        core::log(core::LogLevel::warning,
+                                  "In-game UI synchronization disabled: " +
+                                      synchronized.error().message);
+                        menu_message = "In-game UI stopped: " + synchronized.error().message;
+                        game_ui.reset();
+                        gameplay_input_enabled = true;
+                    }
+                }
                 if (runtime_stats->fixed_step.dropped_time_us != 0) {
                     core::log(
                         core::LogLevel::warning,
@@ -1655,23 +1721,87 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                                  "command-line launch rejected", status.error());
     }
 
+    [[nodiscard]] std::optional<core::PrototypeId> selected_placement_voxel() const {
+        if (game_ui == nullptr || game_ui->selected_hotbar_item() == nullptr) {
+            return std::nullopt;
+        }
+        const auto& selected_item = game_ui->selected_hotbar_item()->prototype_id;
+        const auto definitions = config.content_report->voxel_palette.definitions();
+        const auto voxel = std::ranges::find_if(definitions, [&selected_item](const auto* value) {
+            return value != nullptr && value->interaction.break_resource_item.has_value() &&
+                   *value->interaction.break_resource_item == selected_item;
+        });
+        return voxel == definitions.end() ? std::nullopt
+                                          : std::optional<core::PrototypeId>{
+                                                (*voxel)->prototype_id};
+    }
+
     [[nodiscard]] core::Status process_input(const GameApplicationFrame& current_frame) {
         if (current_frame.input == nullptr) {
             return core::Status::ok();
         }
         const auto state = states.state();
-        if (key_pressed(*current_frame.input, platform::KeyCode::f3)) {
+        if (state != ApplicationState::in_game &&
+            key_pressed(*current_frame.input, platform::KeyCode::f3)) {
             diagnostics_visible = !diagnostics_visible;
         }
-        if (state == ApplicationState::in_game &&
-            key_pressed(*current_frame.input, platform::KeyCode::escape)) {
-            return states.transition(ApplicationState::paused, "pause requested");
-        }
-        if (state == ApplicationState::in_game && player_camera_frame.has_value() &&
-            session_runtime.has_value() && session_runtime->session() != nullptr &&
-            session_runtime->session()->client() != nullptr &&
-            (mouse_pressed(*current_frame.input, platform::MouseButton::left) ||
-             mouse_pressed(*current_frame.input, platform::MouseButton::right))) {
+        if (state == ApplicationState::in_game && session_runtime.has_value() &&
+            session_runtime->session() != nullptr) {
+            ui::UiInputConsumption consumed;
+            if (game_ui != nullptr) {
+                auto processed = game_ui->process_input(*current_frame.input,
+                                                        *session_runtime->session(),
+                                                        current_frame.now_milliseconds);
+                if (!processed) {
+                    core::log(core::LogLevel::warning,
+                              "In-game UI input disabled: " + processed.error().message);
+                    menu_message = "In-game UI stopped: " + processed.error().message;
+                    game_ui.reset();
+                    gameplay_input_enabled = true;
+                } else {
+                    consumed = processed.value().consumed;
+                    gameplay_input_enabled = !game_ui->blocks_gameplay();
+                    if ((processed.value().inventory_toggled || processed.value().map_toggled) &&
+                        services != nullptr) {
+                        auto status = services->set_cursor_capture(gameplay_input_enabled);
+                        if (!status) {
+                            return status;
+                        }
+                    }
+                }
+            } else {
+                gameplay_input_enabled = true;
+            }
+            actions.set_context(gameplay_input_enabled ? input::InputContext::gameplay
+                                                       : input::InputContext::inventory);
+            const auto action_frame = actions.evaluate(*current_frame.input);
+            if (!consumed.keyboard &&
+                action_frame[input::InputAction::toggle_debug].pressed) {
+                diagnostics_visible = !diagnostics_visible;
+            }
+            if (!consumed.keyboard &&
+                action_frame[input::InputAction::toggle_camera].pressed) {
+                camera_perspective =
+                    camera_perspective == movement::PlayerCameraPerspective::third_person
+                        ? movement::PlayerCameraPerspective::first_person
+                        : movement::PlayerCameraPerspective::third_person;
+                settings.first_person_camera =
+                    camera_perspective == movement::PlayerCameraPerspective::first_person;
+                settings_persist_pending = true;
+                settings_persist_after_ms = current_frame.now_milliseconds + 500;
+            }
+            if (!consumed.keyboard &&
+                action_frame[input::InputAction::close_or_pause].pressed) {
+                return states.transition(ApplicationState::paused, "pause requested");
+            }
+            const auto remove = !consumed.pointer && gameplay_input_enabled &&
+                                action_frame[input::InputAction::primary_action].pressed;
+            const auto place = !consumed.pointer && gameplay_input_enabled &&
+                               action_frame[input::InputAction::secondary_action].pressed;
+            if (remove == place || !player_camera_frame.has_value() ||
+                session_runtime->session()->client() == nullptr) {
+                return core::Status::ok();
+            }
             auto* client = session_runtime->session()->client();
             const auto* player = client->local_player_snapshot();
             if (player != nullptr) {
@@ -1694,16 +1824,21 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                         return reachable;
                     }
                     if (reachable) {
-                        if (mouse_pressed(*current_frame.input, platform::MouseButton::left)) {
+                        if (remove) {
                             return session_runtime->session()->submit_remove_voxel(
                                 {hit.value().hit->block}, current_frame.now_milliseconds);
                         }
+                        const auto voxel = selected_placement_voxel();
+                        if (!voxel.has_value()) {
+                            return core::Status::ok();
+                        }
                         return session_runtime->session()->submit_place_voxel(
-                            {hit.value().hit->adjacent_block, placement_voxel},
+                            {hit.value().hit->adjacent_block, *voxel},
                             current_frame.now_milliseconds);
                     }
                 }
             }
+            return core::Status::ok();
         }
         if (config.headless || state == ApplicationState::in_game ||
             state == ApplicationState::session_unloading || state == ApplicationState::shutdown) {
@@ -1784,8 +1919,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 }
                 if (state == ApplicationState::load_failure ||
                     state == ApplicationState::connection_failure) {
-                    return states.transition(ApplicationState::main_menu,
-                                             "error message dismissed");
+                    return dismiss_recoverable_error(state);
                 }
             }
             if (event.kind != ui::UiEventKind::clicked) {
@@ -1810,13 +1944,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                                                                    : "return to menu selected");
             }
             if (event.target == back_id) {
-                menu_navigation.reset();
-                status = refresh_saves();
-                if (!status) {
-                    display_error = status.error();
-                    return rebuild_ui(state);
-                }
-                return states.transition(ApplicationState::main_menu, "error acknowledged");
+                return dismiss_recoverable_error(state);
             }
             if (state != ApplicationState::main_menu) {
                 continue;
@@ -2046,10 +2174,9 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         if (const auto* player = client->local_player_snapshot(); player != nullptr) {
             const movement::PlayerCameraCollisionContext collision{
                 client->world().chunks(), config.content_report->voxel_palette};
-            auto camera_frame =
-                camera_rig.evaluate(player->state, movement::PlayerCameraPerspective::third_person,
-                                    current_frame.extent.width, current_frame.extent.height,
-                                    &collision, current_frame.delta_seconds());
+            auto camera_frame = camera_rig.evaluate(
+                player->state, camera_perspective, current_frame.extent.width,
+                current_frame.extent.height, &collision, current_frame.delta_seconds());
             if (!camera_frame) {
                 return core::Result<renderer::RenderCamera>::failure(camera_frame.error().code,
                                                                      camera_frame.error().message);
@@ -2117,7 +2244,19 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         }
         auto* ui_renderer = services->renderer()->ui_renderer();
         auto status = core::Status::ok();
-        if (states.state() != ApplicationState::in_game) {
+        if (states.state() == ApplicationState::in_game && game_ui != nullptr) {
+            auto painted = game_ui->paint(*ui_renderer, current_frame.extent, settings.ui_scale);
+            if (!painted) {
+                core::log(core::LogLevel::warning,
+                          "In-game UI painting disabled: " + painted.error().message);
+                menu_message = "In-game UI stopped: " + painted.error().message;
+                game_ui.reset();
+            } else {
+                services->renderer()->set_ui_widget_stats(
+                    game_ui->stats().layout_ms, game_ui->stats().paint_ms,
+                    game_ui->stats().layout.widget_count);
+            }
+        } else if (states.state() != ApplicationState::in_game) {
             status = widgets.layout({static_cast<float>(current_frame.extent.width),
                                      static_cast<float>(current_frame.extent.height)},
                                     settings.ui_scale);
@@ -2189,12 +2328,6 @@ core::Status HeartsteadApplicationMode::initialize(GameApplicationServices& serv
                                      developer_worlds.error().message);
     }
     state.developer_worlds = std::move(developer_worlds).value();
-    auto placement_voxel = core::PrototypeId::parse("base:voxels/clay");
-    if (!placement_voxel) {
-        return core::Status::failure("heartstead.invalid_placement_voxel",
-                                     "the built-in placement voxel id is invalid");
-    }
-    state.placement_voxel = std::move(*placement_voxel);
     status = state.refresh_saves();
     if (!status) {
         return status;
@@ -2271,15 +2404,9 @@ HeartsteadApplicationMode::update(GameApplicationServices& services,
     }
     auto camera = state.prepare_camera_and_world(frame);
     if (!camera) {
-        if (!state.session_runtime.has_value()) {
-            return core::Result<GameApplicationFrameOutput>::failure(camera.error().code,
-                                                                     camera.error().message);
-        }
-        status = state.recover_runtime_failure(camera.error(), "session presentation failed");
-        if (!status) {
-            return core::Result<GameApplicationFrameOutput>::failure(status.error().code,
-                                                                     status.error().message);
-        }
+        core::log(core::LogLevel::warning,
+                  "Session presentation degraded: " + camera.error().message);
+        state.menu_message = "Visual presentation degraded: " + camera.error().message;
         renderer::RenderCamera fallback;
         status = fallback.set_aspect_ratio(static_cast<float>(std::max(1U, frame.extent.width)) /
                                            static_cast<float>(std::max(1U, frame.extent.height)));
@@ -2292,7 +2419,16 @@ HeartsteadApplicationMode::update(GameApplicationServices& services,
     status = state.update_audio(frame);
     if (!status && state.session_runtime.has_value()) {
         const auto error = status.error();
-        status = state.recover_runtime_failure(error, "session audio presentation failed");
+        core::log(core::LogLevel::warning,
+                  "Session audio presentation disabled: " + error.message);
+        state.menu_message = "Audio presentation disabled: " + error.message;
+        if (state.audio_presentation_initialized && services.audio() != nullptr) {
+            (void)state.audio_presentation.shutdown(*services.audio());
+            state.audio_presentation_initialized = false;
+        }
+        status = services.audio() == nullptr
+                     ? core::Status::ok()
+                     : services.audio()->update(frame.delta_seconds());
     }
     if (status) {
         status = state.paint_ui(frame);
