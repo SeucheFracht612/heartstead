@@ -90,6 +90,23 @@ constexpr std::string_view chunk_delta_magic_v2 = "heartstead.chunk_edit_delta.v
 } // namespace
 
 std::string ChunkEditDeltaTextCodec::encode(ChunkCoord coord,
+                                            std::span<const VoxelEditRecord> edits) {
+    std::ostringstream output;
+    output << chunk_delta_magic_v2 << '\n';
+    output << "coord=" << coord.x << '|' << coord.y << '|' << coord.z << '\n';
+    for (const auto& edit : edits) {
+        output << "edit=" << edit.voxel_coord.x << '|' << edit.voxel_coord.y << '|'
+               << edit.voxel_coord.z << '|' << edit.previous.type << '|'
+               << static_cast<unsigned int>(edit.previous.light) << '|' << edit.previous.state_bits
+               << '|' << edit.previous.metadata_handle << '|' << edit.next.type << '|'
+               << static_cast<unsigned int>(edit.next.light) << '|' << edit.next.state_bits << '|'
+               << edit.next.metadata_handle << '\n';
+    }
+    output << "end\n";
+    return output.str();
+}
+
+std::string ChunkEditDeltaTextCodec::encode(ChunkCoord coord,
                                             const std::vector<const VoxelEditRecord*>& edits) {
     std::ostringstream output;
     output << chunk_delta_magic_v2 << '\n';

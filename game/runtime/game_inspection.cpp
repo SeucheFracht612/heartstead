@@ -312,6 +312,9 @@ debug::InspectionData GameInspector::inspect(const RuntimeSession& session) {
                   std::to_string(server->host().connected_client_count()));
         add_field(data, "loaded_chunk_count", std::to_string(world_stats.chunk_count));
         add_field(data, "chunk_edit_count", std::to_string(chunk_stats.edit_count));
+        add_field(data, "edited_chunk_count", std::to_string(chunk_stats.edited_chunk_count));
+        add_field(data, "chunk_edit_log_cache_rebuild_count",
+                  std::to_string(chunk_stats.edit_log_cache_rebuild_count));
         add_field(data, "dirty_mesh_chunk_count", std::to_string(chunk_stats.dirty_mesh_count));
         add_field(data, "dirty_save_chunk_count", std::to_string(chunk_stats.dirty_save_count));
         for (std::size_t index = 0; index < world::chunk_stage_count; ++index) {

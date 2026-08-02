@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
-#include <map>
 #include <optional>
 #include <set>
 #include <utility>
@@ -66,15 +65,6 @@ namespace {
 [[nodiscard]] bool is_dirty_for_persistence_or_replication(const VoxelChunk& chunk) noexcept {
     return chunk.dirty().contains(ChunkDirtyFlag::save) ||
            chunk.dirty().contains(ChunkDirtyFlag::replication);
-}
-
-[[nodiscard]] std::map<ChunkCoord, std::vector<const VoxelEditRecord*>>
-edits_grouped_by_chunk(const ChunkDatabase& chunks) {
-    std::map<ChunkCoord, std::vector<const VoxelEditRecord*>> edits_by_chunk;
-    for (const auto& edit : chunks.edit_log()) {
-        edits_by_chunk[edit.chunk_coord].push_back(&edit);
-    }
-    return edits_by_chunk;
 }
 
 } // namespace
@@ -323,8 +313,6 @@ ChunkStreamer::flush_save_deltas(WorldState& state, std::span<const ChunkCoord> 
     ChunkStreamSaveFlushReport report;
     report.requested_count = requested_chunks.size();
 
-    const auto edits_by_chunk = edits_grouped_by_chunk(state.chunks());
-
     std::set<ChunkCoord> unique_requests(requested_chunks.begin(), requested_chunks.end());
     for (const auto coord : unique_requests) {
         auto* chunk = state.chunks().find(coord);
@@ -337,15 +325,15 @@ ChunkStreamer::flush_save_deltas(WorldState& state, std::span<const ChunkCoord> 
             continue;
         }
 
-        const auto found_edits = edits_by_chunk.find(coord);
-        if (found_edits == edits_by_chunk.end() || found_edits->second.empty()) {
+        const auto edits = state.chunks().edits_for_chunk(coord);
+        if (edits.empty()) {
             report.dirty_without_delta_chunks.push_back(coord);
             continue;
         }
 
         save::ChunkEditSaveRecord record;
         record.coord = coord;
-        record.encoded_edit_delta = ChunkEditDeltaTextCodec::encode(coord, found_edits->second);
+        record.encoded_edit_delta = ChunkEditDeltaTextCodec::encode(coord, edits);
 
         const auto ticket = chunk->ensure_stage_requested(ChunkStage::persistence);
         auto stage_status = chunk->mark_stage_running(ticket);
@@ -402,7 +390,6 @@ ChunkStreamer::flush_replication_deltas(WorldState& state,
     ChunkStreamReplicationFlushReport report;
     report.requested_count = requested_chunks.size();
 
-    const auto edits_by_chunk = edits_grouped_by_chunk(state.chunks());
     std::set<ChunkCoord> unique_requests(requested_chunks.begin(), requested_chunks.end());
     for (const auto coord : unique_requests) {
         auto* chunk = state.chunks().find(coord);
@@ -415,15 +402,15 @@ ChunkStreamer::flush_replication_deltas(WorldState& state,
             continue;
         }
 
-        const auto found_edits = edits_by_chunk.find(coord);
-        if (found_edits == edits_by_chunk.end() || found_edits->second.empty()) {
+        const auto edits = state.chunks().edits_for_chunk(coord);
+        if (edits.empty()) {
             report.dirty_without_delta_chunks.push_back(coord);
             continue;
         }
 
         save::ChunkEditSaveRecord record;
         record.coord = coord;
-        record.encoded_edit_delta = ChunkEditDeltaTextCodec::encode(coord, found_edits->second);
+        record.encoded_edit_delta = ChunkEditDeltaTextCodec::encode(coord, edits);
 
         const auto ticket = chunk->ensure_stage_requested(ChunkStage::replication);
         auto stage_status = chunk->mark_stage_running(ticket);

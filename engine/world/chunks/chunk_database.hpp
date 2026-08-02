@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -49,6 +50,8 @@ class PreparedGeneratedChunk {
 struct ChunkDatabaseStats {
     std::size_t chunk_count = 0;
     std::size_t edit_count = 0;
+    std::size_t edited_chunk_count = 0;
+    std::uint64_t edit_log_cache_rebuild_count = 0;
     std::size_t dirty_mesh_count = 0;
     std::size_t dirty_save_count = 0;
     std::size_t dirty_replication_count = 0;
@@ -96,7 +99,10 @@ class ChunkDatabase {
     [[nodiscard]] core::Status apply_saved_edits(std::span<const VoxelEditRecord> edits,
                                                  dirty::DirtyRegionTracker& dirty_regions);
 
-    [[nodiscard]] const std::vector<VoxelEditRecord>& edit_log() const noexcept;
+    [[nodiscard]] std::span<const VoxelEditRecord> edits_for_chunk(ChunkCoord coord) const noexcept;
+    // Compatibility/export view. Rebuilt deterministically only after history changes; latency-
+    // sensitive per-chunk consumers should use edits_for_chunk() instead.
+    [[nodiscard]] const std::vector<VoxelEditRecord>& edit_log() const;
     void clear_edit_log();
     void clear_all_dirty();
 
@@ -120,9 +126,9 @@ class ChunkDatabase {
     [[nodiscard]] static core::Status
     validate_saved_edit_batch(std::span<const VoxelEditRecord> edits,
                               const ChunkCoord* expected_chunk = nullptr);
-    [[nodiscard]] std::vector<VoxelEditRecord>
-    build_replaced_saved_edit_history(std::span<const VoxelEditRecord> touched_edits,
-                                      std::span<const VoxelEditRecord> canonical_edits) const;
+    void replace_saved_edit_history(std::span<const VoxelEditRecord> touched_edits,
+                                    std::span<const VoxelEditRecord> canonical_edits);
+    void invalidate_edit_log_cache() noexcept;
     [[nodiscard]] core::Status
     mark_neighbor_dirty_if_boundary(ChunkCoord chunk_coord, VoxelCoord voxel_coord,
                                     dirty::DirtyRegionTracker* dirty_regions);
@@ -138,7 +144,11 @@ class ChunkDatabase {
     [[nodiscard]] static std::vector<ChunkCoord> face_neighbors(ChunkCoord chunk_coord);
 
     std::unordered_map<ChunkCoord, VoxelChunk, ChunkCoordHash> chunks_;
-    std::vector<VoxelEditRecord> edit_log_;
+    std::map<ChunkCoord, std::vector<VoxelEditRecord>> edit_history_by_chunk_;
+    std::size_t edit_count_ = 0;
+    mutable std::vector<VoxelEditRecord> edit_log_cache_;
+    mutable std::uint64_t edit_log_cache_rebuild_count_ = 0;
+    mutable bool edit_log_cache_valid_ = true;
 };
 
 } // namespace heartstead::world

@@ -310,6 +310,7 @@ heartstead_add_foundation_test(heartstead_save_journal_tests save_journal_tests.
 heartstead_add_foundation_test(heartstead_save_scheduler_tests save_scheduler_tests.cpp)
 heartstead_add_foundation_test(heartstead_chunk_load_scheduler_tests
                                chunk_load_scheduler_tests.cpp)
+heartstead_add_foundation_test(heartstead_chunk_edit_index_tests chunk_edit_index_tests.cpp)
 heartstead_add_foundation_test(heartstead_chunk_streaming_benchmark_tests
                                chunk_streaming_benchmark_tests.cpp)
 heartstead_add_foundation_test(heartstead_authoritative_server_v02_tests

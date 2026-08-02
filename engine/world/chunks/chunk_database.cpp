@@ -251,38 +251,66 @@ core::Status ChunkDatabase::set(ChunkCoord chunk_coord, VoxelCoord voxel_coord, 
         return core::Status::ok();
     }
 
-    auto retained_edit = std::ranges::find_if(edit_log_, [&](const VoxelEditRecord& edit) {
-        return edit.chunk_coord == chunk_coord && edit.voxel_coord == voxel_coord;
-    });
-    const bool has_retained_edit = retained_edit != edit_log_.end();
-    if (has_retained_edit && !same_persistent_cell(retained_edit->next, previous)) {
+    auto history_position = edit_history_by_chunk_.find(chunk_coord);
+    auto* history =
+        history_position == edit_history_by_chunk_.end() ? nullptr : &history_position->second;
+    std::optional<std::size_t> retained_edit_index;
+    if (history != nullptr) {
+        const auto retained_edit =
+            std::ranges::find(*history, voxel_coord, &VoxelEditRecord::voxel_coord);
+        if (retained_edit != history->end()) {
+            retained_edit_index = static_cast<std::size_t>(retained_edit - history->begin());
+        }
+    }
+    if (retained_edit_index.has_value() &&
+        !same_persistent_cell((*history)[*retained_edit_index].next, previous)) {
         return core::Status::failure(
             "chunk_database.edit_history_mismatch",
             "retained voxel edit history does not match the resident chunk state");
     }
-    if (!has_retained_edit) {
-        if (edit_log_.size() == edit_log_.max_size()) {
+    bool inserted_empty_history = false;
+    if (!retained_edit_index.has_value()) {
+        if (edit_count_ == edit_log_cache_.max_size()) {
             return core::Status::failure("chunk_database.edit_history_exhausted",
                                          "voxel edit history cannot retain another entry");
         }
         // Ensure recording the edit cannot allocate after the chunk has been mutated.
-        edit_log_.reserve(edit_log_.size() + 1);
+        if (history == nullptr) {
+            std::vector<VoxelEditRecord> reserved_history;
+            reserved_history.reserve(1);
+            const auto [inserted, was_inserted] =
+                edit_history_by_chunk_.try_emplace(chunk_coord, std::move(reserved_history));
+            history_position = inserted;
+            history = &inserted->second;
+            inserted_empty_history = was_inserted;
+        } else {
+            history->reserve(history->size() + 1U);
+        }
     }
     const auto neighbors = boundary_neighbors(chunk_coord, voxel_coord);
 
     auto& chunk = resident == nullptr ? get_or_create(chunk_coord) : *resident;
     auto status = chunk.set(voxel_coord, cell);
     if (!status) {
+        if (inserted_empty_history && history->empty()) {
+            edit_history_by_chunk_.erase(history_position);
+        }
         return status;
     }
 
-    if (!has_retained_edit) {
-        edit_log_.push_back(VoxelEditRecord{chunk_coord, voxel_coord, previous, cell});
-    } else if (same_persistent_cell(retained_edit->previous, cell)) {
-        edit_log_.erase(retained_edit);
+    if (!retained_edit_index.has_value()) {
+        history->push_back(VoxelEditRecord{chunk_coord, voxel_coord, previous, cell});
+        ++edit_count_;
+    } else if (same_persistent_cell((*history)[*retained_edit_index].previous, cell)) {
+        history->erase(history->begin() + static_cast<std::ptrdiff_t>(*retained_edit_index));
+        --edit_count_;
+        if (history->empty()) {
+            edit_history_by_chunk_.erase(history_position);
+        }
     } else {
-        retained_edit->next = cell;
+        (*history)[*retained_edit_index].next = cell;
     }
+    invalidate_edit_log_cache();
     for (const auto neighbor : neighbors) {
         auto* neighbor_chunk = find(neighbor);
         if (neighbor_chunk != nullptr) {
@@ -392,12 +420,31 @@ core::Status ChunkDatabase::apply_saved_edits(std::span<const VoxelEditRecord> e
     return status;
 }
 
-const std::vector<VoxelEditRecord>& ChunkDatabase::edit_log() const noexcept {
-    return edit_log_;
+std::span<const VoxelEditRecord> ChunkDatabase::edits_for_chunk(ChunkCoord coord) const noexcept {
+    const auto found = edit_history_by_chunk_.find(coord);
+    return found == edit_history_by_chunk_.end() ? std::span<const VoxelEditRecord>{}
+                                                 : std::span<const VoxelEditRecord>{found->second};
+}
+
+const std::vector<VoxelEditRecord>& ChunkDatabase::edit_log() const {
+    if (edit_log_cache_valid_) {
+        return edit_log_cache_;
+    }
+    edit_log_cache_.clear();
+    edit_log_cache_.reserve(edit_count_);
+    for (const auto& [_, edits] : edit_history_by_chunk_) {
+        edit_log_cache_.insert(edit_log_cache_.end(), edits.begin(), edits.end());
+    }
+    edit_log_cache_valid_ = true;
+    ++edit_log_cache_rebuild_count_;
+    return edit_log_cache_;
 }
 
 void ChunkDatabase::clear_edit_log() {
-    edit_log_.clear();
+    edit_history_by_chunk_.clear();
+    edit_count_ = 0;
+    edit_log_cache_.clear();
+    edit_log_cache_valid_ = true;
 }
 
 void ChunkDatabase::clear_all_dirty() {
@@ -409,7 +456,9 @@ void ChunkDatabase::clear_all_dirty() {
 ChunkDatabaseStats ChunkDatabase::stats() const noexcept {
     ChunkDatabaseStats result;
     result.chunk_count = chunks_.size();
-    result.edit_count = edit_log_.size();
+    result.edit_count = edit_count_;
+    result.edited_chunk_count = edit_history_by_chunk_.size();
+    result.edit_log_cache_rebuild_count = edit_log_cache_rebuild_count_;
     for (const auto& [_, chunk] : chunks_) {
         if (chunk.dirty().contains(ChunkDirtyFlag::mesh)) {
             ++result.dirty_mesh_count;
@@ -526,13 +575,45 @@ ChunkDatabase::insert_prepared_generated_impl(PreparedGeneratedChunk prepared,
     if (prepared.canonical_edits_.empty()) {
         return insert_generated_impl(std::move(prepared.chunk_), dirty_regions);
     }
-    auto staged_edit_log =
-        build_replaced_saved_edit_history(prepared.canonical_edits_, prepared.canonical_edits_);
+
+    std::vector<VoxelEditRecord> replacement;
+    replacement.reserve(prepared.canonical_edits_.size());
+    for (const auto& edit : prepared.canonical_edits_) {
+        if (edit.previous != edit.next) {
+            replacement.push_back(edit);
+        }
+    }
+
+    const auto edit_count_before = edit_count_;
+    auto existing = edit_history_by_chunk_.find(coord);
+    const bool had_existing_history = existing != edit_history_by_chunk_.end();
+    std::optional<std::vector<VoxelEditRecord>> previous_history;
+    if (had_existing_history) {
+        previous_history.emplace(std::move(existing->second));
+        edit_count_ -= previous_history->size();
+        existing->second = std::move(replacement);
+        edit_count_ += existing->second.size();
+    } else if (!replacement.empty()) {
+        const auto [inserted, _] = edit_history_by_chunk_.emplace(coord, std::move(replacement));
+        existing = inserted;
+        edit_count_ += inserted->second.size();
+    }
+    invalidate_edit_log_cache();
+
     auto status = insert_generated_impl(std::move(prepared.chunk_), dirty_regions);
     if (!status) {
+        if (had_existing_history) {
+            existing->second = std::move(*previous_history);
+        } else if (existing != edit_history_by_chunk_.end()) {
+            edit_history_by_chunk_.erase(existing);
+        }
+        edit_count_ = edit_count_before;
+        invalidate_edit_log_cache();
         return status;
     }
-    edit_log_.swap(staged_edit_log);
+    if (existing != edit_history_by_chunk_.end() && existing->second.empty()) {
+        edit_history_by_chunk_.erase(existing);
+    }
     return core::Status::ok();
 }
 
@@ -553,17 +634,15 @@ core::Status ChunkDatabase::apply_saved_edits_impl(std::span<const VoxelEditReco
         staged_dirty_regions.emplace(*dirty_regions);
     }
     auto* staged_dirty = staged_dirty_regions ? &*staged_dirty_regions : nullptr;
-    auto staged_edit_log = staged.build_replaced_saved_edit_history(edits, canonical_edits);
 
     std::set<ChunkCoord> touched_chunks;
     for (const auto& edit : canonical_edits) {
         touched_chunks.insert(edit.chunk_coord);
     }
     std::vector<VoxelEditRecord> replaced_edit_history;
-    for (const auto& existing : staged.edit_log_) {
-        if (touched_chunks.contains(existing.chunk_coord)) {
-            replaced_edit_history.push_back(existing);
-        }
+    for (const auto coord : touched_chunks) {
+        const auto existing = staged.edits_for_chunk(coord);
+        replaced_edit_history.insert(replaced_edit_history.end(), existing.begin(), existing.end());
     }
     const auto replaced_edits = canonicalize_saved_edits(replaced_edit_history);
 
@@ -630,9 +709,11 @@ core::Status ChunkDatabase::apply_saved_edits_impl(std::span<const VoxelEditReco
 
     // A persisted batch is the canonical full delta for every chunk it names. Replace any
     // retained history from an earlier load instead of appending it again on every stream cycle.
-    staged.edit_log_.swap(staged_edit_log);
+    staged.replace_saved_edit_history(edits, canonical_edits);
     chunks_.swap(staged.chunks_);
-    edit_log_.swap(staged.edit_log_);
+    edit_history_by_chunk_.swap(staged.edit_history_by_chunk_);
+    edit_count_ = staged.edit_count_;
+    invalidate_edit_log_cache();
     if (staged_dirty_regions) {
         *dirty_regions = std::move(*staged_dirty_regions);
     }
@@ -668,27 +749,36 @@ core::Status ChunkDatabase::validate_saved_edit_batch(std::span<const VoxelEditR
     return core::Status::ok();
 }
 
-std::vector<VoxelEditRecord> ChunkDatabase::build_replaced_saved_edit_history(
-    std::span<const VoxelEditRecord> touched_edits,
-    std::span<const VoxelEditRecord> canonical_edits) const {
+void ChunkDatabase::replace_saved_edit_history(std::span<const VoxelEditRecord> touched_edits,
+                                               std::span<const VoxelEditRecord> canonical_edits) {
     std::set<ChunkCoord> touched_chunks;
     for (const auto& edit : touched_edits) {
         touched_chunks.insert(edit.chunk_coord);
     }
     if (touched_chunks.empty()) {
-        return edit_log_;
+        return;
     }
 
-    auto result = edit_log_;
-    std::erase_if(result, [&touched_chunks](const VoxelEditRecord& existing) {
-        return touched_chunks.contains(existing.chunk_coord);
-    });
+    for (const auto coord : touched_chunks) {
+        const auto existing = edit_history_by_chunk_.find(coord);
+        if (existing == edit_history_by_chunk_.end()) {
+            continue;
+        }
+        edit_count_ -= existing->second.size();
+        edit_history_by_chunk_.erase(existing);
+    }
     for (const auto& edit : canonical_edits) {
         if (edit.previous != edit.next) {
-            result.push_back(edit);
+            edit_history_by_chunk_[edit.chunk_coord].push_back(edit);
+            ++edit_count_;
         }
     }
-    return result;
+    invalidate_edit_log_cache();
+}
+
+void ChunkDatabase::invalidate_edit_log_cache() noexcept {
+    edit_log_cache_.clear();
+    edit_log_cache_valid_ = false;
 }
 
 core::Status
