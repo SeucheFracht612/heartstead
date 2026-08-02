@@ -28,13 +28,18 @@ The chunk-streaming benchmark separately gates the authoritative generated-data 
 | --- | ---: |
 | Near-ring interest to resident publication P95 | 250 ms |
 | Teleport target-ring interest to resident publication P95 | 1,000 ms |
-| Saved-delta interest to resident publication P95 | 250 ms |
+| In-memory saved-delta interest to resident publication P95 | 250 ms |
+| File-backed saved-delta interest to resident publication P95 | 250 ms |
+| File-backed payload-read P95 | 25 ms |
+| File-backed generation-index open P95 | 100 ms |
 | Owner-thread chunk publication update | 500 us |
 
 These limits use wall-clock raw samples whose interest timestamp precedes bounded scheduler
 admission. The saved-delta workload retains 16,384 unrelated edits and obsolete target histories,
-but uses an immutable in-memory delta source to isolate decode, private preparation, and indexed
-owner publication from physical filesystem variability. All limits stop at authoritative
+while the physical workloads create a real 16,384-record `FileSaveDatabase` generation and use its
+production indexed reader. Warm and Linux cache-drop-advice modes report index-open, payload-read,
+and cache-treatment evidence separately. Accepted `POSIX_FADV_DONTNEED` is advisory and does not
+establish a guaranteed cold-cache or physical-device miss. All limits stop at authoritative
 block-data publication and do not claim lighting, collision, client replication, meshing, GPU
 upload, draw eligibility, or display latency.
 

@@ -123,6 +123,9 @@ This is not a final production save store. It establishes the engine boundary:
 - derived data remains rebuildable and is not saved as authoritative state
 - file layout and slot naming are owned by the engine, not by gameplay systems or mods
 
-Future work should add cross-process writer exclusion, production-scale backup/export policy,
-large-world snapshot-capture and physical-I/O benchmarks, an append-oriented per-chunk write path
-that does not rewrite the complete delta table, and complete save-slot UI workflows.
+Warm and Linux cache-drop-advice physical read benchmarks now exercise this indexed path at 16,384
+records. They do not establish guaranteed-cold behavior or cover other filesystems/media. Future
+work should add cross-process writer exclusion, production-scale backup/export policy,
+large-world snapshot-capture and save-under-load benchmarks, an append-oriented per-chunk write
+path that does not rewrite the complete delta table, guaranteed-cold/multi-filesystem validation,
+and complete save-slot UI workflows.

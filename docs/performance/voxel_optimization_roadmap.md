@@ -24,15 +24,15 @@ requires one.
 | Research capability | Current Heartstead state | Planned action |
 | --- | --- | --- |
 | Permanent hierarchical profiling | Partial: retained CPU/GPU timers, counters, raw benchmark frames, and opt-in Tracy zones now cover major runtime, renderer, chunk, worker, lighting, collision, and streaming paths. | Extend zones and attribution as later stages are changed; add allocation ownership and queue-age plots. |
-| Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. The live renderer-proof test covers rapid interest teleports, cancellation, convergence, and zero-reservation teardown. Separate open-loop chunk, isolated voxel-response, and end-to-end render-readiness benchmarks retain request-to-resident, collision-publication, whole-field relight, upload, and exact draw-command percentiles. | Add server/client, save, cold-start, burst-edit, physical-disk, actual GPU execution/presentation, and long-soak workloads. |
-| Reproducible provenance and gates | Renderer schema v4, chunk-streaming schema v2, voxel-response schema v1, and chunk-render-readiness schema v1 record source/build/CPU/device/run metadata, warmups, repetitions, raw samples, workload configuration, and fail-closed lifecycle invariants. Optional gates cover frame distributions, uploads, available GPU, rapid-edit mesh response, generated/saved resident publication, exact collision publication, full-field relight convergence, required-chunk draw eligibility, synchronous GPU waits, mesh amplification, and owner publication time. | Add relative-regression checks and the remaining physical-I/O, display, persistence-scale, and multiplayer gates. |
+| Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. The live renderer-proof test covers rapid interest teleports, cancellation, convergence, and zero-reservation teardown. Separate open-loop chunk, isolated voxel-response, and end-to-end render-readiness benchmarks retain request-to-resident, physical indexed-read, collision-publication, whole-field relight, upload, and exact draw-command percentiles. | Add server/client, save-under-load, guaranteed-cold and multi-filesystem, cold-start, burst-edit, actual GPU execution/presentation, and long-soak workloads. |
+| Reproducible provenance and gates | Renderer schema v4, chunk-streaming schema v3, voxel-response schema v1, and chunk-render-readiness schema v1 record source/build/CPU/device/run metadata, warmups, repetitions, raw samples, workload configuration, and fail-closed lifecycle invariants. Optional gates cover frame distributions, uploads, available GPU, rapid-edit mesh response, generated/in-memory/file-backed saved resident publication, physical payload reads and index opens, exact collision publication, full-field relight convergence, required-chunk draw eligibility, synchronous GPU waits, mesh amplification, and owner publication time. | Add relative-regression checks and the remaining guaranteed-cold/multi-filesystem I/O, display, persistence-write-scale, and multiplayer gates. |
 | Bounded jobs and cancellation | Generic and typed schedulers now bound pending/result work, expose backpressure and queue-age telemetry, age priorities, and support reasoned queued/cooperative cancellation. | Attribute per-type saturation in higher-level pipeline counters and tune limits from traces. |
 | Versioned chunk pipeline | An owner-thread ledger now separates content, light, mesh, collision, persistence, and replication request/output revisions and states. Save/replication, mesh/GPU, collision/physics, and whole-field lighting publication are ticket-validated across edit and reload races. | Calibrate stale-work amplification and latency under representative edit/streaming traces. |
 | Compact voxel sections | Chunks remain fixed 32³ with contiguous dense `VoxelCell` production storage. Reproducible 16/32 experiments now cover dense, split, palette-packed, uniform-light, sparse-metadata, and adaptive split-dense fallback candidates. | Retain dense production storage while mask/macro work proceeds; add a medium-diversity crossover sweep before any storage selection. |
 | Occupancy and opacity masks | A fixed 4 KiB occupancy mask follows the exact chunk content revision. Meshing snapshots also carry pooled greedy-cube and halo-padded full-occluder masks keyed by content dependencies and render-table revision. | Reuse the resident occupancy mask for later measured consumers; keep render-dependent masks derived and consumer-specific. |
 | Face culling and greedy meshing | Implemented with immutable neighborhood snapshots, material/render phases, bounded scheduling, stale rejection, pooled buffers, reproducible isolated benchmarks, occupancy-assisted rejection, word-level face candidates/AO queries, surface-bound reservation, an isolated-cube culled fallback, and bounded invalidation-to-resident traces. | Keep slab or microbrick rebuilds deferred unless a future measured edit P95 again exceeds target. |
 | Dynamic edit propagation | Dirty regions, neighbor dependencies, asynchronous mesh/light/collision work, upload quotas, exact mesh/collision/relight lifecycle tracking, edit coalescing/abandonment telemetry, and calibrated visual, collision, relight, required-chunk upload-preparation, and draw-eligibility P95 gates exist. | Add burst-edit collision/relight amplification and actual GPU execution/presentation/display response workloads. |
-| Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, per-chunk indexed delta save/replication, residency budgets, and far clipmaps exist. Durable snapshot acceptance/compaction and application saves run through a bounded save worker. A bounded chunk loader moves disk/decode/generation/private edit application off-thread and is active in the live renderer-proof stream. Saved-delta publication and narrow flushes no longer scan or copy global edit history, and physical delta sources parse the selected generation index once rather than once per requested chunk. | Add physical cache-state/read-scale gates, replace full-table per-chunk writes, adopt async loading in the general generated-world controller, bound eviction waves, and add scale-calibrated save-capture gates. |
+| Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, per-chunk indexed delta save/replication, residency budgets, and far clipmaps exist. Durable snapshot acceptance/compaction and application saves run through a bounded save worker. A bounded chunk loader moves disk/decode/generation/private edit application off-thread and is active in the live renderer-proof stream. Saved-delta publication and narrow flushes no longer scan or copy global edit history, physical delta sources parse the selected generation index once per streaming epoch, and warm plus Linux cache-drop-advice physical read gates pass at 16,384 records. | Replace full-table per-chunk writes, add save-under-streaming and guaranteed-cold/multi-filesystem coverage, adopt async loading in the general generated-world controller, bound eviction waves, and add scale-calibrated save-capture gates. |
 | Visibility, LOD, and GPU scaling | Frustum/distance/hierarchical visibility, HZB support, far clipmaps, indirect rendering, GPU arenas, upload staging, and pass timestamps already exist. | Tune only from captures; validate total culling benefit and retain broad fallback paths. |
 | Simulation and multiplayer scale | Simulation LOD, server authority, interest management, replication deltas, and fixed-step runtime exist. | Add multi-client spread/convergence benchmarks, byte/time quotas, backlog recovery gates, and soak coverage. |
 
@@ -162,17 +162,20 @@ The file-backed saved-delta source now opens and validates one generation-scoped
 workers use it. Concurrent reads perform `O(log n)` lookup and one payload-file read; they no longer
 parse and sort `index.txt` for every requested coordinate. Existing readers remain pinned across a
 new generation activation, legacy inline snapshots remain supported, and corrupt indexes fail at
-open. Physical cache-state calibration and the full-table streamed-write replacement remain M5
-work.
+open. The full-table streamed-write replacement remains M5 work.
 
 The open-loop chunk benchmark declares every target coordinate at one instant so bounded admission
-delay remains in each raw sample. Its saved-delta workload retains 16,384 unrelated edits plus one
-obsolete history per target and requires indexed replacement without rebuilding the flat export
-view. On the declared reference CPU, three clean Release processes measured median process-level
-near-ring P95 at 35.398 ms, teleport target-ring P95 at 37.645 ms, and saved-delta P95 at 37.694 ms,
-with a worst owner publication update of 55 us. Correctness gates require complete convergence,
-exact obsolete cancellation, no off-interest/stale/failed publication, unchanged saved-edit
-cardinality, zero global-view rebuilds, and zero final reservation. See
+delay remains in each raw sample. Schema v3 adds a real 16,384-record `FileSaveDatabase` generation,
+separate one-time index-open and per-payload-read timings, an explicitly primed workload, and a Linux
+workload that records whether cache-drop advice was accepted. On the declared reference CPU, three
+clean Release processes measured median process-level P95 at 37.694 ms near, 40.755 ms after
+teleport, 38.596 ms for the in-memory delta source, 37.544 ms for warm physical deltas, and
+42.921 ms after accepted cache-drop advice. Median warm/advice-accepted payload-read P95 was
+0.042166/0.238455 ms and index-open P95 was 12.808863/15.957277 ms. The worst owner publication
+update was 126 us. Correctness gates require complete convergence, exact obsolete cancellation, no
+off-interest/stale/failed publication, exact saved-history replacement, evidence for the requested
+cache treatment, successful fixture cleanup, zero global-view rebuilds, and zero final reservation.
+Accepted `POSIX_FADV_DONTNEED` remains advisory rather than proof of a cold device read. See
 [Chunk streaming benchmarks](chunk_streaming_benchmarks.md).
 
 The isolated voxel-response benchmark issues paired solid add/remove edits only after collision and
@@ -200,9 +203,12 @@ execution, presentation, and scan-out. See
 
 A small release lifecycle sample measured save owner handoff at 0.046 ms, below the 0.25 ms target,
 but this is not a scale-qualified closure: snapshot capture still scales with owned world state.
-General-world runtime adoption, physical-disk/cache coverage, burst-edit/large-residency response,
-load-under-save/large-snapshot-capture benchmarks, and actual GPU execution/presentation/display
-timing remain before M5 can be marked complete.
+The physical fixture's production writer took a median 48.324 seconds to create 16,384 durable
+per-chunk records, exposing full-generation rewrite/file durability as the next persistence-scale
+bottleneck even though indexed reads pass comfortably. General-world runtime adoption,
+append-oriented streamed writes, guaranteed-cold and multi-filesystem coverage,
+burst-edit/large-residency response, load-under-save/large-snapshot-capture benchmarks, and actual
+GPU execution/presentation/display timing remain before M5 can be marked complete.
 
 ### M6 — world and multiplayer scale
 

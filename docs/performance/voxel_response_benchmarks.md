@@ -140,6 +140,8 @@ The benchmark stops before replication transport, client residency, remeshing, u
 draw eligibility, display scan-out, and newly requested chunk loading. The separate
 [chunk render-readiness benchmark](chunk_render_readiness_benchmarks.md) now closes generated
 required-chunk loading through exact current draw-command construction, including meshing and RHI
-upload. Save-under-streaming, large snapshot capture, physical-disk/cache behavior, general
-generated-world loader adoption, and actual GPU execution/presentation/display timing remain M5
-work in the [Voxel optimization roadmap](voxel_optimization_roadmap.md).
+upload. The separate [chunk streaming benchmark](chunk_streaming_benchmarks.md) now gates warm and
+Linux cache-drop-advice reads through the production indexed save reader. Save-under-streaming,
+large snapshot capture, append-oriented persistence writes, guaranteed-cold/multi-filesystem
+behavior, general generated-world loader adoption, and actual GPU execution/presentation/display
+timing remain M5 work in the [Voxel optimization roadmap](voxel_optimization_roadmap.md).
