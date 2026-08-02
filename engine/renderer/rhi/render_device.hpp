@@ -207,6 +207,9 @@ struct RenderDeviceDesc {
     PresentMode present_mode = PresentMode::fifo;
     std::uint32_t frames_in_flight = 2;
     bool enable_validation = true;
+    // Diagnostic-only: serialize each present through VK_KHR_present_wait when supported. This
+    // measures host-observed queue-to-presentation completion and intentionally changes pacing.
+    bool measure_presentation_completion = false;
     std::optional<platform::NativeWindowHandle> native_window;
 };
 
@@ -241,6 +244,9 @@ struct RenderFrameStats {
     std::size_t total_indices = 0;
     double cpu_command_recording_ms = 0.0;
     double cpu_gpu_wait_ms = 0.0;
+    bool presentation_timing_valid = false;
+    std::uint64_t presentation_id = 0;
+    double presentation_wait_ms = 0.0;
     bool gpu_timing_valid = false;
     std::uint64_t gpu_timing_frame_index = 0;
     std::uint32_t gpu_timing_latency_frames = 0;
@@ -722,6 +728,7 @@ struct RenderDeviceCapabilities {
     bool supports_draw_indirect_first_instance = false;
     bool supports_draw_indirect_count = false;
     std::uint32_t maximum_draw_indirect_count = 1;
+    bool supports_presentation_completion_timing = false;
     bool supports_frame_submission = false;
     bool supports_depth = false;
     bool headless = true;

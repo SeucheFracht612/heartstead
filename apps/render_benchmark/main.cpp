@@ -58,6 +58,7 @@ struct Options {
     std::filesystem::path capture_output;
     std::filesystem::path compare_baseline;
     bool validation = true;
+    bool presentation_timing = false;
     bool reference_mesher = false;
     bool help = false;
     bool list_scenes = false;
@@ -308,6 +309,7 @@ void print_usage(std::ostream& output) {
               "  --format json|csv  Result serialization format\n"
               "  --budget PROFILE   Gate none, compatibility, minimum, mainstream, or high-end\n"
               "  --reference-mesher Use the correctness-reference terrain mesher\n"
+              "  --presentation-timing Serialize presents and time completion (Vulkan diagnostic)\n"
               "  --no-validation    Do not request Vulkan validation\n"
               "  --list-scenes      Print scene names\n"
               "  --help             Print this help\n";
@@ -376,6 +378,8 @@ template <typename Integer>
             options.backend = renderer::rhi::RenderBackend::headless;
         } else if (argument == "--no-validation") {
             options.validation = false;
+        } else if (argument == "--presentation-timing") {
+            options.presentation_timing = true;
         } else if (argument == "--reference-mesher") {
             options.reference_mesher = true;
         } else if (argument == "--scene") {
@@ -503,6 +507,12 @@ template <typename Integer>
         return core::Result<Options>::failure(
             "renderer.benchmark_capture_requires_pixels",
             "--capture and --compare require --vulkan because headless rendering has no pixels");
+    }
+    if (options.presentation_timing &&
+        options.backend != renderer::rhi::RenderBackend::vulkan) {
+        return core::Result<Options>::failure(
+            "renderer.benchmark_presentation_timing_requires_vulkan",
+            "--presentation-timing requires --vulkan because it uses presentation IDs and waits");
     }
     return core::Result<Options>::success(options);
 }
@@ -634,6 +644,7 @@ int main(int argc, char** argv) {
         device_desc.initial_extent = initial_extent;
         device_desc.present_mode = renderer::rhi::PresentMode::immediate;
         device_desc.enable_validation = options.validation;
+        device_desc.measure_presentation_completion = options.presentation_timing;
         device_desc.native_window = native_handle;
         auto device = renderer::rhi::create_render_device(device_desc);
         if (!device) {
@@ -1172,6 +1183,7 @@ int main(int argc, char** argv) {
         benchmark_metadata.measured_frames = options.measured_frames;
         benchmark_metadata.frame_cap = options.frame_cap;
         benchmark_metadata.validation_requested = options.validation;
+        benchmark_metadata.presentation_timing_requested = options.presentation_timing;
         benchmark_metadata.budget_profile = options.budget_profile;
         const auto runtime_metadata = profiling::query_runtime_metadata();
         benchmark_metadata.engine_version = runtime_metadata.engine_version;
@@ -1193,6 +1205,8 @@ int main(int argc, char** argv) {
         benchmark_metadata.gpu_device_id = device_info.device_id;
         benchmark_metadata.graphics_api_version = device_info.api_version;
         benchmark_metadata.graphics_driver_version = device_info.driver_version;
+        benchmark_metadata.presentation_timing_supported =
+            active_renderer.device()->capabilities().supports_presentation_completion_timing;
         renderer::benchmark::BenchmarkRecorder recorder(std::move(benchmark_metadata));
         core::log(
             core::LogLevel::info,
@@ -1201,6 +1215,7 @@ int main(int argc, char** argv) {
                 (options.frame_cap == 0 ? "uncapped" : std::to_string(options.frame_cap) + " FPS") +
                 ", backend=" + std::string(renderer::rhi::render_backend_name(options.backend)) +
                 ", mesher=" + (options.reference_mesher ? "reference" : "greedy") +
+                ", presentation_timing=" + (options.presentation_timing ? "on" : "off") +
                 ", settled=" + std::to_string(settlement_frames) + " frames");
 
         std::uint64_t simulation_frame = 0;

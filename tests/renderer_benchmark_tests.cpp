@@ -26,6 +26,8 @@ void test_benchmark_statistics() {
     metadata.chunk_radius = 16;
     metadata.warmup_frames = 120;
     metadata.measured_frames = 4;
+    metadata.presentation_timing_requested = true;
+    metadata.presentation_timing_supported = true;
     metadata.engine_version = "0.1.0";
     metadata.git_commit = "0123456789ab";
     metadata.build_configuration = "release";
@@ -91,6 +93,9 @@ void test_benchmark_statistics() {
             stats.gpu_upload_timing_valid = true;
             stats.gpu_upload_submission_serial = index + 10;
             stats.gpu_upload_ms = 0.25 * static_cast<double>(index);
+            stats.presentation_timing_valid = true;
+            stats.presentation_id = 100 + index;
+            stats.presentation_wait_ms = 0.5 * static_cast<double>(index);
         }
         recorder.record(stats);
     }
@@ -116,6 +121,12 @@ void test_benchmark_statistics() {
     assert(summary.sample_count == 4);
     assert(summary.gpu_sample_count == 2);
     assert(summary.gpu_upload_sample_count == 3);
+    assert(summary.presentation_sample_count == 3);
+    assert(std::abs(summary.mean_presentation_wait_ms - 1.0) < 0.0001);
+    assert(std::abs(summary.median_presentation_wait_ms - 1.0) < 0.0001);
+    assert(std::abs(summary.p95_presentation_wait_ms - 1.45) < 0.0001);
+    assert(std::abs(summary.p99_presentation_wait_ms - 1.49) < 0.0001);
+    assert(std::abs(summary.maximum_presentation_wait_ms - 1.5) < 0.0001);
     assert(std::abs(summary.mean_gpu_upload_ms - 0.5) < 0.0001);
     assert(std::abs(summary.mean_gpu_opaque_terrain_ms - 0.5) < 0.0001);
     assert(std::abs(summary.mean_gpu_alpha_tested_terrain_ms - 0.25) < 0.0001);
@@ -172,6 +183,14 @@ void test_benchmark_statistics() {
     assert(recorder.to_json().find("\"git_commit\": \"0123456789ab\"") != std::string::npos);
     assert(recorder.to_json().find("\"gpu_name\": \"Test GPU\"") != std::string::npos);
     assert(recorder.to_json().find("\"budget_profile\": \"none\"") != std::string::npos);
+    assert(recorder.to_json().find("\"presentation_timing_requested\": true") !=
+           std::string::npos);
+    assert(recorder.to_json().find("\"presentation_timing_supported\": true") !=
+           std::string::npos);
+    assert(recorder.to_json().find("\"presentation_sample_count\": 3") !=
+           std::string::npos);
+    assert(recorder.to_json().find("\"p95_presentation_wait_ms\": 1.450000") !=
+           std::string::npos);
     assert(recorder.to_json().find("\"limits\": null") != std::string::npos);
     assert(recorder.to_json().find("\"warmup_frames\": 120") != std::string::npos);
     assert(recorder.to_json().find("\"p99_frame_ms\": 97.090000") != std::string::npos);
@@ -185,6 +204,9 @@ void test_benchmark_statistics() {
            std::string::npos);
     assert(recorder.to_json().find("\"frames\": [") != std::string::npos);
     assert(recorder.to_json().find("\"gpu_upload_ms\": 0.750000") != std::string::npos);
+    assert(recorder.to_json().find("\"presentation_id\": 103") != std::string::npos);
+    assert(recorder.to_json().find("\"presentation_wait_ms\": 1.500000") !=
+           std::string::npos);
     assert(recorder.to_json().find("\"gpu_alpha_tested_ms\": 0.250000") != std::string::npos);
     assert(recorder.to_json().find("\"p95_voxel_relight_solve_ms\": 0.712500") !=
            std::string::npos);
@@ -208,6 +230,8 @@ void test_benchmark_statistics() {
            std::ranges::count(csv.substr(header_end + 1, row_end - header_end - 1), ','));
     assert(benchmark::format_benchmark_summary(summary).find("0.1%low=10.000fps") !=
            std::string::npos);
+    assert(benchmark::format_benchmark_summary(summary).find(
+               "present_wait=1.000/1.000/1.450ms") != std::string::npos);
     assert(benchmark::format_benchmark_summary(summary).find("relight=0.375/0.71") !=
            std::string::npos);
     assert(benchmark::format_benchmark_summary(summary).find("fluid=0.750/1.425") !=

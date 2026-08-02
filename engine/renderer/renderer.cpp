@@ -2653,6 +2653,9 @@ void Renderer::update_backend_stats(const rhi::RenderFrameStats& frame) noexcept
     }
     stats_.command_recording_ms = frame.cpu_command_recording_ms;
     stats_.gpu_wait_ms += frame.cpu_gpu_wait_ms;
+    stats_.presentation_timing_valid = frame.presentation_timing_valid;
+    stats_.presentation_id = frame.presentation_id;
+    stats_.presentation_wait_ms = frame.presentation_wait_ms;
     stats_.gpu_timing_valid = frame.gpu_timing_valid;
     stats_.gpu_timing_frame_index = frame.gpu_timing_frame_index;
     stats_.gpu_timing_latency_frames = frame.gpu_timing_latency_frames;

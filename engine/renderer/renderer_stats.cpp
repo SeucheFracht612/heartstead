@@ -23,6 +23,10 @@ std::string format_renderer_stats(const RendererStats& stats) {
         stream << " gpu_upload=" << stats.gpu_upload_ms << "ms"
                << " upload_submit=" << stats.gpu_upload_submission_serial;
     }
+    if (stats.presentation_timing_valid) {
+        stream << " present_wait=" << stats.presentation_wait_ms << "ms"
+               << " present_id=" << stats.presentation_id;
+    }
     stream << " sync=" << stats.chunk_synchronization_ms << "ms" << " mesh=" << stats.meshing_ms
            << "ms" << " upload=" << stats.upload_ms << "ms" << " cull=" << stats.culling_ms << "ms"
            << " record=" << stats.command_recording_ms << "ms" << " wait=" << stats.gpu_wait_ms

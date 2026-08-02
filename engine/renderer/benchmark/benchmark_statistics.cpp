@@ -265,6 +265,7 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
     std::vector<double> fluid_apply_times;
     std::vector<double> particle_update_times;
     std::vector<double> particle_presentation_times;
+    std::vector<double> presentation_wait_times;
     frame_times.reserve(samples_.size());
     relight_solve_times.reserve(samples_.size());
     relight_apply_times.reserve(samples_.size());
@@ -273,6 +274,7 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
     fluid_apply_times.reserve(samples_.size());
     particle_update_times.reserve(samples_.size());
     particle_presentation_times.reserve(samples_.size());
+    presentation_wait_times.reserve(samples_.size());
     double cpu_total = 0.0;
     double gpu_total = 0.0;
     double gpu_upload_total = 0.0;
@@ -287,6 +289,7 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
     double upload_preparation_total = 0.0;
     double upload_total = 0.0;
     double gpu_wait_total = 0.0;
+    double presentation_wait_total = 0.0;
     double gpu_opaque_total = 0.0;
     double gpu_alpha_tested_total = 0.0;
     double gpu_transparent_total = 0.0;
@@ -363,6 +366,11 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
             gpu_upload_total += sample.gpu_upload_ms;
             ++summary.gpu_upload_sample_count;
         }
+        if (sample.presentation_timing_valid) {
+            presentation_wait_times.push_back(sample.presentation_wait_ms);
+            presentation_wait_total += sample.presentation_wait_ms;
+            ++summary.presentation_sample_count;
+        }
     }
     const auto* final_sample = final_state_.has_value() ? &*final_state_ : &samples_.back();
     summary.maximum_edit_to_visible_ms =
@@ -395,6 +403,7 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
     std::ranges::sort(fluid_apply_times);
     std::ranges::sort(particle_update_times);
     std::ranges::sort(particle_presentation_times);
+    std::ranges::sort(presentation_wait_times);
     summary.median_frame_ms = percentile(frame_times, 0.50);
     summary.p95_frame_ms = percentile(frame_times, 0.95);
     summary.p99_frame_ms = percentile(frame_times, 0.99);
@@ -415,6 +424,12 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
     summary.p95_particle_update_ms = percentile(particle_update_times, 0.95);
     summary.median_particle_presentation_ms = percentile(particle_presentation_times, 0.50);
     summary.p95_particle_presentation_ms = percentile(particle_presentation_times, 0.95);
+    if (!presentation_wait_times.empty()) {
+        summary.median_presentation_wait_ms = percentile(presentation_wait_times, 0.50);
+        summary.p95_presentation_wait_ms = percentile(presentation_wait_times, 0.95);
+        summary.p99_presentation_wait_ms = percentile(presentation_wait_times, 0.99);
+        summary.maximum_presentation_wait_ms = presentation_wait_times.back();
+    }
     summary.slowest_frame = *std::ranges::max_element(
         samples_, {}, [](const RendererStats& sample) { return sample.cpu_frame_ms; });
     const auto sample_count = static_cast<double>(samples_.size());
@@ -430,6 +445,10 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
     summary.mean_upload_preparation_ms = upload_preparation_total / sample_count;
     summary.mean_upload_ms = upload_total / sample_count;
     summary.mean_gpu_wait_ms = gpu_wait_total / sample_count;
+    if (summary.presentation_sample_count != 0) {
+        summary.mean_presentation_wait_ms =
+            presentation_wait_total / static_cast<double>(summary.presentation_sample_count);
+    }
     if (summary.gpu_sample_count != 0) {
         summary.mean_gpu_frame_ms = gpu_total / static_cast<double>(summary.gpu_sample_count);
         summary.mean_gpu_opaque_terrain_ms =
@@ -494,12 +513,18 @@ std::string BenchmarkRecorder::to_json() const {
            << "    \"budget_profile\": \""
            << benchmark_budget_profile_name(metadata_.budget_profile) << "\",\n"
            << "    \"validation_requested\": "
-           << (metadata_.validation_requested ? "true" : "false") << "\n"
+           << (metadata_.validation_requested ? "true" : "false") << ",\n"
+           << "    \"presentation_timing_requested\": "
+           << (metadata_.presentation_timing_requested ? "true" : "false") << ",\n"
+           << "    \"presentation_timing_supported\": "
+           << (metadata_.presentation_timing_supported ? "true" : "false") << "\n"
            << "  },\n"
            << "  \"summary\": {\n"
            << "    \"sample_count\": " << summary.sample_count << ",\n"
            << "    \"gpu_sample_count\": " << summary.gpu_sample_count << ",\n"
            << "    \"gpu_upload_sample_count\": " << summary.gpu_upload_sample_count << ",\n"
+           << "    \"presentation_sample_count\": " << summary.presentation_sample_count
+           << ",\n"
            << "    \"median_frame_ms\": " << summary.median_frame_ms << ",\n"
            << "    \"p95_frame_ms\": " << summary.p95_frame_ms << ",\n"
            << "    \"p99_frame_ms\": " << summary.p99_frame_ms << ",\n"
@@ -521,6 +546,16 @@ std::string BenchmarkRecorder::to_json() const {
            << "    \"mean_upload_preparation_ms\": " << summary.mean_upload_preparation_ms << ",\n"
            << "    \"mean_upload_ms\": " << summary.mean_upload_ms << ",\n"
            << "    \"mean_gpu_wait_ms\": " << summary.mean_gpu_wait_ms << ",\n"
+           << "    \"mean_presentation_wait_ms\": " << summary.mean_presentation_wait_ms
+           << ",\n"
+           << "    \"median_presentation_wait_ms\": "
+           << summary.median_presentation_wait_ms << ",\n"
+           << "    \"p95_presentation_wait_ms\": " << summary.p95_presentation_wait_ms
+           << ",\n"
+           << "    \"p99_presentation_wait_ms\": " << summary.p99_presentation_wait_ms
+           << ",\n"
+           << "    \"maximum_presentation_wait_ms\": "
+           << summary.maximum_presentation_wait_ms << ",\n"
            << "    \"maximum_edit_to_visible_ms\": " << summary.maximum_edit_to_visible_ms
            << ",\n"
            << "    \"final_edit_to_visible_median_ms\": "
@@ -649,7 +684,12 @@ std::string BenchmarkRecorder::to_json() const {
            << ", \"meshing_ms\": " << summary.slowest_frame.meshing_ms
            << ", \"upload_preparation_ms\": " << summary.slowest_frame.upload_preparation_ms
            << ", \"upload_ms\": " << summary.slowest_frame.upload_ms
-           << ", \"gpu_wait_ms\": " << summary.slowest_frame.gpu_wait_ms << "}\n"
+           << ", \"gpu_wait_ms\": " << summary.slowest_frame.gpu_wait_ms
+           << ", \"presentation_timing_valid\": "
+           << (summary.slowest_frame.presentation_timing_valid ? "true" : "false")
+           << ", \"presentation_id\": " << summary.slowest_frame.presentation_id
+           << ", \"presentation_wait_ms\": "
+           << summary.slowest_frame.presentation_wait_ms << "}\n"
            << "  },\n  \"frames\": [\n";
     for (std::size_t index = 0; index < samples_.size(); ++index) {
         const auto& sample = samples_[index];
@@ -657,6 +697,10 @@ std::string BenchmarkRecorder::to_json() const {
                << ", \"submission_serial\": " << sample.submission_serial
                << ", \"completed_submission_serial\": " << sample.completed_submission_serial
                << ", \"cpu_frame_ms\": " << sample.cpu_frame_ms
+               << ", \"presentation_timing_valid\": "
+               << (sample.presentation_timing_valid ? "true" : "false")
+               << ", \"presentation_id\": " << sample.presentation_id
+               << ", \"presentation_wait_ms\": " << sample.presentation_wait_ms
                << ", \"gpu_valid\": " << (sample.gpu_timing_valid ? "true" : "false")
                << ", \"gpu_timing_frame\": " << sample.gpu_timing_frame_index
                << ", \"gpu_latency_frames\": " << sample.gpu_timing_latency_frames
@@ -814,9 +858,14 @@ std::string BenchmarkRecorder::to_csv() const {
               "budget_maximum_edit_to_visible_p95_ms,"
               "budget_maximum_mesh_builds_per_publication,"
               "budget_maximum_upload_bytes_per_frame,budget_evaluated,budget_passed,"
-              "budget_violation_count,validation_requested,median_frame_ms,p95_frame_ms,"
-              "p99_frame_ms,one_percent_low_fps,point_one_percent_low_fps,maximum_frame_ms,"
+              "budget_violation_count,validation_requested,presentation_timing_requested,"
+              "presentation_timing_supported,median_frame_ms,p95_frame_ms,p99_frame_ms,"
+              "one_percent_low_fps,point_one_percent_low_fps,maximum_frame_ms,"
+              "presentation_sample_count,mean_presentation_wait_ms,"
+              "median_presentation_wait_ms,p95_presentation_wait_ms,"
+              "p99_presentation_wait_ms,maximum_presentation_wait_ms,"
               "frame,submission_serial,completed_submission_serial,cpu_frame_ms,"
+              "presentation_timing_valid,presentation_id,presentation_wait_ms,"
               "gpu_valid,gpu_timing_frame,gpu_latency_frames,gpu_frame_ms,gpu_upload_valid,"
               "gpu_upload_submission_serial,gpu_upload_ms,gpu_opaque_ms,gpu_alpha_tested_ms,"
               "gpu_transparent_ms,gpu_transfer_ms,gpu_final_copy_ms,extraction_ms,"
@@ -888,12 +937,22 @@ std::string BenchmarkRecorder::to_csv() const {
                << limits.maximum_upload_bytes_per_frame << ','
                << (summary.budget.evaluated ? 1 : 0) << ',' << (summary.budget.passed ? 1 : 0) << ','
                << summary.budget.violations.size() << ','
-               << (metadata_.validation_requested ? 1 : 0) << ',' << summary.median_frame_ms << ','
+               << (metadata_.validation_requested ? 1 : 0) << ','
+               << (metadata_.presentation_timing_requested ? 1 : 0) << ','
+               << (metadata_.presentation_timing_supported ? 1 : 0) << ','
+               << summary.median_frame_ms << ','
                << summary.p95_frame_ms << ',' << summary.p99_frame_ms << ','
                << summary.one_percent_low_fps << ',' << summary.point_one_percent_low_fps << ','
-               << summary.maximum_frame_ms << ',' << sample.frame_index << ','
+               << summary.maximum_frame_ms << ',' << summary.presentation_sample_count << ','
+               << summary.mean_presentation_wait_ms << ','
+               << summary.median_presentation_wait_ms << ','
+               << summary.p95_presentation_wait_ms << ','
+               << summary.p99_presentation_wait_ms << ','
+               << summary.maximum_presentation_wait_ms << ',' << sample.frame_index << ','
                << sample.submission_serial << ',' << sample.completed_submission_serial << ','
-               << sample.cpu_frame_ms << ',' << (sample.gpu_timing_valid ? 1 : 0) << ','
+               << sample.cpu_frame_ms << ',' << (sample.presentation_timing_valid ? 1 : 0) << ','
+               << sample.presentation_id << ',' << sample.presentation_wait_ms << ','
+               << (sample.gpu_timing_valid ? 1 : 0) << ','
                << sample.gpu_timing_frame_index << ',' << sample.gpu_timing_latency_frames << ','
                << sample.gpu_frame_ms << ',' << (sample.gpu_upload_timing_valid ? 1 : 0) << ','
                << sample.gpu_upload_submission_serial << ',' << sample.gpu_upload_ms << ','
@@ -1007,6 +1066,14 @@ std::string format_benchmark_summary(const BenchmarkSummary& summary) {
         output << "unavailable";
     } else {
         output << summary.mean_gpu_upload_ms << "ms";
+    }
+    output << " present_wait=";
+    if (summary.presentation_sample_count == 0) {
+        output << "unavailable";
+    } else {
+        output << summary.mean_presentation_wait_ms << '/'
+               << summary.median_presentation_wait_ms << '/'
+               << summary.p95_presentation_wait_ms << "ms mean/median/p95";
     }
     output << " edit_visible=" << summary.final_edit_to_visible_median_ms << '/'
            << summary.final_edit_to_visible_p95_ms << '/'

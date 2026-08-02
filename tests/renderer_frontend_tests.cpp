@@ -999,6 +999,9 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(renderer_stats.upload_ms > 0.0);
     assert(renderer_stats.command_recording_ms > 0.0);
     assert(renderer_stats.cpu_frame_ms >= renderer_stats.chunk_synchronization_ms);
+    assert(!renderer_stats.presentation_timing_valid);
+    assert(renderer_stats.presentation_id == 0);
+    assert(renderer_stats.presentation_wait_ms == 0.0);
     assert(!renderer_stats.gpu_timing_valid);
     assert(!renderer_stats.gpu_upload_timing_valid);
     assert(renderer_stats.gpu_wait_ms == 0.0);

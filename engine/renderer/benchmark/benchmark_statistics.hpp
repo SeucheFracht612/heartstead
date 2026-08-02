@@ -59,6 +59,8 @@ struct BenchmarkRunMetadata {
     std::uint64_t measured_frames = 0;
     std::uint32_t frame_cap = 0;
     bool validation_requested = false;
+    bool presentation_timing_requested = false;
+    bool presentation_timing_supported = false;
     BenchmarkBudgetProfile budget_profile = BenchmarkBudgetProfile::none;
     std::string engine_version;
     std::string git_commit;
@@ -86,6 +88,7 @@ struct BenchmarkSummary {
     std::size_t sample_count = 0;
     std::size_t gpu_sample_count = 0;
     std::size_t gpu_upload_sample_count = 0;
+    std::size_t presentation_sample_count = 0;
 
     double median_frame_ms = 0.0;
     double p95_frame_ms = 0.0;
@@ -108,6 +111,11 @@ struct BenchmarkSummary {
     double mean_upload_preparation_ms = 0.0;
     double mean_upload_ms = 0.0;
     double mean_gpu_wait_ms = 0.0;
+    double mean_presentation_wait_ms = 0.0;
+    double median_presentation_wait_ms = 0.0;
+    double p95_presentation_wait_ms = 0.0;
+    double p99_presentation_wait_ms = 0.0;
+    double maximum_presentation_wait_ms = 0.0;
     double maximum_edit_to_visible_ms = 0.0;
     double final_edit_to_visible_median_ms = 0.0;
     double final_edit_to_visible_p95_ms = 0.0;

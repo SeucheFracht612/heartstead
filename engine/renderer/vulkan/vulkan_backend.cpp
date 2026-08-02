@@ -330,6 +330,7 @@ struct SelectedPhysicalDevice {
     bool multi_draw_indirect = false;
     bool draw_indirect_first_instance = false;
     bool draw_indirect_count = false;
+    bool presentation_completion_timing = false;
     bool memory_budget = false;
     std::uint32_t graphics_queue_family = 0;
     std::uint32_t timestamp_valid_bits = 0;
@@ -493,8 +494,9 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
     return VK_FORMAT_UNDEFINED;
 }
 
-[[nodiscard]] core::Result<SelectedPhysicalDevice> select_physical_device(VkInstance instance,
-                                                                          VkSurfaceKHR surface) {
+[[nodiscard]] core::Result<SelectedPhysicalDevice>
+select_physical_device(VkInstance instance, VkSurfaceKHR surface,
+                       bool require_presentation_completion) {
     std::uint32_t device_count = 0;
     auto result = vkEnumeratePhysicalDevices(instance, &device_count, nullptr);
     if (result != VK_SUCCESS || device_count == 0) {
@@ -513,6 +515,7 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
     devices.resize(device_count);
 
     for (const auto physical_device : devices) {
+        bool presentation_completion_extensions = false;
         std::uint32_t queue_family_count = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, nullptr);
         std::vector<VkQueueFamilyProperties> queue_families(queue_family_count);
@@ -548,6 +551,11 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
                                                     VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
                 continue;
             }
+            presentation_completion_extensions =
+                physical_device_supports_extension(physical_device,
+                                                   VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
+                physical_device_supports_extension(physical_device,
+                                                   VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
             auto swapchain_support = query_swapchain_support(physical_device, surface);
             if (!swapchain_support || swapchain_support.value().formats.empty() ||
                 swapchain_support.value().present_modes.empty() ||
@@ -568,6 +576,16 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
         selected.properties = properties.properties;
         VkPhysicalDeviceVulkan12Features features_12{};
         features_12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        VkPhysicalDevicePresentIdFeaturesKHR present_id_features{};
+        present_id_features.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
+        VkPhysicalDevicePresentWaitFeaturesKHR present_wait_features{};
+        present_wait_features.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR;
+        if (presentation_completion_extensions) {
+            features_12.pNext = &present_id_features;
+            present_id_features.pNext = &present_wait_features;
+        }
         VkPhysicalDeviceFeatures2 device_features{};
         device_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
         device_features.pNext = &features_12;
@@ -577,6 +595,12 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
         selected.draw_indirect_first_instance =
             device_features.features.drawIndirectFirstInstance == VK_TRUE;
         selected.draw_indirect_count = features_12.drawIndirectCount == VK_TRUE;
+        selected.presentation_completion_timing =
+            presentation_completion_extensions && present_id_features.presentId == VK_TRUE &&
+            present_wait_features.presentWait == VK_TRUE;
+        if (require_presentation_completion && !selected.presentation_completion_timing) {
+            continue;
+        }
         selected.memory_budget = physical_device_supports_extension(
             physical_device, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
         selected.depth_format = choose_supported_depth_format(physical_device);
@@ -589,6 +613,12 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
         return core::Result<SelectedPhysicalDevice>::success(selected);
     }
 
+    if (require_presentation_completion) {
+        return core::Result<SelectedPhysicalDevice>::failure(
+            "renderer.vulkan_presentation_timing_unsupported",
+            "no Vulkan physical device supports presentation completion timing for the window "
+            "surface");
+    }
     return core::Result<SelectedPhysicalDevice>::failure(
         surface == VK_NULL_HANDLE ? "renderer.vulkan_no_graphics_queue"
                                   : "renderer.vulkan_no_surface_queue",
@@ -602,6 +632,7 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
 [[nodiscard]] core::Result<VkDevice> create_logical_device(VkPhysicalDevice physical_device,
                                                            std::uint32_t graphics_queue_family,
                                                            bool enable_swapchain,
+                                                           bool enable_presentation_completion,
                                                            bool enable_memory_budget) {
     constexpr float queue_priority = 1.0F;
     VkDeviceQueueCreateInfo queue_info{};
@@ -615,7 +646,21 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
     features_13.dynamicRendering = VK_TRUE;
     VkPhysicalDeviceVulkan12Features features_12{};
     features_12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-    features_12.pNext = &features_13;
+    VkPhysicalDevicePresentIdFeaturesKHR present_id_features{};
+    present_id_features.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
+    VkPhysicalDevicePresentWaitFeaturesKHR present_wait_features{};
+    present_wait_features.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR;
+    if (enable_presentation_completion) {
+        features_12.pNext = &present_id_features;
+        present_id_features.pNext = &present_wait_features;
+        present_wait_features.pNext = &features_13;
+        present_id_features.presentId = VK_TRUE;
+        present_wait_features.presentWait = VK_TRUE;
+    } else {
+        features_12.pNext = &features_13;
+    }
     VkPhysicalDeviceFeatures2 features{};
     features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     features.pNext = &features_12;
@@ -639,6 +684,10 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
     std::vector<const char*> device_extensions;
     if (enable_swapchain) {
         device_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    }
+    if (enable_presentation_completion) {
+        device_extensions.push_back(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+        device_extensions.push_back(VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
     }
     if (enable_memory_budget) {
         device_extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
@@ -1317,6 +1366,14 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         double final_copy_ms = 0.0;
     };
 
+    struct VulkanPresentSubmission {
+        VkResult queue_result = VK_SUCCESS;
+        VkResult completion_result = VK_SUCCESS;
+        bool timing_valid = false;
+        std::uint64_t present_id = 0;
+        double wait_ms = 0.0;
+    };
+
     struct VulkanFrameTarget {
         VkImage color_image = VK_NULL_HANDLE;
         VkImageView color_view = VK_NULL_HANDLE;
@@ -1371,6 +1428,11 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
           multi_draw_indirect_(selected.multi_draw_indirect),
           draw_indirect_first_instance_(selected.draw_indirect_first_instance),
           draw_indirect_count_(selected.draw_indirect_count),
+          presentation_completion_timing_supported_(
+              selected.presentation_completion_timing),
+          presentation_completion_timing_enabled_(
+              selected.presentation_completion_timing &&
+              desc_.measure_presentation_completion),
           memory_budget_(selected.memory_budget),
           graphics_queue_family_(selected.graphics_queue_family),
           depth_format_(selected.depth_format), device_(device), queue_(queue),
@@ -1378,6 +1440,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
           command_pool_(command_pool), command_buffer_(command_buffer), fence_(fence),
           image_available_semaphore_(image_available_semaphore),
           render_finished_semaphore_(render_finished_semaphore) {
+        if (presentation_completion_timing_enabled_) {
+            wait_for_present_ = reinterpret_cast<PFN_vkWaitForPresentKHR>(
+                vkGetDeviceProcAddr(device_, "vkWaitForPresentKHR"));
+        }
         initialize_instrumentation();
     }
 
@@ -1449,6 +1515,11 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
     VulkanSmokeDevice& operator=(VulkanSmokeDevice&&) = delete;
 
     [[nodiscard]] core::Status initialize_frame_contexts() {
+        if (presentation_completion_timing_enabled_ && wait_for_present_ == nullptr) {
+            return core::Status::failure(
+                "renderer.vulkan_present_wait_function_unavailable",
+                "VK_KHR_present_wait was enabled but vkWaitForPresentKHR is unavailable");
+        }
         frame_contexts_.reserve(desc_.frames_in_flight);
         upload_contexts_.reserve(desc_.frames_in_flight);
         for (std::uint32_t index = 0; index < desc_.frames_in_flight; ++index) {
@@ -1510,6 +1581,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         result.supports_draw_indirect_first_instance = draw_indirect_first_instance_;
         result.supports_draw_indirect_count = draw_indirect_count_;
         result.maximum_draw_indirect_count = properties_.limits.maxDrawIndirectCount;
+        result.supports_presentation_completion_timing =
+            presentation_completion_timing_supported_;
         result.supports_frame_submission = true;
         result.supports_depth = depth_format_ != VK_FORMAT_UNDEFINED;
         result.supports_memory_budget = memory_budget_;
@@ -4805,6 +4878,62 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         return core::Status::ok();
     }
 
+    [[nodiscard]] core::Result<VulkanPresentSubmission>
+    queue_present(VkPresentInfoKHR& present_info) {
+        using Clock = std::chrono::steady_clock;
+        VulkanPresentSubmission submission;
+        VkPresentIdKHR present_id_info{};
+        const void* original_next = present_info.pNext;
+        if (presentation_completion_timing_enabled_) {
+            if (present_info.swapchainCount != 1 || present_info.pSwapchains == nullptr ||
+                present_info.pSwapchains[0] != swapchain_) {
+                return core::Result<VulkanPresentSubmission>::failure(
+                    "renderer.vulkan_presentation_timing_invalid_swapchain_count",
+                    "presentation completion timing requires exactly one active swapchain");
+            }
+            if (next_present_id_ == std::numeric_limits<std::uint64_t>::max()) {
+                return core::Result<VulkanPresentSubmission>::failure(
+                    "renderer.vulkan_present_id_exhausted",
+                    "presentation completion timing exhausted its 64-bit identifier space");
+            }
+            submission.present_id = next_present_id_++;
+            present_id_info.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR;
+            present_id_info.pNext = original_next;
+            present_id_info.swapchainCount = present_info.swapchainCount;
+            present_id_info.pPresentIds = &submission.present_id;
+            present_info.pNext = &present_id_info;
+        }
+
+        if (!presentation_completion_timing_enabled_) {
+            submission.queue_result = vkQueuePresentKHR(queue_, &present_info);
+            return core::Result<VulkanPresentSubmission>::success(submission);
+        }
+
+        const auto started = Clock::now();
+        submission.queue_result = vkQueuePresentKHR(queue_, &present_info);
+        present_info.pNext = original_next;
+        if (submission.queue_result != VK_SUCCESS &&
+            submission.queue_result != VK_SUBOPTIMAL_KHR) {
+            return core::Result<VulkanPresentSubmission>::success(submission);
+        }
+
+        constexpr std::uint64_t diagnostic_timeout_nanoseconds = 1'000'000'000ULL;
+        submission.completion_result = wait_for_present_(
+            device_, swapchain_, submission.present_id, diagnostic_timeout_nanoseconds);
+        submission.wait_ms =
+            std::chrono::duration<double, std::milli>(Clock::now() - started).count();
+        submission.timing_valid = submission.completion_result == VK_SUCCESS ||
+                                  submission.completion_result == VK_SUBOPTIMAL_KHR;
+        if (!submission.timing_valid &&
+            submission.completion_result != VK_ERROR_OUT_OF_DATE_KHR) {
+            return core::Result<VulkanPresentSubmission>::failure(
+                "renderer.vulkan_present_wait_failed",
+                "failed to observe Vulkan presentation completion: " +
+                    std::string(vk_result_name(submission.completion_result)));
+        }
+        return core::Result<VulkanPresentSubmission>::success(submission);
+    }
+
     [[nodiscard]] core::Result<rhi::RenderFrameStats>
     render_present_frame(rhi::RenderFrameDesc desc) {
         auto status = ensure_swapchain();
@@ -4854,7 +4983,12 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         present_info.pSwapchains = &swapchain_;
         present_info.pImageIndices = &image_index;
 
-        const auto present_result = vkQueuePresentKHR(queue_, &present_info);
+        auto presentation = queue_present(present_info);
+        if (!presentation) {
+            return core::Result<rhi::RenderFrameStats>::failure(
+                presentation.error().code, presentation.error().message);
+        }
+        const auto present_result = presentation.value().queue_result;
         const auto wait_result = vkWaitForFences(device_, 1, &fence_, VK_TRUE,
                                                  std::numeric_limits<std::uint64_t>::max());
         if (wait_result != VK_SUCCESS) {
@@ -4862,7 +4996,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 "renderer.vulkan_wait_fence_failed", "failed to wait for Vulkan present fence: " +
                                                          std::string(vk_result_name(wait_result)));
         }
-        if (present_result == VK_ERROR_OUT_OF_DATE_KHR) {
+        if (present_result == VK_ERROR_OUT_OF_DATE_KHR ||
+            presentation.value().completion_result == VK_ERROR_OUT_OF_DATE_KHR) {
             destroy_swapchain();
             return core::Result<rhi::RenderFrameStats>::failure(
                 "renderer.vulkan_present_out_of_date", "Vulkan swapchain is out of date");
@@ -4884,6 +5019,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         stats.extent = swapchain_extent_;
         stats.clear_color = desc.clear_color;
         stats.presented = true;
+        stats.presentation_timing_valid = presentation.value().timing_valid;
+        stats.presentation_id = presentation.value().present_id;
+        stats.presentation_wait_ms = presentation.value().wait_ms;
         stats.render_pass_count = 2;
         stats.present_pass_count = 1;
         stats.synchronization_barrier_count = 0;
@@ -6398,6 +6536,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
 
         // Render-finished semaphores are owned by swapchain images. Reacquiring an image proves
         // that presentation consumed its prior wait before that semaphore is signaled again.
+        VulkanPresentSubmission presentation;
         VkResult present_result = VK_SUCCESS;
         if (present) {
             VkPresentInfoKHR present_info{};
@@ -6407,7 +6546,13 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             present_info.swapchainCount = 1;
             present_info.pSwapchains = &swapchain_;
             present_info.pImageIndices = &image_index;
-            present_result = vkQueuePresentKHR(queue_, &present_info);
+            auto queued_presentation = queue_present(present_info);
+            if (!queued_presentation) {
+                return core::Result<rhi::RenderFrameStats>::failure(
+                    queued_presentation.error().code, queued_presentation.error().message);
+            }
+            presentation = queued_presentation.value();
+            present_result = presentation.queue_result;
         }
 
         frame_color_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -6422,9 +6567,13 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         if (present) {
             swapchain_image_layouts_[image_index] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         }
+        const bool presentation_out_of_date =
+            presentation.completion_result == VK_ERROR_OUT_OF_DATE_KHR;
         if (present && (present_result == VK_ERROR_OUT_OF_DATE_KHR ||
-                        present_result == VK_SUBOPTIMAL_KHR || acquired_suboptimal)) {
-            presented = present_result != VK_ERROR_OUT_OF_DATE_KHR;
+                        present_result == VK_SUBOPTIMAL_KHR || presentation_out_of_date ||
+                        acquired_suboptimal)) {
+            presented = present_result != VK_ERROR_OUT_OF_DATE_KHR &&
+                        !presentation_out_of_date;
             const auto wait_started = Clock::now();
             const auto queue_idle_result = vkQueueWaitIdle(queue_);
             accumulate_wait(wait_started);
@@ -6451,6 +6600,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         stats.extent = target_extent;
         stats.clear_color = clear_color;
         stats.presented = presented;
+        stats.presentation_timing_valid = presentation.timing_valid;
+        stats.presentation_id = presentation.present_id;
+        stats.presentation_wait_ms = presentation.wait_ms;
         const auto memory = capabilities();
         stats.memory_budget_valid = memory.supports_memory_budget;
         stats.device_local_memory_budget_bytes = memory.device_local_memory_budget_bytes;
@@ -6910,11 +7062,15 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
     bool multi_draw_indirect_ = false;
     bool draw_indirect_first_instance_ = false;
     bool draw_indirect_count_ = false;
+    bool presentation_completion_timing_supported_ = false;
+    bool presentation_completion_timing_enabled_ = false;
     bool memory_budget_ = false;
     std::uint32_t graphics_queue_family_ = 0;
     VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue queue_ = VK_NULL_HANDLE;
+    PFN_vkWaitForPresentKHR wait_for_present_ = nullptr;
+    std::uint64_t next_present_id_ = 1;
     std::uint32_t timestamp_valid_bits_ = 0;
     VkQueryPool timestamp_query_pool_ = VK_NULL_HANDLE;
     std::array<bool, timestamp_slot_count> timestamp_pending_{};
@@ -7010,8 +7166,15 @@ core::Result<std::unique_ptr<rhi::IRenderDevice>> create_device(rhi::RenderDevic
         }
         surface = native_surface.value();
     }
+    if (desc.measure_presentation_completion && surface == VK_NULL_HANDLE) {
+        destroy_instance_resource(instance.value());
+        return core::Result<std::unique_ptr<rhi::IRenderDevice>>::failure(
+            "renderer.vulkan_presentation_timing_requires_surface",
+            "presentation completion timing requires a native window surface");
+    }
 
-    auto selected = select_physical_device(instance.value().instance, surface);
+    auto selected = select_physical_device(instance.value().instance, surface,
+                                           desc.measure_presentation_completion);
     if (!selected) {
         if (surface != VK_NULL_HANDLE) {
             vkDestroySurfaceKHR(instance.value().instance, surface, nullptr);
@@ -7020,10 +7183,20 @@ core::Result<std::unique_ptr<rhi::IRenderDevice>> create_device(rhi::RenderDevic
         return core::Result<std::unique_ptr<rhi::IRenderDevice>>::failure(selected.error().code,
                                                                           selected.error().message);
     }
+    if (desc.measure_presentation_completion &&
+        !selected.value().presentation_completion_timing) {
+        vkDestroySurfaceKHR(instance.value().instance, surface, nullptr);
+        destroy_instance_resource(instance.value());
+        return core::Result<std::unique_ptr<rhi::IRenderDevice>>::failure(
+            "renderer.vulkan_presentation_timing_unsupported",
+            "presentation completion timing requires a surface with VK_KHR_present_id and "
+            "VK_KHR_present_wait support");
+    }
 
     auto device =
         create_logical_device(selected.value().physical_device,
                               selected.value().graphics_queue_family, surface != VK_NULL_HANDLE,
+                              desc.measure_presentation_completion,
                               selected.value().memory_budget);
     if (!device) {
         if (surface != VK_NULL_HANDLE) {

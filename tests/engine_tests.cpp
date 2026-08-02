@@ -3177,6 +3177,7 @@ void test_renderer_rhi() {
     assert(capabilities.supports_buffer_upload);
     assert(capabilities.supports_image_upload);
     assert(capabilities.supports_draw_binding);
+    assert(!capabilities.supports_presentation_completion_timing);
     assert(capabilities.headless);
     assert(device.value()->live_resource_count() == 0);
     assert(device.value()->completed_frame_count() == 0);
@@ -3191,6 +3192,9 @@ void test_renderer_rhi() {
     assert(frame.value().frame_index == 0);
     assert(frame.value().submission_serial == 1);
     assert(frame.value().completed_submission_serial == 1);
+    assert(!frame.value().presentation_timing_valid);
+    assert(frame.value().presentation_id == 0);
+    assert(frame.value().presentation_wait_ms == 0.0);
     assert(frame.value().extent.width == 640);
     assert(frame.value().extent.height == 360);
     assert(frame.value().clear_color.blue == 0.75F);
@@ -3517,6 +3521,13 @@ void test_renderer_rhi() {
     vulkan_desc.initial_extent = RenderExtent{320, 180};
     auto vulkan_device = create_render_device(vulkan_desc);
     if (vulkan_backend_info.available) {
+        auto presentation_timing_without_surface = vulkan_desc;
+        presentation_timing_without_surface.measure_presentation_completion = true;
+        const auto invalid_presentation_timing_device =
+            create_render_device(presentation_timing_without_surface);
+        assert(!invalid_presentation_timing_device);
+        assert(invalid_presentation_timing_device.error().code ==
+               "renderer.vulkan_presentation_timing_requires_surface");
         assert(vulkan_device);
         assert(vulkan_device.value()->backend() == RenderBackend::vulkan);
         assert(vulkan_device.value()->backend_name() == "vulkan");
@@ -3834,6 +3845,9 @@ void test_renderer_rhi() {
                 assert(vulkan_present_frame);
                 assert(vulkan_present_frame.value().backend == RenderBackend::vulkan);
                 assert(vulkan_present_frame.value().presented);
+                assert(!vulkan_present_frame.value().presentation_timing_valid);
+                assert(vulkan_present_frame.value().presentation_id == 0);
+                assert(vulkan_present_frame.value().presentation_wait_ms == 0.0);
                 assert(vulkan_present_frame.value().render_pass_count == 2);
                 assert(vulkan_present_frame.value().present_pass_count == 1);
                 assert(vulkan_present_frame.value().resource_use_count == 2);

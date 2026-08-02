@@ -9,6 +9,8 @@ struct RendererStats {
     std::uint64_t frame_index = 0;
     std::uint64_t submission_serial = 0;
     std::uint64_t completed_submission_serial = 0;
+    std::uint64_t presentation_id = 0;
+    bool presentation_timing_valid = false;
     std::uint64_t gpu_timing_frame_index = 0;
     bool gpu_timing_valid = false;
     std::uint32_t gpu_timing_latency_frames = 0;
@@ -28,6 +30,7 @@ struct RendererStats {
     double upload_preparation_ms = 0.0;
     double upload_ms = 0.0;
     double gpu_wait_ms = 0.0;
+    double presentation_wait_ms = 0.0;
     double edit_to_visible_latest_ms = 0.0;
     double edit_to_visible_frame_max_ms = 0.0;
     double edit_to_visible_recent_median_ms = 0.0;
