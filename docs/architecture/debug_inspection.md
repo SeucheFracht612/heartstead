@@ -87,6 +87,8 @@ Save database inspection reports legacy versus generation-backed layout, active 
 committed/staged/stale generation counts, snapshot size, effective chunk-delta table size, both
 journal sizes/sequences, and warnings for pending full-snapshot or chunk-delta journal work. This
 keeps the save acceptance/checkpoint boundary visible after generation manifests are introduced.
+The live runtime overlay separately reports deferred checkpoint roots, in-flight attempts, total
+retry submissions, completions, exhausted roots, and terminal checkpoint failures.
 Save database maintenance inspection reports recovered staged generation count, full-snapshot and
 chunk-journal recovery/compaction results, pruned stale generation count, compacted orphan count,
 before/after generation counts, and whether the maintenance pass changed persistent storage.

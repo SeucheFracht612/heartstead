@@ -105,10 +105,17 @@ Implemented behavior:
 - provides a one-worker `SaveScheduler` with bounded active/completed requests and measured
   per-request/aggregate working-memory reservations; serialization, stable-storage waits,
   compaction, and slot-metadata publication stay on that worker
+- provides a distinct low-priority checkpoint request that compacts the newest accepted snapshot
+  without capturing or appending another one; it carries forward the accepted request's measured
+  memory reservation and shares the same worker/backpressure limits
 - retains request-entry-to-durable-acceptance latency separately from the worker's
   encode-and-stable-write duration, so queue/dispatch delay cannot be hidden by the component timer
 - treats journal acceptance as success even if later checkpoint compaction fails, reports the
   compaction error separately, and lets normal reads/recovery select the accepted entry
+- lets the application retry a skipped or `save_database.busy` checkpoint after 250 ms with capped
+  exponential backoff to 30 seconds, at most eight attempts and eight pending roots; terminal
+  storage errors are not retried, while pending/in-flight/completed/exhausted/terminal counts remain
+  visible in runtime diagnostics
 - updates `last_played_at_ms` separately when a loaded world becomes active, so Continue ordering
   does not confuse opening a world with saving it
 - keeps an optional `preview.png` sidecar beside the authoritative generation store; production
@@ -171,7 +178,6 @@ pinned, creates a quiescent null-source reader gap, prunes the stale generation,
 reader for future submissions. These benchmarks do not establish guaranteed-cold behavior or cover
 other filesystems/media. Three clean reference-machine processes passed that concurrent phase at
 16,384 records with median owner handoff of 0.027907 ms, request-to-durable acceptance of 16.730 ms,
-and full generation publication of 45.371 seconds. Future work should add a bounded application
-checkpoint retry policy, cross-process writer exclusion, production-scale backup/export policy,
-large-world live snapshot capture, guaranteed-cold/multi-filesystem validation, and complete
-save-slot UI workflows.
+and full generation publication of 45.371 seconds. Future work should add cross-process writer
+exclusion, production-scale backup/export policy, large-world live snapshot capture,
+guaranteed-cold/multi-filesystem validation, and complete save-slot UI workflows.

@@ -76,8 +76,10 @@ The retained writer validates and accounts for the indexed base once; each timed
 publishes one immutable checksummed entry. The stable-storage wait is deliberately included and must
 not run on the gameplay thread. The checkpoint limit is a regression cap on current full-table
 background work, not a latency SLO: reference checkpoint time is roughly 48 seconds and still
-requires bounded runtime scheduling, retained-view rotation, and retry policy before live use. The
-report also requires exact restart payload verification, journal teardown, and fixture cleanup. See
+requires retained-view rotation and future incrementalization. Runtime scheduling now uses the
+bounded save worker plus an eight-attempt application retry policy with capped backoff and the
+original snapshot's memory reservation. The report also requires exact restart payload
+verification, journal teardown, and fixture cleanup. See
 [Chunk delta journal benchmarks](../performance/chunk_delta_journal_benchmarks.md).
 
 The chunk-render-readiness benchmark separately gates the production generated-data path through
