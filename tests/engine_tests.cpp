@@ -7356,8 +7356,8 @@ void test_file_save_database() {
     assert(streamed);
     assert(streamed.value().encoded_edit_delta == "streamed-delta");
     assert(!std::filesystem::exists(root / "chunks" / "c_-5_0_2.delta"));
-    assert(std::filesystem::exists(root / "generations" / "generation_1" / "chunks" /
-                                   "c_-5_0_2.delta"));
+    assert(std::filesystem::exists(root / "generations" / "generation_1" / "chunk_journal" /
+                                   "entry_00000000000000000001.hcdj"));
 
     constexpr std::int64_t far_chunk_coord = 1LL << 40;
     status = database.write_chunk_delta(
@@ -7368,10 +7368,8 @@ void test_file_save_database() {
     assert(far_streamed);
     assert(far_streamed.value().coord.x == far_chunk_coord);
     assert(far_streamed.value().encoded_edit_delta == "far-delta");
-    assert(std::filesystem::exists(root / "generations" / "generation_1" / "chunks" /
-                                   ("c_" + std::to_string(far_chunk_coord) + "_" +
-                                    std::to_string(-far_chunk_coord) + "_" +
-                                    std::to_string(far_chunk_coord + 2) + ".delta")));
+    assert(std::filesystem::exists(root / "generations" / "generation_1" / "chunk_journal" /
+                                   "entry_00000000000000000002.hcdj"));
 
     loaded = database.read_snapshot();
     assert(loaded);
@@ -7633,7 +7631,7 @@ void test_file_save_database_safety() {
     assert(deltas.value()[0].encoded_edit_delta == "updated");
     assert(deltas.value()[1].coord == (heartstead::world::ChunkCoord{2, 0, 0}));
     assert(deltas.value()[1].encoded_edit_delta == "second");
-    assert(!std::filesystem::exists(active_chunks / "orphan.delta"));
+    assert(std::filesystem::exists(active_chunks / "orphan.delta"));
 
     const auto index_path = active_chunks / "index.txt";
     const auto expect_invalid_index = [&](std::string text, std::string_view error_code) {
@@ -7670,8 +7668,8 @@ void test_file_save_database_safety() {
     deltas = transaction_database.read_chunk_deltas();
     assert(deltas && deltas.value().size() == 2);
     assert(transaction_database.write_chunk_delta({{2, 0, 0}, "recovered"}));
-    assert(std::filesystem::is_directory(active_chunks));
-    assert(!std::filesystem::exists(backup_chunks));
+    assert(!std::filesystem::exists(active_chunks));
+    assert(std::filesystem::is_directory(backup_chunks));
     const auto recovered = transaction_database.read_chunk_delta({2, 0, 0});
     assert(recovered && recovered.value().encoded_edit_delta == "recovered");
 
@@ -14320,7 +14318,6 @@ void test_chunk_streamer() {
     assert(empty_reader);
     heartstead::world::FileSaveChunkEditDeltaSource empty_file_source(
         std::move(empty_reader).value());
-    heartstead::world::FileSaveChunkEditDeltaSink file_sink(database);
     auto missing_delta = empty_file_source.read_chunk_delta({99, 0, 0});
     assert(missing_delta);
     assert(!missing_delta.value().has_value());
@@ -14434,6 +14431,9 @@ void test_chunk_streamer() {
         {0, 0, 0},
         {8, 0, 0},
     };
+    auto file_writer = database.open_chunk_delta_writer();
+    assert(file_writer);
+    heartstead::world::FileSaveChunkEditDeltaSink file_sink(std::move(file_writer).value());
     auto save_flush =
         heartstead::world::ChunkStreamer::flush_save_deltas(state, save_flush_requests, file_sink);
     assert(save_flush);

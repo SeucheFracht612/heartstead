@@ -26,6 +26,9 @@ struct SaveDatabaseStats {
     std::uintmax_t snapshot_bytes = 0;
     std::size_t chunk_delta_count = 0;
     std::uintmax_t chunk_delta_bytes = 0;
+    std::size_t chunk_delta_journal_entry_count = 0;
+    std::uintmax_t chunk_delta_journal_bytes = 0;
+    std::uint64_t chunk_delta_journal_highest_sequence = 0;
     std::size_t journal_entry_count = 0;
     std::uintmax_t journal_bytes = 0;
     std::uint64_t journal_checkpoint_sequence = 0;
@@ -50,12 +53,32 @@ struct SaveJournalRecoveryResult {
     [[nodiscard]] bool changed() const noexcept;
 };
 
+struct ChunkDeltaJournalReceipt {
+    std::uint64_t sequence = 0;
+    std::size_t encoded_bytes = 0;
+};
+
+struct ChunkDeltaJournalCompactionResult {
+    bool compacted = false;
+    std::size_t merged_entry_count = 0;
+    std::size_t removed_entry_count = 0;
+};
+
+struct ChunkDeltaJournalRecoveryResult {
+    std::size_t discarded_temporary_entry_count = 0;
+    bool discarded_compacted_directory = false;
+
+    [[nodiscard]] bool changed() const noexcept;
+};
+
 struct SaveDatabaseMaintenancePolicy {
     bool recover_staged_generations = true;
     bool recover_snapshot_journal = true;
+    bool recover_chunk_delta_journal = true;
     bool prune_stale_generations = false;
     std::size_t keep_stale_generations = 1;
     bool compact_chunk_deltas = false;
+    bool compact_chunk_delta_journal = false;
 };
 
 struct SaveDatabaseMaintenanceResult {
@@ -63,8 +86,10 @@ struct SaveDatabaseMaintenanceResult {
     SaveDatabaseStats after;
     std::size_t recovered_staged_generation_count = 0;
     SaveJournalRecoveryResult journal_recovery;
+    ChunkDeltaJournalRecoveryResult chunk_delta_journal_recovery;
     std::size_t pruned_stale_generation_count = 0;
     std::size_t compacted_chunk_delta_count = 0;
+    ChunkDeltaJournalCompactionResult chunk_delta_journal_compaction;
 
     [[nodiscard]] bool changed() const noexcept;
 };
@@ -88,13 +113,15 @@ struct FileChunkDeltaReaderStats {
     FileChunkDeltaStorageKind storage_kind = FileChunkDeltaStorageKind::none;
     std::filesystem::path selected_save_root;
     std::string active_generation;
+    std::size_t base_indexed_chunk_delta_count = 0;
+    std::size_t journal_entry_count = 0;
     std::size_t indexed_chunk_delta_count = 0;
 };
 
-// A generation-scoped, immutable chunk-index view. Opening performs manifest selection and index
-// validation once; concurrent reads then use binary search and read only the selected payload.
-// Callers must reopen after mutating the selected generation and must not prune that generation
-// while the reader is in use.
+// A generation-scoped, immutable chunk-index view. Opening selects the authoritative full
+// snapshot, validates the base index and current chunk journal, and pins that journal end mark.
+// Later appends are not visible. Callers must reopen after compaction or generation publication and
+// must not prune the selected generation while the reader is in use.
 class FileChunkDeltaReader {
   public:
     FileChunkDeltaReader(const FileChunkDeltaReader&) = delete;
@@ -107,16 +134,63 @@ class FileChunkDeltaReader {
     [[nodiscard]] const FileChunkDeltaReaderStats& stats() const noexcept;
 
   private:
+    enum class PayloadKind : std::uint8_t {
+        external_file,
+        inline_payload,
+        journal_entry,
+    };
+
     struct Entry {
         world::ChunkCoord coord;
-        // An external-table filename or an inline legacy-snapshot payload, selected by stats.
+        PayloadKind payload_kind = PayloadKind::inline_payload;
+        std::filesystem::path path;
         std::string value;
+        std::uint64_t sequence = 0;
     };
 
     FileChunkDeltaReader() = default;
 
     FileChunkDeltaReaderStats stats_;
-    std::filesystem::path payload_directory_;
+    std::vector<Entry> entries_;
+
+    friend class FileSaveDatabase;
+};
+
+struct FileChunkDeltaWriterStats {
+    std::filesystem::path selected_save_root;
+    std::string active_generation;
+    std::size_t effective_chunk_delta_count = 0;
+    std::size_t effective_payload_bytes = 0;
+    std::size_t journal_entry_count = 0;
+    std::size_t journal_bytes = 0;
+    std::uint64_t highest_sequence = 0;
+};
+
+// A generation-scoped, single-writer append session. Each accepted update is an immutable,
+// checksummed journal entry. Reopen after publishing a new save generation. Other writers, bulk
+// replacement, compaction, and full-snapshot publication require external serialization with this
+// session; the API detects stale generations and sequential writer conflicts, not filesystem races.
+class FileChunkDeltaWriter {
+  public:
+    FileChunkDeltaWriter(const FileChunkDeltaWriter&) = delete;
+    FileChunkDeltaWriter& operator=(const FileChunkDeltaWriter&) = delete;
+    FileChunkDeltaWriter(FileChunkDeltaWriter&&) noexcept = default;
+    FileChunkDeltaWriter& operator=(FileChunkDeltaWriter&&) noexcept = default;
+
+    [[nodiscard]] core::Result<ChunkDeltaJournalReceipt>
+    write_chunk_delta(const ChunkEditSaveRecord& chunk_delta);
+    [[nodiscard]] const FileChunkDeltaWriterStats& stats() const noexcept;
+
+  private:
+    struct Entry {
+        world::ChunkCoord coord;
+        std::size_t payload_bytes = 0;
+    };
+
+    FileChunkDeltaWriter() = default;
+
+    std::filesystem::path database_root_;
+    FileChunkDeltaWriterStats stats_;
     std::vector<Entry> entries_;
 
     friend class FileSaveDatabase;
@@ -138,10 +212,8 @@ class FileSaveDatabase {
     // on a save worker. Readers automatically prefer an accepted record newer than the checkpoint.
     [[nodiscard]] core::Result<SaveJournalReceipt>
     journal_snapshot(const SaveSnapshot& snapshot) const;
-    [[nodiscard]] core::Result<SaveJournalCompactionResult>
-    compact_snapshot_journal() const;
-    [[nodiscard]] core::Result<SaveJournalRecoveryResult>
-    recover_snapshot_journal() const;
+    [[nodiscard]] core::Result<SaveJournalCompactionResult> compact_snapshot_journal() const;
+    [[nodiscard]] core::Result<SaveJournalRecoveryResult> recover_snapshot_journal() const;
 
     [[nodiscard]] core::Status write_chunk_delta(const ChunkEditSaveRecord& chunk_delta) const;
     [[nodiscard]] core::Status
@@ -151,8 +223,12 @@ class FileSaveDatabase {
     [[nodiscard]] core::Result<ChunkEditSaveRecord> read_chunk_delta(world::ChunkCoord coord) const;
     [[nodiscard]] core::Result<std::vector<ChunkEditSaveRecord>> read_chunk_deltas() const;
     [[nodiscard]] core::Result<FileChunkDeltaReader> open_chunk_delta_reader() const;
+    [[nodiscard]] core::Result<FileChunkDeltaWriter> open_chunk_delta_writer() const;
 
     [[nodiscard]] core::Result<std::size_t> compact_chunk_deltas() const;
+    [[nodiscard]] core::Result<ChunkDeltaJournalCompactionResult>
+    compact_chunk_delta_journal() const;
+    [[nodiscard]] core::Result<ChunkDeltaJournalRecoveryResult> recover_chunk_delta_journal() const;
     [[nodiscard]] core::Status prune_stale_generations(std::size_t keep_stale_generations) const;
     [[nodiscard]] core::Result<std::size_t> recover_staged_generations() const;
     [[nodiscard]] core::Result<SaveDatabaseMaintenanceResult>

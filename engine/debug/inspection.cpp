@@ -3626,8 +3626,11 @@ InspectionData Inspector::inspect(const save::SaveDatabaseStats& stats) {
     InspectionData data;
     data.object_type = "save_database_stats";
     data.display_name = "Save Database";
-    const bool has_pending_journal =
+    const bool has_pending_snapshot_journal =
         stats.journal_highest_sequence > stats.journal_checkpoint_sequence;
+    const bool has_pending_chunk_delta_journal = stats.chunk_delta_journal_entry_count > 0;
+    const bool has_pending_journal =
+        has_pending_snapshot_journal || has_pending_chunk_delta_journal;
     if (has_pending_journal) {
         data.state = "journal_pending";
     } else if (!stats.has_snapshot) {
@@ -3648,20 +3651,28 @@ InspectionData Inspector::inspect(const save::SaveDatabaseStats& stats) {
     add_field(data, "snapshot_bytes", std::to_string(stats.snapshot_bytes));
     add_field(data, "chunk_delta_count", std::to_string(stats.chunk_delta_count));
     add_field(data, "chunk_delta_bytes", std::to_string(stats.chunk_delta_bytes));
+    add_field(data, "chunk_delta_journal_entry_count",
+              std::to_string(stats.chunk_delta_journal_entry_count));
+    add_field(data, "chunk_delta_journal_bytes", std::to_string(stats.chunk_delta_journal_bytes));
+    add_field(data, "chunk_delta_journal_highest_sequence",
+              std::to_string(stats.chunk_delta_journal_highest_sequence));
     add_field(data, "journal_entry_count", std::to_string(stats.journal_entry_count));
     add_field(data, "journal_bytes", std::to_string(stats.journal_bytes));
     add_field(data, "journal_checkpoint_sequence",
               std::to_string(stats.journal_checkpoint_sequence));
-    add_field(data, "journal_highest_sequence",
-              std::to_string(stats.journal_highest_sequence));
+    add_field(data, "journal_highest_sequence", std::to_string(stats.journal_highest_sequence));
 
     if (!stats.has_snapshot && !has_pending_journal) {
         add_issue(data, InspectionSeverity::warning, "save_database.empty",
                   "save database does not contain an active snapshot");
     }
-    if (has_pending_journal) {
+    if (has_pending_snapshot_journal) {
         add_issue(data, InspectionSeverity::warning, "save_database.journal_pending",
                   "save database has a durable journal entry awaiting background compaction");
+    }
+    if (has_pending_chunk_delta_journal) {
+        add_issue(data, InspectionSeverity::warning, "save_database.chunk_delta_journal_pending",
+                  "save database has durable chunk delta entries awaiting compaction");
     }
     if (stats.uses_generation_manifest && stats.active_generation.empty()) {
         add_issue(data, InspectionSeverity::error, "save_database.missing_active_generation",
@@ -3694,6 +3705,16 @@ InspectionData Inspector::inspect(const save::SaveDatabaseMaintenanceResult& res
               std::to_string(result.journal_recovery.compaction.compacted_sequence));
     add_field(data, "removed_journal_entry_count",
               std::to_string(result.journal_recovery.compaction.removed_entry_count));
+    add_field(data, "discarded_chunk_delta_journal_temporary_entry_count",
+              std::to_string(result.chunk_delta_journal_recovery.discarded_temporary_entry_count));
+    add_field(data, "discarded_compacted_chunk_delta_journal_directory",
+              bool_text(result.chunk_delta_journal_recovery.discarded_compacted_directory));
+    add_field(data, "chunk_delta_journal_compacted",
+              bool_text(result.chunk_delta_journal_compaction.compacted));
+    add_field(data, "chunk_delta_journal_merged_entry_count",
+              std::to_string(result.chunk_delta_journal_compaction.merged_entry_count));
+    add_field(data, "chunk_delta_journal_removed_entry_count",
+              std::to_string(result.chunk_delta_journal_compaction.removed_entry_count));
     add_field(data, "pruned_stale_generation_count",
               std::to_string(result.pruned_stale_generation_count));
     add_field(data, "compacted_chunk_delta_count",

@@ -50,13 +50,14 @@ class IChunkEditDeltaSink {
 
 class FileSaveChunkEditDeltaSink final : public IChunkEditDeltaSink {
   public:
-    explicit FileSaveChunkEditDeltaSink(const save::FileSaveDatabase& database) noexcept;
+    explicit FileSaveChunkEditDeltaSink(save::FileChunkDeltaWriter writer) noexcept;
 
     [[nodiscard]] core::Status
     write_chunk_delta(const save::ChunkEditSaveRecord& chunk_delta) const override;
+    [[nodiscard]] const save::FileChunkDeltaWriterStats& stats() const noexcept;
 
   private:
-    const save::FileSaveDatabase* database_ = nullptr;
+    mutable save::FileChunkDeltaWriter writer_;
 };
 
 class IChunkReplicationDeltaSink {

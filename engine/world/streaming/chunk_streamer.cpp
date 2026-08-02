@@ -82,13 +82,20 @@ const save::FileChunkDeltaReaderStats& FileSaveChunkEditDeltaSource::stats() con
     return reader_.stats();
 }
 
-FileSaveChunkEditDeltaSink::FileSaveChunkEditDeltaSink(
-    const save::FileSaveDatabase& database) noexcept
-    : database_(&database) {}
+FileSaveChunkEditDeltaSink::FileSaveChunkEditDeltaSink(save::FileChunkDeltaWriter writer) noexcept
+    : writer_(std::move(writer)) {}
 
 core::Status
 FileSaveChunkEditDeltaSink::write_chunk_delta(const save::ChunkEditSaveRecord& chunk_delta) const {
-    return database_->write_chunk_delta(chunk_delta);
+    auto receipt = writer_.write_chunk_delta(chunk_delta);
+    if (!receipt) {
+        return core::Status::failure(receipt.error().code, receipt.error().message);
+    }
+    return core::Status::ok();
+}
+
+const save::FileChunkDeltaWriterStats& FileSaveChunkEditDeltaSink::stats() const noexcept {
+    return writer_.stats();
 }
 
 core::Result<ChunkStreamLoadReport>
