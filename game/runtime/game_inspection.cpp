@@ -346,6 +346,18 @@ debug::InspectionData GameInspector::inspect(const RuntimeSession& session) {
                   std::to_string(collision_stats.pending_chunk_count));
         add_field(data, "chunk_collision_box_count",
                   std::to_string(collision_stats.current_collision_boxes));
+        add_field(data, "chunk_collision_response_pending",
+                  std::to_string(collision_stats.pending_collision_response_count));
+        add_field(data, "chunk_collision_response_completed",
+                  std::to_string(collision_stats.total_collision_response_completed));
+        add_field(data, "chunk_collision_response_p95_ms",
+                  std::to_string(collision_stats.collision_response_latency.p95_ms));
+        add_field(data, "chunk_collision_response_session_max_ms",
+                  std::to_string(collision_stats.collision_response_latency.session_maximum_ms));
+        add_field(data, "chunk_collision_response_coalesced",
+                  std::to_string(collision_stats.total_coalesced_collision_invalidations));
+        add_field(data, "chunk_collision_response_abandoned",
+                  std::to_string(collision_stats.total_abandoned_collision_invalidations));
         const auto& fluid_stats = server->chunk_fluids().stats();
         add_field(data, "voxel_fluid_active_cells", std::to_string(fluid_stats.active_cell_count));
         add_field(data, "voxel_fluid_steps", std::to_string(fluid_stats.steps));
@@ -366,6 +378,18 @@ debug::InspectionData GameInspector::inspect(const RuntimeSession& session) {
                   std::to_string(lighting_stats.stale_results));
         add_field(data, "voxel_relight_apply_budget_overruns",
                   std::to_string(lighting_stats.apply_budget_overruns));
+        add_field(data, "voxel_relight_response_pending",
+                  std::to_string(lighting_stats.pending_relight_response_count));
+        add_field(data, "voxel_relight_response_completed",
+                  std::to_string(lighting_stats.total_relight_response_completed));
+        add_field(data, "voxel_relight_convergence_p95_ms",
+                  std::to_string(lighting_stats.relight_convergence_latency.p95_ms));
+        add_field(data, "voxel_relight_convergence_session_max_ms",
+                  std::to_string(lighting_stats.relight_convergence_latency.session_maximum_ms));
+        add_field(data, "voxel_relight_response_coalesced",
+                  std::to_string(lighting_stats.total_coalesced_relight_invalidations));
+        add_field(data, "voxel_relight_response_abandoned",
+                  std::to_string(lighting_stats.total_abandoned_relight_invalidations));
         if (const auto* loading_stats = server->chunk_loading_stats(); loading_stats != nullptr) {
             add_field(data, "chunk_load_in_flight",
                       std::to_string(loading_stats->in_flight_requests));

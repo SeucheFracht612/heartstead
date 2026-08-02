@@ -289,6 +289,69 @@ void test_system_rejects_in_flight_edit_and_reload_results() {
     assert(collision_system.value()->stats().stale_results >= 2);
 }
 
+void test_system_tracks_bounded_collision_response_latency() {
+    using namespace heartstead;
+
+    auto physics_world =
+        physics::create_physics_world({.backend = physics::PhysicsBackend::headless});
+    assert(physics_world);
+    const auto palette = collision_palette();
+    world::ChunkDatabase chunks;
+    dirty::DirtyRegionTracker dirty_regions;
+    constexpr world::ChunkCoord coordinate{0, 0, 0};
+    auto& chunk = chunks.get_or_create(coordinate);
+    chunk.fill({1, 0});
+    assert(dirty_regions.mark_single(dirty::DirtyRegionKind::chunk_collision,
+                                     {coordinate.x, coordinate.y, coordinate.z}, "initial"));
+
+    auto collision_system = physics::ChunkCollisionSystem::create(*physics_world.value(), palette);
+    assert(collision_system);
+    assert(wait_for_collision_revision(*collision_system.value(), chunks, dirty_regions, palette,
+                                       coordinate, chunk.content_revision()));
+    collision_system.value()->reset_latency_observations();
+    assert(collision_system.value()->stats().collision_response_latency.sample_count == 0);
+    assert(collision_system.value()->stats().pending_collision_response_count == 0);
+
+    assert(chunks.set(coordinate, {1, 1, 1}, world::VoxelCell::air(), dirty_regions));
+    assert(collision_system.value()->update(chunks, dirty_regions, palette));
+    assert(collision_system.value()->stats().pending_collision_response_count == 1);
+
+    assert(chunks.set(coordinate, {2, 1, 1}, world::VoxelCell::air(), dirty_regions));
+    assert(collision_system.value()->update(chunks, dirty_regions, palette));
+    assert(collision_system.value()->stats().total_coalesced_collision_invalidations == 1);
+    const auto target_revision = chunks.find(coordinate)->content_revision();
+    assert(wait_for_collision_revision(*collision_system.value(), chunks, dirty_regions, palette,
+                                       coordinate, target_revision));
+
+    const auto completed = collision_system.value()->stats();
+    assert(completed.pending_collision_response_count == 0);
+    assert(completed.total_collision_response_completed == 1);
+    assert(completed.collision_response_latency.sample_count == 1);
+    assert(completed.collision_response_latency.latest_ms > 0.0);
+    assert(completed.collision_response_latency.median_ms ==
+           completed.collision_response_latency.latest_ms);
+    assert(completed.collision_response_latency.p95_ms ==
+           completed.collision_response_latency.latest_ms);
+    assert(completed.collision_response_latency.p99_ms ==
+           completed.collision_response_latency.latest_ms);
+    assert(completed.collision_response_latency.maximum_ms ==
+           completed.collision_response_latency.latest_ms);
+    assert(completed.collision_response_latency.session_maximum_ms ==
+           completed.collision_response_latency.latest_ms);
+
+    collision_system.value()->reset_latency_observations();
+    assert(chunks.set(coordinate, {3, 1, 1}, world::VoxelCell::air(), dirty_regions));
+    assert(collision_system.value()->update(chunks, dirty_regions, palette));
+    assert(collision_system.value()->stats().pending_collision_response_count == 1);
+    assert(chunks.erase(coordinate));
+    assert(collision_system.value()->update(chunks, dirty_regions, palette));
+    const auto abandoned = collision_system.value()->stats();
+    assert(abandoned.pending_collision_response_count == 0);
+    assert(abandoned.total_abandoned_collision_invalidations == 1);
+    assert(abandoned.total_collision_response_completed == 0);
+    assert(abandoned.collision_response_latency.sample_count == 0);
+}
+
 } // namespace
 
 int main() {
@@ -296,6 +359,7 @@ int main() {
     test_partial_and_non_colliding_prototypes_are_preserved();
     test_snapshot_rejects_stale_identity_and_unknown_types();
     test_system_rejects_in_flight_edit_and_reload_results();
+    test_system_tracks_bounded_collision_response_latency();
     test_system_cooks_rebuilds_and_removes_terrain(heartstead::physics::PhysicsBackend::headless);
     test_system_cooks_rebuilds_and_removes_terrain(heartstead::physics::PhysicsBackend::jolt);
     return 0;

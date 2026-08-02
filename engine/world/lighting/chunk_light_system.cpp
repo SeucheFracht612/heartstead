@@ -1,5 +1,7 @@
 #include "engine/world/lighting/chunk_light_system.hpp"
 
+#include "engine/profiling/profiler.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -63,6 +65,7 @@ core::Status ChunkLightSystem::update(ChunkDatabase& chunks,
     stats_.snapshot_cells_copied_this_update = 0;
     stats_.changed_chunks_this_update = 0;
     stats_.changed_cells_this_update = 0;
+    stats_.relight_response_completed_this_update = 0;
     stats_.last_sunlight_queue_visits = 0;
     stats_.last_block_light_queue_visits = 0;
     stats_.last_solve_ms = 0.0;
@@ -87,7 +90,7 @@ core::Status ChunkLightSystem::update(ChunkDatabase& chunks,
         }
         sources_.assign(sources.begin(), sources.end());
         ++source_revision_;
-        invalidate_field(chunks);
+        invalidate_field(chunks, dirty::DirtyRegionClock::now());
     }
     collect_dirty(chunks, dirty_regions);
     status = apply_completed(chunks, dirty_regions);
@@ -110,6 +113,10 @@ void ChunkLightSystem::shutdown() noexcept {
     snapshot_build_.reset();
     observed_dirty_revisions_.clear();
     changed_chunks_.clear();
+    if (pending_relight_response_.has_value()) {
+        ++stats_.total_abandoned_relight_invalidations;
+        pending_relight_response_.reset();
+    }
     relight_requested_ = false;
     refresh_stats();
 }
@@ -127,6 +134,15 @@ const ChunkLightSystemStats& ChunkLightSystem::stats() const noexcept {
     return stats_;
 }
 
+void ChunkLightSystem::reset_latency_observations() noexcept {
+    relight_latency_.reset();
+    stats_.relight_response_completed_this_update = 0;
+    stats_.total_relight_response_completed = 0;
+    stats_.total_coalesced_relight_invalidations = 0;
+    stats_.total_abandoned_relight_invalidations = 0;
+    refresh_stats();
+}
+
 core::Status ChunkLightSystem::refresh_block_table(const VoxelPalette& palette,
                                                    ChunkDatabase& chunks) {
     if (block_table_ != nullptr && block_table_->revision == palette.render_revision()) {
@@ -139,7 +155,7 @@ core::Status ChunkLightSystem::refresh_block_table(const VoxelPalette& palette,
         return status;
     }
     block_table_ = std::move(rebuilt);
-    invalidate_field(chunks);
+    invalidate_field(chunks, dirty::DirtyRegionClock::now());
     return core::Status::ok();
 }
 
@@ -147,8 +163,12 @@ void ChunkLightSystem::collect_dirty(ChunkDatabase& chunks,
                                      dirty::DirtyRegionTracker& dirty_regions) {
     const auto regions = dirty_regions.consume_kind(dirty::DirtyRegionKind::chunk_lighting);
     bool field_changed = !regions.empty();
+    auto invalidated_at = dirty::DirtyRegionClock::time_point::max();
     if (!regions.empty()) {
         stats_.dirty_regions_consumed += regions.size();
+        for (const auto& region : regions) {
+            invalidated_at = std::min(invalidated_at, region.marked_at);
+        }
     }
 
     std::map<ChunkIdentity, std::uint64_t> resident_observations;
@@ -173,11 +193,18 @@ void ChunkLightSystem::collect_dirty(ChunkDatabase& chunks,
             [](const auto& entry) { return entry.first; });
     observed_dirty_revisions_ = std::move(resident_observations);
     if (field_changed || topology_changed) {
-        invalidate_field(chunks);
+        if (invalidated_at == dirty::DirtyRegionClock::time_point::max()) {
+            invalidated_at = dirty::DirtyRegionClock::now();
+        }
+        invalidate_field(chunks, invalidated_at);
     }
 }
 
-void ChunkLightSystem::invalidate_field(ChunkDatabase& chunks) {
+void ChunkLightSystem::invalidate_field(
+    ChunkDatabase& chunks, std::optional<dirty::DirtyRegionClock::time_point> invalidated_at) {
+    if (invalidated_at.has_value()) {
+        track_relight_response(*invalidated_at);
+    }
     if (snapshot_build_.has_value()) {
         for (const auto& captured : snapshot_build_->snapshot.chunks) {
             auto* chunk = chunks.find(captured.identity.coordinate);
@@ -198,6 +225,33 @@ void ChunkLightSystem::invalidate_field(ChunkDatabase& chunks) {
         scheduler_->cancel();
     }
     relight_requested_ = true;
+}
+
+void ChunkLightSystem::track_relight_response(
+    dirty::DirtyRegionClock::time_point started_at) noexcept {
+    if (started_at == dirty::DirtyRegionClock::time_point{}) {
+        return;
+    }
+    if (pending_relight_response_.has_value()) {
+        ++stats_.total_coalesced_relight_invalidations;
+        *pending_relight_response_ = std::min(*pending_relight_response_, started_at);
+        return;
+    }
+    pending_relight_response_ = started_at;
+}
+
+void ChunkLightSystem::complete_relight_response(
+    dirty::DirtyRegionClock::time_point completed_at) noexcept {
+    if (!pending_relight_response_.has_value()) {
+        return;
+    }
+    const auto elapsed = completed_at - *pending_relight_response_;
+    const auto milliseconds =
+        std::max(0.0, std::chrono::duration<double, std::milli>(elapsed).count());
+    pending_relight_response_.reset();
+    relight_latency_.record(milliseconds);
+    ++stats_.relight_response_completed_this_update;
+    ++stats_.total_relight_response_completed;
 }
 
 void ChunkLightSystem::begin_snapshot(ChunkDatabase& chunks) {
@@ -525,6 +579,7 @@ core::Status ChunkLightSystem::apply_completed(ChunkDatabase& chunks,
             return status;
         }
     }
+    complete_relight_response(dirty::DirtyRegionClock::now());
     changed_chunks_ = std::move(report.changed_chunks);
     stats_.changed_chunks_this_update = changed_chunks_.size();
     stats_.changed_cells_this_update = report.changed_cell_count;
@@ -554,6 +609,11 @@ void ChunkLightSystem::refresh_stats() noexcept {
     }
     stats_.completed_mailbox_count =
         scheduler_ == nullptr ? 0 : scheduler_->stats().completed_mailbox_count;
+    stats_.pending_relight_response_count = pending_relight_response_.has_value() ? 1U : 0U;
+    stats_.relight_convergence_latency = relight_latency_.stats();
+    HEARTSTEAD_PROFILE_PLOT("voxel_light.pending_response", stats_.pending_relight_response_count);
+    HEARTSTEAD_PROFILE_PLOT("voxel_light.convergence_p95_ms",
+                            stats_.relight_convergence_latency.p95_ms);
 }
 
 } // namespace heartstead::world

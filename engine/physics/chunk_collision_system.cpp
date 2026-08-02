@@ -1,5 +1,7 @@
 #include "engine/physics/chunk_collision_system.hpp"
 
+#include "engine/profiling/profiler.hpp"
+
 #include <algorithm>
 #include <bit>
 #include <chrono>
@@ -118,6 +120,7 @@ core::Status ChunkCollisionSystem::update(world::ChunkDatabase& chunks,
     stats_.applied_this_update = 0;
     stats_.body_changes_this_update = 0;
     stats_.removed_this_update = 0;
+    stats_.collision_response_completed_this_update = 0;
     stats_.last_apply_ms = 0.0;
 
     auto status = refresh_collision_table(palette, chunks);
@@ -125,6 +128,7 @@ core::Status ChunkCollisionSystem::update(world::ChunkDatabase& chunks,
         return status;
     }
     collect_dirty_chunks(chunks, dirty_regions);
+    reconcile_collision_responses(chunks);
     status = reconcile_unloaded_chunks(chunks);
     if (!status) {
         return status;
@@ -156,6 +160,8 @@ void ChunkCollisionSystem::shutdown() noexcept {
     }
     bodies_.clear();
     pending_chunks_.clear();
+    stats_.total_abandoned_collision_invalidations += pending_collision_responses_.size();
+    pending_collision_responses_.clear();
     refresh_stats();
     physics_world_ = nullptr;
 }
@@ -177,6 +183,15 @@ const ChunkCollisionSystemStats& ChunkCollisionSystem::stats() noexcept {
 
 const ChunkCollisionSystemStats& ChunkCollisionSystem::stats() const noexcept {
     return stats_;
+}
+
+void ChunkCollisionSystem::reset_latency_observations() noexcept {
+    collision_response_latency_.reset();
+    stats_.collision_response_completed_this_update = 0;
+    stats_.total_collision_response_completed = 0;
+    stats_.total_coalesced_collision_invalidations = 0;
+    stats_.total_abandoned_collision_invalidations = 0;
+    refresh_stats();
 }
 
 core::Status ChunkCollisionSystem::refresh_collision_table(const world::VoxelPalette& palette,
@@ -205,10 +220,18 @@ void ChunkCollisionSystem::collect_dirty_chunks(world::ChunkDatabase& chunks,
     const auto regions = dirty_regions.consume_kind(dirty::DirtyRegionKind::chunk_collision);
     if (!regions.empty()) {
         for (const auto* chunk : chunks.records()) {
-            if (std::ranges::any_of(regions, [chunk](const dirty::DirtyRegion& region) {
-                    return region_contains(region.bounds, chunk->coord());
-                })) {
+            auto earliest_mark = dirty::DirtyRegionClock::time_point::max();
+            for (const auto& region : regions) {
+                if (region_contains(region.bounds, chunk->coord())) {
+                    earliest_mark = std::min(earliest_mark, region.marked_at);
+                }
+            }
+            if (earliest_mark != dirty::DirtyRegionClock::time_point::max()) {
                 pending_chunks_.insert(chunk->coord());
+                track_collision_response(
+                    chunk->identity(),
+                    chunk->stages().requested_revision(world::ChunkStage::collision),
+                    earliest_mark);
             }
         }
     }
@@ -406,6 +429,8 @@ core::Status ChunkCollisionSystem::apply_result(world::ChunkDatabase& chunks,
         }
         chunk->clear_dirty(world::ChunkDirtyFlag::collision);
         pending_chunks_.erase(result.identity.coordinate);
+        complete_collision_response(result.identity, result.stage_ticket.revision,
+                                    dirty::DirtyRegionClock::now());
         ++stats_.applied_shapes;
         ++stats_.applied_this_update;
         return core::Status::ok();
@@ -457,10 +482,69 @@ core::Status ChunkCollisionSystem::apply_result(world::ChunkDatabase& chunks,
     }
     chunk->clear_dirty(world::ChunkDirtyFlag::collision);
     pending_chunks_.erase(result.identity.coordinate);
+    complete_collision_response(result.identity, result.stage_ticket.revision,
+                                dirty::DirtyRegionClock::now());
     ++stats_.applied_shapes;
     ++stats_.applied_this_update;
     ++stats_.body_changes_this_update;
     return core::Status::ok();
+}
+
+void ChunkCollisionSystem::track_collision_response(
+    world::ChunkIdentity identity, std::uint64_t stage_revision,
+    dirty::DirtyRegionClock::time_point started_at) {
+    if (!identity.is_valid() || stage_revision == 0 ||
+        started_at == dirty::DirtyRegionClock::time_point{}) {
+        return;
+    }
+    const auto found = pending_collision_responses_.find(identity.coordinate);
+    if (found == pending_collision_responses_.end()) {
+        pending_collision_responses_.emplace(
+            identity.coordinate, PendingCollisionResponse{identity, stage_revision, started_at});
+        return;
+    }
+    auto& pending = found->second;
+    if (pending.identity != identity) {
+        ++stats_.total_abandoned_collision_invalidations;
+        pending = PendingCollisionResponse{identity, stage_revision, started_at};
+        return;
+    }
+    if (stage_revision > pending.target_stage_revision) {
+        ++stats_.total_coalesced_collision_invalidations;
+        pending.target_stage_revision = stage_revision;
+    }
+    pending.started_at = std::min(pending.started_at, started_at);
+}
+
+void ChunkCollisionSystem::complete_collision_response(
+    world::ChunkIdentity identity, std::uint64_t published_stage_revision,
+    dirty::DirtyRegionClock::time_point published_at) {
+    const auto found = pending_collision_responses_.find(identity.coordinate);
+    if (found == pending_collision_responses_.end() || found->second.identity != identity ||
+        published_stage_revision < found->second.target_stage_revision) {
+        return;
+    }
+    const auto elapsed = published_at - found->second.started_at;
+    const auto milliseconds =
+        std::max(0.0, std::chrono::duration<double, std::milli>(elapsed).count());
+    pending_collision_responses_.erase(found);
+    collision_response_latency_.record(milliseconds);
+    ++stats_.collision_response_completed_this_update;
+    ++stats_.total_collision_response_completed;
+}
+
+void ChunkCollisionSystem::reconcile_collision_responses(
+    const world::ChunkDatabase& chunks) noexcept {
+    for (auto pending = pending_collision_responses_.begin();
+         pending != pending_collision_responses_.end();) {
+        const auto* chunk = chunks.find(pending->first);
+        if (chunk != nullptr && chunk->identity() == pending->second.identity) {
+            ++pending;
+            continue;
+        }
+        ++stats_.total_abandoned_collision_invalidations;
+        pending = pending_collision_responses_.erase(pending);
+    }
 }
 
 core::Result<Vec3>
@@ -476,12 +560,12 @@ ChunkCollisionSystem::chunk_physics_position(world::ChunkCoord coordinate) const
     auto local = world::to_physics_local(position.value(), config_.physics_island);
     if (!local) {
         return core::Result<Vec3>::failure(
-            local.error().code,
-            local.error().message + ": chunk " + std::to_string(coordinate.x) + "," +
-                std::to_string(coordinate.y) + "," + std::to_string(coordinate.z) +
-                " physics origin " + std::to_string(config_.physics_island.block.x) + "," +
-                std::to_string(config_.physics_island.block.y) + "," +
-                std::to_string(config_.physics_island.block.z));
+            local.error().code, local.error().message + ": chunk " + std::to_string(coordinate.x) +
+                                    "," + std::to_string(coordinate.y) + "," +
+                                    std::to_string(coordinate.z) + " physics origin " +
+                                    std::to_string(config_.physics_island.block.x) + "," +
+                                    std::to_string(config_.physics_island.block.y) + "," +
+                                    std::to_string(config_.physics_island.block.z));
     }
     return local;
 }
@@ -490,6 +574,12 @@ void ChunkCollisionSystem::refresh_stats() noexcept {
     stats_.world_revision = world_revision_;
     stats_.resident_body_count = bodies_.size();
     stats_.pending_chunk_count = pending_chunks_.size();
+    stats_.pending_collision_response_count = pending_collision_responses_.size();
+    stats_.collision_response_latency = collision_response_latency_.stats();
+    HEARTSTEAD_PROFILE_PLOT("chunk_collision.pending_response",
+                            stats_.pending_collision_response_count);
+    HEARTSTEAD_PROFILE_PLOT("chunk_collision.response_p95_ms",
+                            stats_.collision_response_latency.p95_ms);
     if (scheduler_ != nullptr) {
         const auto& scheduler_stats = scheduler_->stats();
         stats_.in_flight_job_count = scheduler_stats.in_flight_jobs;

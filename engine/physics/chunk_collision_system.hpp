@@ -4,6 +4,7 @@
 #include "engine/dirty/dirty_region.hpp"
 #include "engine/physics/chunk_collision_scheduler.hpp"
 #include "engine/physics/physics_world.hpp"
+#include "engine/profiling/latency_window.hpp"
 #include "engine/world/chunks/chunk_database.hpp"
 #include "engine/world/coords/world_position.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
@@ -50,6 +51,12 @@ struct ChunkCollisionSystemStats {
     std::uint64_t stale_results = 0;
     std::uint64_t failed_results = 0;
     std::uint64_t current_collision_boxes = 0;
+    std::size_t collision_response_completed_this_update = 0;
+    std::size_t pending_collision_response_count = 0;
+    std::uint64_t total_collision_response_completed = 0;
+    std::uint64_t total_coalesced_collision_invalidations = 0;
+    std::uint64_t total_abandoned_collision_invalidations = 0;
+    profiling::LatencyWindowStats collision_response_latency;
     double last_cooking_ms = 0.0;
     double last_apply_ms = 0.0;
 };
@@ -74,8 +81,15 @@ class ChunkCollisionSystem {
     [[nodiscard]] std::uint64_t world_revision() const noexcept;
     [[nodiscard]] const ChunkCollisionSystemStats& stats() noexcept;
     [[nodiscard]] const ChunkCollisionSystemStats& stats() const noexcept;
+    void reset_latency_observations() noexcept;
 
   private:
+    struct PendingCollisionResponse {
+        world::ChunkIdentity identity{};
+        std::uint64_t target_stage_revision = 0;
+        dirty::DirtyRegionClock::time_point started_at{};
+    };
+
     ChunkCollisionSystem(IPhysicsWorld& physics_world, ChunkCollisionSystemConfig config,
                          std::unique_ptr<ChunkCollisionScheduler> scheduler,
                          std::shared_ptr<const world::ChunkCollisionTableSnapshot> table);
@@ -89,6 +103,12 @@ class ChunkCollisionSystem {
     [[nodiscard]] core::Status submit_pending(world::ChunkDatabase& chunks);
     [[nodiscard]] core::Status apply_result(world::ChunkDatabase& chunks,
                                             ChunkCollisionResult result);
+    void track_collision_response(world::ChunkIdentity identity, std::uint64_t stage_revision,
+                                  dirty::DirtyRegionClock::time_point started_at);
+    void complete_collision_response(world::ChunkIdentity identity,
+                                     std::uint64_t published_stage_revision,
+                                     dirty::DirtyRegionClock::time_point published_at);
+    void reconcile_collision_responses(const world::ChunkDatabase& chunks) noexcept;
     [[nodiscard]] core::Result<Vec3> chunk_physics_position(world::ChunkCoord coordinate) const;
     void refresh_stats() noexcept;
 
@@ -98,6 +118,9 @@ class ChunkCollisionSystem {
     std::shared_ptr<const world::ChunkCollisionTableSnapshot> collision_table_;
     std::map<world::ChunkCoord, ChunkCollisionBodyRecord> bodies_;
     std::set<world::ChunkCoord> pending_chunks_;
+    std::map<world::ChunkCoord, PendingCollisionResponse> pending_collision_responses_;
+    static constexpr std::size_t collision_response_latency_window_size = 256;
+    profiling::LatencyWindow<collision_response_latency_window_size> collision_response_latency_;
     std::uint64_t world_revision_ = 1;
     ChunkCollisionSystemStats stats_{};
 };

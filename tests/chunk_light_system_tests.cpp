@@ -216,6 +216,61 @@ void test_in_flight_edit_and_reload_results_cannot_publish() {
     assert(system.value()->stats().stale_results >= 2);
 }
 
+void test_system_tracks_bounded_relight_convergence_latency() {
+    const auto palette = light_palette();
+    world::ChunkDatabase chunks;
+    dirty::DirtyRegionTracker dirty_regions;
+    constexpr world::ChunkCoord coordinate{0, 0, 0};
+    insert_filled_chunk(chunks, dirty_regions, coordinate, world::VoxelCell::air());
+
+    world::ChunkLightSystemConfig config;
+    config.max_snapshot_cells_per_update = world::VoxelChunk::total_cells;
+    auto system = world::ChunkLightSystem::create(palette, config);
+    assert(system);
+    run_until_applied(*system.value(), chunks, dirty_regions, palette, 1,
+                      world::VoxelChunk::total_cells);
+    system.value()->reset_latency_observations();
+    assert(system.value()->stats().relight_convergence_latency.sample_count == 0);
+    assert(system.value()->stats().pending_relight_response_count == 0);
+
+    assert(chunks.set(coordinate, {1, 1, 1}, world::VoxelCell{1, 0}, dirty_regions, palette));
+    assert(system.value()->update(chunks, dirty_regions, palette));
+    assert(system.value()->stats().pending_relight_response_count == 1);
+
+    assert(chunks.set(coordinate, {2, 1, 1}, world::VoxelCell{1, 0}, dirty_regions, palette));
+    assert(system.value()->update(chunks, dirty_regions, palette));
+    assert(system.value()->stats().total_coalesced_relight_invalidations == 1);
+    run_until_applied(*system.value(), chunks, dirty_regions, palette, 2,
+                      world::VoxelChunk::total_cells);
+
+    const auto completed = system.value()->stats();
+    assert(completed.pending_relight_response_count == 0);
+    assert(completed.total_relight_response_completed == 1);
+    assert(completed.relight_convergence_latency.sample_count == 1);
+    assert(completed.relight_convergence_latency.latest_ms > 0.0);
+    assert(completed.relight_convergence_latency.median_ms ==
+           completed.relight_convergence_latency.latest_ms);
+    assert(completed.relight_convergence_latency.p95_ms ==
+           completed.relight_convergence_latency.latest_ms);
+    assert(completed.relight_convergence_latency.p99_ms ==
+           completed.relight_convergence_latency.latest_ms);
+    assert(completed.relight_convergence_latency.maximum_ms ==
+           completed.relight_convergence_latency.latest_ms);
+    assert(completed.relight_convergence_latency.session_maximum_ms ==
+           completed.relight_convergence_latency.latest_ms);
+
+    system.value()->reset_latency_observations();
+    assert(chunks.set(coordinate, {3, 1, 1}, world::VoxelCell{1, 0}, dirty_regions, palette));
+    assert(system.value()->update(chunks, dirty_regions, palette));
+    assert(system.value()->stats().pending_relight_response_count == 1);
+    system.value()->shutdown();
+    const auto abandoned = system.value()->stats();
+    assert(abandoned.pending_relight_response_count == 0);
+    assert(abandoned.total_abandoned_relight_invalidations == 1);
+    assert(abandoned.total_relight_response_completed == 0);
+    assert(abandoned.relight_convergence_latency.sample_count == 0);
+}
+
 } // namespace
 
 int main() {
@@ -224,5 +279,6 @@ int main() {
     test_snapshot_revision_change_restarts_without_applying_stale_light();
     test_emitter_removal_relights_across_chunk_boundary();
     test_in_flight_edit_and_reload_results_cannot_publish();
+    test_system_tracks_bounded_relight_convergence_latency();
     return 0;
 }

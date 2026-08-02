@@ -2,6 +2,7 @@
 
 #include "engine/core/result.hpp"
 #include "engine/dirty/dirty_region.hpp"
+#include "engine/profiling/latency_window.hpp"
 #include "engine/world/chunks/chunk_database.hpp"
 #include "engine/world/lighting/chunk_light_scheduler.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
@@ -48,6 +49,12 @@ struct ChunkLightSystemStats {
     std::uint64_t total_sunlight_queue_visits = 0;
     std::uint64_t total_block_light_queue_visits = 0;
     std::uint64_t apply_budget_overruns = 0;
+    std::size_t relight_response_completed_this_update = 0;
+    std::size_t pending_relight_response_count = 0;
+    std::uint64_t total_relight_response_completed = 0;
+    std::uint64_t total_coalesced_relight_invalidations = 0;
+    std::uint64_t total_abandoned_relight_invalidations = 0;
+    profiling::LatencyWindowStats relight_convergence_latency;
     double last_solve_ms = 0.0;
     double last_apply_ms = 0.0;
 };
@@ -71,6 +78,7 @@ class ChunkLightSystem {
     [[nodiscard]] std::span<const ChunkCoord> changed_chunks() const noexcept;
     [[nodiscard]] const ChunkLightSystemStats& stats() noexcept;
     [[nodiscard]] const ChunkLightSystemStats& stats() const noexcept;
+    void reset_latency_observations() noexcept;
 
   private:
     struct SnapshotBuildState {
@@ -87,7 +95,11 @@ class ChunkLightSystem {
     [[nodiscard]] core::Status refresh_block_table(const VoxelPalette& palette,
                                                    ChunkDatabase& chunks);
     void collect_dirty(ChunkDatabase& chunks, dirty::DirtyRegionTracker& dirty_regions);
-    void invalidate_field(ChunkDatabase& chunks);
+    void invalidate_field(
+        ChunkDatabase& chunks,
+        std::optional<dirty::DirtyRegionClock::time_point> invalidated_at = std::nullopt);
+    void track_relight_response(dirty::DirtyRegionClock::time_point started_at) noexcept;
+    void complete_relight_response(dirty::DirtyRegionClock::time_point completed_at) noexcept;
     void begin_snapshot(ChunkDatabase& chunks);
     [[nodiscard]] bool snapshot_still_current(const ChunkDatabase& chunks) const;
     [[nodiscard]] core::Status advance_snapshot(ChunkDatabase& chunks);
@@ -103,6 +115,9 @@ class ChunkLightSystem {
     std::map<ChunkIdentity, std::uint64_t> observed_dirty_revisions_;
     std::vector<ChunkCoord> changed_chunks_;
     std::vector<VoxelLightSource> sources_;
+    std::optional<dirty::DirtyRegionClock::time_point> pending_relight_response_;
+    static constexpr std::size_t relight_latency_window_size = 256;
+    profiling::LatencyWindow<relight_latency_window_size> relight_latency_;
     bool relight_requested_ = false;
     std::uint64_t source_revision_ = 1;
     std::uint64_t next_request_id_ = 1;
