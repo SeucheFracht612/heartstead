@@ -156,6 +156,7 @@ target_sources(
     renderer/terrain/far_terrain_lod_updates.cpp
     renderer/terrain/far_terrain_mesh_scheduler.cpp
     renderer/terrain/far_terrain_renderer.cpp
+    renderer/terrain/far_terrain_world_surface.cpp
     renderer/testing/visual_regression.cpp
     renderer/ui/ui_renderer.cpp
     renderer/ui/ui_font.cpp
@@ -408,6 +409,7 @@ target_sources(
       renderer/shaders/shader_compiler.hpp
       renderer/shaders/spirv_loader.hpp
       renderer/terrain/gpu_chunk_vertex.hpp
+      renderer/terrain/far_terrain_world_surface.hpp
       renderer/terrain/terrain_mapping.hpp
       renderer/testing/visual_regression.hpp
       renderer/ui/ui_renderer.hpp

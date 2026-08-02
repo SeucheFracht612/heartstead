@@ -26,6 +26,7 @@
 #include "engine/renderer/scene/render_scene.hpp"
 #include "engine/renderer/scene/scene_render_system.hpp"
 #include "engine/renderer/terrain/far_terrain_renderer.hpp"
+#include "engine/renderer/terrain/far_terrain_world_surface.hpp"
 #include "engine/renderer/ui/ui_renderer.hpp"
 #include "engine/world/fluids/chunk_fluid_system.hpp"
 #include "engine/world/lighting/chunk_light_system.hpp"
@@ -126,12 +127,6 @@ struct RendererFallbackResources {
                white_texture.is_valid() && black_texture.is_valid() && normal_texture.is_valid();
     }
 };
-
-[[nodiscard]] FarTerrainSurfaceSample
-sample_far_terrain_world_surface(const world::WorldState& world, double world_x, double world_z,
-                                 FarTerrainDomain domain) noexcept;
-[[nodiscard]] std::uint64_t
-far_terrain_world_surface_revision(const world::WorldState& world) noexcept;
 
 struct ModelRenderMaterialBinding {
     MaterialRuntimeHandle material;
@@ -294,9 +289,6 @@ class Renderer {
                                    std::span<const std::uint32_t> bloom_fragment_spirv);
     void update_frontend_stats(std::size_t loaded_chunk_count) noexcept;
     void update_backend_stats(const rhi::RenderFrameStats& frame) noexcept;
-    [[nodiscard]] std::vector<math::Bounds3d>
-    synchronize_far_terrain_world_surface(const world::WorldState& world, std::uint64_t revision);
-
     std::unique_ptr<rhi::IRenderDevice> device_;
     rhi::RenderResourceHandle sky_pipeline_{};
     GraphicsPipelineKey sky_pipeline_key_{};
@@ -372,10 +364,7 @@ class Renderer {
     DebugFrameCommands debug_frame_scratch_;
     UiFrameCommands ui_frame_scratch_;
     std::vector<DebugTextLabelFrame> debug_text_labels_;
-    std::map<std::pair<std::int64_t, std::int64_t>, FarTerrainSurfaceSample>
-        far_terrain_world_surface_;
-    std::map<world::ChunkCoord, std::pair<std::uint64_t, std::uint64_t>> far_terrain_chunk_states_;
-    std::uint64_t far_terrain_world_surface_revision_ = 0;
+    FarTerrainWorldSurfaceCache far_terrain_world_surface_;
     rhi::RenderEnvironmentData environment_{};
     rhi::RenderEnvironmentData default_environment_{};
     rhi::RenderExposureSettings default_exposure_{};
