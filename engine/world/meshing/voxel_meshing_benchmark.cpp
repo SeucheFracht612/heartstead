@@ -129,6 +129,19 @@ constexpr std::uint64_t checksum_prime = 1'099'511'628'211ULL;
     for (const auto word : snapshot.center_occupancy.words()) {
         result = combine_checksum(result, word);
     }
+    result = combine_checksum(result, snapshot.meshing_masks.center_revision);
+    result = combine_checksum(result, snapshot.meshing_masks.render_table_revision);
+    result = combine_checksum(result, snapshot.meshing_masks.greedy_cube_count);
+    result = combine_checksum(result, snapshot.meshing_masks.greedy_minimum.x);
+    result = combine_checksum(result, snapshot.meshing_masks.greedy_minimum.y);
+    result = combine_checksum(result, snapshot.meshing_masks.greedy_minimum.z);
+    result = combine_checksum(result, snapshot.meshing_masks.greedy_maximum.x);
+    result = combine_checksum(result, snapshot.meshing_masks.greedy_maximum.y);
+    result = combine_checksum(result, snapshot.meshing_masks.greedy_maximum.z);
+    result = combine_checksum(result, snapshot.meshing_masks.has_directional_occluders ? 1U : 0U);
+    for (const auto word : snapshot.meshing_masks.words) {
+        result = combine_checksum(result, word);
+    }
     for (const auto cell : snapshot.cells) {
         result = cell_checksum(result, cell);
     }
@@ -229,13 +242,15 @@ void append_sample(VoxelMeshingBenchmarkReport& report, VoxelCorpusKind corpus,
                                                     ChunkIdentity identity,
                                                     const BlockRenderTableSnapshot& render_table) {
     std::vector<VoxelCell> reusable_cells;
+    std::vector<std::uint64_t> reusable_mask_words;
     const auto total_passes = config.warmup_repetitions + config.repetitions;
     for (std::uint32_t pass = 0; pass < total_passes; ++pass) {
         std::optional<ChunkNeighborhoodSnapshot> output;
         std::optional<core::Error> failure;
         const auto elapsed = measure_nanoseconds([&] {
             auto built = build_chunk_neighborhood_snapshot(chunks, identity, render_table,
-                                                           std::move(reusable_cells));
+                                                           std::move(reusable_cells),
+                                                           std::move(reusable_mask_words));
             if (!built) {
                 failure = built.error();
                 return;
@@ -251,6 +266,7 @@ void append_sample(VoxelMeshingBenchmarkReport& report, VoxelCorpusKind corpus,
         }
         const auto checksum = snapshot_checksum(*output);
         reusable_cells = std::move(output->cells);
+        reusable_mask_words = std::move(output->meshing_masks.words);
         if (pass >= config.warmup_repetitions) {
             append_sample(report, corpus, VoxelMeshingOperation::snapshot_rebuild,
                           pass - config.warmup_repetitions, elapsed, checksum);
@@ -449,6 +465,8 @@ core::Status VoxelMeshingBenchmarkReport::validate() const {
             measurement.corpus_stats.cell_count != VoxelChunk::total_cells ||
             measurement.snapshot_cell_count < VoxelChunk::total_cells ||
             measurement.snapshot_allocated_bytes < measurement.snapshot_payload_bytes ||
+            measurement.snapshot_meshing_mask_allocated_bytes <
+                measurement.snapshot_meshing_mask_payload_bytes ||
             measurement.reference.allocated_bytes < measurement.reference.payload_bytes ||
             measurement.greedy.allocated_bytes < measurement.greedy.payload_bytes ||
             measurement.reference.unit_surface_face_count != measurement.visible_unit_face_count ||
@@ -601,7 +619,10 @@ std::string VoxelMeshingBenchmarkReport::to_json() const {
                << ",\n      \"snapshot_cell_count\": " << measurement.snapshot_cell_count
                << ",\n      \"snapshot_payload_bytes\": " << measurement.snapshot_payload_bytes
                << ",\n      \"snapshot_allocated_bytes\": " << measurement.snapshot_allocated_bytes
-               << ",\n      \"reference\": ";
+               << ",\n      \"snapshot_meshing_mask_payload_bytes\": "
+               << measurement.snapshot_meshing_mask_payload_bytes
+               << ",\n      \"snapshot_meshing_mask_allocated_bytes\": "
+               << measurement.snapshot_meshing_mask_allocated_bytes << ",\n      \"reference\": ";
         write_mesh_measurement(output, measurement.reference, "      ");
         output << ",\n      \"greedy\": ";
         write_mesh_measurement(output, measurement.greedy, "      ");
@@ -723,14 +744,19 @@ run_voxel_meshing_benchmark(const VoxelMeshingBenchmarkConfig& config) {
         measurement.corpus_stats = corpus_stats;
         measurement.visible_unit_face_count = expected_faces;
         measurement.snapshot_cell_count = snapshot.value().cells.size();
+        measurement.snapshot_meshing_mask_payload_bytes =
+            snapshot.value().meshing_masks.payload_bytes();
+        measurement.snapshot_meshing_mask_allocated_bytes =
+            snapshot.value().meshing_masks.allocated_bytes();
         measurement.snapshot_payload_bytes =
             snapshot.value().cells.size() * sizeof(VoxelCell) +
             snapshot.value().dependencies.size() * sizeof(ChunkDependencyRevision) +
-            VoxelOccupancyMask::payload_bytes;
+            VoxelOccupancyMask::payload_bytes + measurement.snapshot_meshing_mask_payload_bytes;
         measurement.snapshot_allocated_bytes =
             sizeof(ChunkNeighborhoodSnapshot) +
             snapshot.value().cells.capacity() * sizeof(VoxelCell) +
-            snapshot.value().dependencies.capacity() * sizeof(ChunkDependencyRevision);
+            snapshot.value().dependencies.capacity() * sizeof(ChunkDependencyRevision) +
+            measurement.snapshot_meshing_mask_allocated_bytes;
         measurement.reference = measure_mesh_output(reference.value());
         measurement.greedy = measure_mesh_output(greedy.value());
         report.geometry.push_back(std::move(measurement));

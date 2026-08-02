@@ -1064,12 +1064,16 @@ core::Status ChunkRenderSystem::schedule_mesh_jobs(world::WorldState& world,
         }
 
         auto storage = mesh_scheduler_->acquire_snapshot_cells(snapshot_cells);
+        const auto snapshot_mask_words =
+            world::ChunkMeshingMasks::center_word_count + (snapshot_cells + 63U) / 64U;
+        auto mask_storage = mesh_scheduler_->acquire_snapshot_mask_words(snapshot_mask_words);
         auto snapshot = [&]() {
             HEARTSTEAD_PROFILE_ZONE_NAMED("chunks.snapshot");
             profiling::ScopedCpuTimingZone preparation_zone(
                 timings_, profiling::CpuTimingZone::chunk_snapshot);
             return world::build_chunk_neighborhood_snapshot(world.chunks(), pending.identity,
-                                                            *render_table_, std::move(storage));
+                                                            *render_table_, std::move(storage),
+                                                            std::move(mask_storage));
         }();
         if (!snapshot) {
             ++stats_.failed_mesh_count;

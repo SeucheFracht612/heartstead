@@ -45,6 +45,39 @@ struct ChunkMeshScheduler::SharedState {
         }
     }
 
+    [[nodiscard]] std::vector<std::uint64_t> acquire_mask_words(std::size_t minimum_capacity) {
+        std::lock_guard lock(pool_mutex);
+        auto best = mask_word_pool.end();
+        for (auto candidate = mask_word_pool.begin(); candidate != mask_word_pool.end();
+             ++candidate) {
+            if (candidate->capacity() >= minimum_capacity &&
+                (best == mask_word_pool.end() || candidate->capacity() < best->capacity())) {
+                best = candidate;
+            }
+        }
+        if (best != mask_word_pool.end()) {
+            auto result = std::move(*best);
+            mask_word_pool.erase(best);
+            return result;
+        }
+        std::vector<std::uint64_t> result;
+        result.reserve(minimum_capacity);
+        return result;
+    }
+
+    void release_mask_words(std::vector<std::uint64_t> words) {
+        words.clear();
+        std::lock_guard lock(pool_mutex);
+        if (mask_word_pool.size() < max_cached_cell_buffers) {
+            mask_word_pool.push_back(std::move(words));
+        }
+    }
+
+    void release_snapshot(world::ChunkNeighborhoodSnapshot snapshot) {
+        release_cells(std::move(snapshot.cells));
+        release_mask_words(std::move(snapshot.meshing_masks.words));
+    }
+
     [[nodiscard]] world::ChunkMesh acquire_mesh() {
         std::lock_guard lock(pool_mutex);
         if (mesh_pool.empty()) {
@@ -93,6 +126,8 @@ struct ChunkMeshScheduler::SharedState {
     struct PoolStats {
         std::size_t cell_buffers = 0;
         std::size_t cell_capacity = 0;
+        std::size_t mask_word_buffers = 0;
+        std::size_t mask_word_capacity = 0;
         std::size_t mesh_buffers = 0;
         std::size_t mesh_vertex_capacity = 0;
         std::size_t mesh_index_capacity = 0;
@@ -105,6 +140,10 @@ struct ChunkMeshScheduler::SharedState {
         result.cell_buffers = cell_pool.size();
         for (const auto& cells : cell_pool) {
             result.cell_capacity += cells.capacity();
+        }
+        result.mask_word_buffers = mask_word_pool.size();
+        for (const auto& words : mask_word_pool) {
+            result.mask_word_capacity += words.capacity();
         }
         result.mesh_buffers = mesh_pool.size();
         for (const auto& mesh : mesh_pool) {
@@ -119,6 +158,7 @@ struct ChunkMeshScheduler::SharedState {
     std::size_t max_cached_mesh_buffers = 0;
     mutable std::mutex pool_mutex;
     std::vector<std::vector<world::VoxelCell>> cell_pool;
+    std::vector<std::vector<std::uint64_t>> mask_word_pool;
     std::vector<world::ChunkMesh> mesh_pool;
     mutable std::mutex mailbox_mutex;
     std::deque<ChunkMeshResult> mailbox;
@@ -199,15 +239,20 @@ ChunkMeshScheduler::acquire_snapshot_cells(std::size_t minimum_capacity) {
     return shared_state_->acquire_cells(minimum_capacity);
 }
 
+std::vector<std::uint64_t>
+ChunkMeshScheduler::acquire_snapshot_mask_words(std::size_t minimum_capacity) {
+    return shared_state_->acquire_mask_words(minimum_capacity);
+}
+
 core::Status ChunkMeshScheduler::submit(ChunkMeshRequest request) {
     if (jobs_ == nullptr) {
-        shared_state_->release_cells(std::move(request.neighborhood.cells));
+        shared_state_->release_snapshot(std::move(request.neighborhood));
         return core::Status::failure("renderer.chunk_mesh_scheduler_stopped",
                                      "chunk mesh scheduler is stopped");
     }
     auto snapshot_status = request.neighborhood.validate();
     if (!snapshot_status) {
-        shared_state_->release_cells(std::move(request.neighborhood.cells));
+        shared_state_->release_snapshot(std::move(request.neighborhood));
         return snapshot_status;
     }
     if (!request.identity.is_valid() || !request.stage_ticket.is_valid() ||
@@ -216,18 +261,20 @@ core::Status ChunkMeshScheduler::submit(ChunkMeshRequest request) {
         request.identity != request.neighborhood.center_identity || request.center_revision == 0 ||
         request.center_revision != request.neighborhood.center_revision ||
         request.render_table == nullptr || request.block_render_table_revision == 0 ||
-        request.block_render_table_revision != request.render_table->revision) {
-        shared_state_->release_cells(std::move(request.neighborhood.cells));
+        request.block_render_table_revision != request.render_table->revision ||
+        request.block_render_table_revision !=
+            request.neighborhood.meshing_masks.render_table_revision) {
+        shared_state_->release_snapshot(std::move(request.neighborhood));
         return core::Status::failure("renderer.invalid_chunk_mesh_request",
                                      "chunk mesh request metadata is inconsistent");
     }
     if (active_jobs_.contains(request.identity)) {
-        shared_state_->release_cells(std::move(request.neighborhood.cells));
+        shared_state_->release_snapshot(std::move(request.neighborhood));
         return core::Status::failure("renderer.chunk_mesh_request_coalesced",
                                      "a chunk mesh job is already active for this identity");
     }
     if (!has_capacity()) {
-        shared_state_->release_cells(std::move(request.neighborhood.cells));
+        shared_state_->release_snapshot(std::move(request.neighborhood));
         return core::Status::failure("renderer.chunk_mesh_scheduler_full",
                                      "chunk mesh scheduler reached its concurrency budget");
     }
@@ -258,7 +305,7 @@ core::Status ChunkMeshScheduler::submit(ChunkMeshRequest request) {
         if (cancellation->load(std::memory_order_acquire)) {
             result.state = ChunkMeshResultState::cancelled;
             result.dependency_revisions = std::move(request.neighborhood.dependencies);
-            shared_state->release_cells(std::move(request.neighborhood.cells));
+            shared_state->release_snapshot(std::move(request.neighborhood));
             shared_state->publish(std::move(result));
             return core::Status::ok();
         }
@@ -292,7 +339,7 @@ core::Status ChunkMeshScheduler::submit(ChunkMeshRequest request) {
             result.error_message = "chunk mesh worker threw an unknown exception";
         }
         result.dependency_revisions = std::move(request.neighborhood.dependencies);
-        shared_state->release_cells(std::move(request.neighborhood.cells));
+        shared_state->release_snapshot(std::move(request.neighborhood));
         shared_state->publish(std::move(result));
         return core::Status::ok();
     };
@@ -397,6 +444,8 @@ void ChunkMeshScheduler::refresh_stats() noexcept {
     const auto pool = shared_state_->pool_stats();
     stats_.pooled_snapshot_buffers = pool.cell_buffers;
     stats_.pooled_snapshot_capacity_cells = pool.cell_capacity;
+    stats_.pooled_snapshot_mask_buffers = pool.mask_word_buffers;
+    stats_.pooled_snapshot_mask_capacity_words = pool.mask_word_capacity;
     stats_.pooled_mesh_buffers = pool.mesh_buffers;
     stats_.pooled_mesh_vertex_capacity = pool.mesh_vertex_capacity;
     stats_.pooled_mesh_index_capacity = pool.mesh_index_capacity;

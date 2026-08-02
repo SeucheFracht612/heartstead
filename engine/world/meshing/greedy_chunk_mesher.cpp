@@ -7,6 +7,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <utility>
 
 namespace heartstead::world {
@@ -139,11 +140,8 @@ void include_point(ChunkMesh& mesh, math::Vec3f point) noexcept {
 }
 
 [[nodiscard]] bool full_occluder(const ChunkNeighborhoodSnapshot& neighborhood,
-                                 const BlockRenderTableSnapshot& render_table,
-                                 CellAddress address) noexcept {
-    const auto cell = snapshot_cell(neighborhood, address.x, address.y, address.z);
-    const auto* block = find_block(render_table, cell.type);
-    return !cell.is_air() && block != nullptr && block->full_occluder;
+                                 const BlockRenderTableSnapshot&, CellAddress address) noexcept {
+    return neighborhood.meshing_masks.full_occluder_relative(address.x, address.y, address.z);
 }
 
 [[nodiscard]] std::array<std::uint8_t, 4>
@@ -336,19 +334,7 @@ struct CubeCellSummary {
     std::size_t count = 0;
     VoxelCoord minimum{edge, edge, edge};
     VoxelCoord maximum{};
-    std::array<std::uint64_t, VoxelOccupancyMask::word_count> words{};
-
-    void include(VoxelCoord coordinate) noexcept {
-        constexpr auto edge_size = static_cast<std::size_t>(edge);
-        const auto index = static_cast<std::size_t>(coordinate.z) * edge_size * edge_size +
-                           static_cast<std::size_t>(coordinate.y) * edge_size + coordinate.x;
-        words[index / 64U] |= std::uint64_t{1} << (index % 64U);
-        ++count;
-        minimum = {std::min(minimum.x, coordinate.x), std::min(minimum.y, coordinate.y),
-                   std::min(minimum.z, coordinate.z)};
-        maximum = {std::max(maximum.x, coordinate.x), std::max(maximum.y, coordinate.y),
-                   std::max(maximum.z, coordinate.z)};
-    }
+    std::span<const std::uint64_t> words;
 
     [[nodiscard]] std::uint32_t row(std::uint16_t y, std::uint16_t z) const noexcept {
         constexpr auto edge_size = static_cast<std::size_t>(edge);
@@ -378,66 +364,68 @@ struct CubeCellSummary {
     }
 };
 
-[[nodiscard]] core::Result<CubeCellSummary>
-validate_and_count_cube_cells(const ChunkNeighborhoodSnapshot& neighborhood,
-                              const BlockRenderTableSnapshot& render_table) {
-    CubeCellSummary result;
-    const auto include_cell = [&result, &render_table](VoxelCell cell, std::uint16_t x,
-                                                       std::uint16_t y,
-                                                       std::uint16_t z) -> core::Status {
-        if (cell.is_air()) {
-            return core::Status::failure("chunk_mesh.invalid_occupancy_mask",
-                                         "snapshot occupancy mask marks an air voxel as occupied");
-        }
-        const auto* block = find_block(render_table, cell.type);
-        if (block == nullptr) {
-            return core::Status::failure(
-                "chunk_mesh.unknown_voxel_type",
-                "snapshot contains a voxel type missing from its block render table");
-        }
-        if (block->geometry == MeshingGeometryKind::full_cube &&
-            block->render_phase != MeshingRenderPhase::fluid) {
-            result.include({x, y, z});
-        }
-        return core::Status::ok();
-    };
-    if (neighborhood.center_occupancy.full()) {
-        for (std::uint16_t z = 0; z < edge; ++z) {
-            for (std::uint16_t y = 0; y < edge; ++y) {
-                for (std::uint16_t x = 0; x < edge; ++x) {
-                    const auto status = include_cell(snapshot_cell(neighborhood, x, y, z), x, y, z);
-                    if (!status) {
-                        return core::Result<CubeCellSummary>::failure(status.error().code,
-                                                                      status.error().message);
-                    }
-                }
-            }
-        }
-        return core::Result<CubeCellSummary>::success(std::move(result));
-    }
+[[nodiscard]] CubeCellSummary
+cube_cell_summary(const ChunkNeighborhoodSnapshot& neighborhood) noexcept {
+    return {neighborhood.meshing_masks.greedy_cube_count, neighborhood.meshing_masks.greedy_minimum,
+            neighborhood.meshing_masks.greedy_maximum,
+            neighborhood.meshing_masks.greedy_cube_words()};
+}
 
-    constexpr auto edge_size = static_cast<std::size_t>(edge);
-    constexpr auto slice_size = edge_size * edge_size;
-    const auto words = neighborhood.center_occupancy.words();
-    for (std::size_t word_index = 0; word_index < words.size(); ++word_index) {
-        auto word = words[word_index];
-        while (word != 0) {
-            const auto bit_index = static_cast<std::size_t>(std::countr_zero(word));
-            const auto index = word_index * 64U + bit_index;
-            const auto z = static_cast<std::uint16_t>(index / slice_size);
-            const auto remainder = index % slice_size;
-            const auto y = static_cast<std::uint16_t>(remainder / edge_size);
-            const auto x = static_cast<std::uint16_t>(remainder % edge_size);
-            const auto cell = snapshot_cell(neighborhood, x, y, z);
-            const auto status = include_cell(cell, x, y, z);
-            if (!status) {
-                return core::Result<CubeCellSummary>::failure(status.error().code,
-                                                              status.error().message);
+[[nodiscard]] std::uint32_t candidate_row(const ChunkMeshingMasks& masks,
+                                          ChunkMeshFaceDirection direction, std::uint16_t slice,
+                                          std::uint16_t v) noexcept {
+    const auto offset = face_offset(direction);
+    switch (direction) {
+    case ChunkMeshFaceDirection::negative_x:
+    case ChunkMeshFaceDirection::positive_x: {
+        const auto source_bit = std::uint32_t{1} << slice;
+        std::uint32_t result = 0;
+        for (std::uint16_t y = 0; y < edge; ++y) {
+            const auto sources = masks.greedy_cube_x_row(y, v);
+            const auto occluders = masks.full_occluder_x_row(offset.x, y, v);
+            if ((sources & source_bit) != 0 && (occluders & source_bit) == 0) {
+                result |= std::uint32_t{1} << y;
             }
-            word &= word - std::uint64_t{1};
         }
+        return result;
     }
-    return core::Result<CubeCellSummary>::success(std::move(result));
+    case ChunkMeshFaceDirection::negative_y:
+    case ChunkMeshFaceDirection::positive_y:
+        return masks.greedy_cube_x_row(slice, v) &
+               ~masks.full_occluder_x_row(0, static_cast<std::int32_t>(slice) + offset.y, v);
+    case ChunkMeshFaceDirection::negative_z:
+    case ChunkMeshFaceDirection::positive_z:
+        return masks.greedy_cube_x_row(v, slice) &
+               ~masks.full_occluder_x_row(0, v, static_cast<std::int32_t>(slice) + offset.z);
+    }
+    return 0;
+}
+
+[[nodiscard]] constexpr std::uint32_t inclusive_bit_range(std::uint16_t minimum,
+                                                          std::uint16_t maximum) noexcept {
+    const auto below_minimum = minimum == 0 ? 0U : (std::uint32_t{1} << minimum) - 1U;
+    const auto through_maximum =
+        maximum + 1U == edge ? ~std::uint32_t{0} : (std::uint32_t{1} << (maximum + 1U)) - 1U;
+    return through_maximum & ~below_minimum;
+}
+
+void write_candidate_row(std::array<MaskCell, mask_cell_count>& mask,
+                         const ChunkNeighborhoodSnapshot& neighborhood,
+                         const BlockRenderTableSnapshot& render_table,
+                         ChunkMeshFaceDirection direction, std::uint16_t slice, std::uint16_t v,
+                         std::uint32_t candidates) noexcept {
+    while (candidates != 0) {
+        const auto u = static_cast<std::uint16_t>(std::countr_zero(candidates));
+        const auto source = address(direction, slice, u, v);
+        const auto neighbor_offset = face_offset(direction);
+        const CellAddress neighbor{source.x + neighbor_offset.x, source.y + neighbor_offset.y,
+                                   source.z + neighbor_offset.z};
+        const auto source_cell = snapshot_cell(neighborhood, source.x, source.y, source.z);
+        const auto neighbor_cell = snapshot_cell(neighborhood, neighbor.x, neighbor.y, neighbor.z);
+        write_mask_cell(mask[static_cast<std::size_t>(v) * edge + u], source_cell,
+                        neighbor_cell.light, render_table, neighborhood, source, direction);
+        candidates &= candidates - 1U;
+    }
 }
 
 } // namespace
@@ -461,12 +449,13 @@ GreedyChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborh
     if (!status) {
         return core::Result<ChunkMesh>::failure(status.error().code, status.error().message);
     }
-    auto cube_cells = validate_and_count_cube_cells(neighborhood, render_table);
-    if (!cube_cells) {
-        return core::Result<ChunkMesh>::failure(cube_cells.error().code,
-                                                cube_cells.error().message);
+    if (neighborhood.meshing_masks.render_table_revision != render_table.revision) {
+        return core::Result<ChunkMesh>::failure(
+            "chunk_mesh.stale_meshing_masks",
+            "derived meshing masks do not match the active block render table revision");
     }
-    if (cube_cells.value().count == 0) {
+    const auto cube_cells = cube_cell_summary(neighborhood);
+    if (cube_cells.count == 0) {
         // Specialized geometry remains on independent, reference-checked emitters while the full
         // cube hot loop is optimized. Empty chunks also take this harmless path.
         return ChunkMesher::build_surface_mesh(neighborhood, render_table);
@@ -484,7 +473,7 @@ GreedyChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborh
     mesh.provided_halo_radius = neighborhood.halo_radius;
     mesh.required_halo_radius = neighborhood.halo_radius;
     const auto reserve_quads =
-        std::min<std::size_t>(cube_cells.value().exposed_unit_face_upper_bound(), 16U * 1024U);
+        std::min<std::size_t>(cube_cells.exposed_unit_face_upper_bound(), 16U * 1024U);
     mesh.vertices.reserve(reserve_quads * 4U);
     mesh.indices.reserve(reserve_quads * 6U);
 
@@ -500,8 +489,8 @@ GreedyChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborh
         std::uint16_t v_min;
         std::uint16_t v_max;
     };
-    const auto minimum = cube_cells.value().minimum;
-    const auto maximum = cube_cells.value().maximum;
+    const auto minimum = cube_cells.minimum;
+    const auto maximum = cube_cells.maximum;
     const std::array direction_pairs{
         DirectionPair{ChunkMeshFaceDirection::negative_x, ChunkMeshFaceDirection::positive_x,
                       minimum.x, static_cast<std::uint16_t>(maximum.x + 1U), minimum.y, maximum.y,
@@ -514,30 +503,53 @@ GreedyChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborh
                       minimum.y, maximum.y},
     };
     for (const auto directions : direction_pairs) {
+        const auto u_bits = inclusive_bit_range(directions.u_min, directions.u_max);
         for (std::uint16_t boundary = directions.boundary_min; boundary <= directions.boundary_max;
              ++boundary) {
-            for (std::uint16_t v = directions.v_min; v <= directions.v_max; ++v) {
-                for (std::uint16_t u = directions.u_min; u <= directions.u_max; ++u) {
-                    const auto negative_source =
-                        address(directions.negative, static_cast<std::int32_t>(boundary), u, v);
-                    const auto positive_source =
-                        address(directions.positive, static_cast<std::int32_t>(boundary) - 1, u, v);
-                    const auto negative_cell = snapshot_cell(neighborhood, negative_source.x,
-                                                             negative_source.y, negative_source.z);
-                    const auto positive_cell = snapshot_cell(neighborhood, positive_source.x,
-                                                             positive_source.y, positive_source.z);
-                    const auto mask_index = static_cast<std::size_t>(v) * edge + u;
-                    if (boundary < edge && is_greedy_cube(negative_cell, render_table) &&
-                        !cell_occludes(positive_cell, directions.positive, render_table)) {
-                        write_mask_cell(negative_mask[mask_index], negative_cell,
-                                        positive_cell.light, render_table, neighborhood,
-                                        negative_source, directions.negative);
+            if (neighborhood.meshing_masks.has_directional_occluders) {
+                for (std::uint16_t v = directions.v_min; v <= directions.v_max; ++v) {
+                    for (std::uint16_t u = directions.u_min; u <= directions.u_max; ++u) {
+                        const auto negative_source =
+                            address(directions.negative, static_cast<std::int32_t>(boundary), u, v);
+                        const auto positive_source = address(
+                            directions.positive, static_cast<std::int32_t>(boundary) - 1, u, v);
+                        const auto negative_cell = snapshot_cell(
+                            neighborhood, negative_source.x, negative_source.y, negative_source.z);
+                        const auto positive_cell = snapshot_cell(
+                            neighborhood, positive_source.x, positive_source.y, positive_source.z);
+                        const auto mask_index = static_cast<std::size_t>(v) * edge + u;
+                        if (boundary < edge && is_greedy_cube(negative_cell, render_table) &&
+                            !cell_occludes(positive_cell, directions.positive, render_table)) {
+                            write_mask_cell(negative_mask[mask_index], negative_cell,
+                                            positive_cell.light, render_table, neighborhood,
+                                            negative_source, directions.negative);
+                        }
+                        if (boundary > 0 && is_greedy_cube(positive_cell, render_table) &&
+                            !cell_occludes(negative_cell, directions.negative, render_table)) {
+                            write_mask_cell(positive_mask[mask_index], positive_cell,
+                                            negative_cell.light, render_table, neighborhood,
+                                            positive_source, directions.positive);
+                        }
                     }
-                    if (boundary > 0 && is_greedy_cube(positive_cell, render_table) &&
-                        !cell_occludes(negative_cell, directions.negative, render_table)) {
-                        write_mask_cell(positive_mask[mask_index], positive_cell,
-                                        negative_cell.light, render_table, neighborhood,
-                                        positive_source, directions.positive);
+                }
+            } else {
+                if (boundary <= directions.boundary_max - 1U) {
+                    for (std::uint16_t v = directions.v_min; v <= directions.v_max; ++v) {
+                        const auto candidates = candidate_row(neighborhood.meshing_masks,
+                                                              directions.negative, boundary, v) &
+                                                u_bits;
+                        write_candidate_row(negative_mask, neighborhood, render_table,
+                                            directions.negative, boundary, v, candidates);
+                    }
+                }
+                if (boundary > directions.boundary_min) {
+                    const auto slice = static_cast<std::uint16_t>(boundary - 1U);
+                    for (std::uint16_t v = directions.v_min; v <= directions.v_max; ++v) {
+                        const auto candidates = candidate_row(neighborhood.meshing_masks,
+                                                              directions.positive, slice, v) &
+                                                u_bits;
+                        write_candidate_row(positive_mask, neighborhood, render_table,
+                                            directions.positive, slice, v, candidates);
                     }
                 }
             }

@@ -297,11 +297,20 @@ void test_immutable_chunk_meshing_snapshot() {
     assert(snapshot.value().center_occupancy.occupied_count() == 1);
     assert(snapshot.value().center_occupied({31, 4, 5}));
     assert(!snapshot.value().center_occupied({30, 4, 5}));
+    assert(snapshot.value().meshing_masks.center_revision == center.content_revision());
+    assert(snapshot.value().meshing_masks.render_table_revision == table.value().revision);
+    assert(snapshot.value().meshing_masks.greedy_cube_count == 1);
+    assert(snapshot.value().meshing_masks.greedy_cube({31, 4, 5}));
+    assert(snapshot.value().meshing_masks.full_occluder_relative(32, 4, 5));
+    assert(snapshot.value().meshing_masks.payload_bytes() > 0);
     assert(world::dependency_revisions_match(chunks, snapshot.value().dependencies));
 
     auto stale_mask_snapshot = snapshot.value();
     stale_mask_snapshot.center_occupancy = {};
     assert(!stale_mask_snapshot.validate());
+    auto corrupt_meshing_mask_snapshot = snapshot.value();
+    ++corrupt_meshing_mask_snapshot.meshing_masks.greedy_cube_count;
+    assert(!corrupt_meshing_mask_snapshot.validate());
 
     auto immutable_mesh = world::ChunkMesher::build_surface_mesh(snapshot.value(), table.value());
     assert(immutable_mesh);

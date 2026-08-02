@@ -43,6 +43,9 @@ void test_small_benchmark_retains_raw_samples_and_geometry() {
            geometry.greedy.directional_unit_surface_faces);
     assert(geometry.greedy.payload_bytes < geometry.reference.payload_bytes);
     assert(geometry.snapshot_allocated_bytes >= geometry.snapshot_payload_bytes);
+    assert(geometry.snapshot_meshing_mask_payload_bytes > 0);
+    assert(geometry.snapshot_meshing_mask_allocated_bytes >=
+           geometry.snapshot_meshing_mask_payload_bytes);
 
     constexpr std::array operations{
         benchmark::VoxelMeshingOperation::snapshot_rebuild,
@@ -64,9 +67,10 @@ void test_small_benchmark_retains_raw_samples_and_geometry() {
                ->checksum);
 
     const auto json = report.value().to_json();
-    assert(json.contains("\"schema_version\": 1"));
+    assert(json.contains("\"schema_version\": 2"));
     assert(json.contains("\"benchmark\": \"voxel_meshing\""));
     assert(json.contains("\"geometry\""));
+    assert(json.contains("\"snapshot_meshing_mask_payload_bytes\""));
     assert(json.contains("\"raw_samples\""));
     assert(json.contains("\"p95_nanoseconds\""));
 

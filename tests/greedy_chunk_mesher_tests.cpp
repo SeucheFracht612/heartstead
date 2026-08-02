@@ -183,6 +183,43 @@ void test_voxel_ao_matches_reference_across_chunk_boundary() {
     assert(reference.back() == 255);
 }
 
+void test_directional_occluders_use_exact_fallback_and_revision_key() {
+    world::BlockRenderTableSnapshot table;
+    table.revision = 42;
+    table.blocks.resize(2);
+    auto& block = table.blocks[1];
+    block.defined = true;
+    block.geometry = world::MeshingGeometryKind::full_cube;
+    block.render_phase = world::MeshingRenderPhase::opaque;
+    block.material_index = 1;
+    block.occlusion_mask = static_cast<std::uint8_t>(
+        1U << static_cast<std::uint8_t>(world::ChunkMeshFaceDirection::negative_x));
+    block.full_occluder = false;
+    block.neighbor_dependency_radius = 1;
+    block.boxes = {world::BlockModelBox{}};
+    block.render_bounds = {{0.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 1.0F}};
+    assert(table.validate());
+
+    world::ChunkDatabase chunks;
+    auto& chunk = chunks.get_or_create({0, 0, 0});
+    assert(chunk.set({0, 0, 0}, {1, 255}));
+    assert(chunk.set({1, 0, 0}, {1, 255}));
+    auto snapshot = world::build_chunk_neighborhood_snapshot(chunks, chunk.identity(), table);
+    assert(snapshot);
+    assert(snapshot.value().meshing_masks.has_directional_occluders);
+
+    auto mesh = world::GreedyChunkMesher::build_surface_mesh(snapshot.value(), table);
+    assert(mesh);
+    // The ten exterior unit faces merge to six quads; the one-sided internal face remains.
+    assert(mesh.value().face_count == 7);
+
+    auto changed_table = table;
+    ++changed_table.revision;
+    auto stale = world::GreedyChunkMesher::build_surface_mesh(snapshot.value(), changed_table);
+    assert(!stale);
+    assert(stale.error().code == "chunk_mesh.stale_meshing_masks");
+}
+
 } // namespace
 
 int main() {
@@ -191,5 +228,6 @@ int main() {
     test_material_sections_are_grouped_and_cover_indices();
     test_checkerboard_and_cross_chunk_occlusion_match_reference();
     test_voxel_ao_matches_reference_across_chunk_boundary();
+    test_directional_occluders_use_exact_fallback_and_revision_key();
     return 0;
 }

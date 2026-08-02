@@ -75,6 +75,8 @@ struct ChunkMeshSchedulerStats {
     std::size_t completed_mailbox_count = 0;
     std::size_t pooled_snapshot_buffers = 0;
     std::size_t pooled_snapshot_capacity_cells = 0;
+    std::size_t pooled_snapshot_mask_buffers = 0;
+    std::size_t pooled_snapshot_mask_capacity_words = 0;
     std::size_t pooled_mesh_buffers = 0;
     std::size_t pooled_mesh_vertex_capacity = 0;
     std::size_t pooled_mesh_index_capacity = 0;
@@ -97,6 +99,8 @@ class ChunkMeshScheduler {
 
     [[nodiscard]] std::vector<world::VoxelCell>
     acquire_snapshot_cells(std::size_t minimum_capacity);
+    [[nodiscard]] std::vector<std::uint64_t>
+    acquire_snapshot_mask_words(std::size_t minimum_capacity);
     [[nodiscard]] core::Status submit(ChunkMeshRequest request);
     [[nodiscard]] std::vector<ChunkMeshResult>
     drain_completed(std::size_t maximum_results = static_cast<std::size_t>(-1));

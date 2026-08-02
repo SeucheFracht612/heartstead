@@ -55,6 +55,8 @@ struct VoxelMeshingCorpusMeasurement {
     std::size_t snapshot_cell_count = 0;
     std::size_t snapshot_payload_bytes = 0;
     std::size_t snapshot_allocated_bytes = 0;
+    std::size_t snapshot_meshing_mask_payload_bytes = 0;
+    std::size_t snapshot_meshing_mask_allocated_bytes = 0;
     VoxelMeshOutputMeasurement reference;
     VoxelMeshOutputMeasurement greedy;
 };
@@ -86,7 +88,7 @@ struct VoxelMeshingBenchmarkSummary {
 };
 
 struct VoxelMeshingBenchmarkReport {
-    static constexpr std::uint32_t schema_version = 1;
+    static constexpr std::uint32_t schema_version = 2;
 
     VoxelMeshingBenchmarkConfig config;
     profiling::RuntimeMetadata runtime;

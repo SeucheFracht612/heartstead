@@ -10,6 +10,17 @@ namespace heartstead::world {
 
 namespace {
 
+constexpr auto center_edge = static_cast<std::size_t>(VoxelChunk::edge_length);
+
+struct CenterMeshingClassification {
+    std::uint16_t required_halo = 0;
+    std::size_t greedy_cube_count = 0;
+    VoxelCoord greedy_minimum{VoxelChunk::edge_length, VoxelChunk::edge_length,
+                              VoxelChunk::edge_length};
+    VoxelCoord greedy_maximum{};
+    std::array<std::uint64_t, ChunkMeshingMasks::center_word_count> greedy_cube_words{};
+};
+
 [[nodiscard]] constexpr std::int32_t floor_div(std::int32_t value, std::int32_t divisor) noexcept {
     auto quotient = value / divisor;
     if (value % divisor < 0) {
@@ -85,6 +96,108 @@ namespace {
     result.model_prototype_id = model.prototype_id;
     result.render_bounds = model.render_bounds;
     return result;
+}
+
+[[nodiscard]] core::Result<CenterMeshingClassification>
+classify_center_for_meshing(std::span<const VoxelCell> center_cells,
+                            const VoxelOccupancyMask& occupancy,
+                            const BlockRenderTableSnapshot& render_table) {
+    if (center_cells.size() != VoxelChunk::total_cells) {
+        return core::Result<CenterMeshingClassification>::failure(
+            "chunk_mesh.invalid_center_snapshot", "center chunk snapshot has an invalid size");
+    }
+
+    CenterMeshingClassification result;
+    const auto include = [&result, &render_table](VoxelCell cell,
+                                                  std::size_t index) -> core::Status {
+        if (cell.is_air()) {
+            return core::Status::failure("chunk_mesh.invalid_occupancy_mask",
+                                         "center occupancy mask marks an air voxel as occupied");
+        }
+        const auto* block = render_table.find(cell.type);
+        if (block == nullptr) {
+            return core::Status::failure(
+                "chunk_mesh.unknown_voxel_type",
+                "center chunk contains a voxel missing from the block render table");
+        }
+        result.required_halo = std::max(result.required_halo, block->neighbor_dependency_radius);
+        if (block->geometry != MeshingGeometryKind::full_cube ||
+            block->render_phase == MeshingRenderPhase::fluid) {
+            return core::Status::ok();
+        }
+
+        result.greedy_cube_words[index / 64U] |= std::uint64_t{1} << (index % 64U);
+        ++result.greedy_cube_count;
+        const auto z = static_cast<std::uint16_t>(index / (center_edge * center_edge));
+        const auto remainder = index % (center_edge * center_edge);
+        const auto y = static_cast<std::uint16_t>(remainder / center_edge);
+        const auto x = static_cast<std::uint16_t>(remainder % center_edge);
+        result.greedy_minimum = {std::min(result.greedy_minimum.x, x),
+                                 std::min(result.greedy_minimum.y, y),
+                                 std::min(result.greedy_minimum.z, z)};
+        result.greedy_maximum = {std::max(result.greedy_maximum.x, x),
+                                 std::max(result.greedy_maximum.y, y),
+                                 std::max(result.greedy_maximum.z, z)};
+        return core::Status::ok();
+    };
+
+    const auto words = occupancy.words();
+    for (std::size_t word_index = 0; word_index < words.size(); ++word_index) {
+        auto word = words[word_index];
+        while (word != 0) {
+            const auto bit_index = static_cast<std::size_t>(std::countr_zero(word));
+            const auto index = word_index * 64U + bit_index;
+            const auto status = include(center_cells[index], index);
+            if (!status) {
+                return core::Result<CenterMeshingClassification>::failure(status.error().code,
+                                                                          status.error().message);
+            }
+            word &= word - std::uint64_t{1};
+        }
+    }
+    return core::Result<CenterMeshingClassification>::success(std::move(result));
+}
+
+void build_meshing_masks(ChunkNeighborhoodSnapshot& snapshot,
+                         const CenterMeshingClassification& classification,
+                         const BlockRenderTableSnapshot& render_table,
+                         std::vector<std::uint64_t> reusable_words) {
+    auto& masks = snapshot.meshing_masks;
+    masks.center_revision = snapshot.center_revision;
+    masks.render_table_revision = render_table.revision;
+    masks.halo_radius = snapshot.halo_radius;
+    masks.side_length = snapshot.side_length;
+    masks.greedy_cube_count = classification.greedy_cube_count;
+    masks.greedy_minimum = classification.greedy_minimum;
+    masks.greedy_maximum = classification.greedy_maximum;
+    masks.has_directional_occluders = false;
+    reusable_words.clear();
+    if (classification.greedy_cube_count == 0) {
+        masks.words = std::move(reusable_words);
+        return;
+    }
+
+    const auto full_occluder_word_count = (snapshot.cells.size() + 63U) / 64U;
+    reusable_words.resize(ChunkMeshingMasks::center_word_count + full_occluder_word_count, 0);
+    std::copy(classification.greedy_cube_words.begin(), classification.greedy_cube_words.end(),
+              reusable_words.begin());
+    for (std::size_t index = 0; index < snapshot.cells.size(); ++index) {
+        const auto cell = snapshot.cells[index];
+        if (cell.is_air()) {
+            continue;
+        }
+        const auto* block = render_table.find(cell.type);
+        if (block == nullptr) {
+            continue;
+        }
+        if (block->full_occluder) {
+            const auto mask_index = ChunkMeshingMasks::center_word_count + index / 64U;
+            reusable_words[mask_index] |= std::uint64_t{1} << (index % 64U);
+        } else if (block->occlusion_mask != 0) {
+            masks.has_directional_occluders = true;
+        }
+    }
+    masks.words = std::move(reusable_words);
 }
 
 } // namespace
@@ -169,6 +282,145 @@ build_block_render_table_snapshot(const VoxelPalette* palette) {
     return core::Result<BlockRenderTableSnapshot>::success(std::move(result));
 }
 
+bool ChunkMeshingMasks::greedy_cube(std::size_t index) const noexcept {
+    return index < VoxelChunk::total_cells && words.size() >= center_word_count &&
+           (words[index / 64U] & (std::uint64_t{1} << (index % 64U))) != 0;
+}
+
+bool ChunkMeshingMasks::greedy_cube(VoxelCoord coordinate) const noexcept {
+    if (coordinate.x >= VoxelChunk::edge_length || coordinate.y >= VoxelChunk::edge_length ||
+        coordinate.z >= VoxelChunk::edge_length) {
+        return false;
+    }
+    const auto index = static_cast<std::size_t>(coordinate.z) * center_edge * center_edge +
+                       static_cast<std::size_t>(coordinate.y) * center_edge + coordinate.x;
+    return greedy_cube(index);
+}
+
+std::uint32_t ChunkMeshingMasks::greedy_cube_x_row(std::uint16_t y,
+                                                   std::uint16_t z) const noexcept {
+    if (y >= VoxelChunk::edge_length || z >= VoxelChunk::edge_length ||
+        words.size() < center_word_count) {
+        return 0;
+    }
+    const auto index = static_cast<std::size_t>(z) * center_edge * center_edge +
+                       static_cast<std::size_t>(y) * center_edge;
+    return static_cast<std::uint32_t>(words[index / 64U] >> (index % 64U));
+}
+
+bool ChunkMeshingMasks::full_occluder_relative(std::int32_t x, std::int32_t y,
+                                               std::int32_t z) const noexcept {
+    if (greedy_cube_count == 0 || words.size() <= center_word_count) {
+        return false;
+    }
+    const auto halo = static_cast<std::int32_t>(halo_radius);
+    const auto side = static_cast<std::int32_t>(side_length);
+    const auto snapshot_x = x + halo;
+    const auto snapshot_y = y + halo;
+    const auto snapshot_z = z + halo;
+    if (snapshot_x < 0 || snapshot_y < 0 || snapshot_z < 0 || snapshot_x >= side ||
+        snapshot_y >= side || snapshot_z >= side) {
+        return false;
+    }
+    const auto side_size = static_cast<std::size_t>(side_length);
+    const auto index = static_cast<std::size_t>(snapshot_z) * side_size * side_size +
+                       static_cast<std::size_t>(snapshot_y) * side_size +
+                       static_cast<std::size_t>(snapshot_x);
+    return (words[center_word_count + index / 64U] & (std::uint64_t{1} << (index % 64U))) != 0;
+}
+
+std::uint32_t ChunkMeshingMasks::full_occluder_x_row(std::int32_t x, std::int32_t y,
+                                                     std::int32_t z) const noexcept {
+    if (greedy_cube_count == 0 || words.size() <= center_word_count) {
+        return 0;
+    }
+    const auto halo = static_cast<std::int32_t>(halo_radius);
+    const auto side = static_cast<std::int32_t>(side_length);
+    const auto snapshot_y = y + halo;
+    const auto snapshot_z = z + halo;
+    if (snapshot_y < 0 || snapshot_z < 0 || snapshot_y >= side || snapshot_z >= side) {
+        return 0;
+    }
+
+    constexpr auto requested_bits = static_cast<std::int32_t>(VoxelChunk::edge_length);
+    const auto first = std::max(x, -halo);
+    const auto last = std::min(x + requested_bits, side - halo);
+    if (first >= last) {
+        return 0;
+    }
+    const auto side_size = static_cast<std::size_t>(side_length);
+    const auto start_index = static_cast<std::size_t>(snapshot_z) * side_size * side_size +
+                             static_cast<std::size_t>(snapshot_y) * side_size +
+                             static_cast<std::size_t>(first + halo);
+    const auto word_index = center_word_count + start_index / 64U;
+    const auto bit_offset = start_index % 64U;
+    std::uint64_t extracted = words[word_index] >> bit_offset;
+    if (bit_offset != 0 && word_index + 1U < words.size()) {
+        extracted |= words[word_index + 1U] << (64U - bit_offset);
+    }
+    const auto count = static_cast<std::uint32_t>(last - first);
+    if (count < 32U) {
+        extracted &= (std::uint64_t{1} << count) - 1U;
+    }
+    return static_cast<std::uint32_t>(extracted << (first - x));
+}
+
+std::span<const std::uint64_t> ChunkMeshingMasks::greedy_cube_words() const noexcept {
+    return words.size() < center_word_count
+               ? std::span<const std::uint64_t>{}
+               : std::span<const std::uint64_t>{words.data(), center_word_count};
+}
+
+std::size_t ChunkMeshingMasks::payload_bytes() const noexcept {
+    return words.size() * sizeof(std::uint64_t);
+}
+
+std::size_t ChunkMeshingMasks::allocated_bytes() const noexcept {
+    return words.capacity() * sizeof(std::uint64_t);
+}
+
+core::Status ChunkMeshingMasks::validate(std::uint64_t expected_center_revision,
+                                         std::uint16_t expected_halo_radius,
+                                         std::uint16_t expected_side_length) const {
+    if (center_revision == 0 || center_revision != expected_center_revision ||
+        render_table_revision == 0 || halo_radius != expected_halo_radius ||
+        side_length != expected_side_length || greedy_cube_count > VoxelChunk::total_cells) {
+        return core::Status::failure("chunk_mesh.invalid_meshing_mask_metadata",
+                                     "derived meshing mask metadata is inconsistent");
+    }
+    if (greedy_cube_count == 0) {
+        if (!words.empty() || greedy_minimum.x != VoxelChunk::edge_length ||
+            greedy_minimum.y != VoxelChunk::edge_length ||
+            greedy_minimum.z != VoxelChunk::edge_length) {
+            return core::Status::failure("chunk_mesh.invalid_empty_meshing_masks",
+                                         "empty derived meshing masks contain source data");
+        }
+        return core::Status::ok();
+    }
+    const auto side = static_cast<std::size_t>(side_length);
+    const auto full_occluder_word_count = (side * side * side + 63U) / 64U;
+    if (words.size() != center_word_count + full_occluder_word_count ||
+        greedy_minimum.x >= VoxelChunk::edge_length ||
+        greedy_minimum.y >= VoxelChunk::edge_length ||
+        greedy_minimum.z >= VoxelChunk::edge_length ||
+        greedy_maximum.x >= VoxelChunk::edge_length ||
+        greedy_maximum.y >= VoxelChunk::edge_length ||
+        greedy_maximum.z >= VoxelChunk::edge_length || greedy_minimum.x > greedy_maximum.x ||
+        greedy_minimum.y > greedy_maximum.y || greedy_minimum.z > greedy_maximum.z) {
+        return core::Status::failure("chunk_mesh.invalid_meshing_mask_extent",
+                                     "derived meshing mask storage or bounds are invalid");
+    }
+    std::size_t counted = 0;
+    for (std::size_t index = 0; index < center_word_count; ++index) {
+        counted += static_cast<std::size_t>(std::popcount(words[index]));
+    }
+    if (counted != greedy_cube_count) {
+        return core::Status::failure("chunk_mesh.invalid_meshing_mask_count",
+                                     "derived greedy-cube mask population is inconsistent");
+    }
+    return core::Status::ok();
+}
+
 VoxelCell ChunkNeighborhoodSnapshot::cell(std::uint16_t x, std::uint16_t y,
                                           std::uint16_t z) const noexcept {
     if (x >= VoxelChunk::edge_length || y >= VoxelChunk::edge_length ||
@@ -231,6 +483,10 @@ core::Status ChunkNeighborhoodSnapshot::validate() const {
         return core::Status::failure("chunk_mesh.missing_dependency_revisions",
                                      "chunk neighborhood has no dependency revisions");
     }
+    auto mask_status = meshing_masks.validate(center_revision, halo_radius, side_length);
+    if (!mask_status) {
+        return mask_status;
+    }
     return core::Status::ok();
 }
 
@@ -256,10 +512,9 @@ core::Result<std::uint16_t> required_chunk_halo(std::span<const VoxelCell> cente
     return core::Result<std::uint16_t>::success(required);
 }
 
-core::Result<std::uint16_t>
-required_chunk_halo(std::span<const VoxelCell> center_cells,
-                    const VoxelOccupancyMask& occupancy,
-                    const BlockRenderTableSnapshot& render_table) {
+core::Result<std::uint16_t> required_chunk_halo(std::span<const VoxelCell> center_cells,
+                                                const VoxelOccupancyMask& occupancy,
+                                                const BlockRenderTableSnapshot& render_table) {
     if (center_cells.size() != VoxelChunk::total_cells) {
         return core::Result<std::uint16_t>::failure("chunk_mesh.invalid_center_snapshot",
                                                     "center chunk snapshot has an invalid size");
@@ -290,10 +545,9 @@ required_chunk_halo(std::span<const VoxelCell> center_cells,
     return core::Result<std::uint16_t>::success(required);
 }
 
-core::Result<ChunkNeighborhoodSnapshot>
-build_chunk_neighborhood_snapshot(const ChunkDatabase& chunks, ChunkIdentity center,
-                                  const BlockRenderTableSnapshot& render_table,
-                                  std::vector<VoxelCell> reusable_cells) {
+core::Result<ChunkNeighborhoodSnapshot> build_chunk_neighborhood_snapshot(
+    const ChunkDatabase& chunks, ChunkIdentity center, const BlockRenderTableSnapshot& render_table,
+    std::vector<VoxelCell> reusable_cells, std::vector<std::uint64_t> reusable_mask_words) {
     const auto* center_chunk = chunks.find(center.coordinate);
     if (center_chunk == nullptr || center_chunk->identity() != center) {
         return core::Result<ChunkNeighborhoodSnapshot>::failure(
@@ -305,18 +559,18 @@ build_chunk_neighborhood_snapshot(const ChunkDatabase& chunks, ChunkIdentity cen
             "chunk_mesh.stale_occupancy_mask",
             "cannot snapshot a chunk whose occupancy mask revision is stale");
     }
-    const auto halo =
-        required_chunk_halo(center_chunk->cells(), center_chunk->occupancy(), render_table);
-    if (!halo) {
-        return core::Result<ChunkNeighborhoodSnapshot>::failure(halo.error().code,
-                                                                halo.error().message);
+    const auto classification =
+        classify_center_for_meshing(center_chunk->cells(), center_chunk->occupancy(), render_table);
+    if (!classification) {
+        return core::Result<ChunkNeighborhoodSnapshot>::failure(classification.error().code,
+                                                                classification.error().message);
     }
 
     ChunkNeighborhoodSnapshot result;
     result.center_identity = center;
     result.center_revision = center_chunk->content_revision();
     result.center_occupancy = center_chunk->occupancy();
-    result.halo_radius = halo.value();
+    result.halo_radius = classification.value().required_halo;
     result.side_length =
         static_cast<std::uint16_t>(static_cast<std::uint32_t>(VoxelChunk::edge_length) +
                                    static_cast<std::uint32_t>(result.halo_radius) * 2U);
@@ -381,6 +635,8 @@ build_chunk_neighborhood_snapshot(const ChunkDatabase& chunks, ChunkIdentity cen
             }
         }
     }
+    build_meshing_masks(result, classification.value(), render_table,
+                        std::move(reusable_mask_words));
     auto status = result.validate();
     if (!status) {
         return core::Result<ChunkNeighborhoodSnapshot>::failure(status.error().code,

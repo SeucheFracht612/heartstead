@@ -31,9 +31,12 @@ make_request(ChunkMeshScheduler& scheduler, const heartstead::world::ChunkDataba
              std::uint64_t sequence) {
     constexpr std::size_t snapshot_side =
         static_cast<std::size_t>(heartstead::world::VoxelChunk::edge_length) + 2;
-    auto storage = scheduler.acquire_snapshot_cells(snapshot_side * snapshot_side * snapshot_side);
+    constexpr auto snapshot_cells = snapshot_side * snapshot_side * snapshot_side;
+    auto storage = scheduler.acquire_snapshot_cells(snapshot_cells);
+    auto mask_storage = scheduler.acquire_snapshot_mask_words(
+        heartstead::world::ChunkMeshingMasks::center_word_count + (snapshot_cells + 63U) / 64U);
     auto snapshot = heartstead::world::build_chunk_neighborhood_snapshot(
-        chunks, identity, *render_table, std::move(storage));
+        chunks, identity, *render_table, std::move(storage), std::move(mask_storage));
     assert(snapshot);
 
     ChunkMeshRequest request;
@@ -114,6 +117,8 @@ void test_scheduler_coalesces_and_cancels_queued_work() {
     assert(cancelled_result->state == renderer::ChunkMeshResultState::cancelled);
     assert(scheduler->stats().cancelled_jobs == 1);
     assert(scheduler->stats().pooled_snapshot_buffers > 0);
+    assert(scheduler->stats().pooled_snapshot_mask_buffers > 0);
+    assert(scheduler->stats().pooled_snapshot_mask_capacity_words > 0);
     assert(!scheduler->has_in_flight(cancelled.identity()));
 
     const auto completed_mesh =
@@ -155,6 +160,13 @@ void test_results_carry_stale_center_neighbor_table_and_generation_metadata() {
     assert(world.chunks().set(neighbor_coord, {0, 5, 5}, world::VoxelCell{1, 255}));
     const auto original_identity = world.chunks().find(center_coord)->identity();
     const auto table = legacy_render_table();
+
+    auto mismatched_masks =
+        make_request(*scheduler, world.chunks(), original_identity, table, 0);
+    ++mismatched_masks.neighborhood.meshing_masks.render_table_revision;
+    const auto rejected_mismatch = scheduler->submit(std::move(mismatched_masks));
+    assert(!rejected_mismatch);
+    assert(rejected_mismatch.error().code == "renderer.invalid_chunk_mesh_request");
 
     auto old_request = make_request(*scheduler, world.chunks(), original_identity, table, 1);
     const auto requested_revision = old_request.center_revision;

@@ -6,6 +6,7 @@
 #include "engine/world/chunks/chunk_database.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -73,10 +74,40 @@ struct ChunkDependencyRevision {
                             const ChunkDependencyRevision&) = default;
 };
 
+struct ChunkMeshingMasks {
+    static constexpr std::size_t center_word_count = VoxelOccupancyMask::word_count;
+
+    std::uint64_t center_revision = 0;
+    std::uint64_t render_table_revision = 0;
+    std::uint16_t halo_radius = 0;
+    std::uint16_t side_length = VoxelChunk::edge_length;
+    std::size_t greedy_cube_count = 0;
+    VoxelCoord greedy_minimum{VoxelChunk::edge_length, VoxelChunk::edge_length,
+                              VoxelChunk::edge_length};
+    VoxelCoord greedy_maximum{};
+    bool has_directional_occluders = false;
+    std::vector<std::uint64_t> words;
+
+    [[nodiscard]] bool greedy_cube(std::size_t index) const noexcept;
+    [[nodiscard]] bool greedy_cube(VoxelCoord coordinate) const noexcept;
+    [[nodiscard]] std::uint32_t greedy_cube_x_row(std::uint16_t y, std::uint16_t z) const noexcept;
+    [[nodiscard]] bool full_occluder_relative(std::int32_t x, std::int32_t y,
+                                              std::int32_t z) const noexcept;
+    [[nodiscard]] std::uint32_t full_occluder_x_row(std::int32_t x, std::int32_t y,
+                                                    std::int32_t z) const noexcept;
+    [[nodiscard]] std::span<const std::uint64_t> greedy_cube_words() const noexcept;
+    [[nodiscard]] std::size_t payload_bytes() const noexcept;
+    [[nodiscard]] std::size_t allocated_bytes() const noexcept;
+    [[nodiscard]] core::Status validate(std::uint64_t expected_center_revision,
+                                        std::uint16_t expected_halo_radius,
+                                        std::uint16_t expected_side_length) const;
+};
+
 struct ChunkNeighborhoodSnapshot {
     ChunkIdentity center_identity{};
     std::uint64_t center_revision = 0;
     VoxelOccupancyMask center_occupancy;
+    ChunkMeshingMasks meshing_masks;
     std::uint16_t halo_radius = 0;
     std::uint16_t side_length = VoxelChunk::edge_length;
     std::vector<VoxelCell> cells;
@@ -96,14 +127,14 @@ required_chunk_halo(std::span<const VoxelCell> center_cells,
                     const BlockRenderTableSnapshot& render_table);
 
 [[nodiscard]] core::Result<std::uint16_t>
-required_chunk_halo(std::span<const VoxelCell> center_cells,
-                    const VoxelOccupancyMask& occupancy,
+required_chunk_halo(std::span<const VoxelCell> center_cells, const VoxelOccupancyMask& occupancy,
                     const BlockRenderTableSnapshot& render_table);
 
 [[nodiscard]] core::Result<ChunkNeighborhoodSnapshot>
 build_chunk_neighborhood_snapshot(const ChunkDatabase& chunks, ChunkIdentity center,
                                   const BlockRenderTableSnapshot& render_table,
-                                  std::vector<VoxelCell> reusable_cells = {});
+                                  std::vector<VoxelCell> reusable_cells = {},
+                                  std::vector<std::uint64_t> reusable_mask_words = {});
 
 [[nodiscard]] bool
 dependency_revisions_match(const ChunkDatabase& chunks,
