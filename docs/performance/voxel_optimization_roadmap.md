@@ -262,6 +262,39 @@ Exit gate: server P99 meets its tick interval, bounded stress backlog clears wit
 streaming queues respect visible-hole deadlines, and memory has no upward slope after caches reach
 their caps.
 
+Implementation status (in progress): the streaming policy now exposes the complete immediate
+desired set and layers a stateful predictive planner over it. Each viewer contributes both velocity
+and view direction to a bounded, deduplicated trajectory corridor. Required loads remain separate
+from speculation; speculative submissions and active work have independent hard caps, elevated
+pressure halves new speculative admission, and critical pressure disables it. Reversal, expiry, and
+teleport paths issue explicit cancellation requests, while a cancellation that loses the race to
+publication becomes an immediate low-value eviction candidate.
+
+The retained telemetry deliberately separates prediction accuracy, timely coverage, prefetch-to-use
+lead time, late hits, waste, requested/actual cancellation, cancellation misses, failure, and stale
+publication. This follows the accuracy/coverage/timeliness distinction used by the USENIX ATC 2020
+[Leap prefetcher](https://www.usenix.org/system/files/atc20-maruf.pdf) and the FAST 2007 observation
+that speculative data must not displace more valuable demand data when accuracy is low
+([AMP prefetching rationale](https://www.usenix.org/legacy/events/fast07/tech/full_papers/gill/gill_html/node3.html)).
+The policy does not infer success from hit rate alone.
+
+Every clean non-required resident chunk also receives an inspectable eviction value composed from
+estimated reload cost, pressure-scaled spatial retention, decaying temporal retention, speculative
+pollution penalty, and viewer distance. Low values leave first; pressure may override hysteresis,
+but required or persistence/replication-dirty chunks remain pinned and any unresolvable overage is
+reported. The cost/locality structure is informed by
+[GreedyDual-Size](https://www.usenix.org/legacy/publications/library/proceedings/usits97/full_papers/cao/cao_html/node8.html),
+without claiming its cache-optimality result for voxel residency. Pressure is an explicit portable
+input; Linux hosts may eventually feed it from cgroup or system
+[PSI thresholds](https://cdn.kernel.org/doc/html/latest/accounting/psi.html), but the engine policy
+does not depend on `/proc`.
+
+Focused tests cover directional and camera prediction, multi-viewer deduplication, timely demand
+conversion, reversal, teleport, cancellation races, dirty pinning, temporal retention, pressure
+overrides, unresolved caps, and invalid inputs. This establishes the policy contract; M6 streaming
+is not accepted until the policy drives the production scheduler and a traversal benchmark retains
+real hit/waste/cancellation and memory-slope evidence.
+
 ### M7 — trace-gated GPU work
 
 Candidates include further GPU-driven visibility, meshlets, descriptor indexing, compute meshing,

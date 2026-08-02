@@ -96,6 +96,7 @@ struct ChunkStreamInterestPolicy {
 };
 
 struct ChunkStreamInterestPlan {
+    std::vector<ChunkCoord> desired_chunks;
     std::vector<ChunkCoord> load_requests;
     std::vector<ChunkCoord> evictable_chunks;
     std::vector<ChunkCoord> retained_chunks;

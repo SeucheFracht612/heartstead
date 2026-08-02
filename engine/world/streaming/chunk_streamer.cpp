@@ -246,6 +246,7 @@ ChunkStreamer::plan_interest(const WorldState& state,
     plan.viewer_count = viewers.size();
     plan.loaded_chunk_count = loaded.size();
     plan.desired_chunk_count = desired.size();
+    plan.desired_chunks.assign(desired.begin(), desired.end());
 
     for (const auto coord : desired) {
         if (!loaded.contains(coord)) {
