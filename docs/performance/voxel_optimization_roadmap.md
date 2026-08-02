@@ -25,7 +25,7 @@ requires one.
 | --- | --- | --- |
 | Permanent hierarchical profiling | Partial: retained CPU/GPU timers, counters, raw benchmark frames, and opt-in Tracy zones now cover major runtime, renderer, chunk, worker, lighting, collision, and streaming paths. | Extend zones and attribution as later stages are changed; add allocation ownership and queue-age plots. |
 | Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. | Add teleport, rapid-traversal time-to-visible, server/client, save, cold-start, and long-soak workloads. |
-| Reproducible provenance and gates | Benchmark schema v3 records source/build/CPU/GPU/driver/run metadata plus bounded edit-to-visible mesh latency. Optional tier gates enforce median, P95, P99, maximum frame, upload, and available GPU limits. | Add calibrated reference-machine baselines, repetitions, relative-regression checks, and non-renderer gates. |
+| Reproducible provenance and gates | Benchmark schema v4 records source/build/CPU/GPU/driver/run metadata, warmup-isolated edit latency, a bounded tail drain, and mesh-work amplification. Optional tier gates enforce median, P95, P99, maximum frame, upload, available GPU, and sustainable rapid-edit limits. | Add calibrated reference-machine baselines, repetitions, relative-regression checks, and non-renderer gates. |
 | Bounded jobs and cancellation | Generic and typed schedulers now bound pending/result work, expose backpressure and queue-age telemetry, age priorities, and support reasoned queued/cooperative cancellation. | Attribute per-type saturation in higher-level pipeline counters and tune limits from traces. |
 | Versioned chunk pipeline | An owner-thread ledger now separates content, light, mesh, collision, persistence, and replication request/output revisions and states. Save/replication, mesh/GPU, collision/physics, and whole-field lighting publication are ticket-validated across edit and reload races. | Calibrate stale-work amplification and latency under representative edit/streaming traces. |
 | Compact voxel sections | Chunks remain fixed 32³ with contiguous dense `VoxelCell` production storage. Reproducible 16/32 experiments now cover dense, split, palette-packed, uniform-light, sparse-metadata, and adaptive split-dense fallback candidates. | Retain dense production storage while mask/macro work proceeds; add a medium-diversity crossover sweep before any storage selection. |
@@ -44,7 +44,7 @@ Deliverables:
 
 - opt-in optimized Tracy build with permanent no-op call sites in ordinary builds;
 - hierarchical zones and queue plots at the main engine boundaries;
-- benchmark schema v3 with commit, dirty state, build, compiler, OS, CPU, GPU, driver, run
+- benchmark schema v4 with commit, dirty state, build, compiler, OS, CPU, GPU, driver, run
   configuration;
 - tier profiles and non-zero process exit on an evaluated budget failure;
 - unit and smoke coverage for serialization, provenance, and gate evaluation.
@@ -121,9 +121,10 @@ declared mainstream reference CPU; local edit visual response P95 is at most 50 
 Progress: the isolated reference/fresh/reused benchmark, exact output-memory accounting,
 occupancy-assisted empty/source rejection, and surface-bound output reservation are implemented and
 documented in [Voxel meshing experiments](voxel_meshing_benchmarks.md). Exact mesh-stage
-invalidation-to-resident tracking, a fixed rolling percentile window, and benchmark schema v3 are
-also implemented. The sparse-cave and checkerboard P95 gates are still missed, and the 50 ms
-rapid-edit macro gate still needs a clean reference-machine run.
+invalidation-to-resident tracking, a fixed rolling percentile window, warmup reset, bounded tail
+drain, mesh-work amplification, and benchmark schema v4 are also implemented. The sparse-cave and
+checkerboard P95 gates are still missed, and the 50 ms rapid-edit macro gate still needs a clean
+reference-machine run.
 
 ### M5 — asynchronous dynamic-world pipeline
 

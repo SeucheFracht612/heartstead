@@ -27,6 +27,8 @@ struct BenchmarkBudget {
     double maximum_p99_frame_ms = 0.0;
     double maximum_frame_ms = 0.0;
     double maximum_mean_gpu_ms = 0.0;
+    double maximum_edit_to_visible_p95_ms = 0.0;
+    double maximum_mesh_builds_per_publication = 0.0;
     std::uint64_t maximum_upload_bytes_per_frame = 0;
 };
 
@@ -111,9 +113,17 @@ struct BenchmarkSummary {
     double final_edit_to_visible_p95_ms = 0.0;
     double final_edit_to_visible_p99_ms = 0.0;
     std::uint32_t maximum_pending_edit_to_visible = 0;
+    std::uint32_t final_pending_edit_to_visible = 0;
+    std::uint32_t final_edit_to_visible_recent_samples = 0;
+    std::uint64_t measured_edit_to_visible_completed = 0;
     std::uint64_t final_edit_to_visible_completed = 0;
     std::uint64_t final_edit_to_visible_coalesced = 0;
     std::uint64_t final_edit_to_visible_abandoned = 0;
+    std::uint64_t edit_latency_drain_frames = 0;
+    std::uint64_t final_mesh_completed_jobs = 0;
+    std::uint64_t final_mesh_built = 0;
+    std::uint64_t final_mesh_published = 0;
+    double final_mesh_builds_per_publication = 0.0;
     double mean_gpu_opaque_terrain_ms = 0.0;
     double mean_gpu_alpha_tested_terrain_ms = 0.0;
     double mean_gpu_transparent_terrain_ms = 0.0;
@@ -158,6 +168,9 @@ class BenchmarkRecorder {
     explicit BenchmarkRecorder(BenchmarkRunMetadata metadata);
 
     void record(RendererStats stats);
+    // Stores counters after a bounded post-measurement drain without adding drain frames to the
+    // ordinary frame-time distribution.
+    void set_final_state(RendererStats stats, std::uint64_t edit_latency_drain_frames = 0);
     void clear() noexcept;
 
     [[nodiscard]] const std::vector<RendererStats>& samples() const noexcept;
@@ -171,6 +184,8 @@ class BenchmarkRecorder {
   private:
     BenchmarkRunMetadata metadata_;
     std::vector<RendererStats> samples_;
+    std::optional<RendererStats> final_state_;
+    std::uint64_t edit_latency_drain_frames_ = 0;
 };
 
 [[nodiscard]] std::string format_benchmark_summary(const BenchmarkSummary& summary);

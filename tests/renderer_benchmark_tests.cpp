@@ -53,10 +53,17 @@ void test_benchmark_statistics() {
         stats.edit_to_visible_recent_median_ms = static_cast<double>(index) * 4.0;
         stats.edit_to_visible_recent_p95_ms = static_cast<double>(index) * 5.0;
         stats.edit_to_visible_recent_p99_ms = static_cast<double>(index) * 6.0;
+        stats.edit_to_visible_session_max_ms = static_cast<double>(index) * 10.0;
+        stats.edit_to_visible_completed = static_cast<std::uint32_t>(index);
         stats.edit_to_visible_pending = static_cast<std::uint32_t>(4U - index);
+        stats.edit_to_visible_recent_samples = static_cast<std::uint32_t>(index * 2U);
         stats.edit_to_visible_total_completed = index * 2U;
         stats.edit_to_visible_total_coalesced = index;
         stats.edit_to_visible_total_abandoned = index / 2U;
+        stats.mesh_total_completed_jobs = index * 3U;
+        stats.mesh_total_built = index * 2U;
+        stats.mesh_total_published = index;
+        stats.mesh_builds_per_publication = static_cast<double>(index) * 0.5;
         stats.voxel_relight_solve_ms = 0.25 * static_cast<double>(index);
         stats.voxel_relight_apply_ms = 0.1 * static_cast<double>(index);
         stats.voxel_relight_backlog_cells = index * 10U;
@@ -87,6 +94,21 @@ void test_benchmark_statistics() {
         }
         recorder.record(stats);
     }
+    auto final_state = recorder.samples().back();
+    final_state.edit_to_visible_recent_median_ms = 13.0;
+    final_state.edit_to_visible_recent_p95_ms = 17.0;
+    final_state.edit_to_visible_recent_p99_ms = 19.0;
+    final_state.edit_to_visible_session_max_ms = 45.0;
+    final_state.edit_to_visible_pending = 0;
+    final_state.edit_to_visible_recent_samples = 7;
+    final_state.edit_to_visible_total_completed = 8;
+    final_state.edit_to_visible_total_coalesced = 4;
+    final_state.edit_to_visible_total_abandoned = 1;
+    final_state.mesh_total_completed_jobs = 9;
+    final_state.mesh_total_built = 7;
+    final_state.mesh_total_published = 6;
+    final_state.mesh_builds_per_publication = 7.0 / 6.0;
+    recorder.set_final_state(final_state, 2);
 
     const auto summary = recorder.summarize();
     assert(summary.scene == "deterministic-test");
@@ -104,14 +126,22 @@ void test_benchmark_statistics() {
     assert(std::abs(summary.one_percent_low_fps - 10.0) < 0.0001);
     assert(std::abs(summary.point_one_percent_low_fps - 10.0) < 0.0001);
     assert(summary.maximum_frame_ms == 100.0);
-    assert(summary.maximum_edit_to_visible_ms == 30.0);
-    assert(summary.final_edit_to_visible_median_ms == 12.0);
-    assert(summary.final_edit_to_visible_p95_ms == 15.0);
-    assert(summary.final_edit_to_visible_p99_ms == 18.0);
+    assert(summary.maximum_edit_to_visible_ms == 45.0);
+    assert(summary.final_edit_to_visible_median_ms == 13.0);
+    assert(summary.final_edit_to_visible_p95_ms == 17.0);
+    assert(summary.final_edit_to_visible_p99_ms == 19.0);
     assert(summary.maximum_pending_edit_to_visible == 4);
-    assert(summary.final_edit_to_visible_completed == 6);
-    assert(summary.final_edit_to_visible_coalesced == 3);
+    assert(summary.final_pending_edit_to_visible == 0);
+    assert(summary.final_edit_to_visible_recent_samples == 7);
+    assert(summary.measured_edit_to_visible_completed == 6);
+    assert(summary.final_edit_to_visible_completed == 8);
+    assert(summary.final_edit_to_visible_coalesced == 4);
     assert(summary.final_edit_to_visible_abandoned == 1);
+    assert(summary.edit_latency_drain_frames == 2);
+    assert(summary.final_mesh_completed_jobs == 9);
+    assert(summary.final_mesh_built == 7);
+    assert(summary.final_mesh_published == 6);
+    assert(std::abs(summary.final_mesh_builds_per_publication - (7.0 / 6.0)) < 0.0001);
     assert(summary.total_uploaded_bytes == 64);
     assert(summary.maximum_uploaded_bytes == 16);
     assert(!summary.budget.evaluated);
@@ -137,7 +167,7 @@ void test_benchmark_statistics() {
     assert(std::abs(summary.mean_chunk_synchronization_ms - 3.0) < 0.0001);
     assert(std::abs(summary.mean_command_recording_ms - 0.1875) < 0.0001);
     assert(recorder.metadata().initial_width == 1920);
-    assert(recorder.to_json().find("\"schema\": \"heartstead.renderer_benchmark.v3\"") !=
+    assert(recorder.to_json().find("\"schema\": \"heartstead.renderer_benchmark.v4\"") !=
            std::string::npos);
     assert(recorder.to_json().find("\"git_commit\": \"0123456789ab\"") != std::string::npos);
     assert(recorder.to_json().find("\"gpu_name\": \"Test GPU\"") != std::string::npos);
@@ -145,7 +175,11 @@ void test_benchmark_statistics() {
     assert(recorder.to_json().find("\"limits\": null") != std::string::npos);
     assert(recorder.to_json().find("\"warmup_frames\": 120") != std::string::npos);
     assert(recorder.to_json().find("\"p99_frame_ms\": 97.090000") != std::string::npos);
-    assert(recorder.to_json().find("\"maximum_edit_to_visible_ms\": 30.000000") !=
+    assert(recorder.to_json().find("\"maximum_edit_to_visible_ms\": 45.000000") !=
+           std::string::npos);
+    assert(recorder.to_json().find("\"edit_latency_drain_frames\": 2") !=
+           std::string::npos);
+    assert(recorder.to_json().find("\"final_mesh_builds_per_publication\": 1.166667") !=
            std::string::npos);
     assert(recorder.to_json().find("\"edit_to_visible_total_completed\": 6") !=
            std::string::npos);
@@ -179,7 +213,7 @@ void test_benchmark_statistics() {
     assert(benchmark::format_benchmark_summary(summary).find("fluid=0.750/1.425") !=
            std::string::npos);
     assert(benchmark::format_benchmark_summary(summary).find(
-               "edit_visible=12.000/15.000/30.000") != std::string::npos);
+               "edit_visible=13.000/17.000/45.000") != std::string::npos);
 }
 
 void test_benchmark_budget_profiles() {
@@ -198,6 +232,8 @@ void test_benchmark_budget_profiles() {
     assert(minimum);
     assert(std::abs(minimum->frame_interval_ms - (1'000.0 / 60.0)) < 0.0001);
     assert(std::abs(minimum->maximum_p99_frame_ms - 25.0) < 0.0001);
+    assert(minimum->maximum_edit_to_visible_p95_ms == 50.0);
+    assert(minimum->maximum_mesh_builds_per_publication == 1.1);
     assert(minimum->maximum_upload_bytes_per_frame == 2U * 1024U * 1024U);
 
     BenchmarkSummary passing;
@@ -250,6 +286,44 @@ void test_benchmark_budget_profiles() {
     assert(gated.summarize().budget.passed);
     assert(gated.to_json().find("\"maximum_p99_frame_ms\": 25.000000") !=
            std::string::npos);
+
+    BenchmarkSummary rapid = passing;
+    rapid.scene = "rapid-edits";
+    rapid.final_edit_to_visible_recent_samples = 100;
+    rapid.final_edit_to_visible_p95_ms = 49.0;
+    rapid.final_mesh_builds_per_publication = 1.1;
+    assert(evaluate_benchmark_budget(rapid, BenchmarkBudgetProfile::minimum).passed);
+
+    auto slow_edit = rapid;
+    slow_edit.final_edit_to_visible_p95_ms = 50.001;
+    const auto slow_edit_result =
+        evaluate_benchmark_budget(slow_edit, BenchmarkBudgetProfile::minimum);
+    assert(!slow_edit_result.passed);
+    assert(std::ranges::any_of(slow_edit_result.violations, [](const auto& violation) {
+        return violation.metric == "final_edit_to_visible_p95_ms";
+    }));
+
+    auto censored_edit = rapid;
+    censored_edit.final_edit_to_visible_recent_samples = 0;
+    censored_edit.final_pending_edit_to_visible = 1;
+    const auto censored_result =
+        evaluate_benchmark_budget(censored_edit, BenchmarkBudgetProfile::minimum);
+    assert(!censored_result.passed);
+    assert(std::ranges::any_of(censored_result.violations, [](const auto& violation) {
+        return violation.metric == "final_edit_to_visible_recent_samples";
+    }));
+    assert(std::ranges::any_of(censored_result.violations, [](const auto& violation) {
+        return violation.metric == "final_pending_edit_to_visible";
+    }));
+
+    auto amplified_edit = rapid;
+    amplified_edit.final_mesh_builds_per_publication = 1.1001;
+    const auto amplified_result =
+        evaluate_benchmark_budget(amplified_edit, BenchmarkBudgetProfile::minimum);
+    assert(!amplified_result.passed);
+    assert(std::ranges::any_of(amplified_result.violations, [](const auto& violation) {
+        return violation.metric == "final_mesh_builds_per_publication";
+    }));
 
     BenchmarkSummary empty;
     const auto unevaluated = evaluate_benchmark_budget(empty, BenchmarkBudgetProfile::minimum);

@@ -146,6 +146,8 @@ std::optional<BenchmarkBudget> benchmark_budget(BenchmarkBudgetProfile profile) 
             interval * 1.50,
             interval * 3.00,
             gpu_ms,
+            50.0,
+            1.1,
             upload_bytes,
         };
     };
@@ -179,6 +181,11 @@ BenchmarkBudgetEvaluation evaluate_benchmark_budget(const BenchmarkSummary& summ
             evaluation.violations.push_back({std::move(metric), actual, limit});
         }
     };
+    const auto check_minimum = [&evaluation](std::string metric, double actual, double minimum) {
+        if (!std::isfinite(actual) || actual < minimum) {
+            evaluation.violations.push_back({std::move(metric), actual, minimum});
+        }
+    };
     check("median_frame_ms", summary.median_frame_ms, limits->frame_interval_ms);
     check("p95_frame_ms", summary.p95_frame_ms, limits->maximum_p95_frame_ms);
     check("p99_frame_ms", summary.p99_frame_ms, limits->maximum_p99_frame_ms);
@@ -188,6 +195,20 @@ BenchmarkBudgetEvaluation evaluate_benchmark_budget(const BenchmarkSummary& summ
     if (summary.gpu_sample_count != 0) {
         evaluation.gpu_evaluated = true;
         check("mean_gpu_frame_ms", summary.mean_gpu_frame_ms, limits->maximum_mean_gpu_ms);
+    }
+    // rapid-edits is the sustainable, fixed-arrival edit workload. The mass-excavation scene is a
+    // deliberate overload probe and therefore reports the same telemetry without claiming this SLO.
+    if (summary.scene == "rapid-edits") {
+        check_minimum("final_edit_to_visible_recent_samples",
+                      static_cast<double>(summary.final_edit_to_visible_recent_samples), 1.0);
+        check("final_edit_to_visible_p95_ms", summary.final_edit_to_visible_p95_ms,
+              limits->maximum_edit_to_visible_p95_ms);
+        check("final_pending_edit_to_visible",
+              static_cast<double>(summary.final_pending_edit_to_visible), 0.0);
+        check("final_edit_to_visible_abandoned",
+              static_cast<double>(summary.final_edit_to_visible_abandoned), 0.0);
+        check("final_mesh_builds_per_publication", summary.final_mesh_builds_per_publication,
+              limits->maximum_mesh_builds_per_publication);
     }
     evaluation.passed = evaluation.violations.empty();
     return evaluation;
@@ -206,8 +227,16 @@ void BenchmarkRecorder::record(RendererStats stats) {
     samples_.push_back(stats);
 }
 
+void BenchmarkRecorder::set_final_state(RendererStats stats,
+                                        std::uint64_t edit_latency_drain_frames) {
+    final_state_ = stats;
+    edit_latency_drain_frames_ = edit_latency_drain_frames;
+}
+
 void BenchmarkRecorder::clear() noexcept {
     samples_.clear();
+    final_state_.reset();
+    edit_latency_drain_frames_ = 0;
 }
 
 const std::vector<RendererStats>& BenchmarkRecorder::samples() const noexcept {
@@ -288,6 +317,7 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
             std::max(summary.maximum_edit_to_visible_ms, sample.edit_to_visible_frame_max_ms);
         summary.maximum_pending_edit_to_visible =
             std::max(summary.maximum_pending_edit_to_visible, sample.edit_to_visible_pending);
+        summary.measured_edit_to_visible_completed += sample.edit_to_visible_completed;
         summary.total_uploaded_bytes += sample.uploaded_bytes_this_frame;
         summary.maximum_uploaded_bytes =
             std::max(summary.maximum_uploaded_bytes, sample.uploaded_bytes_this_frame);
@@ -334,14 +364,29 @@ BenchmarkSummary BenchmarkRecorder::summarize() const {
             ++summary.gpu_upload_sample_count;
         }
     }
-    const auto& final_sample = samples_.back();
+    const auto* final_sample = final_state_.has_value() ? &*final_state_ : &samples_.back();
+    summary.maximum_edit_to_visible_ms =
+        std::max(summary.maximum_edit_to_visible_ms,
+                 final_sample->edit_to_visible_session_max_ms);
+    summary.maximum_pending_edit_to_visible =
+        std::max(summary.maximum_pending_edit_to_visible,
+                 final_sample->edit_to_visible_pending);
     summary.final_edit_to_visible_median_ms =
-        final_sample.edit_to_visible_recent_median_ms;
-    summary.final_edit_to_visible_p95_ms = final_sample.edit_to_visible_recent_p95_ms;
-    summary.final_edit_to_visible_p99_ms = final_sample.edit_to_visible_recent_p99_ms;
-    summary.final_edit_to_visible_completed = final_sample.edit_to_visible_total_completed;
-    summary.final_edit_to_visible_coalesced = final_sample.edit_to_visible_total_coalesced;
-    summary.final_edit_to_visible_abandoned = final_sample.edit_to_visible_total_abandoned;
+        final_sample->edit_to_visible_recent_median_ms;
+    summary.final_edit_to_visible_p95_ms = final_sample->edit_to_visible_recent_p95_ms;
+    summary.final_edit_to_visible_p99_ms = final_sample->edit_to_visible_recent_p99_ms;
+    summary.final_pending_edit_to_visible = final_sample->edit_to_visible_pending;
+    summary.final_edit_to_visible_recent_samples =
+        final_sample->edit_to_visible_recent_samples;
+    summary.final_edit_to_visible_completed = final_sample->edit_to_visible_total_completed;
+    summary.final_edit_to_visible_coalesced = final_sample->edit_to_visible_total_coalesced;
+    summary.final_edit_to_visible_abandoned = final_sample->edit_to_visible_total_abandoned;
+    summary.edit_latency_drain_frames = edit_latency_drain_frames_;
+    summary.final_mesh_completed_jobs = final_sample->mesh_total_completed_jobs;
+    summary.final_mesh_built = final_sample->mesh_total_built;
+    summary.final_mesh_published = final_sample->mesh_total_published;
+    summary.final_mesh_builds_per_publication =
+        final_sample->mesh_builds_per_publication;
     std::ranges::sort(frame_times);
     std::ranges::sort(relight_solve_times);
     std::ranges::sort(relight_apply_times);
@@ -410,7 +455,7 @@ std::string BenchmarkRecorder::to_json() const {
     const auto summary = summarize();
     std::ostringstream output;
     output << std::fixed << std::setprecision(6);
-    output << "{\n  \"schema\": \"heartstead.renderer_benchmark.v3\",\n"
+    output << "{\n  \"schema\": \"heartstead.renderer_benchmark.v4\",\n"
            << "  \"scene\": \"" << json_escape(metadata_.scene) << "\",\n"
            << "  \"seed\": " << metadata_.seed << ",\n"
            << "  \"provenance\": {\n"
@@ -486,12 +531,26 @@ std::string BenchmarkRecorder::to_json() const {
            << summary.final_edit_to_visible_p99_ms << ",\n"
            << "    \"maximum_pending_edit_to_visible\": "
            << summary.maximum_pending_edit_to_visible << ",\n"
+           << "    \"final_pending_edit_to_visible\": "
+           << summary.final_pending_edit_to_visible << ",\n"
+           << "    \"final_edit_to_visible_recent_samples\": "
+           << summary.final_edit_to_visible_recent_samples << ",\n"
+           << "    \"measured_edit_to_visible_completed\": "
+           << summary.measured_edit_to_visible_completed << ",\n"
            << "    \"final_edit_to_visible_completed\": "
            << summary.final_edit_to_visible_completed << ",\n"
            << "    \"final_edit_to_visible_coalesced\": "
            << summary.final_edit_to_visible_coalesced << ",\n"
            << "    \"final_edit_to_visible_abandoned\": "
            << summary.final_edit_to_visible_abandoned << ",\n"
+           << "    \"edit_latency_drain_frames\": "
+           << summary.edit_latency_drain_frames << ",\n"
+           << "    \"final_mesh_completed_jobs\": "
+           << summary.final_mesh_completed_jobs << ",\n"
+           << "    \"final_mesh_built\": " << summary.final_mesh_built << ",\n"
+           << "    \"final_mesh_published\": " << summary.final_mesh_published << ",\n"
+           << "    \"final_mesh_builds_per_publication\": "
+           << summary.final_mesh_builds_per_publication << ",\n"
            << "    \"mean_gpu_opaque_terrain_ms\": " << summary.mean_gpu_opaque_terrain_ms << ",\n"
            << "    \"mean_gpu_alpha_tested_terrain_ms\": "
            << summary.mean_gpu_alpha_tested_terrain_ms << ",\n"
@@ -561,6 +620,10 @@ std::string BenchmarkRecorder::to_json() const {
                << ", \"maximum_p99_frame_ms\": " << limits.maximum_p99_frame_ms
                << ", \"maximum_frame_ms\": " << limits.maximum_frame_ms
                << ", \"maximum_mean_gpu_ms\": " << limits.maximum_mean_gpu_ms
+               << ", \"maximum_edit_to_visible_p95_ms\": "
+               << limits.maximum_edit_to_visible_p95_ms
+               << ", \"maximum_mesh_builds_per_publication\": "
+               << limits.maximum_mesh_builds_per_publication
                << ", \"maximum_upload_bytes_per_frame\": "
                << limits.maximum_upload_bytes_per_frame << '}';
     } else {
@@ -638,6 +701,12 @@ std::string BenchmarkRecorder::to_json() const {
                << sample.edit_to_visible_total_coalesced
                << ", \"edit_to_visible_total_abandoned\": "
                << sample.edit_to_visible_total_abandoned
+               << ", \"mesh_total_completed_jobs\": "
+               << sample.mesh_total_completed_jobs
+               << ", \"mesh_total_built\": " << sample.mesh_total_built
+               << ", \"mesh_total_published\": " << sample.mesh_total_published
+               << ", \"mesh_builds_per_publication\": "
+               << sample.mesh_builds_per_publication
                << ", \"voxel_relight_solve_ms\": " << sample.voxel_relight_solve_ms
                << ", \"voxel_relight_apply_ms\": " << sample.voxel_relight_apply_ms
                << ", \"voxel_relight_backlog_cells\": " << sample.voxel_relight_backlog_cells
@@ -742,6 +811,8 @@ std::string BenchmarkRecorder::to_csv() const {
               "warmup_frames,measured_frames,frame_cap,budget_profile,budget_frame_interval_ms,"
               "budget_maximum_p95_frame_ms,budget_maximum_p99_frame_ms,"
               "budget_maximum_frame_ms,budget_maximum_mean_gpu_ms,"
+              "budget_maximum_edit_to_visible_p95_ms,"
+              "budget_maximum_mesh_builds_per_publication,"
               "budget_maximum_upload_bytes_per_frame,budget_evaluated,budget_passed,"
               "budget_violation_count,validation_requested,median_frame_ms,p95_frame_ms,"
               "p99_frame_ms,one_percent_low_fps,point_one_percent_low_fps,maximum_frame_ms,"
@@ -753,14 +824,19 @@ std::string BenchmarkRecorder::to_csv() const {
               "meshing_ms,upload_preparation_ms,upload_ms,gpu_wait_ms,"
               "maximum_edit_to_visible_ms,final_edit_to_visible_median_ms,"
               "final_edit_to_visible_p95_ms,final_edit_to_visible_p99_ms,"
-              "maximum_pending_edit_to_visible,final_edit_to_visible_completed,"
-              "final_edit_to_visible_coalesced,final_edit_to_visible_abandoned,"
+              "maximum_pending_edit_to_visible,final_pending_edit_to_visible,"
+              "final_edit_to_visible_recent_samples,measured_edit_to_visible_completed,"
+              "final_edit_to_visible_completed,final_edit_to_visible_coalesced,"
+              "final_edit_to_visible_abandoned,edit_latency_drain_frames,"
+              "final_mesh_completed_jobs,final_mesh_built,final_mesh_published,"
+              "final_mesh_builds_per_publication,"
               "edit_to_visible_latest_ms,edit_to_visible_frame_max_ms,"
               "edit_to_visible_recent_median_ms,edit_to_visible_recent_p95_ms,"
               "edit_to_visible_recent_p99_ms,edit_to_visible_session_max_ms,"
               "edit_to_visible_completed,edit_to_visible_pending,edit_to_visible_recent_samples,"
               "edit_to_visible_total_completed,edit_to_visible_total_coalesced,"
-              "edit_to_visible_total_abandoned,"
+              "edit_to_visible_total_abandoned,mesh_total_completed_jobs,mesh_total_built,"
+              "mesh_total_published,mesh_builds_per_publication,"
               "voxel_relight_solve_ms,voxel_relight_apply_ms,voxel_relight_backlog_cells,"
               "voxel_relight_visited_cells,voxel_relight_changed_chunks,"
               "voxel_relight_stale_results,voxel_relight_apply_budget_overruns,"
@@ -787,7 +863,7 @@ std::string BenchmarkRecorder::to_csv() const {
               "gpu_arena_fragmentation,pending_upload_bytes,uploaded_bytes\n";
     const auto limits = summary.budget.limits.value_or(BenchmarkBudget{});
     for (const auto& sample : samples_) {
-        output << csv_escape("heartstead.renderer_benchmark.v3") << ','
+        output << csv_escape("heartstead.renderer_benchmark.v4") << ','
                << csv_escape(metadata_.scene) << ',' << metadata_.seed << ','
                << csv_escape(metadata_.engine_version) << ',' << csv_escape(metadata_.git_commit)
                << ',' << (metadata_.git_dirty ? 1 : 0) << ','
@@ -806,7 +882,10 @@ std::string BenchmarkRecorder::to_csv() const {
                << csv_escape(benchmark_budget_profile_name(metadata_.budget_profile)) << ','
                << limits.frame_interval_ms << ',' << limits.maximum_p95_frame_ms << ','
                << limits.maximum_p99_frame_ms << ',' << limits.maximum_frame_ms << ','
-               << limits.maximum_mean_gpu_ms << ',' << limits.maximum_upload_bytes_per_frame << ','
+               << limits.maximum_mean_gpu_ms << ','
+               << limits.maximum_edit_to_visible_p95_ms << ','
+               << limits.maximum_mesh_builds_per_publication << ','
+               << limits.maximum_upload_bytes_per_frame << ','
                << (summary.budget.evaluated ? 1 : 0) << ',' << (summary.budget.passed ? 1 : 0) << ','
                << summary.budget.violations.size() << ','
                << (metadata_.validation_requested ? 1 : 0) << ',' << summary.median_frame_ms << ','
@@ -831,9 +910,16 @@ std::string BenchmarkRecorder::to_csv() const {
                << summary.final_edit_to_visible_p95_ms << ','
                << summary.final_edit_to_visible_p99_ms << ','
                << summary.maximum_pending_edit_to_visible << ','
+               << summary.final_pending_edit_to_visible << ','
+               << summary.final_edit_to_visible_recent_samples << ','
+               << summary.measured_edit_to_visible_completed << ','
                << summary.final_edit_to_visible_completed << ','
                << summary.final_edit_to_visible_coalesced << ','
                << summary.final_edit_to_visible_abandoned << ','
+               << summary.edit_latency_drain_frames << ','
+               << summary.final_mesh_completed_jobs << ',' << summary.final_mesh_built << ','
+               << summary.final_mesh_published << ','
+               << summary.final_mesh_builds_per_publication << ','
                << sample.edit_to_visible_latest_ms << ','
                << sample.edit_to_visible_frame_max_ms << ','
                << sample.edit_to_visible_recent_median_ms << ','
@@ -845,6 +931,8 @@ std::string BenchmarkRecorder::to_csv() const {
                << sample.edit_to_visible_total_completed << ','
                << sample.edit_to_visible_total_coalesced << ','
                << sample.edit_to_visible_total_abandoned << ','
+               << sample.mesh_total_completed_jobs << ',' << sample.mesh_total_built << ','
+               << sample.mesh_total_published << ',' << sample.mesh_builds_per_publication << ','
                << sample.voxel_relight_solve_ms << ',' << sample.voxel_relight_apply_ms << ','
                << sample.voxel_relight_backlog_cells << ',' << sample.voxel_relight_visited_cells
                << ',' << sample.voxel_relight_changed_chunks << ','
@@ -922,11 +1010,18 @@ std::string format_benchmark_summary(const BenchmarkSummary& summary) {
     }
     output << " edit_visible=" << summary.final_edit_to_visible_median_ms << '/'
            << summary.final_edit_to_visible_p95_ms << '/'
-           << summary.maximum_edit_to_visible_ms << "ms pending="
-           << summary.maximum_pending_edit_to_visible << " completed="
+           << summary.maximum_edit_to_visible_ms << "ms pending=max/final "
+           << summary.maximum_pending_edit_to_visible << '/'
+           << summary.final_pending_edit_to_visible << " samples="
+           << summary.final_edit_to_visible_recent_samples << " completed=measured/final "
+           << summary.measured_edit_to_visible_completed << '/'
            << summary.final_edit_to_visible_completed << " coalesced="
            << summary.final_edit_to_visible_coalesced << " abandoned="
-           << summary.final_edit_to_visible_abandoned;
+           << summary.final_edit_to_visible_abandoned << " drain="
+           << summary.edit_latency_drain_frames << " mesh_work="
+           << summary.final_mesh_completed_jobs << '/' << summary.final_mesh_built << '/'
+           << summary.final_mesh_published << " mesh_amplification="
+           << summary.final_mesh_builds_per_publication;
     output << " relight=" << summary.median_voxel_relight_solve_ms << '/'
            << summary.p95_voxel_relight_solve_ms << "ms solve "
            << summary.median_voxel_relight_apply_ms << '/' << summary.p95_voxel_relight_apply_ms

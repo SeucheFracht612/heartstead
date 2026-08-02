@@ -53,9 +53,11 @@ Enforce a starting hardware tier in automation:
 ```
 
 `--budget compatibility|minimum|mainstream|high-end` evaluates median, P95, P99, maximum frame,
-maximum upload bytes, and mean GPU time when GPU timestamps exist. Results are written before a
-failing gate exits with status 2. `none` is the default so exploratory runs do not silently become
-release gates.
+maximum upload bytes, and mean GPU time when GPU timestamps exist. On `rapid-edits`, it additionally
+requires at least one completed edit sample, no final pending or abandoned interval, edit-to-visible
+P95 at most 50 ms, and at most 1.1 built meshes per publication. Results are written before a failing
+gate exits with status 2. `none` is the default so exploratory runs do not silently become release
+gates. `mass-excavation` remains an overload diagnostic and does not claim the sustainable-edit SLO.
 
 ## Workloads
 
@@ -85,7 +87,8 @@ radius, and frame configuration. Before measurement, the runner settles the init
 to resident meshes so streaming/edit tests measure replacement and churn rather than accidental
 initial starvation. Initial voxel lighting is also settled once. During warm-up and measurement the
 lighting system advances exactly one bounded update per simulation frame; the benchmark never waits
-for an entire relight field inside a frame.
+for an entire relight field inside a frame. At the warm-up boundary, chunk performance counters and
+the latency distribution reset without cancelling or discarding work already in flight.
 
 ## Timing semantics
 
@@ -98,15 +101,19 @@ Vulkan timestamps are asynchronous. Every GPU result carries the source frame an
 do not align a delayed GPU sample with the CPU frame that happened to receive it. The headless
 backend reports GPU timing unavailable while preserving the same CPU/counter schema.
 
-JSON and CSV schema v3 carry scene/run configuration plus engine version, Git commit and tracked
+JSON and CSV schema v4 carry scene/run configuration plus engine version, Git commit and tracked
 dirty state, build configuration, compiler, platform, architecture, OS, CPU model/logical CPUs,
 Tracy state, GPU, driver information, and numeric Vulkan API/driver versions. Budget evaluation and
-violations are retained with the raw frames. Schema v3 also records bounded chunk-mesh
+violations are retained with the raw frames. Schema v4 records bounded chunk-mesh
 invalidation-to-resident latency: each event begins at the monotonic dirty-region mark and ends only
 when the exact requested mesh-stage revision is uploaded and published. It includes boundary
 neighbors, reports a fixed 256-completion rolling median/P95/P99, and separates pending, coalesced,
-completed, and abandoned intervals. "Visible" here means resident and eligible for the same frame's
-draw list, not display scan-out. Keep the raw output with any conclusion.
+completed, and abandoned intervals. After measured frames stop generating edits, a bounded 240-frame
+drain lets outstanding intervals publish; drain frames do not enter frame-time statistics, and any
+interval still pending is retained as censored work and fails the `rapid-edits` gate. Final completed,
+pending, sample, drain, mesh-job/build/publication, and amplification counters therefore cannot turn
+an empty latency distribution into a pass. "Visible" here means resident and eligible for the same
+frame's draw list, not display scan-out. Keep the raw output with any conclusion.
 
 The first permanent trace surface includes runtime/client/server frames, renderer synchronization,
 extraction, visibility, draw construction, command construction/submission, chunk snapshots,

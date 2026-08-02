@@ -1206,6 +1206,19 @@ int main(int argc, char** argv) {
         std::uint64_t simulation_frame = 0;
         std::uint64_t rendered_frames = 0;
         std::uint64_t measured_frames = 0;
+        const auto pace_frame = [&options](std::chrono::steady_clock::time_point frame_started) {
+            if (options.frame_cap == 0) {
+                return;
+            }
+            const auto frame_duration =
+                std::chrono::duration<double>(1.0 / static_cast<double>(options.frame_cap));
+            std::this_thread::sleep_until(
+                frame_started + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                    frame_duration));
+        };
+        if (options.warmup_frames == 0) {
+            active_renderer.reset_chunk_performance_stats();
+        }
         while (measured_frames < options.measured_frames) {
             const auto frame_started = std::chrono::steady_clock::now();
             if (native_window) {
@@ -1311,13 +1324,57 @@ int main(int argc, char** argv) {
                     core::log(core::LogLevel::info,
                               renderer::format_renderer_stats(active_renderer.stats()));
                 }
+                if (rendered_frames == options.warmup_frames) {
+                    active_renderer.reset_chunk_performance_stats();
+                }
             }
-            if (options.frame_cap != 0) {
-                const auto frame_duration =
-                    std::chrono::duration<double>(1.0 / static_cast<double>(options.frame_cap));
-                std::this_thread::sleep_until(
-                    frame_started + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                                        frame_duration));
+            pace_frame(frame_started);
+        }
+
+        std::uint64_t edit_latency_drain_frames = 0;
+        constexpr std::uint64_t maximum_edit_latency_drain_frames = 240;
+        if (measured_frames == options.measured_frames) {
+            // Stop advancing the workload, but keep the ordinary bounded lighting and rendering
+            // cadence. Pending edit intervals must either publish or remain explicitly censored in
+            // the final state; drain frames do not alter the measured frame-time distribution.
+            while (active_renderer.stats().edit_to_visible_pending != 0 &&
+                   edit_latency_drain_frames < maximum_edit_latency_drain_frames) {
+                const auto frame_started = std::chrono::steady_clock::now();
+                if (native_window) {
+                    auto keep_running = pump_native_events(*native_window, active_renderer,
+                                                           scene.value()->camera());
+                    if (!keep_running) {
+                        return fail(keep_running.error().message);
+                    }
+                    if (!keep_running.value()) {
+                        return fail("benchmark window closed during edit-latency drain");
+                    }
+                }
+                status = chunk_lighting.value()->update(scene.value()->world().chunks(),
+                                                        scene.value()->world().dirty_regions(),
+                                                        scene.value()->palette());
+                if (!status) {
+                    return fail(status.error().message);
+                }
+                active_renderer.set_voxel_lighting_stats(chunk_lighting.value()->stats());
+                status = active_renderer.synchronize_chunks(scene.value()->world(),
+                                                            scene.value()->camera());
+                if (!status) {
+                    return fail(status.error().message);
+                }
+                auto frame = active_renderer.render_frame({scene.value()->camera()});
+                if (!frame) {
+                    return fail(frame.error().message);
+                }
+                ++edit_latency_drain_frames;
+                pace_frame(frame_started);
+            }
+            recorder.set_final_state(active_renderer.stats(), edit_latency_drain_frames);
+            if (active_renderer.stats().edit_to_visible_pending != 0) {
+                core::log(core::LogLevel::warning,
+                          "Edit-latency drain exhausted with " +
+                              std::to_string(active_renderer.stats().edit_to_visible_pending) +
+                              " censored interval(s)");
             }
         }
 

@@ -34,6 +34,7 @@ struct RendererStats {
     double edit_to_visible_recent_p95_ms = 0.0;
     double edit_to_visible_recent_p99_ms = 0.0;
     double edit_to_visible_session_max_ms = 0.0;
+    double mesh_builds_per_publication = 0.0;
     double voxel_relight_solve_ms = 0.0;
     double voxel_relight_apply_ms = 0.0;
     double voxel_fluid_snapshot_ms = 0.0;
@@ -60,6 +61,9 @@ struct RendererStats {
     std::uint64_t mesh_failures = 0;
     std::uint64_t upload_failures = 0;
     std::uint64_t stale_mesh_results = 0;
+    std::uint64_t mesh_total_completed_jobs = 0;
+    std::uint64_t mesh_total_built = 0;
+    std::uint64_t mesh_total_published = 0;
     std::uint64_t edit_to_visible_total_completed = 0;
     std::uint64_t edit_to_visible_total_coalesced = 0;
     std::uint64_t edit_to_visible_total_abandoned = 0;

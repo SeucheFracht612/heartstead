@@ -1008,6 +1008,10 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(renderer_stats.mesh_failures == 0);
     assert(renderer_stats.upload_failures == 0);
     assert(renderer_stats.stale_mesh_results == 0);
+    assert(renderer_stats.mesh_total_completed_jobs >= 1);
+    assert(renderer_stats.mesh_total_built >= 1);
+    assert(renderer_stats.mesh_total_published >= 1);
+    assert(renderer_stats.mesh_builds_per_publication >= 1.0);
     assert(renderer_stats.resident_chunks == 1);
     assert(renderer_stats.visible_chunks == 1);
     assert(renderer_stats.drawn_chunks == 1);
@@ -1034,6 +1038,14 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(formatted_stats.contains("relight_failed=2"));
     assert(formatted_stats.contains("edit_visible="));
     assert(formatted_stats.contains("chunk_failed=0/0"));
+    assert(formatted_stats.contains("mesh_amplification="));
+
+    retained_renderer.reset_chunk_performance_stats();
+    assert(retained_renderer.stats().mesh_total_completed_jobs == 0);
+    assert(retained_renderer.stats().mesh_total_built == 0);
+    assert(retained_renderer.stats().mesh_total_published == 0);
+    assert(retained_renderer.stats().mesh_builds_per_publication == 0.0);
+    assert(retained_renderer.stats().resident_chunks == 1);
 
     constexpr std::array<renderer::GpuStaticMeshVertex, 3> object_vertices{{
         {{-0.5F, -0.5F, 0.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 0.0F}},

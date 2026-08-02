@@ -142,8 +142,10 @@ Runtime storage is bounded to one pending record per affected chunk and a fixed 
 window. `ChunkRenderStats` and `RendererStats` expose per-frame completion count/maximum, pending
 count, latest latency, rolling median/P95/P99/maximum, session maximum, and cumulative completed,
 coalesced, and abandoned counts. Tracy plots retain pending count and rolling P95. Renderer
-benchmark JSON and CSV schema v3 preserve those counters and distributions in raw frame output and
-the summary.
+benchmark JSON and CSV schema v4 preserve those counters and distributions in raw frame output and
+the summary. Schema v4 resets the observation window after warmup, drains pending intervals without
+mixing drain frames into frame-time statistics, retains censored final work, and reports exact
+completed-job/built-mesh/published-mesh amplification.
 
 ## Decision and next experiment
 

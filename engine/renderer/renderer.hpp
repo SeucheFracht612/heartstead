@@ -151,6 +151,9 @@ class Renderer {
     [[nodiscard]] core::Status wait_idle();
     [[nodiscard]] core::Status clear_session_resources();
     [[nodiscard]] core::Status shutdown();
+    // Clears chunk-pipeline counters and latency samples without disturbing resident or queued
+    // work. This is intended for benchmark warm-up boundaries.
+    void reset_chunk_performance_stats() noexcept;
 
     [[nodiscard]] core::Status synchronize_chunks(world::WorldState& world,
                                                   const RenderCamera& camera);

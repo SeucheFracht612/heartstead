@@ -63,7 +63,10 @@ std::string format_renderer_stats(const RendererStats& stats) {
            << " edit_coalesced=" << stats.edit_to_visible_total_coalesced
            << " edit_abandoned=" << stats.edit_to_visible_total_abandoned
            << " chunk_failed=" << stats.mesh_failures << '/' << stats.upload_failures
-           << " chunk_stale=" << stats.stale_mesh_results << " draws=" << stats.draw_calls << '/'
+           << " chunk_stale=" << stats.stale_mesh_results << " mesh_work="
+           << stats.mesh_total_completed_jobs << '/' << stats.mesh_total_built << '/'
+           << stats.mesh_total_published << " mesh_amplification="
+           << stats.mesh_builds_per_publication << " draws=" << stats.draw_calls << '/'
            << stats.indirect_draw_calls << '['
            << stats.opaque_terrain_draws << '/' << stats.alpha_tested_terrain_draws << '/'
            << stats.transparent_terrain_draws << ']' << " pipelines=" << stats.pipeline_switches

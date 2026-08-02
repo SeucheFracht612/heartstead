@@ -1224,6 +1224,15 @@ core::Status Renderer::wait_idle() {
     return device_->wait_idle();
 }
 
+void Renderer::reset_chunk_performance_stats() noexcept {
+    if (chunk_cache_ == nullptr || chunk_system_ == nullptr) {
+        return;
+    }
+    chunk_cache_->reset_session_stats();
+    chunk_system_->reset_session_stats();
+    update_frontend_stats(stats_.loaded_chunks);
+}
+
 core::Status Renderer::clear_session_resources() {
     if (device_ == nullptr || chunk_system_ == nullptr || chunk_cache_ == nullptr) {
         return core::Status::failure(
@@ -2585,6 +2594,10 @@ void Renderer::update_frontend_stats(std::size_t loaded_chunk_count) noexcept {
     stats_.mesh_failures = chunks.total_failed_mesh_count;
     stats_.upload_failures = chunks.total_failed_upload_count;
     stats_.stale_mesh_results = chunks.total_stale_mesh_result_count;
+    stats_.mesh_total_completed_jobs = chunks.total_completed_mesh_job_count;
+    stats_.mesh_total_built = chunks.total_built_mesh_count;
+    stats_.mesh_total_published = chunks.total_published_mesh_count;
+    stats_.mesh_builds_per_publication = chunks.mesh_builds_per_publication;
     stats_.edit_to_visible_total_completed = chunks.total_edit_to_visible_completed_count;
     stats_.edit_to_visible_total_coalesced = chunks.total_coalesced_edit_invalidation_count;
     stats_.edit_to_visible_total_abandoned = chunks.total_abandoned_edit_invalidation_count;
