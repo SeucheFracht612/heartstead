@@ -30,7 +30,8 @@ between submission and invalidation.
 The controller always processes demand first. If any immediate request is deferred, it admits no
 new speculation. Otherwise it keeps at least `reserved_required_request_slots` free, submits
 speculation at low priority, cancels work outside current immediate/predictive interest, applies
-ranked clean evictions, and reports every scheduler outcome back to the predictor.
+ranked clean evictions in `max_evictions_per_update` waves, and reports every scheduler outcome back
+to the predictor. The tail drain continues until deferred eviction work is reconciled.
 
 ## Metrics and fail-closed invariants
 
@@ -44,7 +45,9 @@ The predictive policy separately reports:
 - useful, timely, late, and wasted predictions;
 - accuracy, coverage, and prefetch-to-use lead time;
 - requested and completed cancellation, plus cancellation races;
-- failed and stale speculative results.
+- failed and stale speculative results;
+- bounded eviction output, deferred evictions, projected post-wave overage, and overage that clean
+  candidates cannot resolve.
 
 The report is rejected if either trial loses a movement row, retains an active request or memory
 reservation, sees failed/stale/rejected/duplicate scheduler work, fails to account for every
@@ -94,7 +97,7 @@ processes rather than treating repeated trials in one process as independent mac
 ## Clean reference calibration
 
 Three independent Release processes from clean commit
-`58ce062e9c59592a1be35aa06656dd9c568591f7` passed every gate and fail-closed invariant on an
+`e305891e360605464474b4847ca8f08e030534bd` passed every gate and fail-closed invariant on an
 Intel Core Ultra 7 258V with GCC 13.3.0 on Linux 6.17.0-1030-oem. Each process ran an isolated
 baseline trial followed by an isolated predictive trial; the reports recorded `git_dirty=false`.
 
@@ -106,10 +109,10 @@ baseline trial followed by an isolated predictive trial; the reports recorded `g
 
 | Process | Baseline hole P95 | Predictive hole P95 | Worst owner publication | Maximum/final predictive residency |
 | ---: | ---: | ---: | ---: | ---: |
-| 1 | 5.603 ms | 5.712 ms | 43 us | 16/3 chunks |
-| 2 | 6.604 ms | 5.683 ms | 46 us | 16/3 chunks |
-| 3 | 6.649 ms | 5.551 ms | 25 us | 16/3 chunks |
-| **Median** | **6.604 ms** | **5.683 ms** | **43 us** | **16/3 chunks** |
+| 1 | 5.696 ms | 5.658 ms | 28 us | 16/3 chunks |
+| 2 | 6.535 ms | 5.799 ms | 46 us | 16/3 chunks |
+| 3 | 6.552 ms | 5.614 ms | 102 us | 16/3 chunks |
+| **Median** | **6.535 ms** | **5.658 ms** | **46 us** | **16/3 chunks** |
 
 Across these processes the predictive policy reduced visible-hole steps by 49.2% relative to the
 baseline and raised immediate residency from 11.94% to 55.22%. Timely coverage was 85.07% in every
@@ -122,5 +125,6 @@ client display, network, or whole-process memory results.
 
 This is a headless generation/residency benchmark. It does not yet measure saved-delta I/O, client
 camera integration, mesh/upload/display completion, multiplayer spread, byte-based whole-process
-memory pressure, or network replication. It validates the shared policy/controller boundary before
-those systems adopt it; it does not by itself close M6.
+memory pressure, or network replication. It validates comparative policy/controller behavior; the
+live renderer-proof integration separately covers authoritative motion, teleport, bounded eviction,
+and exact local-client replacement. This benchmark does not by itself close all of M6.

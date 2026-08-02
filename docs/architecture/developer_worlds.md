@@ -55,14 +55,18 @@ The `renderer_proof` hook is shared by the menu world and automated developer-wo
 materializes an initial 3x3 retained-renderer proof fixture around chunk coordinates
 `(1,000,000,000, 0, -1,000,000,000)`, preserving its floating-origin coverage without making the
 standalone render smoke executable the normal gameplay path. The live server then extends the
-fixture to its circular interest radius through the bounded `ChunkLoadScheduler` and an immutable
-scenario generator. Disk/decode/generation/preparation stay off the owner thread; publication is
-item- and time-budgeted.
+fixture through the production predictive-streaming controller, bounded `ChunkLoadScheduler`, and
+an immutable scenario generator. The controller keeps the 441-chunk circular footprint required,
+sweeps that footprint along bounded velocity/camera prediction, reserves scheduler capacity for
+demand, and limits each owner-thread eviction wave. Disk/decode/generation/preparation stay off the
+owner thread; publication is item- and time-budgeted.
 
 The automated runtime test briefly teleports the player outside the original interest center and
-back. It verifies that obsolete load requests are cancelled, no off-interest result is published,
-server and client converge on the 441 desired chunks, and the loader releases every working-memory
-reservation at teardown.
+back with a three-chunk eviction cap. It observes the resulting deferred-eviction backlog, then
+verifies cancellation, complete recovery of all 441 required chunks, bounded speculative
+residency, zero final overage, and zero pending or reserved loader work. At least one original chunk
+must be evicted and reloaded with a new identity, and the direct local client must exactly match
+every final server identity and content revision.
 
 ## Current entries
 

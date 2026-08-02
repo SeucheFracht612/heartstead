@@ -24,7 +24,7 @@ requires one.
 | Research capability | Current Heartstead state | Planned action |
 | --- | --- | --- |
 | Permanent hierarchical profiling | Partial: retained CPU/GPU timers, counters, raw benchmark frames, and opt-in Tracy zones now cover major runtime, renderer, chunk, worker, lighting, collision, and streaming paths. | Extend zones and attribution as later stages are changed; add allocation ownership and queue-age plots. |
-| Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. The live renderer-proof test covers rapid interest teleports, cancellation, convergence, and zero-reservation teardown. Separate open-loop chunk, save-under-streaming, chunk-delta journal, isolated voxel-response, end-to-end render-readiness, near/mid/far edit-transition, and real-runtime multiplayer chunk-subscription benchmarks retain request-to-resident, physical indexed-read, save handoff/acceptance/publication, stable-storage append, checkpoint, collision-publication, whole-field relight, upload, exact current draw-command, retained LOD convergence/continuity, multi-client spread/convergence/traversal, per-client wire, and server-tick percentiles. The Vulkan runner also has a feature-gated, serialized presentation-completion workload with raw present IDs and waits. | Add guaranteed-cold and multi-filesystem, cold-start, burst/hot-edit, impaired-network, correlated edit-to-GPU/presentation, physical-display, and long-soak workloads. |
+| Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. The live renderer-proof test covers authoritative predictive interest, rapid teleports, cancellation, bounded eviction and deferred drain, required-set convergence, exact client replacement, and zero-reservation teardown. Separate open-loop chunk, save-under-streaming, chunk-delta journal, isolated voxel-response, end-to-end render-readiness, near/mid/far edit-transition, and real-runtime multiplayer chunk-subscription benchmarks retain request-to-resident, physical indexed-read, save handoff/acceptance/publication, stable-storage append, checkpoint, collision-publication, whole-field relight, upload, exact current draw-command, retained LOD convergence/continuity, multi-client spread/convergence/traversal, per-client wire, and server-tick percentiles. The Vulkan runner also has a feature-gated, serialized presentation-completion workload with raw present IDs and waits. | Add guaranteed-cold and multi-filesystem, cold-start, burst/hot-edit, impaired-network, correlated edit-to-GPU/presentation, physical-display, and long-soak workloads. |
 | Reproducible provenance and gates | Renderer schema v4, chunk-streaming schema v4, chunk-delta-journal schema v1, voxel-response schema v1, chunk-render-readiness schema v1, and multiplayer chunk-subscription schema v1 record source/build/CPU/device/run metadata, warmups, repetitions or raw ticks, workload configuration, and fail-closed lifecycle invariants. Renderer schema v4 also records presentation-timing request/support, raw validity/ID/wait, and valid-sample distributions. Optional gates cover frame distributions, uploads, available GPU, rapid-edit mesh response, generated/in-memory/file-backed saved resident publication, physical payload reads and index opens, save-under-streaming owner handoff/request-to-durable acceptance/full publication, durable append/reopen/checkpoint, exact collision publication, full-field relight convergence, required-chunk draw eligibility, synchronous GPU waits, mesh amplification, owner publication time, subscription bounds, relevance exclusions, codec reuse/overshoot, backlog recovery, and server P99. | Add relative-regression checks and the remaining guaranteed-cold/multi-filesystem I/O, correlated display, impaired-network, hot-edit, and soak gates. |
 | Bounded jobs and cancellation | Generic and typed schedulers now bound pending/result work, expose backpressure and queue-age telemetry, age priorities, and support reasoned queued/cooperative cancellation. | Attribute per-type saturation in higher-level pipeline counters and tune limits from traces. |
 | Versioned chunk pipeline | An owner-thread ledger now separates content, light, mesh, collision, persistence, and replication request/output revisions and states. Save/replication, mesh/GPU, collision/physics, and whole-field lighting publication are ticket-validated across edit and reload races. | Calibrate stale-work amplification and latency under representative edit/streaming traces. |
@@ -32,7 +32,7 @@ requires one.
 | Occupancy and opacity masks | A fixed 4 KiB occupancy mask follows the exact chunk content revision. Meshing snapshots also carry pooled greedy-cube and halo-padded full-occluder masks keyed by content dependencies and render-table revision. | Reuse the resident occupancy mask for later measured consumers; keep render-dependent masks derived and consumer-specific. |
 | Face culling and greedy meshing | Implemented with immutable neighborhood snapshots, material/render phases, bounded scheduling, stale rejection, pooled buffers, reproducible isolated benchmarks, occupancy-assisted rejection, word-level face candidates/AO queries, surface-bound reservation, an isolated-cube culled fallback, and bounded invalidation-to-resident traces. | Keep slab or microbrick rebuilds deferred unless a future measured edit P95 again exceeds target. |
 | Dynamic edit propagation | Dirty regions, neighbor dependencies, asynchronous mesh/light/collision work, upload quotas, exact mesh/collision/relight lifecycle tracking, edit coalescing/abandonment telemetry, and calibrated visual, collision, relight, required-chunk upload-preparation, and draw-eligibility P95 gates exist. | Add burst-edit collision/relight amplification and correlate the existing GPU/presentation endpoints with edit and physical-display response. |
-| Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, indexed delta save/replication, residency budgets, and far clipmaps exist. Durable snapshot acceptance/compaction and application saves run through a bounded save worker. A bounded chunk loader moves disk/decode/generation/private edit application off-thread and is active in the live renderer-proof stream. Saved-delta publication and narrow flushes no longer scan or copy global edit history, physical delta sources parse one base-plus-journal view per streaming epoch, and a retained writer publishes one checksummed file per update. Process-local readers/writers pin generation tables; append/publication mutations serialize across database instances; destructive maintenance fails fast for retry. The save-under-streaming harness proves pinned reads across full generation publication, an explicit reader gap, stale pruning, and future-source rotation. Warm/cache-advised reads and durable append/reopen/checkpoint gates pass at 16,384 records. | Add application-owned checkpoint retry cadence plus guaranteed-cold/multi-filesystem coverage, adopt async loading in the general generated-world controller, bound eviction waves, and add scale-calibrated live save-capture gates. |
+| Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, indexed delta save/replication, residency budgets, and far clipmaps exist. Durable snapshot acceptance/compaction and application saves run through a bounded save worker. A predictive owner-thread controller now drives the bounded loader in the live renderer-proof stream, reserves demand capacity, tracks speculative outcomes, and emits capped eviction waves with deferred/overage telemetry. Saved-delta publication and narrow flushes no longer scan or copy global edit history, physical delta sources parse one base-plus-journal view per streaming epoch, and a retained writer publishes one checksummed file per update. Process-local readers/writers pin generation tables; append/publication mutations serialize across database instances; destructive maintenance fails fast for retry. The save-under-streaming harness proves pinned reads across full generation publication, an explicit reader gap, stale pruning, and future-source rotation. Warm/cache-advised reads and durable append/reopen/checkpoint gates pass at 16,384 records. | Add application-owned checkpoint retry cadence plus guaranteed-cold/multi-filesystem coverage, extend generator-backed loading beyond the renderer-proof world, and add scale-calibrated live save-capture gates. |
 | Visibility, LOD, and GPU scaling | Frustum/distance/hierarchical visibility, HZB support, far clipmaps, indirect rendering, GPU arenas, upload staging, and pass timestamps already exist. | Tune only from captures; validate total culling benefit and retain broad fallback paths. |
 | Simulation and multiplayer scale | Simulation LOD, server authority, fixed-step runtime, bounded reliable/transient replication, and player-centered hysteretic chunk subscriptions now run in `ServerRuntime`. Chunk snapshots are relevance-limited, identity/revision tracked, atomically queued, globally codec-time-bounded, and encoded once across recipients. A clean eight-client spread/convergence/traversal benchmark passes server P99, relevance, sharing, wire, and backlog-recovery gates. | Filter the separate voxel event/delta path, add hot-edit and impaired-network P99, connect game-specific temporal aggregate models, and add long-soak coverage. |
 
@@ -152,10 +152,12 @@ checkpoint compaction, bounded save scheduling, worker-side slot metadata, and a
 autosave/final-save adoption are implemented. The live chunk-load pipeline now bounds worker,
 mailbox, memory-reservation, item-publication, and publication-time work; separates disk, decode,
 generation, preparation, and owner publication timings; accepts immutable custom generators; and
-rejects cancelled/stale work before publication. The renderer-proof runtime uses this path and its
-rapid-teleport test proves cancelled requests drain, off-interest chunks do not publish, server and
-client converge on all 441 desired chunks, and reservations return to zero. The focused save/load
-and response paths pass warning-as-error builds plus ASan/UBSan and TSAN.
+rejects cancelled/stale work before publication. The renderer-proof runtime now drives this path
+through the predictive owner controller. Its rapid-teleport test caps eviction at three chunks per
+update, observes deferred work, proves cancellation and bounded drain, recovers all 441 required
+chunks plus only a budgeted speculative fringe, replaces an evicted/reloaded chunk by exact remote
+identity and revision on the client, and returns pending work and reservations to zero. The focused
+save/load and response paths pass warning-as-error builds plus ASan/UBSan and TSAN.
 
 The file-backed saved-delta source now opens and validates one generation-scoped sorted index before
 workers use it. Concurrent reads perform `O(log n)` lookup and one payload-file read; they no longer
@@ -242,8 +244,9 @@ typed snapshot.
 The original physical fixture's production writer took a median 48.324 seconds to create 16,384
 durable per-chunk records; the new calibration measures the same full-table shape at 48.047 seconds
 for generation write and 48.254 seconds for checkpoint while keeping individual durable streamed
-appends near 3.3 ms P95. General-world runtime adoption, application checkpoint retry cadence,
-guaranteed-cold and multi-filesystem coverage, burst-edit/large-residency response,
+appends near 3.3 ms P95. Generator hookup for worlds beyond the renderer-proof stream, application
+checkpoint retry cadence, guaranteed-cold and multi-filesystem coverage,
+burst-edit/large-residency response,
 large live-snapshot-capture benchmarks, and correlated required-chunk GPU execution,
 presentation-completion, and physical-display timing remain before M5 can be marked complete.
 
@@ -264,11 +267,12 @@ their caps.
 
 Implementation status (in progress): the streaming policy now exposes the complete immediate
 desired set and layers a stateful predictive planner over it. Each viewer contributes both velocity
-and view direction to a bounded, deduplicated trajectory corridor. Required loads remain separate
-from speculation; speculative submissions and active work have independent hard caps, elevated
-pressure halves new speculative admission, and critical pressure disables it. Reversal, expiry, and
-teleport paths issue explicit cancellation requests, while a cancellation that loses the race to
-publication becomes an immediate low-value eviction candidate.
+and view direction to a bounded, deduplicated trajectory of shifted future-demand footprints. This
+keeps prediction useful when the immediate radius is wider than the center's travel distance.
+Required loads remain separate from speculation; speculative submissions and active work have
+independent hard caps, elevated pressure halves new speculative admission, and critical pressure
+disables it. Reversal, expiry, and teleport paths issue explicit cancellation requests, while a
+cancellation that loses the race to publication becomes an immediate low-value eviction candidate.
 
 The retained telemetry deliberately separates prediction accuracy, timely coverage, prefetch-to-use
 lead time, late hits, waste, requested/actual cancellation, cancellation misses, failure, and stale
@@ -281,28 +285,39 @@ The policy does not infer success from hit rate alone.
 Every clean non-required resident chunk also receives an inspectable eviction value composed from
 estimated reload cost, pressure-scaled spatial retention, decaying temporal retention, speculative
 pollution penalty, and viewer distance. Low values leave first; pressure may override hysteresis,
-but required or persistence/replication-dirty chunks remain pinned and any unresolvable overage is
-reported. The cost/locality structure is informed by
+but required or persistence/replication-dirty chunks remain pinned. Owner destruction is capped per
+update; deferred work, projected post-wave overage, and overage that no eligible clean candidate can
+resolve are reported separately. The cost/locality structure is informed by
 [GreedyDual-Size](https://www.usenix.org/legacy/publications/library/proceedings/usits97/full_papers/cao/cao_html/node8.html),
 without claiming its cache-optimality result for voxel residency. Pressure is an explicit portable
 input; Linux hosts may eventually feed it from cgroup or system
 [PSI thresholds](https://cdn.kernel.org/doc/html/latest/accounting/psi.html), but the engine policy
 does not depend on `/proc`.
 
-Focused tests cover directional and camera prediction, multi-viewer deduplication, timely demand
-conversion, reversal, teleport, cancellation races, dirty pinning, temporal retention, pressure
-overrides, unresolved caps, and invalid inputs. An exclusive owner-thread controller now drives the
-production scheduler, reserves demand capacity, publishes outcomes back into the policy, and applies
-the resulting clean evictions. The paired
+Focused tests cover directional and camera prediction, shifted future-demand footprints,
+multi-viewer deduplication, timely demand conversion, reversal, teleport, cancellation races,
+dirty pinning, temporal retention, pressure overrides, bounded/deferred eviction waves, unresolved
+caps, and invalid inputs. An exclusive owner-thread controller drives the production scheduler,
+reserves demand capacity, publishes outcomes back into the policy, and applies the resulting clean
+evictions. The paired
 [predictive streaming benchmark](predictive_streaming_benchmarks.md) compares that path against a
 no-prefetch baseline while retaining real hit/waste/cancellation, visible-hole, owner-publication,
 and memory-slope evidence. Three clean Release processes passed every gate with identical behavioral
 results: prediction reduced visible-hole steps from 59/67 to 30/67, raised immediate residency from
 11.94% to 55.22%, resolved at 82.61% accuracy with 85.07% timely coverage, completed all four
 cancellation requests, and held the late-soak residency slope at zero. Median baseline/predictive
-visible-hole P95 was 6.604/5.683 ms and median worst owner publication was 43 us. See the
+visible-hole P95 was 6.535/5.658 ms and median worst owner publication was 46 us. See the
 [clean reference calibration](predictive_streaming_benchmarks.md#clean-reference-calibration).
-General runtime adoption remains before this M6 streaming slice is accepted.
+
+The live streaming-enabled renderer-proof server now derives deterministic viewer motion and view
+direction from authoritative player state, detects discontinuities, and feeds that controller every
+simulation tick. Tracy plots, the runtime overlay, and inspection output expose required residency,
+pending/speculative work, prediction accuracy/coverage, deferred eviction, and projected/unresolved
+overage. Its integration test forces a teleport under a three-eviction wave cap, observes the
+backlog, returns, and proves all 441 required chunks recover, residency stays at or below target,
+server/client counts and exact remote identities converge, and pending/deferred/reserved work
+reaches zero. This accepts the live predictive-streaming slice; generator hookup for other world
+types and the broader M6 long-soak/memory evidence remain open.
 
 Temporal simulation admission is now a separate deterministic layer over raw LOD classification.
 Every subject carries a positive estimated work cost; each tick has hard subject-count, work-unit,
