@@ -40,11 +40,9 @@ namespace {
     const auto center_x = floor_to_i64(camera.x / size);
     const auto center_z = floor_to_i64(camera.z / size);
     const auto radius = static_cast<std::int64_t>(config.patches_per_axis / 2U);
-    return {{static_cast<double>(center_x - radius) * size,
-             -std::numeric_limits<double>::max(),
+    return {{static_cast<double>(center_x - radius) * size, -std::numeric_limits<double>::max(),
              static_cast<double>(center_z - radius) * size},
-            {static_cast<double>(center_x + radius + 1) * size,
-             std::numeric_limits<double>::max(),
+            {static_cast<double>(center_x + radius + 1) * size, std::numeric_limits<double>::max(),
              static_cast<double>(center_z + radius + 1) * size}};
 }
 
@@ -60,13 +58,11 @@ core::Status FarTerrainSurfaceGrid::validate_for(const FarTerrainPatch& patch) c
         cell_size != patch.cell_size || resolution != patch.resolution || resolution < 2 ||
         resolution > 256 || !std::isfinite(cell_size) || cell_size <= 0.0 ||
         !horizontal_bounds.is_valid()) {
-        return core::Status::failure(
-            "renderer.invalid_far_terrain_surface_grid",
-            "far-terrain surface grid metadata does not match its patch");
+        return core::Status::failure("renderer.invalid_far_terrain_surface_grid",
+                                     "far-terrain surface grid metadata does not match its patch");
     }
     const auto row = static_cast<std::size_t>(resolution) + 3U;
-    if (samples.size() != row * row ||
-        !std::ranges::all_of(samples, [](const auto& sample) {
+    if (samples.size() != row * row || !std::ranges::all_of(samples, [](const auto& sample) {
             return std::isfinite(sample.height);
         })) {
         return core::Status::failure(
@@ -81,11 +77,9 @@ core::Result<FarTerrainClipmap> FarTerrainClipmap::create(FarTerrainClipmapConfi
         config.patches_per_axis % 2U == 0 || config.patch_resolution < 2 ||
         config.patch_resolution > 256 || !std::isfinite(config.base_cell_size) ||
         config.base_cell_size <= 0.0 || !std::isfinite(config.maximum_distance) ||
-        config.maximum_distance <= 0.0 ||
-        !std::isfinite(config.maximum_geometric_error_pixels) ||
+        config.maximum_distance <= 0.0 || !std::isfinite(config.maximum_geometric_error_pixels) ||
         config.maximum_geometric_error_pixels <= 0.0F ||
-        !std::isfinite(config.inner_exclusion_radius) ||
-        config.inner_exclusion_radius < 0.0) {
+        !std::isfinite(config.inner_exclusion_radius) || config.inner_exclusion_radius < 0.0) {
         return core::Result<FarTerrainClipmap>::failure(
             "renderer.invalid_far_terrain_clipmap",
             "far-terrain clipmap requires odd patch coverage, finite distances, and valid levels");
@@ -103,25 +97,24 @@ FarTerrainPlan FarTerrainClipmap::plan(math::Vec3d camera_world) const {
         const auto cell_size = config_.base_cell_size * std::exp2(static_cast<double>(level));
         const auto center_x = floor_to_i64(camera_world.x / size);
         const auto center_z = floor_to_i64(camera_world.z / size);
-        const auto finer_coverage = level == 0 ? math::Bounds3d{}
-                                              : level_coverage(camera_world, config_, level - 1U);
+        const auto finer_coverage =
+            level == 0 ? math::Bounds3d{} : level_coverage(camera_world, config_, level - 1U);
 
         for (std::int64_t z = center_z - radius; z <= center_z + radius; ++z) {
             for (std::int64_t x = center_x - radius; x <= center_x + radius; ++x) {
-                math::Bounds3d bounds{{static_cast<double>(x) * size, 0.0,
-                                       static_cast<double>(z) * size},
-                                      {static_cast<double>(x + 1) * size, 0.0,
-                                       static_cast<double>(z + 1) * size}};
+                math::Bounds3d bounds{
+                    {static_cast<double>(x) * size, 0.0, static_cast<double>(z) * size},
+                    {static_cast<double>(x + 1) * size, 0.0, static_cast<double>(z + 1) * size}};
                 // Keep an overlap band around the finer level. It is consumed by a stable
                 // dither/morph transition and prevents hard LOD boundaries from exposing gaps.
                 if (level > 0 && fully_inside(bounds, finer_coverage)) {
                     continue;
                 }
                 const auto patch_center = math::Vec3d{(bounds.min.x + bounds.max.x) * 0.5, 0.0,
-                                                       (bounds.min.z + bounds.max.z) * 0.5};
+                                                      (bounds.min.z + bounds.max.z) * 0.5};
                 const auto distance = math::length(patch_center - camera_world);
-                const auto nearest_distance = std::max(
-                    0.0, distance - size * std::numbers::sqrt2_v<double> * 0.5);
+                const auto nearest_distance =
+                    std::max(0.0, distance - size * std::numbers::sqrt2_v<double> * 0.5);
                 if (nearest_distance < config_.inner_exclusion_radius) {
                     continue;
                 }
@@ -130,27 +123,31 @@ FarTerrainPlan FarTerrainClipmap::plan(math::Vec3d camera_world) const {
                     continue;
                 }
                 const auto transition_start = level == 0 ? 0.0F : 0.15F;
-                result.patches.push_back(
-                    {{level, x, z, config_.domain}, bounds, cell_size,
-                     config_.patch_resolution, static_cast<float>(cell_size * 0.5),
-                     transition_start, level == 0 ? 0.0F : 0.85F,
-                     1.0F / static_cast<float>(1.0 + distance)});
+                result.patches.push_back({{level, x, z, config_.domain},
+                                          bounds,
+                                          cell_size,
+                                          config_.patch_resolution,
+                                          static_cast<float>(cell_size * 0.5),
+                                          transition_start,
+                                          level == 0 ? 0.0F : 0.85F,
+                                          1.0F / static_cast<float>(1.0 + distance)});
                 result.patches.back().finer_coverage = finer_coverage;
                 result.covered_radius = std::max(result.covered_radius, distance + size * 0.5);
             }
         }
     }
 
-    std::ranges::sort(result.patches, [](const FarTerrainPatch& left,
-                                        const FarTerrainPatch& right) {
-        return std::tuple{left.key.level, left.key.z, left.key.x} <
-               std::tuple{right.key.level, right.key.z, right.key.x};
-    });
+    std::ranges::sort(result.patches,
+                      [](const FarTerrainPatch& left, const FarTerrainPatch& right) {
+                          return std::tuple{left.key.level, left.key.z, left.key.x} <
+                                 std::tuple{right.key.level, right.key.z, right.key.x};
+                      });
     return result;
 }
 
-core::Result<FarTerrainPatchMesh> FarTerrainClipmap::build_patch_mesh(
-    const FarTerrainPatch& patch, const FarTerrainSurfaceSampler& sampler) const {
+core::Result<FarTerrainPatchMesh>
+FarTerrainClipmap::build_patch_mesh(const FarTerrainPatch& patch,
+                                    const FarTerrainSurfaceSampler& sampler) const {
     auto surface = capture_patch_surface(patch, sampler);
     if (!surface) {
         return core::Result<FarTerrainPatchMesh>::failure(surface.error().code,
@@ -159,9 +156,10 @@ core::Result<FarTerrainPatchMesh> FarTerrainClipmap::build_patch_mesh(
     return build_patch_mesh(patch, surface.value());
 }
 
-core::Result<FarTerrainSurfaceGrid> FarTerrainClipmap::capture_patch_surface(
-    const FarTerrainPatch& patch, const FarTerrainSurfaceSampler& sampler,
-    std::vector<FarTerrainSurfaceSample> reusable) const {
+core::Result<FarTerrainSurfaceGrid>
+FarTerrainClipmap::capture_patch_surface(const FarTerrainPatch& patch,
+                                         const FarTerrainSurfaceSampler& sampler,
+                                         std::vector<FarTerrainSurfaceSample> reusable) const {
     if (!sampler || patch.resolution < 2 || patch.resolution > 256 ||
         !std::isfinite(patch.cell_size) || patch.cell_size <= 0.0 ||
         !patch.horizontal_bounds.is_valid()) {
@@ -180,10 +178,10 @@ core::Result<FarTerrainSurfaceGrid> FarTerrainClipmap::capture_patch_surface(
     result.samples.reserve(row * row);
     for (std::int32_t z = -1; z <= static_cast<std::int32_t>(patch.resolution) + 1; ++z) {
         for (std::int32_t x = -1; x <= static_cast<std::int32_t>(patch.resolution) + 1; ++x) {
-            result.samples.push_back(sampler(
-                patch.horizontal_bounds.min.x + static_cast<double>(x) * patch.cell_size,
-                patch.horizontal_bounds.min.z + static_cast<double>(z) * patch.cell_size,
-                patch.key.domain));
+            result.samples.push_back(
+                sampler(patch.horizontal_bounds.min.x + static_cast<double>(x) * patch.cell_size,
+                        patch.horizontal_bounds.min.z + static_cast<double>(z) * patch.cell_size,
+                        patch.key.domain));
         }
     }
     auto status = result.validate_for(patch);
@@ -196,28 +194,31 @@ core::Result<FarTerrainSurfaceGrid> FarTerrainClipmap::capture_patch_surface(
 
 core::Result<FarTerrainPatchMesh>
 FarTerrainClipmap::build_patch_mesh(const FarTerrainPatch& patch,
-                                    const FarTerrainSurfaceGrid& surface) const {
+                                    const FarTerrainSurfaceGrid& surface,
+                                    FarTerrainPatchMesh reusable) const {
     auto surface_status = surface.validate_for(patch);
     if (!surface_status) {
         return core::Result<FarTerrainPatchMesh>::failure(surface_status.error().code,
                                                           surface_status.error().message);
     }
     const auto surface_row = static_cast<std::size_t>(patch.resolution) + 3U;
-    const auto sample_at = [&surface, surface_row](std::int32_t x,
-                                                   std::int32_t z) -> const auto& {
-        const auto index = static_cast<std::size_t>(z + 1) * surface_row +
-                           static_cast<std::size_t>(x + 1);
+    const auto sample_at = [&surface, surface_row](std::int32_t x, std::int32_t z) -> const auto& {
+        const auto index =
+            static_cast<std::size_t>(z + 1) * surface_row + static_cast<std::size_t>(x + 1);
         return surface.samples[index];
     };
 
-    FarTerrainPatchMesh result;
+    auto result = std::move(reusable);
     result.key = patch.key;
+    result.vertices.clear();
+    result.indices.clear();
+    result.local_bounds = {};
     auto origin_height = 0.0;
     bool found_origin_height = false;
     for (std::uint32_t z = 0; z <= patch.resolution && !found_origin_height; ++z) {
         for (std::uint32_t x = 0; x <= patch.resolution; ++x) {
-            const auto sample = sample_at(static_cast<std::int32_t>(x),
-                                          static_cast<std::int32_t>(z));
+            const auto sample =
+                sample_at(static_cast<std::int32_t>(x), static_cast<std::int32_t>(z));
             if (sample.valid) {
                 origin_height = sample.height;
                 found_origin_height = true;
@@ -236,10 +237,10 @@ FarTerrainClipmap::build_patch_mesh(const FarTerrainPatch& patch,
     bool has_bounds = false;
     for (std::uint32_t z = 0; z <= patch.resolution; ++z) {
         for (std::uint32_t x = 0; x <= patch.resolution; ++x) {
-            const auto world_x = patch.horizontal_bounds.min.x +
-                                 static_cast<double>(x) * patch.cell_size;
-            const auto world_z = patch.horizontal_bounds.min.z +
-                                 static_cast<double>(z) * patch.cell_size;
+            const auto world_x =
+                patch.horizontal_bounds.min.x + static_cast<double>(x) * patch.cell_size;
+            const auto world_z =
+                patch.horizontal_bounds.min.z + static_cast<double>(z) * patch.cell_size;
             const auto grid_x = static_cast<std::int32_t>(x);
             const auto grid_z = static_cast<std::int32_t>(z);
             const auto sample = sample_at(grid_x, grid_z);
@@ -250,11 +251,11 @@ FarTerrainClipmap::build_patch_mesh(const FarTerrainPatch& patch,
             const auto right = neighbor_height(sample_at(grid_x + 1, grid_z));
             const auto back = neighbor_height(sample_at(grid_x, grid_z - 1));
             const auto front = neighbor_height(sample_at(grid_x, grid_z + 1));
-            const auto position = math::Vec3f{
-                static_cast<float>(world_x - result.world_origin.x),
-                static_cast<float>((sample.valid ? sample.height : origin_height) -
-                                   result.world_origin.y),
-                static_cast<float>(world_z - result.world_origin.z)};
+            const auto position =
+                math::Vec3f{static_cast<float>(world_x - result.world_origin.x),
+                            static_cast<float>((sample.valid ? sample.height : origin_height) -
+                                               result.world_origin.y),
+                            static_cast<float>(world_z - result.world_origin.z)};
             float transition = 1.0F;
             if (patch.key.level > 0U) {
                 const auto inside = world_x >= patch.finer_coverage.min.x &&
@@ -263,41 +264,36 @@ FarTerrainClipmap::build_patch_mesh(const FarTerrainPatch& patch,
                                     world_z <= patch.finer_coverage.max.z;
                 double signed_distance = 0.0;
                 if (inside) {
-                    signed_distance =
-                        -std::min({world_x - patch.finer_coverage.min.x,
-                                   patch.finer_coverage.max.x - world_x,
-                                   world_z - patch.finer_coverage.min.z,
-                                   patch.finer_coverage.max.z - world_z});
+                    signed_distance = -std::min({world_x - patch.finer_coverage.min.x,
+                                                 patch.finer_coverage.max.x - world_x,
+                                                 world_z - patch.finer_coverage.min.z,
+                                                 patch.finer_coverage.max.z - world_z});
                 } else {
-                    const auto delta_x =
-                        std::max({patch.finer_coverage.min.x - world_x, 0.0,
-                                  world_x - patch.finer_coverage.max.x});
-                    const auto delta_z =
-                        std::max({patch.finer_coverage.min.z - world_z, 0.0,
-                                  world_z - patch.finer_coverage.max.z});
+                    const auto delta_x = std::max({patch.finer_coverage.min.x - world_x, 0.0,
+                                                   world_x - patch.finer_coverage.max.x});
+                    const auto delta_z = std::max({patch.finer_coverage.min.z - world_z, 0.0,
+                                                   world_z - patch.finer_coverage.max.z});
                     signed_distance = std::hypot(delta_x, delta_z);
                 }
                 const auto transition_band = std::max(patch.cell_size * 2.0, 1.0);
                 transition = static_cast<float>(
                     std::clamp(0.5 + signed_distance / (transition_band * 2.0), 0.0, 1.0));
             }
-            result.vertices.push_back(
-                {position,
-                 normalized({static_cast<float>(left - right),
-                             static_cast<float>(2.0 * patch.cell_size),
-                             static_cast<float>(back - front)}),
-                 {position.x * 0.0625F, position.z * 0.0625F},
-                 sample.material, transition});
+            result.vertices.push_back({position,
+                                       normalized({static_cast<float>(left - right),
+                                                   static_cast<float>(2.0 * patch.cell_size),
+                                                   static_cast<float>(back - front)}),
+                                       {position.x * 0.0625F, position.z * 0.0625F},
+                                       sample.material,
+                                       transition});
             valid_vertices.push_back(sample.valid);
             if (sample.valid) {
                 const math::Bounds3f point_bounds{position, position};
-                result.local_bounds = has_bounds
-                                          ? math::Bounds3f{
-                                                math::component_min(result.local_bounds.min,
-                                                                    position),
-                                                math::component_max(result.local_bounds.max,
-                                                                    position)}
-                                          : point_bounds;
+                result.local_bounds =
+                    has_bounds
+                        ? math::Bounds3f{math::component_min(result.local_bounds.min, position),
+                                         math::component_max(result.local_bounds.max, position)}
+                        : point_bounds;
                 has_bounds = true;
             }
         }
@@ -313,9 +309,8 @@ FarTerrainClipmap::build_patch_mesh(const FarTerrainPatch& patch,
                 !valid_vertices[bottom_left] || !valid_vertices[bottom_right]) {
                 continue;
             }
-            result.indices.insert(result.indices.end(),
-                                  {top_left, bottom_left, top_right,
-                                   top_right, bottom_left, bottom_right});
+            result.indices.insert(result.indices.end(), {top_left, bottom_left, top_right,
+                                                         top_right, bottom_left, bottom_right});
         }
     }
     return core::Result<FarTerrainPatchMesh>::success(std::move(result));

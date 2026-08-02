@@ -75,8 +75,7 @@ struct FarTerrainSurfaceGrid {
 };
 
 using FarTerrainSurfaceSampler =
-    std::function<FarTerrainSurfaceSample(double world_x, double world_z,
-                                          FarTerrainDomain domain)>;
+    std::function<FarTerrainSurfaceSample(double world_x, double world_z, FarTerrainDomain domain)>;
 
 struct FarTerrainVertex {
     math::Vec3f local_position{};
@@ -96,19 +95,17 @@ struct FarTerrainPatchMesh {
 
 class FarTerrainClipmap {
   public:
-    [[nodiscard]] static core::Result<FarTerrainClipmap>
-    create(FarTerrainClipmapConfig config);
+    [[nodiscard]] static core::Result<FarTerrainClipmap> create(FarTerrainClipmapConfig config);
 
     [[nodiscard]] FarTerrainPlan plan(math::Vec3d camera_world) const;
     [[nodiscard]] core::Result<FarTerrainSurfaceGrid>
-    capture_patch_surface(const FarTerrainPatch& patch,
-                          const FarTerrainSurfaceSampler& sampler,
+    capture_patch_surface(const FarTerrainPatch& patch, const FarTerrainSurfaceSampler& sampler,
                           std::vector<FarTerrainSurfaceSample> reusable = {}) const;
     [[nodiscard]] core::Result<FarTerrainPatchMesh>
-    build_patch_mesh(const FarTerrainPatch& patch,
-                     const FarTerrainSurfaceSampler& sampler) const;
+    build_patch_mesh(const FarTerrainPatch& patch, const FarTerrainSurfaceSampler& sampler) const;
     [[nodiscard]] core::Result<FarTerrainPatchMesh>
-    build_patch_mesh(const FarTerrainPatch& patch, const FarTerrainSurfaceGrid& surface) const;
+    build_patch_mesh(const FarTerrainPatch& patch, const FarTerrainSurfaceGrid& surface,
+                     FarTerrainPatchMesh reusable = {}) const;
     [[nodiscard]] const FarTerrainClipmapConfig& config() const noexcept;
 
   private:

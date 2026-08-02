@@ -445,6 +445,8 @@ heartstead_add_foundation_test(heartstead_far_terrain_clipmap_tests
                                far_terrain_clipmap_tests.cpp)
 heartstead_add_foundation_test(heartstead_far_terrain_lod_updates_tests
                                far_terrain_lod_updates_tests.cpp)
+heartstead_add_foundation_test(heartstead_far_terrain_mesh_scheduler_tests
+                               far_terrain_mesh_scheduler_tests.cpp)
 heartstead_add_foundation_test(heartstead_far_terrain_renderer_tests
                                far_terrain_renderer_tests.cpp)
 heartstead_add_foundation_test(heartstead_render_scene_tests render_scene_tests.cpp)
