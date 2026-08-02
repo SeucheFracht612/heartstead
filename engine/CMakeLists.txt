@@ -153,6 +153,7 @@ target_sources(
     renderer/shaders/spirv_loader.cpp
     renderer/terrain/gpu_chunk_vertex.cpp
     renderer/terrain/far_terrain_clipmap.cpp
+    renderer/terrain/far_terrain_lod_updates.cpp
     renderer/terrain/far_terrain_renderer.cpp
     renderer/testing/visual_regression.cpp
     renderer/ui/ui_renderer.cpp
