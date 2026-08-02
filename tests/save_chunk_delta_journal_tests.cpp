@@ -1,6 +1,8 @@
 #include "engine/save/save_binary_codec.hpp"
 #include "engine/save/save_database.hpp"
 
+#include <atomic>
+#include <barrier>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -8,6 +10,7 @@
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -257,15 +260,22 @@ void test_checkpoint_and_recovery_are_restart_safe() {
     const heartstead::world::ChunkCoord coord_a{-1, 2, 3};
     const heartstead::world::ChunkCoord coord_b{9, -8, 7};
     assert(database.write_snapshot(make_snapshot(4, {{coord_a, "base"}})));
-    auto writer_opened = database.open_chunk_delta_writer();
-    assert(writer_opened);
-    auto writer = std::move(writer_opened).value();
-    assert(writer.write_chunk_delta({coord_a, "updated"}));
-    assert(writer.write_chunk_delta({coord_b, "added"}));
-
     const auto save_root = temporary.path() / "generations" / "generation_1";
     const auto abandoned = save_root / "chunk_journal" / "entry_00000000000000000003.hcdj.tmp";
-    write_text(abandoned, "interrupted");
+    {
+        auto writer_opened = database.open_chunk_delta_writer();
+        assert(writer_opened);
+        auto writer = std::move(writer_opened).value();
+        assert(writer.write_chunk_delta({coord_a, "updated"}));
+        assert(writer.write_chunk_delta({coord_b, "added"}));
+        write_text(abandoned, "interrupted");
+
+        auto busy_recovery = database.recover_chunk_delta_journal();
+        assert(!busy_recovery && busy_recovery.error().code == "save_database.busy");
+        auto busy_checkpoint = database.compact_chunk_delta_journal();
+        assert(!busy_checkpoint && busy_checkpoint.error().code == "save_database.busy");
+    }
+
     auto recovered = database.recover_chunk_delta_journal();
     assert(recovered && recovered.value().changed());
     assert(recovered.value().discarded_temporary_entry_count == 1);
@@ -280,14 +290,16 @@ void test_checkpoint_and_recovery_are_restart_safe() {
     assert(!std::filesystem::exists(save_root / "chunk_journal.compacted"));
 
     heartstead::save::FileSaveDatabase restarted(temporary.path());
-    auto reader_opened = restarted.open_chunk_delta_reader();
-    assert(reader_opened);
-    auto reader = std::move(reader_opened).value();
-    assert(reader.stats().storage_kind ==
-           heartstead::save::FileChunkDeltaStorageKind::external_table);
-    assert(reader.stats().journal_entry_count == 0);
-    assert(read_required(reader, coord_a) == "updated");
-    assert(read_required(reader, coord_b) == "added");
+    {
+        auto reader_opened = restarted.open_chunk_delta_reader();
+        assert(reader_opened);
+        auto reader = std::move(reader_opened).value();
+        assert(reader.stats().storage_kind ==
+               heartstead::save::FileChunkDeltaStorageKind::external_table);
+        assert(reader.stats().journal_entry_count == 0);
+        assert(read_required(reader, coord_a) == "updated");
+        assert(read_required(reader, coord_b) == "added");
+    }
 
     auto no_work = restarted.compact_chunk_delta_journal();
     assert(no_work && !no_work.value().compacted);
@@ -305,23 +317,26 @@ void test_finalized_corruption_fails_closed() {
     heartstead::save::FileSaveDatabase database(temporary.path());
     const heartstead::world::ChunkCoord coord{7, 7, 7};
     assert(database.write_snapshot(make_snapshot(5, {{coord, "base"}})));
-    auto base_opened = database.open_chunk_delta_reader();
-    assert(base_opened);
-    auto base_reader = std::move(base_opened).value();
-    assert(database.write_chunk_delta({coord, "accepted"}));
-
     const auto entry = temporary.path() / "generations" / "generation_1" / "chunk_journal" /
                        "entry_00000000000000000001.hcdj";
-    std::fstream stream(entry, std::ios::binary | std::ios::in | std::ios::out);
-    assert(stream);
-    stream.seekp(-1, std::ios::end);
-    const char corrupted = '\xff';
-    stream.write(&corrupted, 1);
-    stream.close();
-    assert(stream);
+    {
+        auto base_opened = database.open_chunk_delta_reader();
+        assert(base_opened);
+        auto base_reader = std::move(base_opened).value();
+        assert(database.write_chunk_delta({coord, "accepted"}));
 
-    // A reader that predates the append still has a valid immutable base view.
-    assert(read_required(base_reader, coord) == "base");
+        std::fstream stream(entry, std::ios::binary | std::ios::in | std::ios::out);
+        assert(stream);
+        stream.seekp(-1, std::ios::end);
+        const char corrupted = '\xff';
+        stream.write(&corrupted, 1);
+        stream.close();
+        assert(stream);
+
+        // A reader that predates the append still has a valid immutable base view.
+        assert(read_required(base_reader, coord) == "base");
+    }
+
     auto opened = database.open_chunk_delta_reader();
     assert(!opened);
     assert(opened.error().code == "save_database.chunk_delta_journal_checksum_mismatch");
@@ -349,30 +364,136 @@ void test_legacy_snapshot_overlay_compacts_to_external_table() {
     write_bytes(temporary.path() / "snapshot.hssb", encoded.value());
 
     heartstead::save::FileSaveDatabase database(temporary.path());
-    auto writer_opened = database.open_chunk_delta_writer();
-    assert(writer_opened);
-    auto writer = std::move(writer_opened).value();
-    assert(writer.write_chunk_delta({coord_b, "journal"}));
+    {
+        auto writer_opened = database.open_chunk_delta_writer();
+        assert(writer_opened);
+        auto writer = std::move(writer_opened).value();
+        assert(writer.write_chunk_delta({coord_b, "journal"}));
 
-    auto reader_opened = database.open_chunk_delta_reader();
-    assert(reader_opened);
-    auto reader = std::move(reader_opened).value();
-    assert(reader.stats().storage_kind ==
-           heartstead::save::FileChunkDeltaStorageKind::inline_snapshot);
-    assert(reader.stats().journal_entry_count == 1);
-    assert(read_required(reader, coord_a) == "legacy");
-    assert(read_required(reader, coord_b) == "journal");
+        auto reader_opened = database.open_chunk_delta_reader();
+        assert(reader_opened);
+        auto reader = std::move(reader_opened).value();
+        assert(reader.stats().storage_kind ==
+               heartstead::save::FileChunkDeltaStorageKind::inline_snapshot);
+        assert(reader.stats().journal_entry_count == 1);
+        assert(read_required(reader, coord_a) == "legacy");
+        assert(read_required(reader, coord_b) == "journal");
+
+        auto busy_checkpoint = database.compact_chunk_delta_journal();
+        assert(!busy_checkpoint && busy_checkpoint.error().code == "save_database.busy");
+    }
 
     auto compacted = database.compact_chunk_delta_journal();
     assert(compacted && compacted.value().compacted);
-    reader_opened = database.open_chunk_delta_reader();
+    auto reader_opened = database.open_chunk_delta_reader();
     assert(reader_opened);
-    reader = std::move(reader_opened).value();
+    auto reader = std::move(reader_opened).value();
     assert(reader.stats().storage_kind ==
            heartstead::save::FileChunkDeltaStorageKind::external_table);
     assert(reader.stats().journal_entry_count == 0);
     assert(read_required(reader, coord_a) == "legacy");
     assert(read_required(reader, coord_b) == "journal");
+}
+
+void test_live_reader_gates_destructive_maintenance_across_instances() {
+    TemporaryDirectory temporary("chunk_delta_journal_live_reader_gate");
+    heartstead::save::FileSaveDatabase database(temporary.path());
+    heartstead::save::FileSaveDatabase alias(temporary.path() / ".");
+    const heartstead::world::ChunkCoord old_coord{21, 0, 0};
+    const heartstead::world::ChunkCoord new_coord{22, 0, 0};
+    assert(database.write_snapshot(make_snapshot(10, {{old_coord, "base"}})));
+    assert(database.write_chunk_delta({old_coord, "overlay"}));
+
+    {
+        auto opened = database.open_chunk_delta_reader();
+        assert(opened);
+        auto reader = std::move(opened).value();
+        assert(read_required(reader, old_coord) == "overlay");
+
+        auto checkpoint = alias.compact_chunk_delta_journal();
+        assert(!checkpoint && checkpoint.error().code == "save_database.busy");
+        const std::vector<heartstead::save::ChunkEditSaveRecord> replacement{
+            {old_coord, "replacement"}};
+        auto replaced = alias.write_chunk_deltas(replacement);
+        assert(!replaced && replaced.error().code == "save_database.busy");
+        auto recovered = alias.recover_chunk_delta_journal();
+        assert(!recovered && recovered.error().code == "save_database.busy");
+        auto compacted_files = alias.compact_chunk_deltas();
+        assert(!compacted_files && compacted_files.error().code == "save_database.busy");
+        auto recovered_generations = alias.recover_staged_generations();
+        assert(!recovered_generations &&
+               recovered_generations.error().code == "save_database.busy");
+        auto pruned = alias.prune_stale_generations(0);
+        assert(!pruned && pruned.error().code == "save_database.busy");
+
+        // Publishing a new immutable generation is safe while the old generation is pinned.
+        assert(alias.write_snapshot(make_snapshot(11, {{new_coord, "new-generation"}})));
+        assert(read_required(reader, old_coord) == "overlay");
+        auto current = alias.read_chunk_delta(new_coord);
+        assert(current && current.value().encoded_edit_delta == "new-generation");
+    }
+
+    assert(alias.prune_stale_generations(0));
+    assert(!std::filesystem::exists(temporary.path() / "generations" / "generation_1"));
+    auto checkpoint = alias.compact_chunk_delta_journal();
+    assert(checkpoint && !checkpoint.value().compacted);
+}
+
+void test_parallel_instances_serialize_append_sequences() {
+    TemporaryDirectory temporary("chunk_delta_journal_parallel_writers");
+    heartstead::save::FileSaveDatabase database(temporary.path());
+    assert(database.write_snapshot(make_snapshot(12, {})));
+
+    constexpr std::size_t writer_count = 8;
+    std::barrier start_line(static_cast<std::ptrdiff_t>(writer_count));
+    std::atomic_size_t appended_count = 0;
+    std::vector<std::jthread> threads;
+    threads.reserve(writer_count);
+    for (std::size_t index = 0; index < writer_count; ++index) {
+        threads.emplace_back([&, index] {
+            heartstead::save::FileSaveDatabase writer_database(temporary.path() / ".");
+            start_line.arrive_and_wait();
+
+            bool appended = false;
+            for (std::size_t attempt = 0; attempt < 1'000 && !appended; ++attempt) {
+                const auto coord =
+                    heartstead::world::ChunkCoord{static_cast<std::int64_t>(100 + index), 0, 0};
+                auto status =
+                    writer_database.write_chunk_delta({coord, "parallel-" + std::to_string(index)});
+                if (status) {
+                    appended = true;
+                    appended_count.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
+                assert(status.error().code == "save_database.busy" ||
+                       status.error().code == "save_database.chunk_delta_writer_stale");
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            assert(appended);
+        });
+    }
+    threads.clear();
+    assert(appended_count.load(std::memory_order_relaxed) == writer_count);
+
+    {
+        auto opened = database.open_chunk_delta_reader();
+        assert(opened);
+        auto reader = std::move(opened).value();
+        assert(reader.stats().journal_entry_count == writer_count);
+        assert(reader.stats().indexed_chunk_delta_count == writer_count);
+        for (std::size_t index = 0; index < writer_count; ++index) {
+            const auto coord =
+                heartstead::world::ChunkCoord{static_cast<std::int64_t>(100 + index), 0, 0};
+            assert(read_required(reader, coord) == "parallel-" + std::to_string(index));
+        }
+    }
+
+    auto checkpoint = database.compact_chunk_delta_journal();
+    assert(checkpoint && checkpoint.value().compacted);
+    assert(checkpoint.value().merged_entry_count == writer_count);
+    auto stats = database.stats();
+    assert(stats && stats.value().chunk_delta_count == writer_count);
+    assert(stats.value().chunk_delta_journal_entry_count == 0);
 }
 
 } // namespace
@@ -384,5 +505,7 @@ int main() {
     test_checkpoint_and_recovery_are_restart_safe();
     test_finalized_corruption_fails_closed();
     test_legacy_snapshot_overlay_compacts_to_external_table();
+    test_live_reader_gates_destructive_maintenance_across_instances();
+    test_parallel_instances_serialize_append_sequences();
     return 0;
 }

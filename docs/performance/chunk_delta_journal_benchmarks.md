@@ -52,11 +52,13 @@ The executable returns no successful report unless all of these hold:
 - final statistics retain the original effective record count; and
 - fixture cleanup succeeds before report validation.
 
-The benchmark serializes all mutation. It does not claim concurrent writer/checkpointer safety,
-cross-process exclusion, crash injection at every filesystem boundary, guaranteed-cold behavior,
-or save-under-streaming latency. Dedicated journal tests separately cover pinned append end marks,
-repeated-key ordering, stale writer/generation rejection, pending full-snapshot authority, restart,
-temporary-file recovery, checkpoint recovery, legacy inline snapshots, and checksum corruption.
+The benchmark serializes its own mutation, so its latency report is not a contention measurement.
+Dedicated journal tests cover process-local multi-instance append serialization, fail-fast
+checkpoint/replacement/recovery/pruning while a generation view is pinned, safe generation
+publication under a pinned reader, repeated-key ordering, stale writer/generation rejection,
+pending full-snapshot authority, restart, temporary-file recovery, checkpoint recovery, legacy
+inline snapshots, and checksum corruption. This does not claim cross-process exclusion, crash
+injection at every filesystem boundary, guaranteed-cold behavior, or save-under-streaming latency.
 
 ## Default regression gates
 
@@ -151,9 +153,8 @@ scheduling/coordination work.
 This milestone closes the measured full-table rewrite from the streamed foreground update path. It
 does not close the broader M5 persistence goal. Remaining work includes:
 
-- serialize live append, full-snapshot publication, bulk replacement, and checkpoint ownership
-  without relying on an external caller contract;
-- move checkpoint execution behind an explicit bounded background policy and expose backlog/age;
+- rotate/close retained streaming views and move fail-fast checkpoint retries behind an explicit
+  bounded background policy with visible backlog/age;
 - measure owner-thread capture and worker handoff with large dirty populations;
 - run load/save/teleport concurrency workloads and prove streaming deadlines under persistence I/O;
 - add crash injection around append publication and checkpoint directory transitions;

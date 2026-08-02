@@ -72,6 +72,12 @@ Implemented behavior:
 - writes streamed chunk-delta updates into the active generation journal when a generation manifest
   exists; the streaming sink owns a retained writer so a flush batch does not reopen or rescan the
   table for every chunk
+- shares a process-local coordinator across database objects whose normalized roots resolve to the
+  same save, serializing append/publication mutations and holding generation-table leases for the
+  lifetime of retained readers and writers
+- fails destructive table replacement, checkpoint, recovery, orphan cleanup, and stale-generation
+  pruning immediately with `save_database.busy` while a retained view is live, so a caller can
+  retry on a worker without waiting behind a long checkpoint
 - provides a world-streaming adapter that owns an already-opened indexed reader and converts a
   missing per-chunk delta into an empty optional while preserving real save/database errors
 - prunes stale committed generations with an explicit keep count while preserving the active
@@ -126,21 +132,21 @@ directories; Windows uses `FlushFileBuffers` and `MoveFileExW(..., MOVEFILE_WRIT
 there is no portable directory-`fsync` equivalent. These calls establish the engine's acceptance
 boundary but cannot override guarantees of the filesystem, device firmware, virtualization layer,
 or platform. The scheduler's single worker serializes requests submitted through one scheduler
-instance. A retained chunk writer is likewise a single-writer session and rejects generation
-rollover, pending full-snapshot authority, exhausted bounds, and sequential conflicts at its
-expected next sequence. Direct database callers must still externally serialize that session with
-bulk replacement, checkpoint, and full-snapshot publication; simultaneous filesystem races and
-separate processes are not locked by this layer. Backup/export policy remains an operational
-responsibility.
+instance. Independently constructed `FileSaveDatabase` objects resolving to the same normalized
+root also share an in-process coordinator. Append operations and full-snapshot publication are
+serialized; retained readers and writers hold shared generation-table leases, while replacement,
+checkpoint, recovery, orphan cleanup, and pruning require an exclusive lease and return
+`save_database.busy` rather than wait. A retained writer still rejects generation rollover,
+pending full-snapshot authority, exhausted bounds, and stale expected sequences. This coordination
+does not lock a separate process, and backup/export policy remains an operational responsibility.
 
 An indexed reader is a view of the generation and journal end mark selected when it opens. Appends
-published later are intentionally invisible. Callers reopen after checkpoint or generation
-publication and keep the selected generation from being pruned for the reader's lifetime, because
-those operations replace/remove files referenced by the old view. Publishing a newer generation
-does not redirect an existing reader; this makes all worker requests in one streaming epoch observe
-the same base-plus-journal authority. Opening fails immediately on a malformed manifest, index,
-journal header, or journal checksum rather than deferring that failure to an arbitrary worker
-request.
+published later are intentionally invisible. Its process-local table lease prevents checkpoint or
+pruning from replacing/removing referenced files until the reader closes; those operations fail
+fast and must be retried. Publishing a newer immutable generation remains safe and does not redirect
+an existing reader. This makes all worker requests in one streaming epoch observe the same
+base-plus-journal authority. Opening fails immediately on a malformed manifest, index, journal
+header, or journal checksum rather than deferring that failure to an arbitrary worker request.
 
 This is not a final production save store. It establishes the engine boundary:
 
@@ -154,6 +160,7 @@ records. The companion
 [chunk delta journal benchmark](../performance/chunk_delta_journal_benchmarks.md) measures one-file
 durable appends, base-plus-journal reopen, exact restart recovery, and complete checkpoint at the
 same record scale. They do not establish guaranteed-cold behavior or cover other filesystems/media.
-Future work should add in-process mutation/checkpoint coordination, cross-process writer exclusion,
-production-scale backup/export policy, large-world snapshot-capture and save-under-load benchmarks,
-guaranteed-cold/multi-filesystem validation, and complete save-slot UI workflows.
+Future work should add bounded background checkpoint retry/rotation, cross-process writer
+exclusion, production-scale backup/export policy, large-world snapshot-capture and
+save-under-load benchmarks, guaranteed-cold/multi-filesystem validation, and complete save-slot UI
+workflows.

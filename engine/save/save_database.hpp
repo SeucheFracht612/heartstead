@@ -9,12 +9,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
+#include <shared_mutex>
 #include <span>
 #include <string>
 #include <vector>
 
 namespace heartstead::save {
+
+struct FileSaveDatabaseCoordinator;
 
 struct SaveDatabaseStats {
     bool uses_generation_manifest = false;
@@ -120,8 +124,9 @@ struct FileChunkDeltaReaderStats {
 
 // A generation-scoped, immutable chunk-index view. Opening selects the authoritative full
 // snapshot, validates the base index and current chunk journal, and pins that journal end mark.
-// Later appends are not visible. Callers must reopen after compaction or generation publication and
-// must not prune the selected generation while the reader is in use.
+// Later appends are not visible. Process-local destructive maintenance returns save_database.busy
+// while the view is alive. Callers reopen after compaction or generation publication; coordinating
+// another process that can mutate the same save root remains an external responsibility.
 class FileChunkDeltaReader {
   public:
     FileChunkDeltaReader(const FileChunkDeltaReader&) = delete;
@@ -152,6 +157,8 @@ class FileChunkDeltaReader {
 
     FileChunkDeltaReaderStats stats_;
     std::vector<Entry> entries_;
+    std::shared_ptr<FileSaveDatabaseCoordinator> coordinator_;
+    std::shared_lock<std::shared_mutex> table_lease_;
 
     friend class FileSaveDatabase;
 };
@@ -166,10 +173,10 @@ struct FileChunkDeltaWriterStats {
     std::uint64_t highest_sequence = 0;
 };
 
-// A generation-scoped, single-writer append session. Each accepted update is an immutable,
-// checksummed journal entry. Reopen after publishing a new save generation. Other writers, bulk
-// replacement, compaction, and full-snapshot publication require external serialization with this
-// session; the API detects stale generations and sequential writer conflicts, not filesystem races.
+// A generation-scoped append session. Each accepted update is an immutable, checksummed journal
+// entry. Instances that resolve to the same save root share a process-local mutation coordinator;
+// append operations serialize, and destructive maintenance returns save_database.busy while this
+// session is alive. Reopen after publishing a new generation. Cross-process exclusion is external.
 class FileChunkDeltaWriter {
   public:
     FileChunkDeltaWriter(const FileChunkDeltaWriter&) = delete;
@@ -192,6 +199,8 @@ class FileChunkDeltaWriter {
     std::filesystem::path database_root_;
     FileChunkDeltaWriterStats stats_;
     std::vector<Entry> entries_;
+    std::shared_ptr<FileSaveDatabaseCoordinator> coordinator_;
+    std::shared_lock<std::shared_mutex> table_lease_;
 
     friend class FileSaveDatabase;
 };
@@ -240,7 +249,11 @@ class FileSaveDatabase {
     [[nodiscard]] core::Result<SaveDatabaseStats> stats() const;
 
   private:
+    [[nodiscard]] core::Result<FileChunkDeltaWriter>
+    open_chunk_delta_writer_under_lock(std::shared_lock<std::shared_mutex> table_lease) const;
+
     std::filesystem::path root_;
+    std::shared_ptr<FileSaveDatabaseCoordinator> coordinator_;
 };
 
 } // namespace heartstead::save

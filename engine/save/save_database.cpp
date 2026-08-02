@@ -12,17 +12,66 @@
 #include <iomanip>
 #include <iterator>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
 namespace heartstead::save {
 
+struct FileSaveDatabaseCoordinator {
+    std::shared_mutex chunk_table_mutex;
+    std::mutex mutation_mutex;
+};
+
 namespace {
+
+constexpr const char* save_database_busy_code = "save_database.busy";
+constexpr const char* save_database_busy_message =
+    "save database is being mutated; retry this operation";
+
+[[nodiscard]] std::filesystem::path coordinator_key_for_root(const std::filesystem::path& root) {
+    std::error_code error;
+    auto absolute = std::filesystem::absolute(root, error);
+    if (error) {
+        return root.lexically_normal();
+    }
+
+    auto canonical = std::filesystem::weakly_canonical(absolute, error);
+    return error ? absolute.lexically_normal() : canonical;
+}
+
+[[nodiscard]] std::shared_ptr<FileSaveDatabaseCoordinator>
+coordinator_for_root(const std::filesystem::path& root) {
+    static std::mutex registry_mutex;
+    static std::unordered_map<std::string, std::weak_ptr<FileSaveDatabaseCoordinator>> registry;
+
+    const auto key = coordinator_key_for_root(root).generic_string();
+    std::scoped_lock lock(registry_mutex);
+    if (const auto found = registry.find(key); found != registry.end()) {
+        if (auto coordinator = found->second.lock()) {
+            return coordinator;
+        }
+        registry.erase(found);
+    }
+
+    for (auto entry = registry.begin(); entry != registry.end();) {
+        if (entry->second.expired()) {
+            entry = registry.erase(entry);
+        } else {
+            ++entry;
+        }
+    }
+
+    auto coordinator = std::make_shared<FileSaveDatabaseCoordinator>();
+    registry.emplace(key, coordinator);
+    return coordinator;
+}
 
 constexpr std::string_view chunk_index_magic = "heartstead.save_database_chunks.v1";
 constexpr std::string_view current_generation_magic = "heartstead.save_database_current.v1";
@@ -1823,6 +1872,190 @@ write_chunk_deltas_to_root(const std::filesystem::path& save_root,
     return write_current_generation(root, generation.value());
 }
 
+[[nodiscard]] core::Result<std::vector<std::uint8_t>>
+encode_snapshot_journal_payload(const SaveSnapshot& snapshot) {
+    auto validation = validate_chunk_deltas_for_storage(snapshot.chunk_edits);
+    if (!validation) {
+        return core::Result<std::vector<std::uint8_t>>::failure(validation.error().code,
+                                                                validation.error().message);
+    }
+    auto encoded = SaveBinaryCodec::encode_snapshot(snapshot);
+    if (!encoded) {
+        return core::Result<std::vector<std::uint8_t>>::failure(encoded.error().code,
+                                                                encoded.error().message);
+    }
+    if (encoded.value().size() > max_snapshot_file_bytes) {
+        return core::Result<std::vector<std::uint8_t>>::failure(
+            "save_database.snapshot_too_large",
+            "binary save snapshot exceeds the configured safety limit");
+    }
+    return encoded;
+}
+
+[[nodiscard]] core::Result<SaveJournalReceipt>
+journal_snapshot_unlocked(const std::filesystem::path& root,
+                          std::span<const std::uint8_t> encoded_snapshot) {
+    auto state = read_journal_state(root);
+    if (!state) {
+        return core::Result<SaveJournalReceipt>::failure(state.error().code, state.error().message);
+    }
+    if (state.value().entries.size() >= max_journal_entry_count) {
+        return core::Result<SaveJournalReceipt>::failure(
+            "save_database.journal_full",
+            "save journal reached its entry budget and requires compaction");
+    }
+    const auto entry_bytes = journal_header_bytes + encoded_snapshot.size();
+    if (entry_bytes > max_journal_bytes - state.value().bytes) {
+        return core::Result<SaveJournalReceipt>::failure(
+            "save_database.journal_full",
+            "save journal reached its byte budget and requires compaction");
+    }
+
+    std::uint64_t highest_sequence = state.value().checkpoint_sequence;
+    if (!state.value().entries.empty()) {
+        highest_sequence = std::max(highest_sequence, state.value().entries.back().sequence);
+    }
+    if (highest_sequence == std::numeric_limits<std::uint64_t>::max()) {
+        return core::Result<SaveJournalReceipt>::failure(
+            "save_database.journal_sequence_exhausted",
+            "save journal sequence identifier range is exhausted");
+    }
+    const auto sequence = highest_sequence + 1U;
+    const auto bytes = encode_journal_entry(sequence, encoded_snapshot);
+    auto status =
+        write_bytes_atomic(journal_directory(root) / journal_entry_filename(sequence), bytes);
+    if (!status) {
+        return core::Result<SaveJournalReceipt>::failure(status.error().code,
+                                                         status.error().message);
+    }
+    return core::Result<SaveJournalReceipt>::success({sequence, encoded_snapshot.size()});
+}
+
+[[nodiscard]] core::Result<SaveJournalCompactionResult>
+compact_snapshot_journal_unlocked(const std::filesystem::path& root) {
+    auto state = read_journal_state(root);
+    if (!state) {
+        return core::Result<SaveJournalCompactionResult>::failure(state.error().code,
+                                                                  state.error().message);
+    }
+    const auto* pending = latest_pending_snapshot_entry(state.value());
+
+    SaveJournalCompactionResult result;
+    if (pending != nullptr) {
+        auto snapshot = read_journal_snapshot(*pending);
+        if (!snapshot) {
+            return core::Result<SaveJournalCompactionResult>::failure(snapshot.error().code,
+                                                                      snapshot.error().message);
+        }
+        auto status = write_snapshot_generation(root, snapshot.value());
+        if (!status) {
+            return core::Result<SaveJournalCompactionResult>::failure(status.error().code,
+                                                                      status.error().message);
+        }
+        status = write_journal_checkpoint(root, pending->sequence);
+        if (!status) {
+            return core::Result<SaveJournalCompactionResult>::failure(status.error().code,
+                                                                      status.error().message);
+        }
+        result.compacted = true;
+        result.compacted_sequence = pending->sequence;
+    }
+
+    const auto removable_sequence =
+        result.compacted ? result.compacted_sequence : state.value().checkpoint_sequence;
+    std::error_code error;
+    for (const auto& entry : state.value().entries) {
+        if (entry.sequence > removable_sequence) {
+            continue;
+        }
+        const bool removed = std::filesystem::remove(entry.path, error);
+        if (error) {
+            return core::Result<SaveJournalCompactionResult>::failure(
+                "save_database.journal_cleanup_failed", error.message());
+        }
+        if (removed) {
+            ++result.removed_entry_count;
+        }
+    }
+    if (result.removed_entry_count > 0) {
+        if (auto flush_error = core::flush_directory_to_disk(journal_directory(root))) {
+            return core::Result<SaveJournalCompactionResult>::failure(
+                "save_database.journal_cleanup_failed", flush_error.message());
+        }
+    }
+    return core::Result<SaveJournalCompactionResult>::success(std::move(result));
+}
+
+[[nodiscard]] core::Result<ChunkDeltaJournalCompactionResult>
+compact_chunk_delta_journal_unlocked(const std::filesystem::path& root) {
+    auto snapshot_journal = read_journal_state(root);
+    if (!snapshot_journal) {
+        return core::Result<ChunkDeltaJournalCompactionResult>::failure(
+            snapshot_journal.error().code, snapshot_journal.error().message);
+    }
+    if (latest_pending_snapshot_entry(snapshot_journal.value()) != nullptr) {
+        return core::Result<ChunkDeltaJournalCompactionResult>::failure(
+            "save_database.snapshot_journal_pending",
+            "compact the accepted snapshot journal before compacting chunk deltas");
+    }
+
+    auto save_root = active_save_root(root);
+    if (!save_root) {
+        return core::Result<ChunkDeltaJournalCompactionResult>::failure(save_root.error().code,
+                                                                        save_root.error().message);
+    }
+    auto journal = read_chunk_delta_journal_state(save_root.value());
+    if (!journal) {
+        return core::Result<ChunkDeltaJournalCompactionResult>::failure(journal.error().code,
+                                                                        journal.error().message);
+    }
+
+    ChunkDeltaJournalCompactionResult result;
+    if (journal.value().entries.empty()) {
+        return core::Result<ChunkDeltaJournalCompactionResult>::success(result);
+    }
+    auto effective = read_effective_chunk_deltas_from_root(save_root.value());
+    if (!effective) {
+        return core::Result<ChunkDeltaJournalCompactionResult>::failure(effective.error().code,
+                                                                        effective.error().message);
+    }
+    auto status = write_chunk_deltas_to_root(save_root.value(), effective.value());
+    if (!status) {
+        return core::Result<ChunkDeltaJournalCompactionResult>::failure(status.error().code,
+                                                                        status.error().message);
+    }
+
+    const auto journal_directory = chunk_delta_journal_directory(save_root.value());
+    const auto compacted_directory = compacted_chunk_delta_journal_directory(save_root.value());
+    status = remove_tree(compacted_directory,
+                         "save_database.remove_compacted_chunk_delta_journal_failed");
+    if (!status) {
+        return core::Result<ChunkDeltaJournalCompactionResult>::failure(status.error().code,
+                                                                        status.error().message);
+    }
+    status = rename_path(journal_directory, compacted_directory,
+                         "save_database.commit_chunk_delta_journal_checkpoint_failed");
+    if (!status) {
+        return core::Result<ChunkDeltaJournalCompactionResult>::failure(status.error().code,
+                                                                        status.error().message);
+    }
+
+    result.compacted = true;
+    result.merged_entry_count = journal.value().entries.size();
+    result.removed_entry_count = journal.value().entries.size();
+    status = remove_tree(compacted_directory,
+                         "save_database.remove_compacted_chunk_delta_journal_failed");
+    if (!status) {
+        return core::Result<ChunkDeltaJournalCompactionResult>::failure(status.error().code,
+                                                                        status.error().message);
+    }
+    if (auto flush_error = core::flush_directory_to_disk(save_root.value())) {
+        return core::Result<ChunkDeltaJournalCompactionResult>::failure(
+            "save_database.remove_compacted_chunk_delta_journal_failed", flush_error.message());
+    }
+    return core::Result<ChunkDeltaJournalCompactionResult>::success(result);
+}
+
 } // namespace
 
 core::Result<std::optional<ChunkEditSaveRecord>>
@@ -1871,6 +2104,17 @@ const FileChunkDeltaReaderStats& FileChunkDeltaReader::stats() const noexcept {
 
 core::Result<ChunkDeltaJournalReceipt>
 FileChunkDeltaWriter::write_chunk_delta(const ChunkEditSaveRecord& chunk_delta) {
+    if (coordinator_ == nullptr || !table_lease_.owns_lock()) {
+        return core::Result<ChunkDeltaJournalReceipt>::failure(
+            "save_database.chunk_delta_writer_invalid",
+            "chunk delta writer does not hold its generation table lease");
+    }
+    std::unique_lock mutation_lock(coordinator_->mutation_mutex, std::try_to_lock);
+    if (!mutation_lock.owns_lock()) {
+        return core::Result<ChunkDeltaJournalReceipt>::failure(save_database_busy_code,
+                                                               save_database_busy_message);
+    }
+
     auto snapshot_journal = read_journal_state(database_root_);
     if (!snapshot_journal) {
         return core::Result<ChunkDeltaJournalReceipt>::failure(snapshot_journal.error().code,
@@ -1996,7 +2240,8 @@ const FileChunkDeltaWriterStats& FileChunkDeltaWriter::stats() const noexcept {
     return stats_;
 }
 
-FileSaveDatabase::FileSaveDatabase(std::filesystem::path root) : root_(std::move(root)) {}
+FileSaveDatabase::FileSaveDatabase(std::filesystem::path root)
+    : root_(std::move(root)), coordinator_(coordinator_for_root(root_)) {}
 
 bool SaveDatabaseMaintenanceResult::changed() const noexcept {
     return recovered_staged_generation_count > 0 || pruned_stale_generation_count > 0 ||
@@ -2021,11 +2266,20 @@ const std::filesystem::path& FileSaveDatabase::root() const noexcept {
 }
 
 core::Status FileSaveDatabase::write_snapshot(const SaveSnapshot& snapshot) const {
-    auto accepted = journal_snapshot(snapshot);
+    auto encoded = encode_snapshot_journal_payload(snapshot);
+    if (!encoded) {
+        return core::Status::failure(encoded.error().code, encoded.error().message);
+    }
+    std::unique_lock mutation_lock(coordinator_->mutation_mutex, std::try_to_lock);
+    if (!mutation_lock.owns_lock()) {
+        return core::Status::failure(save_database_busy_code, save_database_busy_message);
+    }
+
+    auto accepted = journal_snapshot_unlocked(root_, encoded.value());
     if (!accepted) {
         return core::Status::failure(accepted.error().code, accepted.error().message);
     }
-    auto compacted = compact_snapshot_journal();
+    auto compacted = compact_snapshot_journal_unlocked(root_);
     if (!compacted) {
         return core::Status::failure(compacted.error().code, compacted.error().message);
     }
@@ -2039,6 +2293,17 @@ core::Status FileSaveDatabase::write_snapshot(const SaveSnapshot& snapshot) cons
 }
 
 core::Result<SaveSnapshot> FileSaveDatabase::read_snapshot() const {
+    std::shared_lock table_lease(coordinator_->chunk_table_mutex, std::try_to_lock);
+    if (!table_lease.owns_lock()) {
+        return core::Result<SaveSnapshot>::failure(save_database_busy_code,
+                                                   save_database_busy_message);
+    }
+    std::unique_lock mutation_lock(coordinator_->mutation_mutex, std::try_to_lock);
+    if (!mutation_lock.owns_lock()) {
+        return core::Result<SaveSnapshot>::failure(save_database_busy_code,
+                                                   save_database_busy_message);
+    }
+
     auto journal = read_journal_state(root_);
     if (!journal) {
         return core::Result<SaveSnapshot>::failure(journal.error().code, journal.error().message);
@@ -2076,113 +2341,37 @@ core::Result<SaveSnapshot> FileSaveDatabase::read_snapshot() const {
 
 core::Result<SaveJournalReceipt>
 FileSaveDatabase::journal_snapshot(const SaveSnapshot& snapshot) const {
-    auto validation = validate_chunk_deltas_for_storage(snapshot.chunk_edits);
-    if (!validation) {
-        return core::Result<SaveJournalReceipt>::failure(validation.error().code,
-                                                         validation.error().message);
-    }
-    auto encoded = SaveBinaryCodec::encode_snapshot(snapshot);
+    auto encoded = encode_snapshot_journal_payload(snapshot);
     if (!encoded) {
         return core::Result<SaveJournalReceipt>::failure(encoded.error().code,
                                                          encoded.error().message);
     }
-    if (encoded.value().size() > max_snapshot_file_bytes) {
-        return core::Result<SaveJournalReceipt>::failure(
-            "save_database.snapshot_too_large",
-            "binary save snapshot exceeds the configured safety limit");
+
+    std::unique_lock mutation_lock(coordinator_->mutation_mutex, std::try_to_lock);
+    if (!mutation_lock.owns_lock()) {
+        return core::Result<SaveJournalReceipt>::failure(save_database_busy_code,
+                                                         save_database_busy_message);
     }
 
-    auto state = read_journal_state(root_);
-    if (!state) {
-        return core::Result<SaveJournalReceipt>::failure(state.error().code, state.error().message);
-    }
-    if (state.value().entries.size() >= max_journal_entry_count) {
-        return core::Result<SaveJournalReceipt>::failure(
-            "save_database.journal_full",
-            "save journal reached its entry budget and requires compaction");
-    }
-    const auto entry_bytes = journal_header_bytes + encoded.value().size();
-    if (entry_bytes > max_journal_bytes - state.value().bytes) {
-        return core::Result<SaveJournalReceipt>::failure(
-            "save_database.journal_full",
-            "save journal reached its byte budget and requires compaction");
-    }
-
-    std::uint64_t highest_sequence = state.value().checkpoint_sequence;
-    if (!state.value().entries.empty()) {
-        highest_sequence = std::max(highest_sequence, state.value().entries.back().sequence);
-    }
-    if (highest_sequence == std::numeric_limits<std::uint64_t>::max()) {
-        return core::Result<SaveJournalReceipt>::failure(
-            "save_database.journal_sequence_exhausted",
-            "save journal sequence identifier range is exhausted");
-    }
-    const auto sequence = highest_sequence + 1U;
-    const auto bytes = encode_journal_entry(sequence, encoded.value());
-    auto status =
-        write_bytes_atomic(journal_directory(root_) / journal_entry_filename(sequence), bytes);
-    if (!status) {
-        return core::Result<SaveJournalReceipt>::failure(status.error().code,
-                                                         status.error().message);
-    }
-    return core::Result<SaveJournalReceipt>::success({sequence, encoded.value().size()});
+    return journal_snapshot_unlocked(root_, encoded.value());
 }
 
 core::Result<SaveJournalCompactionResult> FileSaveDatabase::compact_snapshot_journal() const {
-    auto state = read_journal_state(root_);
-    if (!state) {
-        return core::Result<SaveJournalCompactionResult>::failure(state.error().code,
-                                                                  state.error().message);
+    std::unique_lock mutation_lock(coordinator_->mutation_mutex, std::try_to_lock);
+    if (!mutation_lock.owns_lock()) {
+        return core::Result<SaveJournalCompactionResult>::failure(save_database_busy_code,
+                                                                  save_database_busy_message);
     }
-    const auto* pending = latest_pending_snapshot_entry(state.value());
-
-    SaveJournalCompactionResult result;
-    if (pending != nullptr) {
-        auto snapshot = read_journal_snapshot(*pending);
-        if (!snapshot) {
-            return core::Result<SaveJournalCompactionResult>::failure(snapshot.error().code,
-                                                                      snapshot.error().message);
-        }
-        auto status = write_snapshot_generation(root_, snapshot.value());
-        if (!status) {
-            return core::Result<SaveJournalCompactionResult>::failure(status.error().code,
-                                                                      status.error().message);
-        }
-        status = write_journal_checkpoint(root_, pending->sequence);
-        if (!status) {
-            return core::Result<SaveJournalCompactionResult>::failure(status.error().code,
-                                                                      status.error().message);
-        }
-        result.compacted = true;
-        result.compacted_sequence = pending->sequence;
-    }
-
-    const auto removable_sequence =
-        result.compacted ? result.compacted_sequence : state.value().checkpoint_sequence;
-    std::error_code error;
-    for (const auto& entry : state.value().entries) {
-        if (entry.sequence > removable_sequence) {
-            continue;
-        }
-        const bool removed = std::filesystem::remove(entry.path, error);
-        if (error) {
-            return core::Result<SaveJournalCompactionResult>::failure(
-                "save_database.journal_cleanup_failed", error.message());
-        }
-        if (removed) {
-            ++result.removed_entry_count;
-        }
-    }
-    if (result.removed_entry_count > 0) {
-        if (auto flush_error = core::flush_directory_to_disk(journal_directory(root_))) {
-            return core::Result<SaveJournalCompactionResult>::failure(
-                "save_database.journal_cleanup_failed", flush_error.message());
-        }
-    }
-    return core::Result<SaveJournalCompactionResult>::success(std::move(result));
+    return compact_snapshot_journal_unlocked(root_);
 }
 
 core::Result<SaveJournalRecoveryResult> FileSaveDatabase::recover_snapshot_journal() const {
+    std::unique_lock mutation_lock(coordinator_->mutation_mutex, std::try_to_lock);
+    if (!mutation_lock.owns_lock()) {
+        return core::Result<SaveJournalRecoveryResult>::failure(save_database_busy_code,
+                                                                save_database_busy_message);
+    }
+
     SaveJournalRecoveryResult result;
     const auto directory = journal_directory(root_);
     std::error_code error;
@@ -2222,7 +2411,7 @@ core::Result<SaveJournalRecoveryResult> FileSaveDatabase::recover_snapshot_journ
         }
     }
 
-    auto compaction = compact_snapshot_journal();
+    auto compaction = compact_snapshot_journal_unlocked(root_);
     if (!compaction) {
         return core::Result<SaveJournalRecoveryResult>::failure(compaction.error().code,
                                                                 compaction.error().message);
@@ -2261,6 +2450,29 @@ core::Status FileSaveDatabase::write_chunk_delta(const ChunkEditSaveRecord& chun
 
 core::Status
 FileSaveDatabase::write_chunk_deltas(std::span<const ChunkEditSaveRecord> chunk_deltas) const {
+    auto validation = validate_chunk_deltas_for_storage(chunk_deltas);
+    if (!validation) {
+        return validation;
+    }
+    auto preflight_snapshot_journal = read_journal_state(root_);
+    if (!preflight_snapshot_journal) {
+        return core::Status::failure(preflight_snapshot_journal.error().code,
+                                     preflight_snapshot_journal.error().message);
+    }
+    if (latest_pending_snapshot_entry(preflight_snapshot_journal.value()) != nullptr) {
+        return core::Status::failure(
+            "save_database.snapshot_journal_pending",
+            "compact the accepted snapshot journal before replacing chunk deltas");
+    }
+    std::unique_lock table_lock(coordinator_->chunk_table_mutex, std::try_to_lock);
+    if (!table_lock.owns_lock()) {
+        return core::Status::failure(save_database_busy_code, save_database_busy_message);
+    }
+    std::unique_lock mutation_lock(coordinator_->mutation_mutex, std::try_to_lock);
+    if (!mutation_lock.owns_lock()) {
+        return core::Status::failure(save_database_busy_code, save_database_busy_message);
+    }
+
     auto snapshot_journal = read_journal_state(root_);
     if (!snapshot_journal) {
         return core::Status::failure(snapshot_journal.error().code,
@@ -2272,7 +2484,7 @@ FileSaveDatabase::write_chunk_deltas(std::span<const ChunkEditSaveRecord> chunk_
             "compact the accepted snapshot journal before replacing chunk deltas");
     }
 
-    auto compacted = compact_chunk_delta_journal();
+    auto compacted = compact_chunk_delta_journal_unlocked(root_);
     if (!compacted) {
         return core::Status::failure(compacted.error().code, compacted.error().message);
     }
@@ -2284,6 +2496,20 @@ FileSaveDatabase::write_chunk_deltas(std::span<const ChunkEditSaveRecord> chunk_
 }
 
 core::Result<FileChunkDeltaReader> FileSaveDatabase::open_chunk_delta_reader() const {
+    FileChunkDeltaReader reader;
+    reader.coordinator_ = coordinator_;
+    reader.table_lease_ =
+        std::shared_lock<std::shared_mutex>(coordinator_->chunk_table_mutex, std::try_to_lock);
+    if (!reader.table_lease_.owns_lock()) {
+        return core::Result<FileChunkDeltaReader>::failure(save_database_busy_code,
+                                                           save_database_busy_message);
+    }
+    std::unique_lock mutation_lock(coordinator_->mutation_mutex, std::try_to_lock);
+    if (!mutation_lock.owns_lock()) {
+        return core::Result<FileChunkDeltaReader>::failure(save_database_busy_code,
+                                                           save_database_busy_message);
+    }
+
     auto snapshot_journal = read_journal_state(root_);
     if (!snapshot_journal) {
         return core::Result<FileChunkDeltaReader>::failure(snapshot_journal.error().code,
@@ -2306,7 +2532,6 @@ core::Result<FileChunkDeltaReader> FileSaveDatabase::open_chunk_delta_reader() c
                               return left.coord < right.coord;
                           });
 
-        FileChunkDeltaReader reader;
         reader.stats_.storage_kind = FileChunkDeltaStorageKind::inline_snapshot;
         reader.stats_.selected_save_root = root_;
         reader.stats_.base_indexed_chunk_delta_count = snapshot.value().chunk_edits.size();
@@ -2328,7 +2553,6 @@ core::Result<FileChunkDeltaReader> FileSaveDatabase::open_chunk_delta_reader() c
                                                            save_root.error().message);
     }
 
-    FileChunkDeltaReader reader;
     reader.stats_.selected_save_root = save_root.value();
     if (save_root.value().parent_path() == generations_directory(root_)) {
         reader.stats_.active_generation = save_root.value().filename().string();
@@ -2457,6 +2681,26 @@ core::Result<FileChunkDeltaReader> FileSaveDatabase::open_chunk_delta_reader() c
 }
 
 core::Result<FileChunkDeltaWriter> FileSaveDatabase::open_chunk_delta_writer() const {
+    std::shared_lock table_lease(coordinator_->chunk_table_mutex, std::try_to_lock);
+    if (!table_lease.owns_lock()) {
+        return core::Result<FileChunkDeltaWriter>::failure(save_database_busy_code,
+                                                           save_database_busy_message);
+    }
+    std::unique_lock mutation_lock(coordinator_->mutation_mutex, std::try_to_lock);
+    if (!mutation_lock.owns_lock()) {
+        return core::Result<FileChunkDeltaWriter>::failure(save_database_busy_code,
+                                                           save_database_busy_message);
+    }
+
+    return open_chunk_delta_writer_under_lock(std::move(table_lease));
+}
+
+core::Result<FileChunkDeltaWriter> FileSaveDatabase::open_chunk_delta_writer_under_lock(
+    std::shared_lock<std::shared_mutex> table_lease) const {
+    FileChunkDeltaWriter writer;
+    writer.coordinator_ = coordinator_;
+    writer.table_lease_ = std::move(table_lease);
+
     auto snapshot_journal = read_journal_state(root_);
     if (!snapshot_journal) {
         return core::Result<FileChunkDeltaWriter>::failure(snapshot_journal.error().code,
@@ -2474,7 +2718,6 @@ core::Result<FileChunkDeltaWriter> FileSaveDatabase::open_chunk_delta_writer() c
                                                            save_root.error().message);
     }
 
-    FileChunkDeltaWriter writer;
     writer.database_root_ = root_;
     writer.stats_.selected_save_root = save_root.value();
     if (save_root.value().parent_path() == generations_directory(root_)) {
@@ -2638,111 +2881,78 @@ FileSaveDatabase::read_chunk_delta(world::ChunkCoord coord) const {
 }
 
 core::Result<std::vector<ChunkEditSaveRecord>> FileSaveDatabase::read_chunk_deltas() const {
-    auto snapshot_journal = read_journal_state(root_);
-    if (!snapshot_journal) {
-        return core::Result<std::vector<ChunkEditSaveRecord>>::failure(
-            snapshot_journal.error().code, snapshot_journal.error().message);
-    }
-    const auto* pending_snapshot = latest_pending_snapshot_entry(snapshot_journal.value());
-    if (pending_snapshot != nullptr) {
-        auto snapshot = read_journal_snapshot(*pending_snapshot);
-        if (!snapshot) {
-            return core::Result<std::vector<ChunkEditSaveRecord>>::failure(
-                snapshot.error().code, snapshot.error().message);
-        }
-        auto validation = validate_chunk_deltas_for_storage(snapshot.value().chunk_edits);
-        if (!validation) {
-            return core::Result<std::vector<ChunkEditSaveRecord>>::failure(
-                validation.error().code, validation.error().message);
-        }
-        std::ranges::sort(snapshot.value().chunk_edits,
-                          [](const ChunkEditSaveRecord& left, const ChunkEditSaveRecord& right) {
-                              return left.coord < right.coord;
-                          });
-        return core::Result<std::vector<ChunkEditSaveRecord>>::success(
-            std::move(snapshot).value().chunk_edits);
+    auto reader = open_chunk_delta_reader();
+    if (!reader) {
+        return core::Result<std::vector<ChunkEditSaveRecord>>::failure(reader.error().code,
+                                                                       reader.error().message);
     }
 
-    auto save_root = active_save_root(root_);
-    if (!save_root) {
-        return core::Result<std::vector<ChunkEditSaveRecord>>::failure(save_root.error().code,
-                                                                       save_root.error().message);
+    std::vector<ChunkEditSaveRecord> chunk_deltas;
+    chunk_deltas.reserve(reader.value().entries_.size());
+    for (const auto& entry : reader.value().entries_) {
+        auto chunk_delta = reader.value().read_chunk_delta(entry.coord);
+        if (!chunk_delta) {
+            return core::Result<std::vector<ChunkEditSaveRecord>>::failure(
+                chunk_delta.error().code, chunk_delta.error().message);
+        }
+        if (!chunk_delta.value().has_value()) {
+            return core::Result<std::vector<ChunkEditSaveRecord>>::failure(
+                "save_database.chunk_delta_reader_invalid",
+                "chunk delta disappeared from an open immutable reader");
+        }
+        chunk_deltas.push_back(std::move(*chunk_delta.value()));
     }
-    return read_effective_chunk_deltas_from_root(save_root.value());
+    return core::Result<std::vector<ChunkEditSaveRecord>>::success(std::move(chunk_deltas));
 }
 
 core::Result<ChunkDeltaJournalCompactionResult>
 FileSaveDatabase::compact_chunk_delta_journal() const {
-    auto snapshot_journal = read_journal_state(root_);
-    if (!snapshot_journal) {
+    auto preflight_snapshot_journal = read_journal_state(root_);
+    if (!preflight_snapshot_journal) {
         return core::Result<ChunkDeltaJournalCompactionResult>::failure(
-            snapshot_journal.error().code, snapshot_journal.error().message);
+            preflight_snapshot_journal.error().code, preflight_snapshot_journal.error().message);
     }
-    if (latest_pending_snapshot_entry(snapshot_journal.value()) != nullptr) {
+    if (latest_pending_snapshot_entry(preflight_snapshot_journal.value()) != nullptr) {
         return core::Result<ChunkDeltaJournalCompactionResult>::failure(
             "save_database.snapshot_journal_pending",
             "compact the accepted snapshot journal before compacting chunk deltas");
     }
-
-    auto save_root = active_save_root(root_);
-    if (!save_root) {
-        return core::Result<ChunkDeltaJournalCompactionResult>::failure(save_root.error().code,
-                                                                        save_root.error().message);
+    std::unique_lock table_lock(coordinator_->chunk_table_mutex, std::try_to_lock);
+    if (!table_lock.owns_lock()) {
+        return core::Result<ChunkDeltaJournalCompactionResult>::failure(save_database_busy_code,
+                                                                        save_database_busy_message);
     }
-    auto journal = read_chunk_delta_journal_state(save_root.value());
-    if (!journal) {
-        return core::Result<ChunkDeltaJournalCompactionResult>::failure(journal.error().code,
-                                                                        journal.error().message);
+    std::unique_lock mutation_lock(coordinator_->mutation_mutex, std::try_to_lock);
+    if (!mutation_lock.owns_lock()) {
+        return core::Result<ChunkDeltaJournalCompactionResult>::failure(save_database_busy_code,
+                                                                        save_database_busy_message);
     }
-
-    ChunkDeltaJournalCompactionResult result;
-    if (journal.value().entries.empty()) {
-        return core::Result<ChunkDeltaJournalCompactionResult>::success(result);
-    }
-    auto effective = read_effective_chunk_deltas_from_root(save_root.value());
-    if (!effective) {
-        return core::Result<ChunkDeltaJournalCompactionResult>::failure(effective.error().code,
-                                                                        effective.error().message);
-    }
-    auto status = write_chunk_deltas_to_root(save_root.value(), effective.value());
-    if (!status) {
-        return core::Result<ChunkDeltaJournalCompactionResult>::failure(status.error().code,
-                                                                        status.error().message);
-    }
-
-    const auto journal_directory = chunk_delta_journal_directory(save_root.value());
-    const auto compacted_directory = compacted_chunk_delta_journal_directory(save_root.value());
-    status = remove_tree(compacted_directory,
-                         "save_database.remove_compacted_chunk_delta_journal_failed");
-    if (!status) {
-        return core::Result<ChunkDeltaJournalCompactionResult>::failure(status.error().code,
-                                                                        status.error().message);
-    }
-    status = rename_path(journal_directory, compacted_directory,
-                         "save_database.commit_chunk_delta_journal_checkpoint_failed");
-    if (!status) {
-        return core::Result<ChunkDeltaJournalCompactionResult>::failure(status.error().code,
-                                                                        status.error().message);
-    }
-
-    result.compacted = true;
-    result.merged_entry_count = journal.value().entries.size();
-    result.removed_entry_count = journal.value().entries.size();
-    status = remove_tree(compacted_directory,
-                         "save_database.remove_compacted_chunk_delta_journal_failed");
-    if (!status) {
-        return core::Result<ChunkDeltaJournalCompactionResult>::failure(status.error().code,
-                                                                        status.error().message);
-    }
-    if (auto flush_error = core::flush_directory_to_disk(save_root.value())) {
-        return core::Result<ChunkDeltaJournalCompactionResult>::failure(
-            "save_database.remove_compacted_chunk_delta_journal_failed", flush_error.message());
-    }
-    return core::Result<ChunkDeltaJournalCompactionResult>::success(result);
+    return compact_chunk_delta_journal_unlocked(root_);
 }
 
 core::Result<ChunkDeltaJournalRecoveryResult>
 FileSaveDatabase::recover_chunk_delta_journal() const {
+    auto preflight_snapshot_journal = read_journal_state(root_);
+    if (!preflight_snapshot_journal) {
+        return core::Result<ChunkDeltaJournalRecoveryResult>::failure(
+            preflight_snapshot_journal.error().code, preflight_snapshot_journal.error().message);
+    }
+    if (latest_pending_snapshot_entry(preflight_snapshot_journal.value()) != nullptr) {
+        return core::Result<ChunkDeltaJournalRecoveryResult>::failure(
+            "save_database.snapshot_journal_pending",
+            "compact the accepted snapshot journal before recovering chunk deltas");
+    }
+    std::unique_lock table_lock(coordinator_->chunk_table_mutex, std::try_to_lock);
+    if (!table_lock.owns_lock()) {
+        return core::Result<ChunkDeltaJournalRecoveryResult>::failure(save_database_busy_code,
+                                                                      save_database_busy_message);
+    }
+    std::unique_lock mutation_lock(coordinator_->mutation_mutex, std::try_to_lock);
+    if (!mutation_lock.owns_lock()) {
+        return core::Result<ChunkDeltaJournalRecoveryResult>::failure(save_database_busy_code,
+                                                                      save_database_busy_message);
+    }
+
     auto snapshot_journal = read_journal_state(root_);
     if (!snapshot_journal) {
         return core::Result<ChunkDeltaJournalRecoveryResult>::failure(
@@ -2835,6 +3045,17 @@ FileSaveDatabase::recover_chunk_delta_journal() const {
 }
 
 core::Result<std::size_t> FileSaveDatabase::compact_chunk_deltas() const {
+    std::unique_lock table_lock(coordinator_->chunk_table_mutex, std::try_to_lock);
+    if (!table_lock.owns_lock()) {
+        return core::Result<std::size_t>::failure(save_database_busy_code,
+                                                  save_database_busy_message);
+    }
+    std::unique_lock mutation_lock(coordinator_->mutation_mutex, std::try_to_lock);
+    if (!mutation_lock.owns_lock()) {
+        return core::Result<std::size_t>::failure(save_database_busy_code,
+                                                  save_database_busy_message);
+    }
+
     auto save_root = active_save_root(root_);
     if (!save_root) {
         return core::Result<std::size_t>::failure(save_root.error().code,
@@ -2900,6 +3121,15 @@ core::Result<std::size_t> FileSaveDatabase::compact_chunk_deltas() const {
 }
 
 core::Status FileSaveDatabase::prune_stale_generations(std::size_t keep_stale_generations) const {
+    std::unique_lock table_lock(coordinator_->chunk_table_mutex, std::try_to_lock);
+    if (!table_lock.owns_lock()) {
+        return core::Status::failure(save_database_busy_code, save_database_busy_message);
+    }
+    std::unique_lock mutation_lock(coordinator_->mutation_mutex, std::try_to_lock);
+    if (!mutation_lock.owns_lock()) {
+        return core::Status::failure(save_database_busy_code, save_database_busy_message);
+    }
+
     std::error_code error;
     const bool has_manifest = std::filesystem::exists(current_generation_path(root_), error);
     if (error) {
@@ -2949,6 +3179,17 @@ core::Status FileSaveDatabase::prune_stale_generations(std::size_t keep_stale_ge
 }
 
 core::Result<std::size_t> FileSaveDatabase::recover_staged_generations() const {
+    std::unique_lock table_lock(coordinator_->chunk_table_mutex, std::try_to_lock);
+    if (!table_lock.owns_lock()) {
+        return core::Result<std::size_t>::failure(save_database_busy_code,
+                                                  save_database_busy_message);
+    }
+    std::unique_lock mutation_lock(coordinator_->mutation_mutex, std::try_to_lock);
+    if (!mutation_lock.owns_lock()) {
+        return core::Result<std::size_t>::failure(save_database_busy_code,
+                                                  save_database_busy_message);
+    }
+
     std::error_code error;
     const bool has_manifest = std::filesystem::exists(current_generation_path(root_), error);
     if (error) {
@@ -3120,6 +3361,17 @@ FileSaveDatabase::migrate_to_schema(const SaveMigrationRegistry& registry,
 }
 
 core::Result<SaveDatabaseStats> FileSaveDatabase::stats() const {
+    std::shared_lock table_lease(coordinator_->chunk_table_mutex, std::try_to_lock);
+    if (!table_lease.owns_lock()) {
+        return core::Result<SaveDatabaseStats>::failure(save_database_busy_code,
+                                                        save_database_busy_message);
+    }
+    std::unique_lock mutation_lock(coordinator_->mutation_mutex, std::try_to_lock);
+    if (!mutation_lock.owns_lock()) {
+        return core::Result<SaveDatabaseStats>::failure(save_database_busy_code,
+                                                        save_database_busy_message);
+    }
+
     auto save_root = active_save_root(root_);
     if (!save_root) {
         return core::Result<SaveDatabaseStats>::failure(save_root.error().code,
@@ -3210,7 +3462,7 @@ core::Result<SaveDatabaseStats> FileSaveDatabase::stats() const {
             result.chunk_delta_bytes += chunk_delta.encoded_edit_delta.size();
         }
     } else {
-        auto chunk_delta_writer = open_chunk_delta_writer();
+        auto chunk_delta_writer = open_chunk_delta_writer_under_lock(std::move(table_lease));
         if (!chunk_delta_writer) {
             return core::Result<SaveDatabaseStats>::failure(chunk_delta_writer.error().code,
                                                             chunk_delta_writer.error().message);
