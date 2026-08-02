@@ -59,7 +59,7 @@ benchmark composes the broader environment stack into a stable integration workl
 The deterministic benchmark family retains raw samples and percentile summaries. Renderer schema
 v4, chunk-streaming schema v4, chunk-delta-journal schema v1, voxel-response schema v1,
 chunk-render-readiness schema v1, multiplayer chunk-subscription schema v3, and multiplayer
-network-impairment schema v1 record
+network-impairment schema v2 record
 source/build/machine/device provenance and enforce workload-specific absolute gates. Clean
 reference runs cover renderer/edit workloads, generated
 plus in-memory and physical indexed saved-delta publication, warm and Linux cache-drop-advice
@@ -75,8 +75,8 @@ slope/growth. An optimized `profiling-release` preset
 links on-demand Tracy instrumentation across the main runtime, renderer, worker, chunk, lighting,
 collision, and streaming boundaries; normal builds compile those call sites to no-ops. Guaranteed
 cold/multi-filesystem I/O, coordinated checkpoint under live streaming, large snapshot capture,
-general-controller loader adoption, actual GPU execution/presentation timing, multi-client
-impairment, and game-specific temporal aggregation remain staged in the
+general-controller loader adoption, actual GPU execution/presentation timing, socket-backed
+shared-link impairment, and game-specific temporal aggregation remain staged in the
 [voxel optimization roadmap](performance/voxel_optimization_roadmap.md).
 
 The retained UI path uses a packaged Noto Sans font rendered from a deterministic SDF atlas,
@@ -136,14 +136,17 @@ client record units. Median soak P50/P95/P99/max was 0.062/2.686/4.734/4.841 ms;
 resident-memory endpoint growth and OLS slope were zero in every process. This accepts the
 deterministic queue/private-memory soak slice, not multi-hour or impaired-network stability.
 
-The deterministic impairment runner now retains 600 raw production-runtime ticks at 100 ms nominal
-RTT, uniform plus-or-minus 10 ms configured delay variation, and 2% unreliable loss. Three clean
-Release processes passed server P99, input acceptance, correction, encoded bandwidth, in-flight
-impairment, reliable-backlog, and transport-integrity gates with median 0.019 ms server P99. Every
-run accepted 99.667% of inputs inside the measured interval, ended at acknowledged sequence 600,
-made zero hard corrections, stayed below 0.075 m soft correction, and averaged 22,253.6 encoded
-server-to-client bytes/s. Multi-client impairment and game-specific temporal aggregation remain.
-See
+The schema-v2 deterministic impairment runner now drives eight production clients through 600 raw
+measured ticks at 100 ms nominal RTT, uniform plus-or-minus 10 ms configured delay variation, and
+2% unreliable loss, followed by bounded no-new-input recovery. Aggregate and sorted per-client
+rows exactly reconcile. Three clean Release processes passed all server P99, input progress,
+correction, aggregate/per-client bandwidth, loss, impairment-depth, exact-convergence,
+reliable-backlog, and transport-integrity gates with median 0.190 ms server P99. They accepted
+4,781-4,782 of 4,800 measured inputs, reached sequence 600 with empty prediction buffers for every
+client, made zero hard corrections, and stayed below 0.07501 m soft correction. Aggregate offered
+load averaged 1,347,076.5-1,357,186.6 bytes/s and the largest per-client average was 169,652.5
+bytes/s. This accepts deterministic in-process multi-client impairment. Game-specific temporal
+aggregation remains; socket-backed shared-link and multi-hour impairment remain separate work. See
 [Multiplayer network-impairment benchmarks](performance/multiplayer_network_impairment_benchmarks.md).
 
 ### Persistence

@@ -227,12 +227,16 @@ with `--enforce-gates --require-precise-memory`. The second option deliberately 
 when the host cannot provide precise process-memory accounting; omit it only for a functional run
 whose memory gates are not acceptance evidence.
 
-For repeatable impaired-runtime acceptance, run the optimized
+For repeatable impaired-runtime acceptance, run the optimized schema-v2
 [`heartstead_multiplayer_network_impairment_benchmark`](../performance/multiplayer_network_impairment_benchmarks.md)
-with `--enforce-gates`. For the real socket path, use `tools/netem_multiplayer.sh` on Linux to apply
-a documented latency/delay-variation/loss profile. Do not turn one observed packet count or
-correction distance into a permanent architecture claim; keep durable acceptance thresholds in
-tests and record individual runs as artifacts.
+with `--enforce-gates`. Its default production workload uses eight clients, preserves aggregate and
+exactly reconciling per-client tick rows, and separates the 600 measured ticks from bounded
+no-new-input recovery evidence. Store raw reports under the ignored build tree and compare independent
+optimized processes with identical provenance. For the real socket path, use
+`tools/netem_multiplayer.sh` on Linux to apply a documented latency/delay-variation/loss profile;
+the in-process result does not cover kernel scheduling, correlated loss, or shared-link queuing.
+Do not turn one observed packet count or correction distance into a permanent architecture claim;
+keep durable acceptance thresholds in tests and record individual runs as artifacts.
 
 ## Game-shell lifecycle checks
 

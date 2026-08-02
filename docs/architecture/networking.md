@@ -300,20 +300,25 @@ stability.
 
 ## Deterministic impairment profile
 
-The maintained in-memory impairment profile drives the production prediction/runtime path for 600
-measured 60 Hz ticks at 50 ms configured one-way latency, uniform plus-or-minus 10 ms configured
-delay variation, and 2% unreliable loss. Schema-v1 raw rows retain server and runtime timing,
-prediction/reconciliation/correction work, encoded offered-load bytes, a loss-eligible unreliable
-denominator, simulated drops, impairment depth, reliable backlog, and transport failures.
+The maintained in-memory impairment profile drives eight production clients through 600 measured
+60 Hz ticks at 50 ms configured one-way latency, uniform plus-or-minus 10 ms configured delay
+variation, and 2% unreliable loss. Schema-v2 raw aggregate rows and sorted per-client rows exactly
+reconcile server/runtime timing context, prediction/reconciliation/correction work, encoded
+offered-load bytes, loss-eligible unreliable denominators, simulated drops, impairment depth,
+reliable
+backlog, connection state, and transport failures. Measured timing/traffic is separate from bounded
+recovery, which submits no new prediction input and requires exact final sequence/state convergence.
 
-Three clean Release processes passed every 12.5/16.667/50 ms server P95/P99/max gate with median
-0.018/0.019/0.682 ms. Each accepted 598 of 600 inputs inside the measured interval, ended at
-acknowledged sequence 600, made zero hard corrections, stayed below 0.075 m soft correction,
-averaged 22,253.6 encoded server-to-client bytes/s, peaked at 34,103 bytes in a rolling second, and
-kept in-flight impairment at or below 70 against a 128-message cap. The reliable application FIFO
-ended empty and no transport error or disconnect occurred. This closes the deterministic impaired
-prediction/P99 profile; multi-client impairment and game-specific temporal aggregation remain M6
-work. See
+Three clean Release processes passed every aggregate and per-client gate with median server
+P95/P99/max of 0.184/0.190/0.209 ms. They accepted 4,781-4,782 of 4,800 inputs inside the measured
+interval, reached sequence 600 for every authoritative/client state, emptied every prediction
+buffer, made zero hard corrections, and stayed below 0.07501 m soft correction. Aggregate offered
+load averaged 1,347,076.5-1,357,186.6 bytes/s; the maximum per-client average/rolling-second values
+were 169,652.5/181,795 bytes. The asynchronous chunk-publication branch peaked at 682 aggregate and
+88 per-client impaired messages, within 1,024/128 caps. The reliable application FIFO ended empty
+and no transport error or disconnect occurred. This closes the deterministic in-process
+multi-client impaired prediction/P99/convergence profile. Game-specific temporal aggregation remains M6
+work; socket-backed shared-link and multi-hour impairment remain separate validation. See
 [Multiplayer network-impairment benchmarks](../performance/multiplayer_network_impairment_benchmarks.md).
 
 ## Prediction and interpolation
@@ -329,9 +334,10 @@ world mutations.
 
 ## Budgets and observability
 
-The host enforces a hard per-client encoded-wire traffic ceiling of 256 KiB over one second and
-targets an average server-to-client rate below 64 KiB/s for the maintained impaired-runtime
-profile. The transient controller separately bounds application payload and codec work per tick;
+The host enforces a hard per-client encoded-wire traffic ceiling of 256 KiB over one second. The
+maintained eight-client impaired-runtime profile additionally gates aggregate/per-client average
+server-to-client offered load below 1,536/192 KiB/s and rolling-second load below 1,536/192 KiB.
+The transient controller separately bounds application payload and codec work per tick;
 neither substitutes for a complete congestion controller. Replaceable unreliable state can be
 dropped. Per-client inbound message/byte limits, global handshake limits, fragment/reassembly
 bounds, timeout/retry bounds, and pre-validation amplification limits protect the authoritative

@@ -134,8 +134,9 @@ reported and bounded to that one operation. Rotating clients, sources, and snaps
 persistent low-identity preference. Reliable correctness traffic and tombstones are outside this
 controller; the host's separate 256 KiB/client encoded-wire window still applies. These defaults are
 implementation safety rails. Clean eight-client spread/P99, conditioned queue/private-memory soak,
-and the maintained single-client impaired prediction profile are calibrated; multi-client
-impairment and game-specific temporal aggregation remain before M6 acceptance. See
+and the maintained eight-client impaired prediction/convergence profile are calibrated;
+game-specific temporal aggregation remains before M6 acceptance. Socket-backed shared-link and
+multi-hour impairment remain separate validation work. See
 [Networking architecture](networking.md#transient-tick-admission).
 
 Reliable correctness traffic uses a separate encoded-wire backlog and drain envelope:
@@ -187,14 +188,19 @@ ownership of 76 server chunks and 2,144 total client record units. This is a det
 fixed-endpoint queue/private-memory soak SLO, not a multi-hour, allocator-attributed, or impaired-
 network result.
 
-The maintained single-client impairment profile adds 600 raw ticks at 100 ms nominal RTT, uniform
-plus-or-minus 10 ms configured delay variation, and 2% unreliable loss. Its independent
-12.5/16.667/50 ms server P95/P99/max, greater-than-90% input acceptance, one-correction/1 m,
-64 KiB/s average, 256 KiB rolling-second, 128-message in-flight impairment, zero reliable-backlog,
-and zero transport-error gates all pass. Three clean Release processes measured median server
-P95/P99/max of 0.018/0.019/0.682 ms, 99.667% measured-interval input acceptance, zero hard
-corrections, 0.075 m maximum soft correction, 22,253.6 encoded server-to-client bytes/s, and a
-34,103-byte rolling-second peak. See
+The maintained schema-v2 impairment profile drives eight clients through 600 measured ticks at
+100 ms nominal RTT, uniform plus-or-minus 10 ms configured delay variation, and 2% unreliable loss.
+Aggregate/per-client rows must exactly reconcile, and measured timing/traffic remains separate from
+bounded no-new-input recovery. Its 12.5/16.667/50 ms server P95/P99/max, greater-than-90% aggregate
+input acceptance and per-client authoritative progress, 8/1 aggregate/per-client hard-correction,
+1 m correction-distance, 1,536/192 KiB/s aggregate/per-client average, 1,536/192 KiB
+aggregate/per-client rolling-second, 1,024/128 aggregate/per-client impaired-message, exact final
+convergence,
+zero reliable-backlog, and zero transport-error gates all pass. Three clean Release processes
+measured median server P95/P99/max of 0.184/0.190/0.209 ms, 99.604-99.625% aggregate input
+acceptance, zero hard corrections, 0.07501 m maximum soft correction, 1,347,076.5-1,357,186.6
+aggregate server-to-client bytes/s, and 169,652.5/181,795 maximum per-client average/rolling-second
+bytes. See
 [Multiplayer network-impairment benchmarks](../performance/multiplayer_network_impairment_benchmarks.md).
 
 High defaults include 16 visible terrain chunks horizontally with mesh/resident/load hysteresis,
