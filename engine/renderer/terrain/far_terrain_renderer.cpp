@@ -50,6 +50,12 @@ core::Status FarTerrainRenderer::initialize(FarTerrainRendererConfig config,
     if (!lod_updates) {
         return core::Status::failure(lod_updates.error().code, lod_updates.error().message);
     }
+    auto mesh_scheduler =
+        FarTerrainMeshScheduler::create(clipmap.value(), config.mesh_scheduler);
+    if (!mesh_scheduler) {
+        return core::Status::failure(mesh_scheduler.error().code,
+                                     mesh_scheduler.error().message);
+    }
     const auto allocation_budget =
         config.maximum_resident_bytes + config.maximum_replacement_headroom_bytes;
     const auto vertex_budget =
@@ -117,6 +123,7 @@ core::Status FarTerrainRenderer::initialize(FarTerrainRendererConfig config,
     config_ = std::move(config);
     clipmap_ = std::move(clipmap.value());
     lod_updates_ = std::move(lod_updates.value());
+    mesh_scheduler_ = std::move(mesh_scheduler.value());
     pipeline_ = pipeline;
     vertex_arena_ = std::move(vertex_arena.value());
     index_arena_ = std::move(index_arena.value());
@@ -155,17 +162,22 @@ core::Status FarTerrainRenderer::update(math::Vec3d camera_world,
                                         std::uint64_t surface_revision,
                                         std::span<const math::Bounds3d> invalidated_regions) {
     HEARTSTEAD_PROFILE_ZONE_NAMED("renderer.far_terrain.update");
-    if (!clipmap_.has_value() || !sampler) {
+    if (!clipmap_.has_value() || !lod_updates_.has_value() || mesh_scheduler_ == nullptr ||
+        !sampler) {
         return core::Status::failure("renderer.far_terrain_uninitialized",
                                      "far terrain must be initialized with a surface sampler");
     }
     stats_.built_patches = 0;
+    stats_.meshed_patches = 0;
     stats_.replaced_patches = 0;
     stats_.rebuilt_mid_patches = 0;
     stats_.rebuilt_far_patches = 0;
     stats_.upload_deferred_patches = 0;
+    stats_.cancelled_mesh_results = 0;
+    stats_.discarded_mesh_results = 0;
     stats_.evicted_patches = 0;
     stats_.uploaded_bytes = 0;
+    stats_.worker_meshing_ms = 0.0;
     vertex_arena_->collect(device_->completed_submission_serial());
     index_arena_->collect(device_->completed_submission_serial());
     plan_ = clipmap_->plan(camera_world);
@@ -192,55 +204,31 @@ core::Status FarTerrainRenderer::update(math::Vec3d camera_world,
         }
     }
 
-    auto updates = lod_updates_->schedule_updates();
-    const auto retry_from = [this, &updates](std::size_t first) {
-        auto status = core::Status::ok();
-        for (auto index = first; index < updates.size(); ++index) {
-            if (!lod_updates_->accepts_result(updates[index].patch.key,
-                                              updates[index].request_revision)) {
-                continue;
-            }
-            auto retry =
-                lod_updates_->retry(updates[index].patch.key, updates[index].request_revision);
-            if (!retry && status) {
-                status = retry;
-            }
+    auto ready_status = discard_obsolete_ready_meshes();
+    if (!ready_status) {
+        return ready_status;
+    }
+    for (const auto& ticket : mesh_scheduler_->in_flight_tickets()) {
+        const auto requested = lod_updates_->requested_revision(ticket.key);
+        if (!requested.has_value() || *requested != ticket.request_revision) {
+            mesh_scheduler_->cancel(ticket.key);
         }
-        return status;
-    };
-    for (std::size_t index = 0; index < updates.size(); ++index) {
-        auto uploaded = upload_patch(updates[index], sampler);
-        if (!uploaded) {
-            const auto upload_error = uploaded.error();
-            static_cast<void>(retry_from(index));
-            return core::Status::failure(upload_error.code, upload_error.message);
-        }
-        if (!uploaded.value()) {
-            ++stats_.upload_deferred_patches;
-            auto retry = retry_from(index);
-            if (!retry) {
-                return retry;
-            }
-            break;
-        }
-        auto published =
-            lod_updates_->publish(updates[index].patch.key, updates[index].request_revision);
-        if (!published) {
-            static_cast<void>(retry_from(index + 1U));
-            return published;
-        }
-        if (updates[index].replaces_resident_patch) {
-            ++stats_.replaced_patches;
-            if (updates[index].band == FarTerrainLodBand::mid) {
-                ++stats_.rebuilt_mid_patches;
-            } else {
-                ++stats_.rebuilt_far_patches;
-            }
-        }
+    }
+    auto completed_status = consume_completed_meshes();
+    if (!completed_status) {
+        return completed_status;
+    }
+    auto publish_status = publish_ready_meshes();
+    if (!publish_status) {
+        return publish_status;
     }
     auto budget_status = enforce_resident_budget();
     if (!budget_status) {
         return budget_status;
+    }
+    auto schedule_status = schedule_meshes(sampler);
+    if (!schedule_status) {
+        return schedule_status;
     }
     refresh_resident_stats();
     const auto& lod = lod_updates_->stats();
@@ -255,34 +243,240 @@ core::Status FarTerrainRenderer::update(math::Vec3d camera_world,
     stats_.total_stale_results = lod.total_stale_results;
     stats_.total_retried_updates = lod.total_retried_updates;
     stats_.pending_patches = lod.pending_mid_updates + lod.pending_far_updates;
+    const auto& mesh = mesh_scheduler_->stats();
+    stats_.ready_meshes = ready_meshes_.size();
+    stats_.worker_in_flight_meshes = mesh.in_flight_jobs;
+    stats_.worker_completed_mailbox = mesh.completed_mailbox_count;
+    stats_.total_mesh_jobs_submitted = mesh.submitted_jobs;
+    stats_.total_mesh_jobs_completed = mesh.completed_jobs;
+    stats_.total_mesh_jobs_cancelled = mesh.cancelled_jobs;
+    stats_.total_mesh_jobs_failed = mesh.failed_jobs;
     HEARTSTEAD_PROFILE_PLOT("far_terrain.pending_mid", stats_.pending_mid_updates);
     HEARTSTEAD_PROFILE_PLOT("far_terrain.pending_far", stats_.pending_far_updates);
     HEARTSTEAD_PROFILE_PLOT("far_terrain.stale_resident", stats_.stale_resident_patches);
     HEARTSTEAD_PROFILE_PLOT("far_terrain.maximum_pending_frames", stats_.maximum_pending_frames);
+    HEARTSTEAD_PROFILE_PLOT("far_terrain.worker_in_flight", stats_.worker_in_flight_meshes);
+    HEARTSTEAD_PROFILE_PLOT("far_terrain.worker_mailbox", stats_.worker_completed_mailbox);
+    HEARTSTEAD_PROFILE_PLOT("far_terrain.ready_meshes", stats_.ready_meshes);
+    HEARTSTEAD_PROFILE_PLOT("far_terrain.worker_meshing_ms", stats_.worker_meshing_ms);
+    return core::Status::ok();
+}
+
+core::Status FarTerrainRenderer::discard_obsolete_ready_meshes() {
+    auto first_failure = core::Status::ok();
+    for (auto iterator = ready_meshes_.begin(); iterator != ready_meshes_.end();) {
+        const auto& update = iterator->update;
+        if (lod_updates_->accepts_result(update.patch.key, update.request_revision)) {
+            ++iterator;
+            continue;
+        }
+        if (lod_updates_->contains(update.patch.key)) {
+            auto rejected =
+                lod_updates_->reject_stale(update.patch.key, update.request_revision);
+            if (!rejected && first_failure) {
+                first_failure = rejected;
+            }
+        }
+        if (iterator->mesh.has_value()) {
+            mesh_scheduler_->recycle_mesh(std::move(*iterator->mesh));
+        }
+        iterator = ready_meshes_.erase(iterator);
+        ++stats_.discarded_mesh_results;
+    }
+    return first_failure;
+}
+
+core::Status FarTerrainRenderer::consume_completed_meshes() {
+    auto first_failure = core::Status::ok();
+    auto completed = mesh_scheduler_->drain_completed();
+    for (auto& result : completed) {
+        stats_.worker_meshing_ms += result.meshing_ms;
+        const auto& update = result.update;
+        if (!lod_updates_->accepts_result(update.patch.key, update.request_revision)) {
+            if (lod_updates_->contains(update.patch.key)) {
+                auto rejected =
+                    lod_updates_->reject_stale(update.patch.key, update.request_revision);
+                if (!rejected && first_failure) {
+                    first_failure = rejected;
+                }
+            }
+            if (result.mesh.has_value()) {
+                mesh_scheduler_->recycle_mesh(std::move(*result.mesh));
+            }
+            ++stats_.discarded_mesh_results;
+            continue;
+        }
+
+        if (result.state == FarTerrainMeshResultState::cancelled) {
+            auto retry = lod_updates_->retry(update.patch.key, update.request_revision);
+            if (result.mesh.has_value()) {
+                mesh_scheduler_->recycle_mesh(std::move(*result.mesh));
+            }
+            if (!retry && first_failure) {
+                first_failure = retry;
+            }
+            ++stats_.cancelled_mesh_results;
+            continue;
+        }
+        if (result.state == FarTerrainMeshResultState::failed || !result.mesh.has_value()) {
+            auto retry = lod_updates_->retry(update.patch.key, update.request_revision);
+            if (result.mesh.has_value()) {
+                mesh_scheduler_->recycle_mesh(std::move(*result.mesh));
+            }
+            if (!retry && first_failure) {
+                first_failure = retry;
+            } else if (first_failure) {
+                first_failure = core::Status::failure(
+                    result.error_code.empty() ? "renderer.far_terrain_mesh_missing_result"
+                                              : result.error_code,
+                    result.error_message.empty()
+                        ? "far-terrain worker completed without a mesh"
+                        : result.error_message);
+            }
+            continue;
+        }
+        ++stats_.meshed_patches;
+        ready_meshes_.push_back(std::move(result));
+    }
+    return first_failure;
+}
+
+core::Status FarTerrainRenderer::publish_ready_meshes() {
+    std::ranges::sort(ready_meshes_, [](const auto& left, const auto& right) {
+        if (left.update.band != right.update.band) {
+            return left.update.band == FarTerrainLodBand::mid;
+        }
+        if (left.update.pending_frames != right.update.pending_frames) {
+            return left.update.pending_frames > right.update.pending_frames;
+        }
+        if (left.update.replaces_resident_patch != right.update.replaces_resident_patch) {
+            return left.update.replaces_resident_patch;
+        }
+        if (left.update.request_sequence != right.update.request_sequence) {
+            return left.update.request_sequence < right.update.request_sequence;
+        }
+        return left.update.patch.key < right.update.patch.key;
+    });
+
+    std::size_t published_count = 0;
+    auto iterator = ready_meshes_.begin();
+    while (iterator != ready_meshes_.end() &&
+           published_count < config_.maximum_patch_builds_per_frame) {
+        const auto update = iterator->update;
+        if (!iterator->mesh.has_value()) {
+            auto retry = lod_updates_->retry(update.patch.key, update.request_revision);
+            iterator = ready_meshes_.erase(iterator);
+            if (!retry) {
+                return retry;
+            }
+            return core::Status::failure("renderer.far_terrain_mesh_missing_result",
+                                         "ready far-terrain result does not contain a mesh");
+        }
+        auto uploaded = upload_patch(update, *iterator->mesh);
+        if (!uploaded) {
+            const auto upload_error = uploaded.error();
+            auto retry = lod_updates_->retry(update.patch.key, update.request_revision);
+            mesh_scheduler_->recycle_mesh(std::move(*iterator->mesh));
+            ready_meshes_.erase(iterator);
+            if (!retry) {
+                return retry;
+            }
+            return core::Status::failure(upload_error.code, upload_error.message);
+        }
+        if (!uploaded.value()) {
+            ++stats_.upload_deferred_patches;
+            break;
+        }
+        auto published = lod_updates_->publish(update.patch.key, update.request_revision);
+        if (!published) {
+            return published;
+        }
+        if (update.replaces_resident_patch) {
+            ++stats_.replaced_patches;
+            if (update.band == FarTerrainLodBand::mid) {
+                ++stats_.rebuilt_mid_patches;
+            } else {
+                ++stats_.rebuilt_far_patches;
+            }
+        }
+        mesh_scheduler_->recycle_mesh(std::move(*iterator->mesh));
+        iterator = ready_meshes_.erase(iterator);
+        ++published_count;
+    }
+    return core::Status::ok();
+}
+
+core::Status FarTerrainRenderer::schedule_meshes(const FarTerrainSurfaceSampler& sampler) {
+    const auto& worker_stats = mesh_scheduler_->stats();
+    const auto occupied = ready_meshes_.size() + worker_stats.in_flight_jobs;
+    if (occupied >= config_.mesh_scheduler.maximum_concurrent_jobs) {
+        return core::Status::ok();
+    }
+    const auto available = config_.mesh_scheduler.maximum_concurrent_jobs - occupied;
+    auto updates = lod_updates_->schedule_updates(available);
+    const auto retry_from = [this, &updates](std::size_t first) {
+        auto first_failure = core::Status::ok();
+        for (auto index = first; index < updates.size(); ++index) {
+            if (!lod_updates_->accepts_result(updates[index].patch.key,
+                                              updates[index].request_revision)) {
+                continue;
+            }
+            auto retry =
+                lod_updates_->retry(updates[index].patch.key, updates[index].request_revision);
+            if (!retry && first_failure) {
+                first_failure = retry;
+            }
+        }
+        return first_failure;
+    };
+    for (std::size_t index = 0; index < updates.size(); ++index) {
+        const auto row = static_cast<std::size_t>(updates[index].patch.resolution) + 3U;
+        auto samples = mesh_scheduler_->acquire_surface_samples(row * row);
+        auto surface = clipmap_->capture_patch_surface(updates[index].patch, sampler,
+                                                       std::move(samples));
+        if (!surface) {
+            const auto capture_error = surface.error();
+            auto retry = retry_from(index);
+            if (!retry) {
+                return retry;
+            }
+            return core::Status::failure(capture_error.code, capture_error.message);
+        }
+        auto submitted = mesh_scheduler_->submit(
+            {updates[index], std::move(surface).value()});
+        if (!submitted) {
+            auto retry = retry_from(index);
+            if (!retry) {
+                return retry;
+            }
+            return submitted;
+        }
+    }
     return core::Status::ok();
 }
 
 core::Result<bool> FarTerrainRenderer::upload_patch(const FarTerrainLodUpdateRequest& request,
-                                                    const FarTerrainSurfaceSampler& sampler) {
-    HEARTSTEAD_PROFILE_ZONE_NAMED("renderer.far_terrain.patch_build_upload");
-    auto mesh = clipmap_->build_patch_mesh(request.patch, sampler);
-    if (!mesh) {
-        return core::Result<bool>::failure(mesh.error().code, mesh.error().message);
+                                                    const FarTerrainPatchMesh& mesh) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("renderer.far_terrain.patch_upload");
+    if (mesh.key != request.patch.key) {
+        return core::Result<bool>::failure(
+            "renderer.invalid_far_terrain_mesh_result",
+            "far-terrain mesh key does not match its current update ticket");
     }
-    if (mesh.value().indices.empty()) {
+    if (mesh.indices.empty()) {
         install_patch(ResidentPatch{
-            request.patch, mesh.value().world_origin, mesh.value().local_bounds, {}, {}, 0, 0});
+            request.patch, mesh.world_origin, mesh.local_bounds, {}, {}, 0, 0});
         ++stats_.built_patches;
         return core::Result<bool>::success(true);
     }
     std::vector<FarTerrainGpuVertex> vertices;
-    vertices.reserve(mesh.value().vertices.size());
-    for (const auto& vertex : mesh.value().vertices) {
+    vertices.reserve(mesh.vertices.size());
+    for (const auto& vertex : mesh.vertices) {
         vertices.push_back({vertex.local_position, vertex.normal, vertex.uv, vertex.material, 0,
                             vertex.transition, 0.0F});
     }
     const auto vertex_bytes = std::as_bytes(std::span{vertices});
-    const auto index_bytes = std::as_bytes(std::span{mesh.value().indices});
+    const auto index_bytes = std::as_bytes(std::span{mesh.indices});
     const auto byte_size = vertex_bytes.size() + index_bytes.size();
     if (stats_.uploaded_bytes > 0 &&
         stats_.uploaded_bytes + byte_size > config_.maximum_upload_bytes_per_frame) {
@@ -310,8 +504,8 @@ core::Result<bool> FarTerrainRenderer::upload_patch(const FarTerrainLodUpdateReq
         return core::Result<bool>::failure(uploaded.error().code, uploaded.error().message);
     }
     install_patch(ResidentPatch{
-        request.patch, mesh.value().world_origin, mesh.value().local_bounds, vertex.value(),
-        index.value(), static_cast<std::uint32_t>(mesh.value().indices.size()), byte_size});
+        request.patch, mesh.world_origin, mesh.local_bounds, vertex.value(), index.value(),
+        static_cast<std::uint32_t>(mesh.indices.size()), byte_size});
     stats_.uploaded_bytes += byte_size;
     ++stats_.built_patches;
     return core::Result<bool>::success(true);
@@ -373,6 +567,17 @@ void FarTerrainRenderer::refresh_resident_stats() noexcept {
         static_cast<void>(key);
         stats_.resident_bytes += patch.resident_bytes;
     }
+}
+
+void FarTerrainRenderer::recycle_ready_meshes() noexcept {
+    if (mesh_scheduler_ != nullptr) {
+        for (auto& result : ready_meshes_) {
+            if (result.mesh.has_value()) {
+                mesh_scheduler_->recycle_mesh(std::move(*result.mesh));
+            }
+        }
+    }
+    ready_meshes_.clear();
 }
 
 std::vector<rhi::RenderDrawCommand>
@@ -508,6 +713,22 @@ FarTerrainRenderer::build_draws(const RenderCamera& camera,
 
 core::Status FarTerrainRenderer::clear() {
     core::Status first_failure = core::Status::ok();
+    recycle_ready_meshes();
+    if (mesh_scheduler_ != nullptr) {
+        mesh_scheduler_->shutdown();
+        auto replacement = clipmap_.has_value()
+                               ? FarTerrainMeshScheduler::create(*clipmap_, config_.mesh_scheduler)
+                               : core::Result<std::unique_ptr<FarTerrainMeshScheduler>>::failure(
+                                     "renderer.far_terrain_uninitialized",
+                                     "far-terrain clipmap is unavailable during clear");
+        if (replacement) {
+            mesh_scheduler_ = std::move(replacement.value());
+        } else {
+            first_failure = core::Status::failure(replacement.error().code,
+                                                  replacement.error().message);
+            mesh_scheduler_.reset();
+        }
+    }
     for (auto iterator = resident_.begin(); iterator != resident_.end();) {
         auto removed = iterator++;
         release_patch(removed);
@@ -528,6 +749,11 @@ core::Status FarTerrainRenderer::clear() {
 }
 
 core::Status FarTerrainRenderer::shutdown() {
+    recycle_ready_meshes();
+    if (mesh_scheduler_ != nullptr) {
+        mesh_scheduler_->shutdown();
+        mesh_scheduler_.reset();
+    }
     core::Status first_failure = clear();
     for (const auto handle : indirect_buffers_) {
         if (handle.is_valid()) {
@@ -563,6 +789,7 @@ core::Status FarTerrainRenderer::shutdown() {
     draw_data_buffers_ = {};
     clipmap_.reset();
     lod_updates_.reset();
+    mesh_scheduler_.reset();
     pipeline_ = {};
     stats_ = {};
     return first_failure;

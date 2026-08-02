@@ -2619,6 +2619,15 @@ void Renderer::update_frontend_stats(std::size_t loaded_chunk_count) noexcept {
         stats_.far_terrain_rebuilt_mid_patches = saturating_u32(far.rebuilt_mid_patches);
         stats_.far_terrain_rebuilt_far_patches = saturating_u32(far.rebuilt_far_patches);
         stats_.far_terrain_upload_deferred_patches = saturating_u32(far.upload_deferred_patches);
+        stats_.far_terrain_meshed_patches = saturating_u32(far.meshed_patches);
+        stats_.far_terrain_cancelled_mesh_results = saturating_u32(far.cancelled_mesh_results);
+        stats_.far_terrain_discarded_mesh_results = saturating_u32(far.discarded_mesh_results);
+        stats_.far_terrain_ready_meshes = saturating_u32(far.ready_meshes);
+        stats_.far_terrain_worker_in_flight_meshes =
+            saturating_u32(far.worker_in_flight_meshes);
+        stats_.far_terrain_worker_completed_mailbox =
+            saturating_u32(far.worker_completed_mailbox);
+        stats_.far_terrain_worker_meshing_ms = far.worker_meshing_ms;
         stats_.far_terrain_resident_bytes = far.resident_bytes;
         stats_.far_terrain_uploaded_bytes = far.uploaded_bytes;
         stats_.far_terrain_maximum_pending_frames = far.maximum_pending_frames;
@@ -2627,6 +2636,10 @@ void Renderer::update_frontend_stats(std::size_t loaded_chunk_count) noexcept {
         stats_.far_terrain_total_published_updates = far.total_published_updates;
         stats_.far_terrain_total_stale_results = far.total_stale_results;
         stats_.far_terrain_total_retried_updates = far.total_retried_updates;
+        stats_.far_terrain_total_mesh_jobs_submitted = far.total_mesh_jobs_submitted;
+        stats_.far_terrain_total_mesh_jobs_completed = far.total_mesh_jobs_completed;
+        stats_.far_terrain_total_mesh_jobs_cancelled = far.total_mesh_jobs_cancelled;
+        stats_.far_terrain_total_mesh_jobs_failed = far.total_mesh_jobs_failed;
     } else {
         stats_.far_terrain_planned_patches = 0;
         stats_.far_terrain_resident_patches = 0;
@@ -2640,6 +2653,13 @@ void Renderer::update_frontend_stats(std::size_t loaded_chunk_count) noexcept {
         stats_.far_terrain_rebuilt_mid_patches = 0;
         stats_.far_terrain_rebuilt_far_patches = 0;
         stats_.far_terrain_upload_deferred_patches = 0;
+        stats_.far_terrain_meshed_patches = 0;
+        stats_.far_terrain_cancelled_mesh_results = 0;
+        stats_.far_terrain_discarded_mesh_results = 0;
+        stats_.far_terrain_ready_meshes = 0;
+        stats_.far_terrain_worker_in_flight_meshes = 0;
+        stats_.far_terrain_worker_completed_mailbox = 0;
+        stats_.far_terrain_worker_meshing_ms = 0.0;
         stats_.far_terrain_resident_bytes = 0;
         stats_.far_terrain_uploaded_bytes = 0;
         stats_.far_terrain_maximum_pending_frames = 0;
@@ -2648,6 +2668,10 @@ void Renderer::update_frontend_stats(std::size_t loaded_chunk_count) noexcept {
         stats_.far_terrain_total_published_updates = 0;
         stats_.far_terrain_total_stale_results = 0;
         stats_.far_terrain_total_retried_updates = 0;
+        stats_.far_terrain_total_mesh_jobs_submitted = 0;
+        stats_.far_terrain_total_mesh_jobs_completed = 0;
+        stats_.far_terrain_total_mesh_jobs_cancelled = 0;
+        stats_.far_terrain_total_mesh_jobs_failed = 0;
     }
     stats_.visibility_hierarchy_nodes = saturating_u32(chunks.visibility_hierarchy_nodes);
     stats_.visibility_nodes_tested = saturating_u32(chunks.visibility_nodes_tested);

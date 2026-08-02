@@ -66,6 +66,17 @@ std::string format_renderer_stats(const RendererStats& stats) {
            << stats.far_terrain_total_published_updates << '/'
            << stats.far_terrain_total_stale_results << '/'
            << stats.far_terrain_total_retried_updates
+           << " far_mesh=" << stats.far_terrain_meshed_patches << '/'
+           << stats.far_terrain_worker_in_flight_meshes << '/'
+           << stats.far_terrain_ready_meshes << '/'
+           << stats.far_terrain_worker_completed_mailbox << " far_mesh_ms="
+           << stats.far_terrain_worker_meshing_ms << " far_mesh_results="
+           << stats.far_terrain_cancelled_mesh_results << '/'
+           << stats.far_terrain_discarded_mesh_results << " far_mesh_totals="
+           << stats.far_terrain_total_mesh_jobs_submitted << '/'
+           << stats.far_terrain_total_mesh_jobs_completed << '/'
+           << stats.far_terrain_total_mesh_jobs_cancelled << '/'
+           << stats.far_terrain_total_mesh_jobs_failed
            << " chunk_queue=" << stats.mesh_pending_chunks << '/' << stats.upload_pending_chunks
            << " edit_visible=" << stats.edit_to_visible_latest_ms << '/'
            << stats.edit_to_visible_recent_p95_ms << '/' << stats.edit_to_visible_session_max_ms

@@ -40,6 +40,7 @@ struct RendererStats {
     double voxel_fluid_snapshot_ms = 0.0;
     double voxel_fluid_simulation_ms = 0.0;
     double voxel_fluid_apply_ms = 0.0;
+    double far_terrain_worker_meshing_ms = 0.0;
     double particle_update_ms = 0.0;
     double particle_presentation_ms = 0.0;
     double ui_layout_ms = 0.0;
@@ -83,6 +84,12 @@ struct RendererStats {
     std::uint32_t far_terrain_rebuilt_mid_patches = 0;
     std::uint32_t far_terrain_rebuilt_far_patches = 0;
     std::uint32_t far_terrain_upload_deferred_patches = 0;
+    std::uint32_t far_terrain_meshed_patches = 0;
+    std::uint32_t far_terrain_cancelled_mesh_results = 0;
+    std::uint32_t far_terrain_discarded_mesh_results = 0;
+    std::uint32_t far_terrain_ready_meshes = 0;
+    std::uint32_t far_terrain_worker_in_flight_meshes = 0;
+    std::uint32_t far_terrain_worker_completed_mailbox = 0;
     std::uint32_t residency_suppressed_chunks = 0;
     std::uint32_t draw_calls = 0;
     std::uint32_t indirect_draw_calls = 0;
@@ -155,6 +162,10 @@ struct RendererStats {
     std::uint64_t far_terrain_total_published_updates = 0;
     std::uint64_t far_terrain_total_stale_results = 0;
     std::uint64_t far_terrain_total_retried_updates = 0;
+    std::uint64_t far_terrain_total_mesh_jobs_submitted = 0;
+    std::uint64_t far_terrain_total_mesh_jobs_completed = 0;
+    std::uint64_t far_terrain_total_mesh_jobs_cancelled = 0;
+    std::uint64_t far_terrain_total_mesh_jobs_failed = 0;
     std::uint64_t resident_static_mesh_bytes = 0;
     std::uint64_t streaming_resident_bytes = 0;
     std::uint64_t streaming_pending_bytes = 0;

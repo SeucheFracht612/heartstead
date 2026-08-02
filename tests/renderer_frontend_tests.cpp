@@ -1039,6 +1039,7 @@ void test_renderer_frontend_submits_headless_frames() {
     assert(formatted_stats.contains("edit_visible="));
     assert(formatted_stats.contains("chunk_failed=0/0"));
     assert(formatted_stats.contains("mesh_amplification="));
+    assert(formatted_stats.contains("far_mesh="));
 
     retained_renderer.reset_chunk_performance_stats();
     assert(retained_renderer.stats().mesh_total_completed_jobs == 0);
