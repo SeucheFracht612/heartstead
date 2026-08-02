@@ -475,11 +475,15 @@ void test_external_listen_runtime_uses_true_remote_endpoint() {
 
     std::int64_t now_ms = 0;
     for (std::uint32_t frame_index = 0;
-         frame_index < 8 && !runtime.session()->client()->is_connected(); ++frame_index) {
+         frame_index < 64 &&
+         (!runtime.session()->client()->is_connected() ||
+          runtime.session()->client()->local_player_snapshot() == nullptr);
+         ++frame_index) {
         now_ms += 17;
         assert(runtime.run_frame({16'667, now_ms}));
     }
     assert(runtime.session()->client()->is_connected());
+    assert(runtime.session()->client()->local_player_snapshot() != nullptr);
     assert(runtime.session()->server()->host().connected_client_count() == 1);
     assert(runtime.session()->server()->player_for_client(
                runtime.session()->client()->client_id()) != nullptr);
@@ -2107,6 +2111,11 @@ void test_runtime_configuration_rejects_invalid_compositions() {
     invalid_client_replication_time
         .max_transient_snapshot_serialization_time_us_per_client_per_tick = 0;
     assert(!invalid_client_replication_time.validate());
+
+    game::RuntimeConfiguration invalid_chunk_snapshot_serialization_time;
+    invalid_chunk_snapshot_serialization_time
+        .max_chunk_snapshot_serialization_time_us_per_tick = 0;
+    assert(!invalid_chunk_snapshot_serialization_time.validate());
 }
 
 } // namespace

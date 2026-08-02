@@ -5,6 +5,7 @@
 #include "game/runtime/game_runtime.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <filesystem>
@@ -320,6 +321,47 @@ void test_collision_chunks_precede_deferred_initial_state(
     assert(session->submit_player_input(input, now_ms));
 }
 
+void test_snapshot_serialization_budget_defers_unique_chunks(
+    const content::ContentValidationReport& report) {
+    auto runtime = make_runtime(report);
+    game::RuntimeConfiguration config;
+    config.fixed_step = {60, 4, 250'000};
+    config.max_chunk_snapshot_serialization_time_us_per_tick = 1;
+    assert(runtime.start_session(config, make_session_request(report)));
+    auto* session = runtime.session();
+    assert(session != nullptr && session->server() != nullptr && session->client() != nullptr);
+    auto& server = *session->server();
+
+    constexpr std::array<world::ChunkCoord, 2> new_chunks{{{-1, 0, 0}, {1, 0, 0}}};
+    for (const auto coordinate : new_chunks) {
+        auto& chunk = server.world().chunks().get_or_create(coordinate);
+        assert(chunk.set({0, 0, 0}, foundation_surface_cell(server)));
+        chunk.clear_all_dirty();
+    }
+
+    std::int64_t now_ms = 0;
+    auto first = run_frame(runtime, now_ms);
+    const auto& first_stats = first.server_ticks.front().chunk_subscriptions;
+    assert(first_stats.snapshot_serialization_operation_count >= 1);
+    assert(first_stats.serialization_budget_deferred_snapshot_count >= 1);
+    assert(first_stats.deferred_snapshot_count >=
+           first_stats.serialization_budget_deferred_snapshot_count);
+    assert(first_stats.partial_snapshot_count == 0);
+
+    bool published = false;
+    for (std::uint32_t tick = 0; tick < 16; ++tick) {
+        auto frame = run_frame(runtime, now_ms);
+        assert(frame.server_ticks.front().chunk_subscriptions.partial_snapshot_count == 0);
+        if (std::ranges::all_of(new_chunks, [&](world::ChunkCoord coordinate) {
+                return session->client()->world().chunks().contains(coordinate);
+            })) {
+            published = true;
+            break;
+        }
+    }
+    assert(published);
+}
+
 } // namespace
 
 int main() {
@@ -330,5 +372,6 @@ int main() {
     test_shared_chunk_encoding_is_reused_across_clients(report);
     test_reliable_backlog_defers_and_recovers_without_partial_publication(report);
     test_collision_chunks_precede_deferred_initial_state(report);
+    test_snapshot_serialization_budget_defers_unique_chunks(report);
     return 0;
 }

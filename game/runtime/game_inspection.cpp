@@ -235,9 +235,11 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     std::uint32_t chunk_snapshot_serialization_operation_count = 0;
     std::uint64_t chunk_snapshot_payload_bytes = 0;
     std::uint64_t chunk_snapshot_serialization_time_us = 0;
+    std::uint64_t chunk_snapshot_maximum_serialization_time_overshoot_us = 0;
     std::uint64_t chunk_subscription_deferred_addition_count = 0;
     std::uint64_t chunk_subscription_deferred_removal_count = 0;
     std::uint64_t chunk_snapshot_deferred_count = 0;
+    std::uint64_t chunk_snapshot_serialization_budget_deferred_count = 0;
     std::uint32_t chunk_subscription_reliable_admission_deferral_count = 0;
     std::uint32_t physics_body_count = 0;
     std::size_t collision_body_count = 0;
@@ -334,9 +336,14 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
             chunks.snapshot_serialization_operation_count;
         chunk_snapshot_payload_bytes += chunks.snapshot_payload_bytes;
         chunk_snapshot_serialization_time_us += chunks.snapshot_serialization_time_us;
+        chunk_snapshot_maximum_serialization_time_overshoot_us =
+            std::max(chunk_snapshot_maximum_serialization_time_overshoot_us,
+                     chunks.snapshot_serialization_time_overshoot_us);
         chunk_subscription_deferred_addition_count += chunks.deferred_addition_count;
         chunk_subscription_deferred_removal_count += chunks.deferred_removal_count;
         chunk_snapshot_deferred_count += chunks.deferred_snapshot_count;
+        chunk_snapshot_serialization_budget_deferred_count +=
+            chunks.serialization_budget_deferred_snapshot_count;
         chunk_subscription_reliable_admission_deferral_count +=
             chunks.reliable_admission_deferral_count;
         physics_body_count = tick.physics.body_count;
@@ -445,11 +452,15 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     add_field(data, "chunk_snapshot_payload_bytes", std::to_string(chunk_snapshot_payload_bytes));
     add_field(data, "chunk_snapshot_serialization_time_us",
               std::to_string(chunk_snapshot_serialization_time_us));
+    add_field(data, "chunk_snapshot_maximum_serialization_time_overshoot_us",
+              std::to_string(chunk_snapshot_maximum_serialization_time_overshoot_us));
     add_field(data, "chunk_subscription_deferred_addition_count",
               std::to_string(chunk_subscription_deferred_addition_count));
     add_field(data, "chunk_subscription_deferred_removal_count",
               std::to_string(chunk_subscription_deferred_removal_count));
     add_field(data, "chunk_snapshot_deferred_count", std::to_string(chunk_snapshot_deferred_count));
+    add_field(data, "chunk_snapshot_serialization_budget_deferred_count",
+              std::to_string(chunk_snapshot_serialization_budget_deferred_count));
     add_field(data, "chunk_subscription_reliable_admission_deferral_count",
               std::to_string(chunk_subscription_reliable_admission_deferral_count));
     add_field(data, "physics_body_count", std::to_string(physics_body_count));
@@ -546,6 +557,8 @@ debug::InspectionData GameInspector::inspect(const RuntimeSession& session) {
                   std::to_string(config.max_reliable_delivery_messages_per_tick));
         add_field(data, "configured_max_reliable_delivery_bytes_per_tick",
                   std::to_string(config.max_reliable_delivery_bytes_per_tick));
+        add_field(data, "configured_max_chunk_snapshot_serialization_time_us_per_tick",
+                  std::to_string(config.max_chunk_snapshot_serialization_time_us_per_tick));
         add_field(data, "configured_chunk_subscribe_horizontal_radius",
                   std::to_string(config.chunk_subscriptions.subscribe_horizontal_radius_chunks));
         add_field(data, "configured_chunk_subscribe_vertical_radius",

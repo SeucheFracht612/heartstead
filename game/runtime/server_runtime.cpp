@@ -354,6 +354,11 @@ core::Result<std::unique_ptr<ServerRuntime>> ServerRuntime::create(ServerRuntime
         return core::Result<std::unique_ptr<ServerRuntime>>::failure(
             chunk_subscription_status.error().code, chunk_subscription_status.error().message);
     }
+    if (desc.max_chunk_snapshot_serialization_time_us_per_tick == 0) {
+        return core::Result<std::unique_ptr<ServerRuntime>>::failure(
+            "server_runtime.invalid_chunk_snapshot_serialization_budget",
+            "chunk snapshot serialization time budget must be non-zero");
+    }
     auto world_time_status = desc.world_time.validate();
     if (!world_time_status) {
         return core::Result<std::unique_ptr<ServerRuntime>>::failure(
@@ -914,7 +919,7 @@ core::Result<core::NetId> ServerRuntime::connect_client() {
         synchronize_client_chunk_subscription(connected.value(),
                                               {desc_.chunk_subscriptions.max_chunks_per_client,
                                                desc_.chunk_subscriptions.max_chunks_per_client},
-                                              snapshot_cache);
+                                              snapshot_cache, false);
     if (!status) {
         (void)disconnect_client(connected.value());
         return core::Result<core::NetId>::failure(status.error().code, status.error().message);
@@ -1999,6 +2004,12 @@ core::Status ServerRuntime::replicate_entity_motion(std::uint64_t simulation_tic
 core::Status ServerRuntime::synchronize_chunk_subscriptions() {
     HEARTSTEAD_PROFILE_ZONE_NAMED("network.chunk_subscription_sync");
     const auto finalize_stats = [this]() {
+        if (current_chunk_subscriptions_.snapshot_serialization_time_us >
+            desc_.max_chunk_snapshot_serialization_time_us_per_tick) {
+            current_chunk_subscriptions_.snapshot_serialization_time_overshoot_us =
+                current_chunk_subscriptions_.snapshot_serialization_time_us -
+                desc_.max_chunk_snapshot_serialization_time_us_per_tick;
+        }
         current_chunk_subscriptions_.client_count =
             static_cast<std::uint32_t>(player_connections_.size());
         for (const auto& [_, connection] : player_connections_) {
@@ -2082,7 +2093,8 @@ core::Status ServerRuntime::synchronize_chunk_subscriptions() {
 
 core::Status ServerRuntime::synchronize_client_chunk_subscription(
     core::NetId client_id, world::ChunkSubscriptionTransitionBudget transition_budget,
-    std::map<world::ChunkCoord, EncodedChunkSnapshot>& snapshot_cache) {
+    std::map<world::ChunkCoord, EncodedChunkSnapshot>& snapshot_cache,
+    bool enforce_serialization_budget) {
     const auto found = player_connections_.find(client_id.value());
     if (found == player_connections_.end()) {
         return core::Status::failure("server_runtime.player_not_connected",
@@ -2247,6 +2259,14 @@ core::Status ServerRuntime::synchronize_client_chunk_subscription(
         auto cached = snapshot_cache.find(coordinate);
         if (cached == snapshot_cache.end() || cached->second.identity != chunk->identity() ||
             cached->second.content_revision != chunk->content_revision()) {
+            if (enforce_serialization_budget &&
+                current_chunk_subscriptions_.snapshot_serialization_time_us >=
+                desc_.max_chunk_snapshot_serialization_time_us_per_tick) {
+                ++connection.deferred_chunk_snapshots;
+                ++current_chunk_subscriptions_.deferred_snapshot_count;
+                ++current_chunk_subscriptions_.serialization_budget_deferred_snapshot_count;
+                continue;
+            }
             const auto started = ReplicationClock::now();
             auto slices = world::make_chunk_snapshot_slices(*chunk);
             if (!slices) {

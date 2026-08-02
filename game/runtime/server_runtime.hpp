@@ -58,6 +58,7 @@ struct ServerRuntimeDesc {
     world::ChunkLightSystemConfig chunk_lighting;
     world::ChunkLoadSchedulerConfig chunk_loading;
     world::ChunkSubscriptionPolicy chunk_subscriptions;
+    std::uint64_t max_chunk_snapshot_serialization_time_us_per_tick = 4'000;
     std::uint32_t simulation_ticks_per_second = 60;
     net::ReplicationTickBudgetConfig transient_replication_budget;
     bool direct_local_chunk_replication = false;
@@ -89,10 +90,12 @@ struct ServerChunkSubscriptionTickStats {
     std::uint32_t snapshot_serialization_operation_count = 0;
     std::uint64_t snapshot_payload_bytes = 0;
     std::uint64_t snapshot_serialization_time_us = 0;
+    std::uint64_t snapshot_serialization_time_overshoot_us = 0;
     std::uint64_t deferred_addition_count = 0;
     std::uint64_t capacity_deferred_addition_count = 0;
     std::uint64_t deferred_removal_count = 0;
     std::uint64_t deferred_snapshot_count = 0;
+    std::uint64_t serialization_budget_deferred_snapshot_count = 0;
     std::uint32_t reliable_admission_deferral_count = 0;
 };
 
@@ -248,7 +251,8 @@ class ServerRuntime final {
     [[nodiscard]] core::Status synchronize_chunk_subscriptions();
     [[nodiscard]] core::Status synchronize_client_chunk_subscription(
         core::NetId client_id, world::ChunkSubscriptionTransitionBudget transition_budget,
-        std::map<world::ChunkCoord, EncodedChunkSnapshot>& snapshot_cache);
+        std::map<world::ChunkCoord, EncodedChunkSnapshot>& snapshot_cache,
+        bool enforce_serialization_budget = true);
     [[nodiscard]] bool initial_chunk_state_ready(const PlayerConnection& connection) const noexcept;
     [[nodiscard]] core::Status send_initial_state(core::NetId client_id);
     [[nodiscard]] core::Result<std::uint64_t> reserve_custom_replication_sequence();
