@@ -631,7 +631,9 @@ FarTerrainRenderer::build_draws(const RenderCamera& camera,
             reusable.push_back(draw);
         }
     };
-    if (!visible.empty() && device_->capabilities().supports_multi_draw_indirect) {
+    const auto capabilities = device_->capabilities();
+    if (!visible.empty() && capabilities.supports_multi_draw_indirect &&
+        capabilities.supports_draw_indirect_first_instance) {
         using BufferPair = std::pair<rhi::RenderResourceHandle, rhi::RenderResourceHandle>;
         std::map<BufferPair, std::vector<const VisiblePatch*>> groups;
         for (const auto& item : visible) {

@@ -84,6 +84,7 @@ class HeadlessRenderDevice final : public IRenderDevice {
         result.supports_sampler_cache = true;
         result.supports_draw_binding = true;
         result.supports_multi_draw_indirect = true;
+        result.supports_draw_indirect_first_instance = true;
         result.supports_draw_indirect_count = true;
         result.supports_frame_submission = true;
         result.supports_depth = true;
@@ -1725,6 +1726,9 @@ RenderBackendCapabilities render_backend_capabilities(RenderBackend backend) noe
         capabilities.supports_image_upload = true;
         capabilities.supports_sampler_cache = true;
         capabilities.supports_draw_binding = true;
+        capabilities.supports_multi_draw_indirect = true;
+        capabilities.supports_draw_indirect_first_instance = true;
+        capabilities.supports_draw_indirect_count = true;
         capabilities.supports_frame_submission = true;
         capabilities.supports_depth = true;
         capabilities.supports_headless = true;
@@ -1748,6 +1752,9 @@ RenderBackendCapabilities render_backend_capabilities(RenderBackend backend) noe
         capabilities.supports_image_upload = true;
         capabilities.supports_sampler_cache = true;
         capabilities.supports_draw_binding = true;
+        capabilities.supports_multi_draw_indirect = true;
+        capabilities.supports_draw_indirect_first_instance = true;
+        capabilities.supports_draw_indirect_count = true;
         capabilities.supports_frame_submission = true;
         capabilities.supports_depth = true;
         capabilities.requires_window_surface = true;

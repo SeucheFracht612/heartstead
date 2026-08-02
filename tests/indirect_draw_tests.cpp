@@ -52,6 +52,7 @@ int main() {
     auto& device = *device_result.value();
     const auto capabilities = device.capabilities();
     assert(capabilities.supports_multi_draw_indirect);
+    assert(capabilities.supports_draw_indirect_first_instance);
     assert(capabilities.supports_draw_indirect_count);
 
     const std::array commands{

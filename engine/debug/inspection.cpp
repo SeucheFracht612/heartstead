@@ -698,6 +698,12 @@ InspectionData Inspector::inspect(const renderer::rhi::RenderBackendCapabilities
     add_field(data, "supports_buffer_upload", bool_text(capabilities.supports_buffer_upload));
     add_field(data, "supports_image_upload", bool_text(capabilities.supports_image_upload));
     add_field(data, "supports_draw_binding", bool_text(capabilities.supports_draw_binding));
+    add_field(data, "supports_multi_draw_indirect",
+              bool_text(capabilities.supports_multi_draw_indirect));
+    add_field(data, "supports_draw_indirect_first_instance",
+              bool_text(capabilities.supports_draw_indirect_first_instance));
+    add_field(data, "supports_draw_indirect_count",
+              bool_text(capabilities.supports_draw_indirect_count));
     add_field(data, "requires_window_surface", bool_text(capabilities.requires_window_surface));
     add_field(data, "requires_gpu_device", bool_text(capabilities.requires_gpu_device));
     add_field(data, "supports_headless", bool_text(capabilities.supports_headless));

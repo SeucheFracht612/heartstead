@@ -719,6 +719,7 @@ struct RenderDeviceCapabilities {
     bool supports_sampler_cache = false;
     bool supports_draw_binding = false;
     bool supports_multi_draw_indirect = false;
+    bool supports_draw_indirect_first_instance = false;
     bool supports_draw_indirect_count = false;
     bool supports_frame_submission = false;
     bool supports_depth = false;
@@ -751,6 +752,7 @@ struct RenderBackendCapabilities {
     std::uint32_t recommended_frames_in_flight = 1;
     std::string_view graphics_api;
     bool supports_multi_draw_indirect = false;
+    bool supports_draw_indirect_first_instance = false;
     bool supports_draw_indirect_count = false;
 };
 

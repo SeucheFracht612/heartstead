@@ -49,8 +49,11 @@ indirect is unavailable. The real Vulkan GPU test writes both command and count 
 and consumes them in graphics. Indirect barriers execute before dynamic rendering begins; indexed
 state, scissor, descriptors, and push constants are bound before the indirect command is issued.
 
-The Vulkan device advertises `multiDrawIndirect` and core Vulkan 1.2 `drawIndirectCount`
-independently. Counted draws are rejected when unsupported instead of silently changing behavior.
+The Vulkan device advertises `multiDrawIndirect`, `drawIndirectFirstInstance`, and core Vulkan 1.2
+`drawIndirectCount` independently. Far-patch batching requires both multi-draw and non-zero
+indirect first-instance support because `firstInstance` selects patch data in the vertex shader;
+otherwise it retains the direct-draw fallback. Counted draws are rejected when unsupported instead
+of silently changing behavior.
 
 ## Far terrain
 

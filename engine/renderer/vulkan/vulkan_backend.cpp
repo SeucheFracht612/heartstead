@@ -328,6 +328,7 @@ struct SelectedPhysicalDevice {
     VkPhysicalDeviceDriverProperties driver_properties{};
     bool sampler_anisotropy = false;
     bool multi_draw_indirect = false;
+    bool draw_indirect_first_instance = false;
     bool draw_indirect_count = false;
     bool memory_budget = false;
     std::uint32_t graphics_queue_family = 0;
@@ -573,6 +574,8 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
         vkGetPhysicalDeviceFeatures2(physical_device, &device_features);
         selected.sampler_anisotropy = device_features.features.samplerAnisotropy == VK_TRUE;
         selected.multi_draw_indirect = device_features.features.multiDrawIndirect == VK_TRUE;
+        selected.draw_indirect_first_instance =
+            device_features.features.drawIndirectFirstInstance == VK_TRUE;
         selected.draw_indirect_count = features_12.drawIndirectCount == VK_TRUE;
         selected.memory_budget = physical_device_supports_extension(
             physical_device, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
@@ -624,6 +627,8 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
     vkGetPhysicalDeviceFeatures2(physical_device, &supported_features);
     features.features.samplerAnisotropy = supported_features.features.samplerAnisotropy;
     features.features.multiDrawIndirect = supported_features.features.multiDrawIndirect;
+    features.features.drawIndirectFirstInstance =
+        supported_features.features.drawIndirectFirstInstance;
     features_12.drawIndirectCount = supported_12.drawIndirectCount;
 
     VkDeviceCreateInfo device_info{};
@@ -1364,6 +1369,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
           driver_properties_(selected.driver_properties),
           sampler_anisotropy_(selected.sampler_anisotropy),
           multi_draw_indirect_(selected.multi_draw_indirect),
+          draw_indirect_first_instance_(selected.draw_indirect_first_instance),
           draw_indirect_count_(selected.draw_indirect_count),
           memory_budget_(selected.memory_budget),
           graphics_queue_family_(selected.graphics_queue_family),
@@ -1501,6 +1507,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         result.supports_sampler_cache = true;
         result.supports_draw_binding = true;
         result.supports_multi_draw_indirect = multi_draw_indirect_;
+        result.supports_draw_indirect_first_instance = draw_indirect_first_instance_;
         result.supports_draw_indirect_count = draw_indirect_count_;
         result.supports_frame_submission = true;
         result.supports_depth = depth_format_ != VK_FORMAT_UNDEFINED;
@@ -6900,6 +6907,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
     VkPhysicalDeviceDriverProperties driver_properties_{};
     bool sampler_anisotropy_ = false;
     bool multi_draw_indirect_ = false;
+    bool draw_indirect_first_instance_ = false;
     bool draw_indirect_count_ = false;
     bool memory_budget_ = false;
     std::uint32_t graphics_queue_family_ = 0;
