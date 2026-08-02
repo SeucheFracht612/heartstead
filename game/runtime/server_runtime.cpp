@@ -26,12 +26,25 @@ namespace heartstead::game {
 
 namespace {
 
-inline constexpr std::size_t renderer_proof_chunks_generated_per_update = 4;
+inline constexpr std::size_t renderer_proof_chunk_submissions_per_update = 4;
 inline constexpr std::int64_t renderer_proof_generation_interval_ms = 32;
 
 struct RendererProofChunkCandidate {
     world::ChunkCoord coord;
     std::int64_t distance_squared = 0;
+};
+
+class RendererProofChunkLoadGenerator final : public world::IChunkLoadGenerator {
+  public:
+    explicit RendererProofChunkLoadGenerator(scenarios::RendererProofVoxelTypes types) noexcept
+        : types_(types) {}
+
+    [[nodiscard]] core::Result<world::VoxelChunk> generate(world::ChunkCoord coord) const override {
+        return scenarios::generate_renderer_proof_chunk(coord, types_);
+    }
+
+  private:
+    scenarios::RendererProofVoxelTypes types_;
 };
 
 [[nodiscard]] std::optional<std::int64_t> checked_axis_offset(std::int64_t base,
@@ -318,7 +331,14 @@ core::Status ServerRuntime::initialize() {
         if (!types) {
             return core::Status::failure(types.error().code, types.error().message);
         }
-        renderer_proof_voxel_types_ = types.value();
+        world::ChunkLoadSchedulerContext load_context;
+        load_context.generator = std::make_shared<RendererProofChunkLoadGenerator>(types.value());
+        auto loader =
+            world::ChunkLoadScheduler::create(std::move(load_context), desc_.chunk_loading);
+        if (!loader) {
+            return core::Status::failure(loader.error().code, loader.error().message);
+        }
+        chunk_loader_ = std::move(loader).value();
         renderer_proof_streaming_enabled_ = true;
     }
     auto chunk_collision = physics::ChunkCollisionSystem::create(*physics_, *desc_.voxel_palette,
@@ -677,10 +697,11 @@ core::Status ServerRuntime::start() {
 }
 
 core::Status ServerRuntime::stop() {
-    if (!host_.is_running()) {
-        return core::Status::ok();
+    auto status = host_.is_running() ? host_.stop() : core::Status::ok();
+    if (status && chunk_loader_ != nullptr) {
+        chunk_loader_->shutdown();
     }
-    return host_.stop();
+    return status;
 }
 
 core::Result<ServerRuntimeTickStats>
@@ -723,6 +744,9 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     stats.physical_resources = physical_resource_physics_->stats();
     stats.chunk_fluids = chunk_fluids_->stats();
     stats.chunk_lighting = chunk_lighting_->stats();
+    if (chunk_loader_ != nullptr) {
+        stats.chunk_loading = chunk_loader_->stats();
+    }
     stats.moved_player_count = current_moved_player_count_;
     stats.repeated_input_count = current_repeated_input_count_;
     stats.movement_event_count = current_movement_event_count_;
@@ -885,6 +909,10 @@ world::ChunkLightSystem& ServerRuntime::chunk_lighting() noexcept {
 
 const world::ChunkLightSystem& ServerRuntime::chunk_lighting() const noexcept {
     return *chunk_lighting_;
+}
+
+const world::ChunkLoadSchedulerStats* ServerRuntime::chunk_loading_stats() const noexcept {
+    return chunk_loader_ == nullptr ? nullptr : &chunk_loader_->stats();
 }
 
 core::Status ServerRuntime::drop_physical_resource(entities::PhysicalResourceRecord resource,
@@ -1454,17 +1482,24 @@ core::Status ServerRuntime::simulate_players(simulation::SimulationContext& cont
 }
 
 core::Status ServerRuntime::stream_renderer_proof_world() {
-    if (!renderer_proof_streaming_enabled_ ||
-        (renderer_proof_next_generation_time_ms_.has_value() &&
-         current_time_ms_ < *renderer_proof_next_generation_time_ms_)) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("streaming.renderer_proof_interest");
+    if (!renderer_proof_streaming_enabled_) {
         return core::Status::ok();
+    }
+    if (chunk_loader_ == nullptr) {
+        return core::Status::failure("server_runtime.chunk_loader_missing",
+                                     "renderer-proof streaming has no chunk-load scheduler");
     }
 
     std::vector<RendererProofChunkCandidate> candidates;
+    std::vector<world::ChunkCoord> desired;
     const auto players = players_.records();
-    candidates.reserve(players.size() * static_cast<std::size_t>(
-                                            scenarios::renderer_proof_stream_radius_chunks *
-                                            scenarios::renderer_proof_stream_radius_chunks * 4));
+    const auto expected_interest_count =
+        players.size() *
+        static_cast<std::size_t>(scenarios::renderer_proof_stream_radius_chunks *
+                                 scenarios::renderer_proof_stream_radius_chunks * 4);
+    candidates.reserve(expected_interest_count);
+    desired.reserve(expected_interest_count);
     for (const auto* player : players) {
         const auto player_chunk = world::chunk_coord_for_block(player->state.position.anchor);
         for (std::int64_t offset_z = -scenarios::renderer_proof_stream_radius_chunks;
@@ -1482,12 +1517,37 @@ core::Status ServerRuntime::stream_renderer_proof_world() {
                     continue;
                 }
                 const world::ChunkCoord coord{*x, scenarios::renderer_proof_center.y, *z};
-                if (chunk_fits_physics_island(coord, desc_.chunk_collision.physics_island) &&
-                    !world_.chunks().contains(coord)) {
+                if (!chunk_fits_physics_island(coord, desc_.chunk_collision.physics_island)) {
+                    continue;
+                }
+                desired.push_back(coord);
+                if (!world_.chunks().contains(coord) && !chunk_loader_->contains(coord)) {
                     candidates.push_back({coord, distance_squared});
                 }
             }
         }
+    }
+
+    static_cast<void>(chunk_loader_->cancel_all_except(desired));
+
+    auto publication = chunk_loader_->update(world_);
+    if (!publication.failures.empty()) {
+        const auto& failure = publication.failures.front();
+        return core::Status::failure(failure.error.code, failure.error.message);
+    }
+    for (const auto& published : publication.published) {
+        if (collision_world_revision_ == std::numeric_limits<std::uint64_t>::max()) {
+            return core::Status::failure(
+                "server_runtime.collision_revision_exhausted",
+                "authoritative collision-world revision space is exhausted");
+        }
+        ++collision_world_revision_;
+        pending_streamed_chunks_.push_back(published.coord);
+    }
+
+    if (renderer_proof_next_generation_time_ms_.has_value() &&
+        current_time_ms_ < *renderer_proof_next_generation_time_ms_) {
+        return core::Status::ok();
     }
 
     std::ranges::sort(candidates, [](const auto& lhs, const auto& rhs) {
@@ -1504,32 +1564,31 @@ core::Status ServerRuntime::stream_renderer_proof_world() {
                    : lhs.coord < rhs.coord;
     });
 
-    std::size_t generated_count = 0;
+    std::size_t submitted_count = 0;
     for (const auto& candidate : candidates) {
-        if (generated_count >= renderer_proof_chunks_generated_per_update) {
+        if (submitted_count >= renderer_proof_chunk_submissions_per_update ||
+            !chunk_loader_->has_capacity()) {
             break;
         }
-        auto generated =
-            scenarios::generate_renderer_proof_chunk(candidate.coord, renderer_proof_voxel_types_);
-        if (!generated) {
-            return core::Status::failure(generated.error().code, generated.error().message);
+        if (world_.chunks().contains(candidate.coord) || chunk_loader_->contains(candidate.coord)) {
+            continue;
         }
-        if (collision_world_revision_ == std::numeric_limits<std::uint64_t>::max()) {
-            return core::Status::failure(
-                "server_runtime.collision_revision_exhausted",
-                "authoritative collision-world revision space is exhausted");
+        auto submitted = chunk_loader_->submit(candidate.coord, jobs::JobPriority::high);
+        if (!submitted) {
+            if (submitted.error().code == "chunk_load_scheduler.full") {
+                break;
+            }
+            if (submitted.error().code == "chunk_load_scheduler.duplicate_request") {
+                continue;
+            }
+            return core::Status::failure(submitted.error().code, submitted.error().message);
         }
-        auto status =
-            world_.chunks().insert_generated(std::move(generated).value(), world_.dirty_regions());
-        if (!status) {
-            return status;
-        }
-        ++collision_world_revision_;
-        pending_streamed_chunks_.push_back(candidate.coord);
+        ++submitted_count;
+    }
+    if (submitted_count != 0) {
         renderer_proof_next_generation_time_ms_ =
             checked_axis_offset(current_time_ms_, renderer_proof_generation_interval_ms)
                 .value_or(std::numeric_limits<std::int64_t>::max());
-        ++generated_count;
     }
     return core::Status::ok();
 }

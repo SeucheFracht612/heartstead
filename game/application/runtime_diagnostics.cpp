@@ -113,6 +113,11 @@ std::string format_runtime_diagnostics(const RuntimeDiagnosticsSnapshot& snapsho
            << "jobs/loading/network " << snapshot.active_jobs << '/'
            << snapshot.pending_loading_operations << '/' << snapshot.active_network_connections
            << " | callbacks " << snapshot.registered_session_callbacks << '\n'
+           << "chunk load pending/reserved " << snapshot.pending_chunk_load_operations << '/'
+           << bytes_text(snapshot.reserved_chunk_load_working_bytes) << " | worker/pipeline "
+           << snapshot.last_chunk_load_worker_ms << '/'
+           << snapshot.maximum_chunk_load_pipeline_latency_ms << " ms | publish max "
+           << snapshot.maximum_chunk_load_publication_us << " us\n"
            << "save pending/reserved " << snapshot.pending_save_operations << '/'
            << bytes_text(snapshot.reserved_save_working_bytes) << " | owner last/max "
            << snapshot.last_save_owner_handoff_ms << '/' << snapshot.maximum_save_owner_handoff_ms

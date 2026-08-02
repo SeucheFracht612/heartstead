@@ -135,8 +135,7 @@ debug::InspectionData GameInspector::inspect(const ClientRuntimeStats& stats) {
     add_field(data, "hard_correction_count", std::to_string(stats.hard_correction_count));
     add_field(data, "collision_revision_change_count",
               std::to_string(stats.collision_revision_change_count));
-    add_field(data, "interpolated_player_count",
-              std::to_string(stats.interpolated_player_count));
+    add_field(data, "interpolated_player_count", std::to_string(stats.interpolated_player_count));
     add_field(data, "maximum_correction_distance",
               std::to_string(stats.maximum_correction_distance));
     add_field(data, "chunk_snapshot_slice_count", std::to_string(stats.chunk_snapshot_slice_count));
@@ -206,6 +205,11 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     std::size_t fluid_processed_cells = 0;
     double fluid_simulation_ms = 0.0;
     double fluid_apply_ms = 0.0;
+    std::size_t chunk_load_in_flight = 0;
+    std::size_t chunk_load_reserved_bytes = 0;
+    double chunk_load_worker_ms = 0.0;
+    double chunk_load_pipeline_ms = 0.0;
+    std::uint64_t chunk_load_publication_us = 0;
     for (const auto& tick : stats.server_ticks) {
         simulation_ms += tick.simulation.total_ms;
         command_count += static_cast<std::uint32_t>(tick.commands.command_reports.size());
@@ -213,10 +217,8 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
             tick.commands.command_reports, [](const auto& report) { return !report.success; }));
         event_count += tick.simulation.event_count;
         replication_message_count += tick.replication.sent_message_count;
-        transient_snapshot_payload_bytes +=
-            tick.transient_snapshot_payload_bytes;
-        deferred_transient_snapshot_count +=
-            tick.deferred_transient_snapshot_count;
+        transient_snapshot_payload_bytes += tick.transient_snapshot_payload_bytes;
+        deferred_transient_snapshot_count += tick.deferred_transient_snapshot_count;
         physics_body_count = tick.physics.body_count;
         collision_body_count = tick.chunk_collision.resident_body_count;
         collision_box_count = tick.chunk_collision.current_collision_boxes;
@@ -231,6 +233,11 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
         fluid_processed_cells = tick.chunk_fluids.processed_cells_this_update;
         fluid_simulation_ms = tick.chunk_fluids.last_simulation_ms;
         fluid_apply_ms = tick.chunk_fluids.last_apply_ms;
+        chunk_load_in_flight = tick.chunk_loading.in_flight_requests;
+        chunk_load_reserved_bytes = tick.chunk_loading.reserved_working_bytes;
+        chunk_load_worker_ms = tick.chunk_loading.last_worker_ms;
+        chunk_load_pipeline_ms = tick.chunk_loading.last_pipeline_latency_ms;
+        chunk_load_publication_us = tick.chunk_loading.maximum_publication_time_us;
     }
     add_field(data, "server_tick_count", std::to_string(stats.server_ticks.size()));
     add_field(data, "simulation_ms", std::to_string(simulation_ms));
@@ -255,6 +262,11 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     add_field(data, "voxel_fluid_processed_cells", std::to_string(fluid_processed_cells));
     add_field(data, "voxel_fluid_simulation_ms", std::to_string(fluid_simulation_ms));
     add_field(data, "voxel_fluid_apply_ms", std::to_string(fluid_apply_ms));
+    add_field(data, "chunk_load_in_flight", std::to_string(chunk_load_in_flight));
+    add_field(data, "chunk_load_reserved_bytes", std::to_string(chunk_load_reserved_bytes));
+    add_field(data, "chunk_load_worker_ms", std::to_string(chunk_load_worker_ms));
+    add_field(data, "chunk_load_pipeline_ms", std::to_string(chunk_load_pipeline_ms));
+    add_field(data, "chunk_load_publication_us", std::to_string(chunk_load_publication_us));
     add_field(data, "client_received_message_count",
               std::to_string(stats.client.received_message_count));
     add_field(data, "presentation_adapter_count", std::to_string(stats.presentation.adapter_count));
@@ -332,8 +344,7 @@ debug::InspectionData GameInspector::inspect(const RuntimeSession& session) {
         add_field(data, "chunk_collision_box_count",
                   std::to_string(collision_stats.current_collision_boxes));
         const auto& fluid_stats = server->chunk_fluids().stats();
-        add_field(data, "voxel_fluid_active_cells",
-                  std::to_string(fluid_stats.active_cell_count));
+        add_field(data, "voxel_fluid_active_cells", std::to_string(fluid_stats.active_cell_count));
         add_field(data, "voxel_fluid_steps", std::to_string(fluid_stats.steps));
         add_field(data, "voxel_fluid_changed_cells",
                   std::to_string(fluid_stats.total_changed_cells));
@@ -352,6 +363,28 @@ debug::InspectionData GameInspector::inspect(const RuntimeSession& session) {
                   std::to_string(lighting_stats.stale_results));
         add_field(data, "voxel_relight_apply_budget_overruns",
                   std::to_string(lighting_stats.apply_budget_overruns));
+        if (const auto* loading_stats = server->chunk_loading_stats(); loading_stats != nullptr) {
+            add_field(data, "chunk_load_in_flight",
+                      std::to_string(loading_stats->in_flight_requests));
+            add_field(data, "chunk_load_ready",
+                      std::to_string(loading_stats->ready_for_publication_count));
+            add_field(data, "chunk_load_reserved_bytes",
+                      std::to_string(loading_stats->reserved_working_bytes));
+            add_field(data, "chunk_load_submitted",
+                      std::to_string(loading_stats->submitted_requests));
+            add_field(data, "chunk_load_published",
+                      std::to_string(loading_stats->published_requests));
+            add_field(data, "chunk_load_cancelled",
+                      std::to_string(loading_stats->cancelled_requests));
+            add_field(data, "chunk_load_stale", std::to_string(loading_stats->stale_requests));
+            add_field(data, "chunk_load_rejected",
+                      std::to_string(loading_stats->rejected_requests));
+            add_field(data, "chunk_load_worker_ms", std::to_string(loading_stats->last_worker_ms));
+            add_field(data, "chunk_load_pipeline_ms",
+                      std::to_string(loading_stats->last_pipeline_latency_ms));
+            add_field(data, "chunk_load_publication_us",
+                      std::to_string(loading_stats->maximum_publication_time_us));
+        }
         add_field(data, "simulation_system_count",
                   std::to_string(server->scheduler().registered_system_count()));
         add_field(data, "gameplay_module_count",

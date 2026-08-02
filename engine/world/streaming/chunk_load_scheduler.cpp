@@ -1,6 +1,7 @@
 #include "engine/world/streaming/chunk_load_scheduler.hpp"
 
 #include "engine/profiling/cpu_timing.hpp"
+#include "engine/profiling/profiler.hpp"
 #include "engine/world/chunks/chunk_edit_delta_codec.hpp"
 
 #include <algorithm>
@@ -9,7 +10,6 @@
 #include <limits>
 #include <mutex>
 #include <optional>
-#include <set>
 #include <utility>
 
 namespace heartstead::world {
@@ -33,9 +33,11 @@ using SchedulerClock = std::chrono::steady_clock;
 
 struct ChunkLoadScheduler::SharedContext {
     explicit SharedContext(ChunkLoadSchedulerContext source)
-        : generation(std::move(source.generation)), regions(std::move(source.regions)),
-          palette(std::move(source.palette)), saved_deltas(std::move(source.saved_deltas)) {}
+        : generator(std::move(source.generator)), generation(std::move(source.generation)),
+          regions(std::move(source.regions)), palette(std::move(source.palette)),
+          saved_deltas(std::move(source.saved_deltas)) {}
 
+    std::shared_ptr<const IChunkLoadGenerator> generator;
     TerrainGenerationConfig generation;
     RegionGraph regions;
     VoxelPalette palette;
@@ -96,6 +98,9 @@ core::Status ChunkLoadSchedulerConfig::validate() const {
 }
 
 core::Status ChunkLoadSchedulerContext::validate() const {
+    if (generator != nullptr) {
+        return core::Status::ok();
+    }
     if (generation.region_id.empty()) {
         return core::Status::failure("chunk_load_scheduler.missing_region_id",
                                      "chunk load generation requires a region id");
@@ -198,6 +203,7 @@ core::Result<ChunkLoadRequestId> ChunkLoadScheduler::submit(ChunkCoord coord,
     job.work = [request_id, coord, context, shared, cancellation,
                 reservation = config_.reservation_bytes_per_request](
                    const jobs::JobContext& job_context) mutable {
+        HEARTSTEAD_PROFILE_ZONE_NAMED("streaming.chunk_load.worker");
         ChunkLoadResult result;
         result.request_id = request_id;
         result.coord = coord;
@@ -219,6 +225,7 @@ core::Result<ChunkLoadRequestId> ChunkLoadScheduler::submit(ChunkCoord coord,
                     std::optional<save::ChunkEditSaveRecord> saved_delta;
                     if (context->saved_deltas != nullptr) {
                         auto read = [&] {
+                            HEARTSTEAD_PROFILE_ZONE_NAMED("streaming.chunk_load.disk_read");
                             profiling::ScopedCpuTimer timer(result.disk_read_ms);
                             return context->saved_deltas->read_chunk_delta(coord);
                         }();
@@ -238,6 +245,7 @@ core::Result<ChunkLoadRequestId> ChunkLoadScheduler::submit(ChunkCoord coord,
                     std::vector<VoxelEditRecord> edits;
                     if (saved_delta.has_value()) {
                         auto decoded = [&] {
+                            HEARTSTEAD_PROFILE_ZONE_NAMED("streaming.chunk_load.decode");
                             profiling::ScopedCpuTimer timer(result.decode_ms);
                             return ChunkEditDeltaTextCodec::decode(coord,
                                                                    saved_delta->encoded_edit_delta);
@@ -256,7 +264,11 @@ core::Result<ChunkLoadRequestId> ChunkLoadScheduler::submit(ChunkCoord coord,
                     }
 
                     auto generated = [&] {
+                        HEARTSTEAD_PROFILE_ZONE_NAMED("streaming.chunk_load.generate");
                         profiling::ScopedCpuTimer timer(result.generation_ms);
+                        if (context->generator != nullptr) {
+                            return context->generator->generate(coord);
+                        }
                         return DeterministicTerrainGenerator::generate_chunk(
                             coord, context->generation, context->regions, context->palette);
                     }();
@@ -272,6 +284,7 @@ core::Result<ChunkLoadRequestId> ChunkLoadScheduler::submit(ChunkCoord coord,
                     }
 
                     auto prepared = [&] {
+                        HEARTSTEAD_PROFILE_ZONE_NAMED("streaming.chunk_load.prepare");
                         profiling::ScopedCpuTimer timer(result.prepare_ms);
                         return ChunkDatabase::prepare_generated(std::move(generated).value(),
                                                                 edits);
@@ -343,11 +356,10 @@ core::Status ChunkLoadScheduler::cancel(ChunkCoord coord) noexcept {
     return core::Status::ok();
 }
 
-std::size_t ChunkLoadScheduler::cancel_all_except(std::span<const ChunkCoord> desired) {
-    const std::set<ChunkCoord> retained(desired.begin(), desired.end());
+std::size_t ChunkLoadScheduler::cancel_all_except(std::span<const ChunkCoord> desired) noexcept {
     std::size_t cancelled = 0;
     for (const auto& [coord, request_id] : active_by_coord_) {
-        if (retained.contains(coord)) {
+        if (std::ranges::find(desired, coord) != desired.end()) {
             continue;
         }
         const auto active = active_requests_.find(request_id);
@@ -378,6 +390,7 @@ void ChunkLoadScheduler::collect_completed(ChunkLoadPublicationReport& report) {
 }
 
 ChunkLoadPublicationReport ChunkLoadScheduler::update(WorldState& state) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("streaming.chunk_load.publish");
     ChunkLoadPublicationReport report;
     collect_completed(report);
     const auto started_at = SchedulerClock::now();
@@ -489,17 +502,26 @@ bool ChunkLoadScheduler::contains(ChunkCoord coord) const noexcept {
     return active_by_coord_.contains(coord);
 }
 
-const ChunkLoadSchedulerStats& ChunkLoadScheduler::stats() noexcept {
+const ChunkLoadSchedulerStats& ChunkLoadScheduler::stats() const noexcept {
     refresh_stats();
     return stats_;
 }
 
-void ChunkLoadScheduler::refresh_stats() noexcept {
+void ChunkLoadScheduler::refresh_stats() const noexcept {
     stats_.in_flight_requests = active_requests_.size();
     stats_.completed_mailbox_count = shared_state_->size();
     stats_.ready_for_publication_count = ready_for_publication_.size();
     stats_.oldest_queued_request_age_us =
         jobs_ == nullptr ? 0 : jobs_->stats().oldest_queued_job_age_us;
+    HEARTSTEAD_PROFILE_PLOT("streaming.load.in_flight", stats_.in_flight_requests);
+    HEARTSTEAD_PROFILE_PLOT("streaming.load.completed", stats_.completed_mailbox_count);
+    HEARTSTEAD_PROFILE_PLOT("streaming.load.ready", stats_.ready_for_publication_count);
+    HEARTSTEAD_PROFILE_PLOT("streaming.load.reserved_bytes", stats_.reserved_working_bytes);
+    HEARTSTEAD_PROFILE_PLOT("streaming.load.cancelled_total", stats_.cancelled_requests);
+    HEARTSTEAD_PROFILE_PLOT("streaming.load.stale_total", stats_.stale_requests);
+    HEARTSTEAD_PROFILE_PLOT("streaming.load.pipeline_ms", stats_.last_pipeline_latency_ms);
+    HEARTSTEAD_PROFILE_PLOT("streaming.load.publication_max_us",
+                            stats_.maximum_publication_time_us);
 }
 
 void ChunkLoadScheduler::shutdown() noexcept {

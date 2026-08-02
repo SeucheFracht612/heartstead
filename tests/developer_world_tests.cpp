@@ -101,14 +101,30 @@ void test_packaged_renderer_fixture_launch(const content::ContentValidationRepor
         runtime.session()->client()->world().chunks().chunk_count();
     assert(initial_server_chunk_count == 9);
     assert(initial_client_chunk_count == initial_server_chunk_count);
-    const auto* player =
+    auto* player =
         runtime.session()->server()->player_for_client(runtime.session()->client()->client_id());
     assert(player != nullptr);
     assert(player->state.position.anchor.x > 30'000'000'000LL);
     assert(player->state.position.anchor.z < -30'000'000'000LL);
-    for (std::int64_t frame_index = 1; frame_index <= 300; ++frame_index) {
+
+    const auto original_anchor = player->state.position.anchor;
+    auto first_frame = runtime.run_frame({16'667, 17});
+    assert(first_frame && !first_frame.value().server_ticks.empty());
+    assert(first_frame.value().server_ticks.back().chunk_loading.submitted_requests > 0);
+
+    player->state.position.anchor.x +=
+        world::VoxelChunk::edge_length * static_cast<std::int64_t>(40);
+    auto teleport_frame = runtime.run_frame({16'667, 34});
+    assert(teleport_frame && !teleport_frame.value().server_ticks.empty());
+    player->state.position.anchor = original_anchor;
+
+    world::ChunkLoadSchedulerStats loading_stats;
+    for (std::int64_t frame_index = 3; frame_index <= 302; ++frame_index) {
         auto frame = runtime.run_frame({16'667, frame_index * 17});
         assert(frame);
+        if (!frame.value().server_ticks.empty()) {
+            loading_stats = frame.value().server_ticks.back().chunk_loading;
+        }
     }
     std::size_t expected_chunk_count = 0;
     for (std::int64_t z = -scenarios::renderer_proof_stream_radius_chunks;
@@ -123,6 +139,16 @@ void test_packaged_renderer_fixture_launch(const content::ContentValidationRepor
     assert(world.chunks().chunk_count() == expected_chunk_count);
     assert(runtime.session()->client()->world().chunks().chunk_count() ==
            world.chunks().chunk_count());
+    assert(loading_stats.in_flight_requests == 0);
+    assert(loading_stats.reserved_working_bytes == 0);
+    assert(loading_stats.reserved_working_bytes_high_water > 0);
+    assert(loading_stats.reserved_working_bytes_high_water <=
+           world::ChunkLoadSchedulerConfig{}.max_reserved_working_bytes);
+    assert(loading_stats.published_requests == expected_chunk_count - initial_server_chunk_count);
+    assert(loading_stats.cancelled_requests > 0);
+    assert(loading_stats.last_worker_ms > 0.0);
+    assert(loading_stats.maximum_pipeline_latency_ms > 0.0);
+    assert(loading_stats.maximum_publication_time_us > 0);
     assert(std::ranges::any_of(world.chunks().records(), [](const auto* chunk) {
         const auto coord = chunk->coord();
         return coord.x < scenarios::renderer_proof_center.x - 1 ||

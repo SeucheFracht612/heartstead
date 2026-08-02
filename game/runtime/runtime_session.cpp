@@ -122,6 +122,10 @@ core::Status RuntimeConfiguration::validate() const {
     if (!status) {
         return status;
     }
+    status = chunk_loading.validate();
+    if (!status) {
+        return status;
+    }
     if (max_transient_snapshot_messages_per_tick == 0 ||
         max_transient_snapshot_payload_bytes_per_tick == 0 ||
         max_outbound_bytes_per_client_per_second == 0) {
@@ -368,6 +372,7 @@ core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& pr
                                                         : world::BlockCoord{};
         server_desc.chunk_fluids = config_.chunk_fluids;
         server_desc.chunk_lighting = config_.chunk_lighting;
+        server_desc.chunk_loading = config_.chunk_loading;
         server_desc.simulation_ticks_per_second = config_.fixed_step.ticks_per_second;
         server_desc.max_transient_snapshot_messages_per_tick =
             config_.max_transient_snapshot_messages_per_tick;
@@ -938,6 +943,9 @@ core::Status RuntimeSession::shutdown() {
         teardown_report_.session_jobs_before = collision.pending_chunk_count +
                                                collision.in_flight_job_count +
                                                collision.completed_mailbox_count;
+        if (const auto* loading = server_->chunk_loading_stats(); loading != nullptr) {
+            teardown_report_.session_jobs_before += loading->in_flight_requests;
+        }
     }
     teardown_report_.registered_cleanup_count = cleanup_entries_.size();
     (void)request_stop();
@@ -997,6 +1005,9 @@ core::Status RuntimeSession::shutdown() {
         teardown_report_.session_jobs_after = collision.pending_chunk_count +
                                               collision.in_flight_job_count +
                                               collision.completed_mailbox_count;
+        if (const auto* loading = server_->chunk_loading_stats(); loading != nullptr) {
+            teardown_report_.session_jobs_after += loading->in_flight_requests;
+        }
     }
     accepting_commands_ = false;
     state_ = result ? RuntimeSessionState::stopped : RuntimeSessionState::stopping;
@@ -1057,6 +1068,9 @@ SessionResourceCounts RuntimeSession::resource_counts() const noexcept {
         const auto& collision = server_->chunk_collision().stats();
         counts.active_jobs = collision.pending_chunk_count + collision.in_flight_job_count +
                              collision.completed_mailbox_count;
+        if (const auto* loading = server_->chunk_loading_stats(); loading != nullptr) {
+            counts.active_jobs += loading->in_flight_requests;
+        }
     }
     return counts;
 }

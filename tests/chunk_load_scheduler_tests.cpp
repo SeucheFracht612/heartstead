@@ -29,6 +29,21 @@ class TestDeltaSource final : public world::IChunkEditDeltaSource {
     }
 };
 
+class TestChunkGenerator final : public world::IChunkLoadGenerator {
+  public:
+    [[nodiscard]] core::Result<world::VoxelChunk> generate(world::ChunkCoord coord) const override {
+        std::vector<world::VoxelCell> cells(world::VoxelChunk::total_cells,
+                                            world::VoxelCell{42, 7});
+        world::VoxelChunk chunk(coord);
+        auto status = chunk.load_generated_cells(std::move(cells));
+        if (!status) {
+            return core::Result<world::VoxelChunk>::failure(status.error().code,
+                                                            status.error().message);
+        }
+        return core::Result<world::VoxelChunk>::success(std::move(chunk));
+    }
+};
+
 [[nodiscard]] world::ChunkLoadSchedulerContext
 make_context(std::shared_ptr<const world::IChunkEditDeltaSource> source = {}) {
     const auto clay = core::PrototypeId::parse("base:voxels/clay");
@@ -217,6 +232,31 @@ void test_chunk_delta_decode_record_limit() {
     assert(decoded.error().code == "world_snapshot.too_many_chunk_delta_edits");
 }
 
+void test_custom_generator_uses_bounded_publication_path() {
+    world::ChunkLoadSchedulerContext context;
+    context.generator = std::make_shared<TestChunkGenerator>();
+    assert(context.validate());
+
+    world::ChunkLoadSchedulerConfig config;
+    config.worker_count = 1;
+    config.max_concurrent_requests = 1;
+    config.max_completed_results = 1;
+    auto created = world::ChunkLoadScheduler::create(std::move(context), config);
+    assert(created);
+    auto scheduler = std::move(created).value();
+    assert(scheduler->submit({9, 0, 0}));
+
+    world::WorldState state;
+    std::vector<world::ChunkStreamLoadReport> published;
+    std::vector<world::ChunkCoord> cancelled;
+    std::vector<world::ChunkLoadFailure> failures;
+    drain_until_idle(*scheduler, state, published, cancelled, failures);
+    assert(cancelled.empty() && failures.empty());
+    assert(published.size() == 1);
+    auto cell = state.chunks().get({9, 0, 0}, {0, 0, 0});
+    assert(cell && cell.value() == (world::VoxelCell{42, 7}));
+}
+
 void test_validation_and_names() {
     world::ChunkLoadSchedulerConfig config;
     config.worker_count = 0;
@@ -243,6 +283,7 @@ int main() {
     test_bounded_background_load_and_publication();
     test_cancellation_failure_stale_and_memory_backpressure();
     test_chunk_delta_decode_record_limit();
+    test_custom_generator_uses_bounded_publication_path();
     test_validation_and_names();
     return 0;
 }

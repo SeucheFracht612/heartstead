@@ -42,7 +42,20 @@ struct ChunkLoadSchedulerConfig {
     [[nodiscard]] core::Status validate() const;
 };
 
+// Implementations are invoked concurrently by chunk-load workers. They must keep generation
+// inputs immutable for the lifetime of the scheduler and support concurrent const calls.
+class IChunkLoadGenerator {
+  public:
+    virtual ~IChunkLoadGenerator() = default;
+
+    [[nodiscard]] virtual core::Result<VoxelChunk> generate(ChunkCoord coord) const = 0;
+};
+
 struct ChunkLoadSchedulerContext {
+    // When supplied, this generator replaces the deterministic terrain configuration below. This
+    // lets packaged scenarios use the same bounded publication pipeline without forcing their
+    // fixture generation through the general world-generation model.
+    std::shared_ptr<const IChunkLoadGenerator> generator;
     TerrainGenerationConfig generation;
     RegionGraph regions;
     VoxelPalette palette;
@@ -109,14 +122,14 @@ class ChunkLoadScheduler {
     [[nodiscard]] core::Result<ChunkLoadRequestId>
     submit(ChunkCoord coord, jobs::JobPriority priority = jobs::JobPriority::normal);
     [[nodiscard]] core::Status cancel(ChunkCoord coord) noexcept;
-    std::size_t cancel_all_except(std::span<const ChunkCoord> desired);
+    std::size_t cancel_all_except(std::span<const ChunkCoord> desired) noexcept;
     void cancel_all() noexcept;
 
     [[nodiscard]] ChunkLoadPublicationReport update(WorldState& state);
     [[nodiscard]] bool has_capacity() const noexcept;
     [[nodiscard]] bool has_in_flight() const noexcept;
     [[nodiscard]] bool contains(ChunkCoord coord) const noexcept;
-    [[nodiscard]] const ChunkLoadSchedulerStats& stats() noexcept;
+    [[nodiscard]] const ChunkLoadSchedulerStats& stats() const noexcept;
     void shutdown() noexcept;
 
   private:
@@ -153,7 +166,7 @@ class ChunkLoadScheduler {
 
     void collect_completed(ChunkLoadPublicationReport& report);
     void finish_request(const ChunkLoadResult& result) noexcept;
-    void refresh_stats() noexcept;
+    void refresh_stats() const noexcept;
 
     ChunkLoadSchedulerConfig config_;
     std::unique_ptr<jobs::IJobSystem> jobs_;
@@ -163,7 +176,7 @@ class ChunkLoadScheduler {
     std::map<ChunkCoord, ChunkLoadRequestId> active_by_coord_;
     std::deque<ChunkLoadResult> ready_for_publication_;
     std::uint64_t next_request_id_ = 1;
-    ChunkLoadSchedulerStats stats_;
+    mutable ChunkLoadSchedulerStats stats_;
 };
 
 [[nodiscard]] const char* chunk_load_result_state_name(ChunkLoadResultState state) noexcept;

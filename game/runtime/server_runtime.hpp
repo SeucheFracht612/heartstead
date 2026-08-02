@@ -18,6 +18,7 @@
 #include "engine/world/fluids/chunk_fluid_system.hpp"
 #include "engine/world/lighting/chunk_light_system.hpp"
 #include "engine/world/replication_delta.hpp"
+#include "engine/world/streaming/chunk_load_scheduler.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
 #include "engine/world/world_state.hpp"
 #include "game/framework/gameplay_module.hpp"
@@ -50,6 +51,7 @@ struct ServerRuntimeDesc {
     physics::PhysicalResourcePhysicsSystemConfig physical_resources;
     world::ChunkFluidSystemConfig chunk_fluids;
     world::ChunkLightSystemConfig chunk_lighting;
+    world::ChunkLoadSchedulerConfig chunk_loading;
     std::uint32_t simulation_ticks_per_second = 60;
     std::uint32_t max_transient_snapshot_messages_per_tick = 512;
     std::uint32_t max_transient_snapshot_payload_bytes_per_tick = 256u * 1024u;
@@ -73,6 +75,7 @@ struct ServerRuntimeTickStats {
     physics::PhysicalResourcePhysicsSystemStats physical_resources;
     world::ChunkFluidSystemStats chunk_fluids;
     world::ChunkLightSystemStats chunk_lighting;
+    world::ChunkLoadSchedulerStats chunk_loading;
     std::uint32_t moved_player_count = 0;
     std::uint32_t repeated_input_count = 0;
     std::uint32_t movement_event_count = 0;
@@ -127,6 +130,7 @@ class ServerRuntime final {
     [[nodiscard]] const world::ChunkFluidSystem& chunk_fluids() const noexcept;
     [[nodiscard]] world::ChunkLightSystem& chunk_lighting() noexcept;
     [[nodiscard]] const world::ChunkLightSystem& chunk_lighting() const noexcept;
+    [[nodiscard]] const world::ChunkLoadSchedulerStats* chunk_loading_stats() const noexcept;
     [[nodiscard]] core::Status drop_physical_resource(entities::PhysicalResourceRecord resource,
                                                       physics::Vec3 linear_velocity = {},
                                                       physics::Vec3 angular_velocity = {});
@@ -184,6 +188,7 @@ class ServerRuntime final {
     std::unique_ptr<physics::PhysicalResourcePhysicsSystem> physical_resource_physics_;
     std::unique_ptr<world::ChunkFluidSystem> chunk_fluids_;
     std::unique_ptr<world::ChunkLightSystem> chunk_lighting_;
+    std::unique_ptr<world::ChunkLoadScheduler> chunk_loader_;
     net::HostSession host_;
     net::ServerCommandDispatcher commands_;
     simulation::SimulationScheduler scheduler_;
@@ -224,7 +229,6 @@ class ServerRuntime final {
     std::uint64_t next_custom_replication_sequence_ = 1;
     std::uint64_t transient_replication_cursor_ = 0;
     std::optional<std::int64_t> renderer_proof_next_generation_time_ms_;
-    scenarios::RendererProofVoxelTypes renderer_proof_voxel_types_;
     bool renderer_proof_streaming_enabled_ = false;
 };
 

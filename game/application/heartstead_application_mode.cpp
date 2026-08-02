@@ -492,6 +492,18 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             snapshot.authoritative_tick = runtime_stats->authoritative_world_tick;
             snapshot.interpolation_alpha = runtime_stats->fixed_step.interpolation_alpha;
             snapshot.dropped_tick_time_us = runtime_stats->fixed_step.dropped_time_us;
+            if (!runtime_stats->server_ticks.empty()) {
+                const auto& loading_stats = runtime_stats->server_ticks.back().chunk_loading;
+                snapshot.pending_chunk_load_operations = loading_stats.in_flight_requests;
+                snapshot.pending_loading_operations += loading_stats.in_flight_requests;
+                snapshot.reserved_chunk_load_working_bytes =
+                    loading_stats.reserved_working_bytes;
+                snapshot.last_chunk_load_worker_ms = loading_stats.last_worker_ms;
+                snapshot.maximum_chunk_load_pipeline_latency_ms =
+                    loading_stats.maximum_pipeline_latency_ms;
+                snapshot.maximum_chunk_load_publication_us =
+                    loading_stats.maximum_publication_time_us;
+            }
         }
         if (session_runtime.has_value() && session_runtime->session() != nullptr) {
             const auto* session = session_runtime->session();

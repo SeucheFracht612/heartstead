@@ -31,6 +31,11 @@ struct RuntimeDiagnosticsSnapshot {
     double interpolation_alpha = 0.0;
     std::size_t active_jobs = 0;
     std::size_t pending_loading_operations = 0;
+    std::size_t pending_chunk_load_operations = 0;
+    std::size_t reserved_chunk_load_working_bytes = 0;
+    double last_chunk_load_worker_ms = 0.0;
+    double maximum_chunk_load_pipeline_latency_ms = 0.0;
+    std::uint64_t maximum_chunk_load_publication_us = 0;
     std::size_t pending_save_operations = 0;
     std::size_t reserved_save_working_bytes = 0;
     double last_save_owner_handoff_ms = 0.0;

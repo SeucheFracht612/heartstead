@@ -339,6 +339,11 @@ void test_runtime_diagnostics_are_explicit() {
     snapshot.session_generation = 9;
     snapshot.authoritative_tick = 120;
     snapshot.physics_objects = 4;
+    snapshot.pending_chunk_load_operations = 2;
+    snapshot.reserved_chunk_load_working_bytes = 128U * 1024U * 1024U;
+    snapshot.last_chunk_load_worker_ms = 3.5;
+    snapshot.maximum_chunk_load_pipeline_latency_ms = 8.25;
+    snapshot.maximum_chunk_load_publication_us = 412;
     snapshot.pending_save_operations = 1;
     snapshot.reserved_save_working_bytes = 8U * 1024U * 1024U;
     snapshot.last_save_owner_handoff_ms = 0.2;
@@ -347,6 +352,9 @@ void test_runtime_diagnostics_are_explicit() {
     const auto text = game::format_runtime_diagnostics(snapshot);
     assert(text.find("application InGame") != std::string::npos);
     assert(text.find("generation 9") != std::string::npos);
+    assert(text.find("chunk load pending/reserved 2/128.0 MiB") != std::string::npos);
+    assert(text.find("worker/pipeline 3.50/8.25 ms | publish max 412 us") !=
+           std::string::npos);
     assert(text.find("save pending/reserved 1/8.0 MiB") != std::string::npos);
     assert(text.find("budget telemetry unavailable") == std::string::npos);
 

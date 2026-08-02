@@ -40,6 +40,7 @@ struct RuntimeConfiguration {
     physics::PhysicsBackend physics_backend = physics::PhysicsBackend::headless;
     world::ChunkFluidSystemConfig chunk_fluids{};
     world::ChunkLightSystemConfig chunk_lighting{};
+    world::ChunkLoadSchedulerConfig chunk_loading{};
     std::uint32_t max_transient_snapshot_messages_per_tick = 512;
     std::uint32_t max_transient_snapshot_payload_bytes_per_tick = 256u * 1024u;
     std::uint32_t max_outbound_bytes_per_client_per_second = 256u * 1024u;
