@@ -202,6 +202,7 @@ target_sources(
     workpieces/workpiece_template.cpp
     workpieces/workpiece_state.cpp
     world/blocks/block_model.cpp
+    world/benchmark/voxel_response_benchmark.cpp
     world/chunks/chunk_database.cpp
     world/chunks/chunk_stage_ledger.cpp
     world/chunks/chunk_edit_delta_codec.cpp
