@@ -480,6 +480,117 @@ core::Result<SaveRequestId> SaveScheduler::submit(SaveRequest request) {
     return core::Result<SaveRequestId>::success(request_id);
 }
 
+core::Result<SaveRequestId>
+SaveScheduler::submit_checkpoint(std::filesystem::path database_root,
+                                 std::size_t working_reservation_bytes) {
+    if (jobs_ == nullptr) {
+        ++stats_.rejected_requests;
+        return core::Result<SaveRequestId>::failure("save_scheduler.stopped",
+                                                    "save scheduler is stopped");
+    }
+    if (database_root.empty()) {
+        ++stats_.rejected_requests;
+        return core::Result<SaveRequestId>::failure(
+            "save_scheduler.invalid_request", "save checkpoint requires a database root");
+    }
+
+    if (working_reservation_bytes == 0 ||
+        working_reservation_bytes > config_.max_request_working_bytes) {
+        ++stats_.rejected_requests;
+        return core::Result<SaveRequestId>::failure(
+            "save_scheduler.request_memory_budget_exceeded",
+            "save checkpoint requires the accepted snapshot's bounded memory reservation");
+    }
+    const auto memory_reservation = working_reservation_bytes;
+    if (active_requests_.size() >= config_.max_concurrent_requests ||
+        memory_reservation >
+            config_.max_reserved_working_bytes - stats_.reserved_working_bytes) {
+        ++stats_.rejected_requests;
+        return core::Result<SaveRequestId>::failure(
+            "save_scheduler.full",
+            "save scheduler reached its request or working-memory reservation budget");
+    }
+    if (next_request_id_ == 0) {
+        ++stats_.rejected_requests;
+        return core::Result<SaveRequestId>::failure("save_scheduler.request_id_exhausted",
+                                                    "save request identifier range is exhausted");
+    }
+
+    const auto request_id = SaveRequestId::from_value(next_request_id_);
+    auto shared = shared_state_;
+    auto cancellation = std::make_shared<std::atomic_bool>(false);
+    jobs::JobDesc job;
+    job.name = "save_checkpoint";
+    job.type = "persistence.checkpoint";
+    job.priority = jobs::JobPriority::low;
+    job.estimated_cost = static_cast<std::uint32_t>(
+        std::min(memory_reservation / 1024U + 1U,
+                 static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
+    job.work = [request_id, database_root = std::move(database_root), memory_reservation, shared,
+                cancellation](const jobs::JobContext& context) mutable {
+        SaveResult result;
+        result.request_id = request_id;
+        result.operation = SaveOperationKind::checkpoint;
+        result.reserved_working_bytes = memory_reservation;
+        {
+            profiling::ScopedCpuTimer total_timer(result.total_worker_ms);
+            if (context.cancellation_requested() || cancellation->load(std::memory_order_acquire)) {
+                result.state = SaveResultState::cancelled;
+            } else {
+                try {
+                    FileSaveDatabase database(std::move(database_root));
+                    auto compacted = [&] {
+                        profiling::ScopedCpuTimer timer(result.compaction_ms);
+                        return database.compact_snapshot_journal();
+                    }();
+                    if (!compacted) {
+                        result.state = SaveResultState::failed;
+                        result.error_code = compacted.error().code;
+                        result.error_message = compacted.error().message;
+                    } else {
+                        result.state = SaveResultState::succeeded;
+                        result.compacted = compacted.value().compacted;
+                        result.journal_sequence = compacted.value().compacted_sequence;
+                    }
+                } catch (const std::exception& exception) {
+                    result.state = SaveResultState::failed;
+                    result.error_code = "save_scheduler.checkpoint_exception";
+                    result.error_message = exception.what();
+                } catch (...) {
+                    result.state = SaveResultState::failed;
+                    result.error_code = "save_scheduler.checkpoint_exception";
+                    result.error_message = "save checkpoint worker threw an unknown exception";
+                }
+            }
+        }
+        shared->publish(std::move(result));
+        return core::Status::ok();
+    };
+
+    auto submitted = jobs_->submit(std::move(job));
+    if (!submitted) {
+        ++stats_.rejected_requests;
+        refresh_stats();
+        return core::Result<SaveRequestId>::failure(submitted.error().code,
+                                                    submitted.error().message);
+    }
+    active_requests_.emplace(request_id,
+                             ActiveRequest{submitted.value(), memory_reservation,
+                                           std::move(cancellation)});
+    stats_.reserved_working_bytes += memory_reservation;
+    stats_.reserved_working_bytes_high_water =
+        std::max(stats_.reserved_working_bytes_high_water, stats_.reserved_working_bytes);
+    ++stats_.submitted_requests;
+    ++stats_.submitted_checkpoint_requests;
+    if (next_request_id_ == std::numeric_limits<std::uint64_t>::max()) {
+        next_request_id_ = 0;
+    } else {
+        ++next_request_id_;
+    }
+    refresh_stats();
+    return core::Result<SaveRequestId>::success(request_id);
+}
+
 std::vector<SaveResult> SaveScheduler::drain_completed(std::size_t maximum_results) {
     if (jobs_ != nullptr) {
         static_cast<void>(jobs_->drain_completed());
@@ -508,6 +619,9 @@ void SaveScheduler::account_completed(std::span<const SaveResult> results) noexc
             active_requests_.erase(active);
         }
         ++stats_.completed_requests;
+        if (result.operation == SaveOperationKind::checkpoint) {
+            ++stats_.completed_checkpoint_requests;
+        }
         if (result.state == SaveResultState::cancelled) {
             ++stats_.cancelled_requests;
         } else if (result.state == SaveResultState::failed) {
@@ -589,6 +703,16 @@ const char* save_result_state_name(SaveResultState state) noexcept {
         return "failed";
     case SaveResultState::cancelled:
         return "cancelled";
+    }
+    return "unknown";
+}
+
+const char* save_operation_kind_name(SaveOperationKind operation) noexcept {
+    switch (operation) {
+    case SaveOperationKind::snapshot:
+        return "snapshot";
+    case SaveOperationKind::checkpoint:
+        return "checkpoint";
     }
     return "unknown";
 }

@@ -176,6 +176,7 @@ target_sources(
     save/save_compatibility.cpp
     save/save_binary_codec.cpp
     save/chunk_delta_journal_benchmark.cpp
+    save/save_checkpoint_retry.cpp
     save/save_database.cpp
     save/save_metadata.cpp
     save/save_migration.cpp
@@ -423,6 +424,7 @@ target_sources(
       rooms/room_graph.hpp
       save/save_compatibility.hpp
       save/save_binary_codec.hpp
+      save/save_checkpoint_retry.hpp
       save/save_database.hpp
       save/save_identity.hpp
       save/save_metadata.hpp

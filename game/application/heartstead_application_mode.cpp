@@ -8,6 +8,7 @@
 #include "engine/movement/player_camera.hpp"
 #include "engine/profiling/cpu_timing.hpp"
 #include "engine/renderer/testing/visual_regression.hpp"
+#include "engine/save/save_checkpoint_retry.hpp"
 #include "engine/save/save_compatibility.hpp"
 #include "engine/save/save_scheduler.hpp"
 #include "engine/save/save_slot.hpp"
@@ -367,6 +368,7 @@ enum class ApplicationSaveIntent : std::uint8_t {
 struct PendingApplicationSave {
     ApplicationSaveIntent intent = ApplicationSaveIntent::autosave;
     bool capture_preview_on_success = false;
+    std::filesystem::path database_root;
 };
 
 using SessionLoadResult = core::Result<LoadedSession>;
@@ -378,7 +380,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         : config(std::move(initial_config)), states(this),
           skin(shell_skin(config.content_report)), widgets(skin),
           settings(config.initial_settings), settings_store(config.user_data_root / "settings.txt"),
-          save_catalog(config.user_data_root / "saves") {
+          save_catalog(config.user_data_root / "saves"),
+          checkpoint_retries(config.save_checkpoint_retry) {
         camera_perspective = settings.first_person_camera
                                  ? movement::PlayerCameraPerspective::first_person
                                  : movement::PlayerCameraPerspective::third_person;
@@ -400,8 +403,10 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     ApplicationSettings settings;
     ApplicationSettingsStore settings_store;
     save::FileSaveSlotCatalog save_catalog;
+    save::SaveCheckpointRetryQueue checkpoint_retries;
     std::unique_ptr<save::SaveScheduler> save_scheduler;
     std::map<save::SaveRequestId, PendingApplicationSave> pending_saves;
+    std::map<save::SaveRequestId, std::filesystem::path> pending_checkpoint_attempts;
     DeveloperWorldRegistry developer_worlds;
     std::vector<save::SaveSlotSummary> save_entries;
     MainMenuNavigation menu_navigation;
@@ -482,6 +487,13 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             snapshot.pending_save_operations = save_stats.in_flight_requests;
             snapshot.reserved_save_working_bytes = save_stats.reserved_working_bytes;
         }
+        const auto checkpoint_stats = checkpoint_retries.stats();
+        snapshot.pending_save_checkpoints = checkpoint_stats.pending_checkpoints;
+        snapshot.in_flight_save_checkpoints = checkpoint_stats.in_flight_checkpoints;
+        snapshot.save_checkpoint_retry_attempts = checkpoint_stats.submitted_attempts;
+        snapshot.completed_save_checkpoints = checkpoint_stats.completed_checkpoints;
+        snapshot.exhausted_save_checkpoints = checkpoint_stats.exhausted_checkpoints;
+        snapshot.terminal_save_checkpoint_failures = checkpoint_stats.terminal_failures;
         if (loading_progress != nullptr && loading.valid()) {
             snapshot.loading_phase = loading_progress->phase.load(std::memory_order_relaxed);
         }
@@ -1539,21 +1551,87 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         pending_save_preview.reset();
     }
 
+    void defer_save_checkpoint(const std::filesystem::path& database_root,
+                               std::size_t working_reservation_bytes,
+                               std::string_view reason) {
+        auto status = checkpoint_retries.defer(database_root, working_reservation_bytes,
+                                               last_runtime_time_ms);
+        if (!status) {
+            menu_message = "World data is durable, but its deferred checkpoint could not be "
+                           "scheduled: " +
+                           status.error().code + ": " + status.error().message;
+        } else {
+            menu_message = "World data is durable; checkpoint retry scheduled after " +
+                           std::string(reason) + ".";
+        }
+        core::log(core::LogLevel::warning, menu_message);
+    }
+
+    void consume_checkpoint_result(const save::SaveResult& result,
+                                   const std::filesystem::path& database_root) {
+        const auto error_code =
+            result.error_code.empty() ? std::string("heartstead.checkpoint_failed")
+                                      : result.error_code;
+        const auto error_message =
+            result.error_message.empty() ? std::string("save checkpoint did not complete")
+                                         : result.error_message;
+        const auto outcome = result.state == save::SaveResultState::succeeded
+                                 ? save::SaveCheckpointRetryOutcome::completed
+                             : error_code == "save_database.busy"
+                                 ? save::SaveCheckpointRetryOutcome::retryable_failure
+                                 : save::SaveCheckpointRetryOutcome::terminal_failure;
+        auto disposition =
+            checkpoint_retries.note_outcome(database_root, outcome, last_runtime_time_ms);
+        if (!disposition) {
+            menu_message = "Save checkpoint retry accounting failed: " +
+                           disposition.error().code + ": " + disposition.error().message;
+            core::log(core::LogLevel::warning, menu_message);
+            return;
+        }
+        switch (disposition.value()) {
+        case save::SaveCheckpointRetryDisposition::completed:
+            return;
+        case save::SaveCheckpointRetryDisposition::scheduled:
+            menu_message = "Save checkpoint remains busy; a bounded retry is scheduled.";
+            break;
+        case save::SaveCheckpointRetryDisposition::exhausted:
+            menu_message = "World data remains durable in the journal, but checkpoint retries "
+                           "were exhausted: " +
+                           error_message;
+            break;
+        case save::SaveCheckpointRetryDisposition::terminal_failure:
+            menu_message = "World data remains durable in the journal, but checkpointing "
+                           "requires attention: " +
+                           error_code + ": " + error_message;
+            break;
+        }
+        core::log(core::LogLevel::warning, menu_message);
+    }
+
     void consume_save_results(std::vector<save::SaveResult> results) {
         for (auto& result : results) {
-            const auto pending = pending_saves.find(result.request_id);
-            const auto intent = pending == pending_saves.end()
-                                    ? ApplicationSaveIntent::autosave
-                                    : pending->second.intent;
-            const auto capture_preview =
-                pending != pending_saves.end() && pending->second.capture_preview_on_success;
-            if (pending != pending_saves.end()) {
-                pending_saves.erase(pending);
+            const auto checkpoint = pending_checkpoint_attempts.find(result.request_id);
+            if (checkpoint != pending_checkpoint_attempts.end()) {
+                const auto database_root = checkpoint->second;
+                pending_checkpoint_attempts.erase(checkpoint);
+                last_save_worker_ms = result.total_worker_ms;
+                consume_checkpoint_result(result, database_root);
+                continue;
             }
+
+            const auto pending = pending_saves.find(result.request_id);
+            if (pending == pending_saves.end() ||
+                result.operation != save::SaveOperationKind::snapshot) {
+                menu_message = "Save scheduler returned an untracked result.";
+                core::log(core::LogLevel::warning, menu_message);
+                continue;
+            }
+            const auto request = pending->second;
+            pending_saves.erase(pending);
 
             last_save_durable_acceptance_ms = result.request_to_durable_acceptance_ms;
             last_save_worker_ms = result.total_worker_ms;
-            const auto required = intent != ApplicationSaveIntent::autosave;
+            const auto required = request.intent != ApplicationSaveIntent::autosave;
             if (result.state != save::SaveResultState::succeeded ||
                 !result.durably_accepted) {
                 core::Error error;
@@ -1576,7 +1654,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 continue;
             }
 
-            if (capture_preview) {
+            if (request.capture_preview_on_success) {
                 capture_active_save_preview();
             }
             if (!result.metadata_error_code.empty()) {
@@ -1584,8 +1662,17 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                                result.metadata_error_message;
                 core::log(core::LogLevel::warning, menu_message);
             }
-            if (!result.compaction_error_code.empty()) {
-                menu_message = "World data was journaled, but save compaction was deferred: " +
+            if (result.compacted) {
+                checkpoint_retries.note_completed_externally(request.database_root);
+            } else if (result.compaction_error_code.empty() ||
+                       result.compaction_error_code == "save_database.busy") {
+                const auto reason = result.compaction_error_message.empty()
+                                        ? std::string_view("a cooperative cancellation boundary")
+                                        : std::string_view(result.compaction_error_message);
+                defer_save_checkpoint(request.database_root, result.reserved_working_bytes, reason);
+            } else {
+                menu_message = "World data was journaled, but checkpointing requires attention: " +
+                               result.compaction_error_code + ": " +
                                result.compaction_error_message;
                 core::log(core::LogLevel::warning, menu_message);
             }
@@ -1596,6 +1683,39 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         if (save_scheduler != nullptr) {
             consume_save_results(save_scheduler->drain_completed());
         }
+    }
+
+    [[nodiscard]] core::Status submit_due_checkpoint_retry() {
+        if (save_scheduler == nullptr || !save_scheduler->has_capacity()) {
+            return core::Status::ok();
+        }
+        const auto candidate = checkpoint_retries.next_due(last_runtime_time_ms);
+        if (!candidate.has_value()) {
+            return core::Status::ok();
+        }
+        auto submitted = save_scheduler->submit_checkpoint(candidate->database_root,
+                                                           candidate->working_reservation_bytes);
+        if (!submitted) {
+            if (submitted.error().code == "save_scheduler.full") {
+                return core::Status::ok();
+            }
+            return core::Status::failure(submitted.error().code, submitted.error().message);
+        }
+        auto status =
+            checkpoint_retries.note_submitted(candidate->database_root, last_runtime_time_ms);
+        if (!status) {
+            static_cast<void>(save_scheduler->cancel(submitted.value()));
+            return status;
+        }
+        const auto [_, inserted] = pending_checkpoint_attempts.emplace(
+            submitted.value(), candidate->database_root);
+        if (!inserted) {
+            static_cast<void>(save_scheduler->cancel(submitted.value()));
+            return core::Status::failure(
+                "heartstead.duplicate_checkpoint_request",
+                "save checkpoint request identifier is already tracked");
+        }
+        return core::Status::ok();
     }
 
     [[nodiscard]] core::Status wait_for_pending_saves() {
@@ -1632,6 +1752,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         core::Result<save::SaveRequestId> submitted =
             core::Result<save::SaveRequestId>::failure("heartstead.save_not_submitted",
                                                        "save request was not submitted");
+        std::filesystem::path database_root;
         {
             profiling::ScopedCpuTimer owner_timer(last_save_owner_handoff_ms);
             auto snapshot = session_runtime->capture_save_snapshot();
@@ -1651,6 +1772,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                     "heartstead.persistent_save_path_missing",
                     "persistent session has no save destination");
             }
+            database_root = request.database_root;
             request.snapshot = std::move(snapshot).value();
             request.compact_after_acceptance = true;
             submitted = save_scheduler->submit(std::move(request));
@@ -1664,7 +1786,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             required_save_error.reset();
         }
         pending_saves.emplace(submitted.value(),
-                              PendingApplicationSave{intent, capture_preview});
+                              PendingApplicationSave{intent, capture_preview,
+                                                     std::move(database_root)});
         return core::Status::ok();
     }
 
@@ -2773,6 +2896,10 @@ core::Status HeartsteadApplicationMode::initialize(GameApplicationServices& serv
         return core::Status::failure("heartstead.invalid_autosave_interval",
                                      "autosave interval must be positive");
     }
+    auto retry_status = state.config.save_checkpoint_retry.validate();
+    if (!retry_status) {
+        return retry_status;
+    }
     if (state.config.content_report == nullptr || state.config.content_report->has_errors()) {
         return core::Status::failure("heartstead.invalid_content",
                                      "Heartstead requires validated content at application boot");
@@ -2870,6 +2997,13 @@ HeartsteadApplicationMode::update(GameApplicationServices& services,
     state.last_runtime_time_ms = frame.now_milliseconds;
     state.last_wall_clock_ms = frame.wall_clock_milliseconds;
     state.poll_save_results();
+    auto checkpoint_status = state.submit_due_checkpoint_retry();
+    if (!checkpoint_status) {
+        state.display_error = checkpoint_status.error();
+        state.menu_message = "Save checkpoint retry could not be submitted: " +
+                             checkpoint_status.error().message;
+        core::log(core::LogLevel::warning, state.menu_message);
+    }
     state.frame_rate.record_frame(frame.delta_microseconds);
     ++state.frame_count;
     if (!frame.headless && frame.extent.is_valid()) {

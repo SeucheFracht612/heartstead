@@ -1,3 +1,4 @@
+#include "engine/save/save_checkpoint_retry.hpp"
 #include "engine/save/save_scheduler.hpp"
 #include "engine/save/save_slot.hpp"
 
@@ -148,6 +149,138 @@ void test_durable_only_result_recovers_without_compaction() {
     cleanup(root);
 }
 
+void test_checkpoint_request_compacts_an_existing_acceptance_without_another_snapshot() {
+    const auto root = make_temp_root();
+    heartstead::save::FileSaveDatabase database(root);
+    const auto accepted_snapshot = snapshot(511);
+    const auto memory = heartstead::save::estimate_save_snapshot_memory(accepted_snapshot);
+    assert(!memory.saturated);
+    auto accepted = database.journal_snapshot(accepted_snapshot);
+    assert(accepted && accepted.value().sequence == 1);
+
+    heartstead::save::SaveSchedulerConfig config;
+    config.max_concurrent_requests = 1;
+    config.max_completed_results = 1;
+    auto created = heartstead::save::SaveScheduler::create(config);
+    assert(created);
+    auto scheduler = std::move(created).value();
+
+    auto submitted = scheduler->submit_checkpoint(root, memory.working_reservation_bytes);
+    assert(submitted);
+    assert(scheduler->stats().reserved_working_bytes == memory.working_reservation_bytes);
+    auto results = wait_for_results(*scheduler, 1);
+    assert(results.front().operation == heartstead::save::SaveOperationKind::checkpoint);
+    assert(results.front().state == heartstead::save::SaveResultState::succeeded);
+    assert(!results.front().durably_accepted);
+    assert(results.front().compacted);
+    assert(results.front().journal_sequence == accepted.value().sequence);
+    assert(results.front().compaction_ms > 0.0);
+    assert(results.front().reserved_working_bytes == memory.working_reservation_bytes);
+    assert(scheduler->stats().submitted_checkpoint_requests == 1);
+    assert(scheduler->stats().completed_checkpoint_requests == 1);
+    assert(scheduler->stats().compacted_requests == 1);
+
+    auto no_work = scheduler->submit_checkpoint(root, memory.working_reservation_bytes);
+    assert(no_work);
+    results = wait_for_results(*scheduler, 1);
+    assert(results.front().state == heartstead::save::SaveResultState::succeeded);
+    assert(!results.front().compacted);
+    assert(scheduler->stats().submitted_checkpoint_requests == 2);
+    assert(scheduler->stats().completed_checkpoint_requests == 2);
+    auto missing_reservation = scheduler->submit_checkpoint(root, 0);
+    assert(!missing_reservation);
+    assert(missing_reservation.error().code ==
+           "save_scheduler.request_memory_budget_exceeded");
+
+    auto loaded = database.read_snapshot();
+    assert(loaded && loaded.value().metadata.world_seed == 511);
+    cleanup(root);
+}
+
+void test_checkpoint_retry_queue_is_bounded_and_uses_capped_backoff() {
+    heartstead::save::SaveCheckpointRetryPolicy policy;
+    policy.initial_delay_ms = 10;
+    policy.maximum_delay_ms = 40;
+    policy.max_attempts = 3;
+    policy.max_pending_checkpoints = 2;
+    heartstead::save::SaveCheckpointRetryQueue retries(policy);
+    const std::filesystem::path root_a = "/tmp/heartstead-checkpoint-a";
+    const std::filesystem::path root_b = "/tmp/heartstead-checkpoint-b";
+    const std::filesystem::path root_c = "/tmp/heartstead-checkpoint-c";
+
+    auto missing_reservation = retries.defer(root_a, 0, 100);
+    assert(!missing_reservation);
+    assert(missing_reservation.error().code ==
+           "save_checkpoint_retry.invalid_memory_reservation");
+    constexpr std::size_t reservation_a = 4'096;
+    constexpr std::size_t reservation_b = 8'192;
+    constexpr std::size_t reservation_c = 16'384;
+    assert(retries.defer(root_a / ".", reservation_a, 100));
+    assert(retries.contains(root_a));
+    assert(!retries.next_due(109).has_value());
+    auto due = retries.next_due(110);
+    assert(due.has_value());
+    assert(due->database_root == root_a);
+    assert(due->working_reservation_bytes == reservation_a);
+    assert(due->attempt_number == 1);
+    assert(!retries.note_submitted(root_a, 109));
+    assert(retries.note_submitted(root_a, 110));
+    assert(!retries.next_due(1'000).has_value());
+
+    auto outcome = retries.note_outcome(
+        root_a, heartstead::save::SaveCheckpointRetryOutcome::retryable_failure, 111);
+    assert(outcome && outcome.value() ==
+                          heartstead::save::SaveCheckpointRetryDisposition::scheduled);
+    assert(!retries.next_due(130).has_value());
+    due = retries.next_due(131);
+    assert(due && due->attempt_number == 2);
+    assert(retries.note_submitted(root_a, 131));
+    outcome = retries.note_outcome(
+        root_a, heartstead::save::SaveCheckpointRetryOutcome::retryable_failure, 132);
+    assert(outcome && outcome.value() ==
+                          heartstead::save::SaveCheckpointRetryDisposition::scheduled);
+    assert(!retries.next_due(171).has_value());
+    due = retries.next_due(172);
+    assert(due && due->attempt_number == 3);
+    assert(retries.note_submitted(root_a, 172));
+    outcome = retries.note_outcome(
+        root_a, heartstead::save::SaveCheckpointRetryOutcome::retryable_failure, 173);
+    assert(outcome && outcome.value() ==
+                          heartstead::save::SaveCheckpointRetryDisposition::exhausted);
+    assert(!retries.contains(root_a));
+
+    assert(retries.defer(root_a, reservation_a, 200));
+    assert(retries.defer(root_b, reservation_b, 200));
+    auto full = retries.defer(root_c, reservation_c, 200);
+    assert(!full && full.error().code == "save_checkpoint_retry.full");
+    retries.note_completed_externally(root_a);
+    due = retries.next_due(210);
+    assert(due && due->database_root == root_b);
+    assert(retries.note_submitted(root_b, 210));
+    outcome = retries.note_outcome(
+        root_b, heartstead::save::SaveCheckpointRetryOutcome::terminal_failure, 211);
+    assert(outcome && outcome.value() ==
+                          heartstead::save::SaveCheckpointRetryDisposition::terminal_failure);
+    assert(retries.defer(root_c, reservation_c, 220));
+    due = retries.next_due(230);
+    assert(due && due->database_root == root_c);
+    assert(retries.note_submitted(root_c, 230));
+    outcome = retries.note_outcome(
+        root_c, heartstead::save::SaveCheckpointRetryOutcome::completed, 231);
+    assert(outcome && outcome.value() ==
+                          heartstead::save::SaveCheckpointRetryDisposition::completed);
+
+    const auto stats = retries.stats();
+    assert(stats.pending_checkpoints == 0);
+    assert(stats.in_flight_checkpoints == 0);
+    assert(stats.deferred_events == 4);
+    assert(stats.submitted_attempts == 5);
+    assert(stats.retryable_failures == 3);
+    assert(stats.completed_checkpoints == 1);
+    assert(stats.exhausted_checkpoints == 1);
+    assert(stats.terminal_failures == 1);
+}
+
 void test_slot_metadata_is_committed_on_the_worker() {
     const auto root = make_temp_root();
     const auto catalog_root = root / "saves";
@@ -256,8 +389,23 @@ void test_invalid_configs_and_names_fail() {
     config.max_request_working_bytes = 2;
     config.max_reserved_working_bytes = 1;
     assert(!config.validate());
+    heartstead::save::SaveCheckpointRetryPolicy retry_policy;
+    retry_policy.initial_delay_ms = 0;
+    assert(!retry_policy.validate());
+    retry_policy.initial_delay_ms = 2;
+    retry_policy.maximum_delay_ms = 1;
+    assert(!retry_policy.validate());
     assert(heartstead::save::save_result_state_name(
                static_cast<heartstead::save::SaveResultState>(255)) == std::string_view("unknown"));
+    assert(heartstead::save::save_operation_kind_name(
+               heartstead::save::SaveOperationKind::checkpoint) ==
+           std::string_view("checkpoint"));
+    assert(heartstead::save::save_operation_kind_name(
+               static_cast<heartstead::save::SaveOperationKind>(255)) ==
+           std::string_view("unknown"));
+    assert(heartstead::save::save_checkpoint_retry_disposition_name(
+               static_cast<heartstead::save::SaveCheckpointRetryDisposition>(255)) ==
+           std::string_view("unknown"));
 }
 
 } // namespace
@@ -266,6 +414,8 @@ int main() {
     test_memory_estimate_accounts_for_owned_payloads();
     test_background_save_is_bounded_durable_and_compacted();
     test_durable_only_result_recovers_without_compaction();
+    test_checkpoint_request_compacts_an_existing_acceptance_without_another_snapshot();
+    test_checkpoint_retry_queue_is_bounded_and_uses_capped_backoff();
     test_slot_metadata_is_committed_on_the_worker();
     test_queued_request_cancellation_publishes_a_bounded_result();
     test_invalid_and_over_budget_requests_fail_closed();

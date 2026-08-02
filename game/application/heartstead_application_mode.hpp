@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/save/save_checkpoint_retry.hpp"
 #include "game/application/application_settings.hpp"
 #include "game/application/game_application.hpp"
 #include "game/application/launch_options.hpp"
@@ -28,6 +29,7 @@ struct HeartsteadApplicationModeConfig {
     std::optional<InitialLaunchDirective> initial_launch;
     std::optional<SessionLaunchRequest> initial_session;
     std::int64_t autosave_interval_ms = 30'000;
+    save::SaveCheckpointRetryPolicy save_checkpoint_retry;
     bool headless = false;
     bool safe_mode = false;
 };

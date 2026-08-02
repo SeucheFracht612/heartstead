@@ -353,6 +353,12 @@ void test_runtime_diagnostics_are_explicit() {
     snapshot.streaming_timely_coverage = 0.50;
     snapshot.pending_save_operations = 1;
     snapshot.reserved_save_working_bytes = 8U * 1024U * 1024U;
+    snapshot.pending_save_checkpoints = 2;
+    snapshot.in_flight_save_checkpoints = 1;
+    snapshot.save_checkpoint_retry_attempts = 4;
+    snapshot.completed_save_checkpoints = 3;
+    snapshot.exhausted_save_checkpoints = 1;
+    snapshot.terminal_save_checkpoint_failures = 0;
     snapshot.last_save_owner_handoff_ms = 0.2;
     snapshot.device_gpu_usage_bytes = 32U * 1024U * 1024U;
     snapshot.device_gpu_budget_bytes = 512U * 1024U * 1024U;
@@ -366,6 +372,8 @@ void test_runtime_diagnostics_are_explicit() {
            std::string::npos);
     assert(text.find("accuracy/coverage 0.75/0.50") != std::string::npos);
     assert(text.find("save pending/reserved 1/8.0 MiB") != std::string::npos);
+    assert(text.find("checkpoint pending/inflight/retries/completed/exhausted/terminal "
+                     "2/1/4/3/1/0") != std::string::npos);
     assert(text.find("budget telemetry unavailable") == std::string::npos);
 
     const auto process = game::sample_process_resources();

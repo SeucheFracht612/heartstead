@@ -130,6 +130,12 @@ std::string format_runtime_diagnostics(const RuntimeDiagnosticsSnapshot& snapsho
            << snapshot.last_save_owner_handoff_ms << '/' << snapshot.maximum_save_owner_handoff_ms
            << " ms | durable/worker " << snapshot.last_save_durable_acceptance_ms << '/'
            << snapshot.last_save_worker_ms << " ms\n"
+           << "checkpoint pending/inflight/retries/completed/exhausted/terminal "
+           << snapshot.pending_save_checkpoints << '/' << snapshot.in_flight_save_checkpoints << '/'
+           << snapshot.save_checkpoint_retry_attempts << '/'
+           << snapshot.completed_save_checkpoints << '/'
+           << snapshot.exhausted_save_checkpoints << '/'
+           << snapshot.terminal_save_checkpoint_failures << '\n'
            << "entities/physics/presentation/render " << snapshot.world_entities << '/'
            << snapshot.physics_objects << '/' << snapshot.presentation_objects << '/'
            << snapshot.render_objects << " | audio " << snapshot.audio_emitters << " | assets "

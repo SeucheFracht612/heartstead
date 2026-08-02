@@ -60,8 +60,14 @@ enum class SaveResultState : std::uint8_t {
     cancelled,
 };
 
+enum class SaveOperationKind : std::uint8_t {
+    snapshot,
+    checkpoint,
+};
+
 struct SaveResult {
     SaveRequestId request_id;
+    SaveOperationKind operation = SaveOperationKind::snapshot;
     SaveResultState state = SaveResultState::failed;
     bool durably_accepted = false;
     bool compacted = false;
@@ -100,7 +106,9 @@ struct SaveSchedulerStats {
     std::size_t reserved_working_bytes = 0;
     std::size_t reserved_working_bytes_high_water = 0;
     std::uint64_t submitted_requests = 0;
+    std::uint64_t submitted_checkpoint_requests = 0;
     std::uint64_t completed_requests = 0;
+    std::uint64_t completed_checkpoint_requests = 0;
     std::uint64_t durably_accepted_requests = 0;
     std::uint64_t compacted_requests = 0;
     std::uint64_t failed_requests = 0;
@@ -121,6 +129,11 @@ class SaveScheduler {
     SaveScheduler& operator=(const SaveScheduler&) = delete;
 
     [[nodiscard]] core::Result<SaveRequestId> submit(SaveRequest request);
+    // Retries publication of the newest durably accepted snapshot without capturing or appending
+    // another snapshot. The caller carries forward the original request's measured reservation so
+    // decoding and generation publication remain within the same memory budget.
+    [[nodiscard]] core::Result<SaveRequestId>
+    submit_checkpoint(std::filesystem::path database_root, std::size_t working_reservation_bytes);
     [[nodiscard]] std::vector<SaveResult>
     drain_completed(std::size_t maximum_results = static_cast<std::size_t>(-1));
     [[nodiscard]] std::vector<SaveResult>
@@ -157,5 +170,6 @@ class SaveScheduler {
 };
 
 [[nodiscard]] const char* save_result_state_name(SaveResultState state) noexcept;
+[[nodiscard]] const char* save_operation_kind_name(SaveOperationKind operation) noexcept;
 
 } // namespace heartstead::save

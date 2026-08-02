@@ -45,6 +45,12 @@ struct RuntimeDiagnosticsSnapshot {
     double streaming_timely_coverage = 0.0;
     std::size_t pending_save_operations = 0;
     std::size_t reserved_save_working_bytes = 0;
+    std::size_t pending_save_checkpoints = 0;
+    std::size_t in_flight_save_checkpoints = 0;
+    std::uint64_t save_checkpoint_retry_attempts = 0;
+    std::uint64_t completed_save_checkpoints = 0;
+    std::uint64_t exhausted_save_checkpoints = 0;
+    std::uint64_t terminal_save_checkpoint_failures = 0;
     double last_save_owner_handoff_ms = 0.0;
     double maximum_save_owner_handoff_ms = 0.0;
     double last_save_durable_acceptance_ms = 0.0;
