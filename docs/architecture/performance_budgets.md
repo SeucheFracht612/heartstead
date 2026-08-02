@@ -56,6 +56,10 @@ capture path still needs its own scale-qualified budget. Correctness gates requi
 reader to remain valid through publication, destructive maintenance to fail fast while it is pinned,
 and a quiescent null-source reader gap before stale-generation pruning and replacement-source
 installation.
+At the reference 16,384-record scale, three clean Release processes passed with median
+save-under-streaming P95 of 38.225 ms, owner submission of 0.027907 ms, request-to-durable acceptance
+of 16.730 ms, and complete compaction of 45.371 seconds. These are local regression evidence, not
+portable hardware guarantees.
 
 The chunk-delta journal benchmark separately gates production persistence work on the save worker:
 

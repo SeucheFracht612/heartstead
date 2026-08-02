@@ -1,7 +1,8 @@
 # Chunk streaming benchmarks
 
 Status: generated, in-memory saved-delta, physical file-backed saved-delta, and opt-in
-save-under-streaming request-to-resident-publication coverage is implemented. The file-backed modes
+save-under-streaming request-to-resident-publication gates pass at 16,384 records on the declared
+reference CPU. The file-backed modes
 include a primed-cache state and a Linux run for which cache-drop advice was accepted. The concurrent
 save phase also proves pinned-generation continuity, bounded owner handoff, durable acceptance, full
 generation publication, fail-fast destructive maintenance, and explicit reader rotation. It does
@@ -128,6 +129,70 @@ the expensive phase runs once rather than once per workload/repetition. Schedule
 independently bounded at two workers, four
 active/completed requests, 64 MiB measured reservation per request, 256 MiB aggregate reservation,
 two publications per owner update, and 500 us per update.
+
+## Schema v4 save-under-streaming calibration
+
+Three independent clean-tracked-tree Release processes at revision
+`9c63c3ba6fa0bb1ca457addaab6c453a111bed79` ran:
+
+```text
+cmake -S . -B build/default-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build/default-release --target heartstead_chunk_streaming_benchmark -j2
+build/default-release/apps/chunk_streaming_benchmark/heartstead_chunk_streaming_benchmark \
+  --workload file_delta_warm \
+  --physical-records 16384 \
+  --physical-fixture-parent build/default-release/benchmarks/physical-fixtures \
+  --warmup 0 \
+  --repetitions 1 \
+  --save-under-streaming \
+  --enforce-gates \
+  --output build/default-release/benchmarks/chunk-streaming-9c63c3b-save-under-load-16384-runN.json
+```
+
+Each process created a fresh 16,384-record generation, retained one ordinary 49-chunk warm physical
+run, and then ran one separate 49-chunk contention phase while publishing the complete fixture
+snapshot. There are no contention warmups or hidden phase repetitions. Raw reports remain outside
+Git under `build/default-release/benchmarks/`.
+
+| Property | Value |
+| --- | --- |
+| Machine | Intel Core Ultra 7 258V, 8 logical CPUs |
+| OS | Linux 6.17.0-1030-oem, x86-64 |
+| Compiler/build | GCC 13.3.0, Release |
+| Source revision | `9c63c3ba6fa0bb1ca457addaab6c453a111bed79` |
+| Source state | clean tracked tree in every retained run |
+| Fixture payload | 16,384 records, 1,441,596 encoded bytes |
+
+| Gated metric | Run 1 | Run 2 | Run 3 | Median process | Gate |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Concurrent interest-to-publication P95 | 35.153 ms | 47.122 ms | 38.225 ms | 38.225 ms | 250 ms |
+| Concurrent physical payload-read P95 | 0.018100 ms | 0.030502 ms | 0.019900 ms | 0.019900 ms | 25 ms |
+| Pinned generation-index open | 24.658 ms | 29.724 ms | 14.927 ms | 24.658 ms | 100 ms |
+| Maximum contention owner publication | 40 us | 25 us | 49 us | 40 us | 500 us |
+| Owner save submission | 0.027907 ms | 0.056619 ms | 0.018489 ms | 0.027907 ms | 0.25 ms |
+| Request-to-durable acceptance | 15.017 ms | 22.278 ms | 16.730 ms | 16.730 ms | 5,000 ms |
+| Worker durable operation | 14.951 ms | 22.160 ms | 16.647 ms | 16.647 ms | component only |
+| Complete background compaction | 45,503.030 ms | 45,355.154 ms | 45,370.637 ms | 45,370.637 ms | 75,000 ms |
+
+| Reported non-gated work | Run 1 | Run 2 | Run 3 | Median process |
+| --- | ---: | ---: | ---: | ---: |
+| Pre-interest fixture snapshot clone | 0.583 ms | 0.749 ms | 0.366 ms | 0.583 ms |
+| Initial durable fixture setup | 46,222.650 ms | 45,458.681 ms | 45,512.850 ms | 45,512.850 ms |
+| Save worker total | 45,518.003 ms | 45,377.349 ms | 45,387.307 ms | 45,387.307 ms |
+
+Every process passed every regular and contention gate. Each contention phase published all 49
+requested pinned-generation deltas with zero failed, stale, or rejected loads. Load reservations
+reached the configured 256 MiB aggregate bound and returned to zero. Each full save was durably
+accepted and compacted from `generation_1` to `generation_2`; destructive pruning returned busy while
+the first reader was pinned, the explicit null-source gap allowed the stale generation to be removed,
+the replacement reader verified every target payload, and exactly two source rotations were
+recorded. Every unique fixture directory was removed before report validation.
+
+The ordinary warm physical run P95 ranged from 36.813 to 42.283 ms. The concurrent range is similar,
+but three local processes do not establish absence of I/O interference on other hardware. Most
+importantly, the 0.366–0.749 ms fixture clone is not production capture evidence. The benchmark starts
+with an already materialized typed snapshot; capturing a large, mutable live world on the owner
+thread remains a separate M5 risk and must not be folded into the passing 0.25 ms submission claim.
 
 ## Historical schema v3 physical-file calibration
 

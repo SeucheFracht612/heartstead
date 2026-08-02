@@ -52,6 +52,9 @@ Implemented behavior:
 - opens a generation-scoped `FileChunkDeltaReader` that selects and validates the authoritative
   base index plus current journal end mark once; retained readers serve concurrent requests by
   binary-searching that immutable view and reading only the selected base or journal payload
+- keeps bulk chunk-delta export distinct from streaming lookup: it holds process-local table and
+  mutation coordination, validates every base payload including records superseded by the journal,
+  and only then applies the overlay, so export/integrity reads do not hide dormant corruption
 - overlays only the highest journal sequence for each coordinate while retaining earlier immutable
   entries until checkpoint, so repeated streamed writes have exact last-accepted ordering
 - checkpoints chunk deltas by durably materializing the complete effective base table, atomically
@@ -166,6 +169,9 @@ same record scale. The schema-v4
 while the prior generation serves physical chunk loads, proves maintenance is busy while that view is
 pinned, creates a quiescent null-source reader gap, prunes the stale generation, and installs a new
 reader for future submissions. These benchmarks do not establish guaranteed-cold behavior or cover
-other filesystems/media. Future work should add a bounded application checkpoint retry policy,
-cross-process writer exclusion, production-scale backup/export policy, large-world live snapshot
-capture, guaranteed-cold/multi-filesystem validation, and complete save-slot UI workflows.
+other filesystems/media. Three clean reference-machine processes passed that concurrent phase at
+16,384 records with median owner handoff of 0.027907 ms, request-to-durable acceptance of 16.730 ms,
+and full generation publication of 45.371 seconds. Future work should add a bounded application
+checkpoint retry policy, cross-process writer exclusion, production-scale backup/export policy,
+large-world live snapshot capture, guaranteed-cold/multi-filesystem validation, and complete
+save-slot UI workflows.

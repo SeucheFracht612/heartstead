@@ -180,6 +180,12 @@ generation publication, concurrent chunk P95, payload reads, reader open, and ow
 then requires destructive maintenance to return busy, pauses new submissions, installs a null-source
 reader gap, prunes the stale generation, and rotates future submissions to a newly opened reader.
 Fixture snapshot cloning is reported but not gated because it is not a live-world capture path.
+Three clean 16,384-record Release processes passed every gate with median concurrent-load P95 of
+38.225 ms, owner save submission of 0.027907 ms, request-to-durable acceptance of 16.730 ms, and
+complete compaction of 45.371 seconds. Every process retained all 49 pinned deltas, returned load
+reservations to zero, observed busy maintenance, pruned during the reader gap, verified all payloads
+through the replacement reader, and recorded exactly two rotations. See
+[Chunk streaming benchmarks](chunk_streaming_benchmarks.md#schema-v4-save-under-streaming-calibration).
 
 The schema-v1 physical journal benchmark retains individual append samples, restart-style writer
 and reader opens, complete checkpoint, exact post-restart payload verification, provenance, and
@@ -227,11 +233,12 @@ of 250 ms, 0.5 ms, 0 ms, and 2.5 respectively. The endpoint deliberately precede
 execution, presentation, and scan-out. See
 [Chunk render-readiness benchmarks](chunk_render_readiness_benchmarks.md).
 
-A small release lifecycle sample measured save owner handoff at 0.046 ms, below the 0.25 ms target.
-The schema-v4 save-under-streaming phase now retains a scale-selectable snapshot, separates owner
-handoff, request-to-durable acceptance, worker durable operation, and full compaction, and exercises
-reader rollover. This is still not complete live-capture closure: snapshot capture scales with owned
-world state and the benchmark fixture already owns the typed snapshot.
+A small release lifecycle sample measured save owner handoff at 0.046 ms, and the full 16,384-record
+save-under-streaming calibration measured a 0.027907 ms median process value, both below the 0.25 ms
+target. Schema v4 separates owner handoff, request-to-durable acceptance, worker durable operation,
+and full compaction while exercising reader rollover. This is still not complete live-capture
+closure: snapshot capture scales with owned world state and the benchmark fixture already owns the
+typed snapshot.
 The original physical fixture's production writer took a median 48.324 seconds to create 16,384
 durable per-chunk records; the new calibration measures the same full-table shape at 48.047 seconds
 for generation write and 48.254 seconds for checkpoint while keeping individual durable streamed
