@@ -491,6 +491,8 @@ heartstead_add_foundation_test(heartstead_asset_safety_tests asset_safety_tests.
 heartstead_add_foundation_test(heartstead_platform_input_edge_tests platform_input_edge_tests.cpp)
 heartstead_add_foundation_test(heartstead_render_device_state_tests render_device_state_tests.cpp)
 heartstead_add_foundation_test(heartstead_simulation_runtime_tests simulation_runtime_tests.cpp)
+heartstead_add_foundation_test(heartstead_process_temporal_aggregation_tests
+                               process_temporal_aggregation_tests.cpp)
 heartstead_add_foundation_test(heartstead_entity_world_tests entity_world_tests.cpp)
 heartstead_add_foundation_test(heartstead_entity_motion_snapshot_tests
                                entity_motion_snapshot_tests.cpp)

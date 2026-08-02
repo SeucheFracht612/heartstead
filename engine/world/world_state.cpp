@@ -525,7 +525,9 @@ core::Status ProcessDatabase::insert(processes::ProcessInstance instance) {
         return core::Status::failure("world_state.duplicate_process",
                                      "process id is already present");
     }
+    const auto process_id = instance.process_id;
     records_.emplace(record_key, std::move(instance));
+    insertion_order_.push_back(process_id);
     return core::Status::ok();
 }
 
@@ -557,6 +559,10 @@ std::vector<const processes::ProcessInstance*> ProcessDatabase::records() const 
         result.push_back(&record);
     }
     return result;
+}
+
+std::span<const core::ProcessId> ProcessDatabase::insertion_order() const noexcept {
+    return insertion_order_;
 }
 
 core::Result<std::size_t> ProcessDatabase::advance_all(simulation::WorldTick world_time,

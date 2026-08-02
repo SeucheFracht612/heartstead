@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -192,6 +193,7 @@ class ProcessDatabase {
     [[nodiscard]] std::vector<const processes::ProcessInstance*>
     find_by_owner(core::SaveId owner_id) const;
     [[nodiscard]] std::vector<const processes::ProcessInstance*> records() const;
+    [[nodiscard]] std::span<const core::ProcessId> insertion_order() const noexcept;
     [[nodiscard]] core::Result<std::size_t> advance_all(simulation::WorldTick world_time,
                                                         processes::ProcessModifiers modifiers);
     [[nodiscard]] core::Result<std::size_t> advance_all(simulation::WorldTick world_time,
@@ -204,6 +206,7 @@ class ProcessDatabase {
 
   private:
     std::unordered_map<std::uint64_t, processes::ProcessInstance> records_;
+    std::vector<core::ProcessId> insertion_order_;
 };
 
 class NetworkDatabase {
