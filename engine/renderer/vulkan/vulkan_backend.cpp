@@ -3651,6 +3651,17 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                                                        double& wait_ms) {
         using Clock = std::chrono::steady_clock;
         if (context.in_flight) {
+            const auto fence_status = vkGetFenceStatus(device_, context.completion_fence);
+            if (fence_status == VK_SUCCESS) {
+                advance_completed_submission(context.submission_serial);
+                context.in_flight = false;
+            } else if (fence_status != VK_NOT_READY) {
+                return core::Status::failure("renderer.vulkan_poll_upload_context_failed",
+                                             "failed to poll a reusable Vulkan upload: " +
+                                                 std::string(vk_result_name(fence_status)));
+            }
+        }
+        if (context.in_flight) {
             const auto started = Clock::now();
             const auto result = vkWaitForFences(device_, 1, &context.completion_fence, VK_TRUE,
                                                 std::numeric_limits<std::uint64_t>::max());
