@@ -141,6 +141,9 @@ void test_checkerboard_and_cross_chunk_occlusion_match_reference() {
     assert(checkerboard.reference.face_count == checkerboard.greedy.face_count);
     assert(directional_surface_area(checkerboard.reference) ==
            directional_surface_area(checkerboard.greedy));
+    assert(checkerboard.reference.vertices == checkerboard.greedy.vertices);
+    assert(checkerboard.reference.indices == checkerboard.greedy.indices);
+    assert(checkerboard.reference.sections == checkerboard.greedy.sections);
 
     auto& boundary_center = chunks.get_or_create({4, -2, 7});
     auto& neighbor = chunks.get_or_create({5, -2, 7});

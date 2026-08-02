@@ -1013,7 +1013,8 @@ namespace {
 
 core::Result<ChunkMesh> build_snapshot_surface_mesh(const ChunkNeighborhoodSnapshot& neighborhood,
                                                     const BlockRenderTableSnapshot& render_table,
-                                                    bool specialized_only) {
+                                                    bool specialized_only,
+                                                    ChunkMesh reusable_mesh = {}) {
     auto status = neighborhood.validate();
     if (!status) {
         return core::Result<ChunkMesh>::failure(status.error().code, status.error().message);
@@ -1023,7 +1024,14 @@ core::Result<ChunkMesh> build_snapshot_surface_mesh(const ChunkNeighborhoodSnaps
         return core::Result<ChunkMesh>::failure(status.error().code, status.error().message);
     }
 
-    ChunkMesh mesh;
+    ChunkMesh mesh = std::move(reusable_mesh);
+    mesh.vertices.clear();
+    mesh.indices.clear();
+    mesh.sections.clear();
+    mesh.rich_instances.clear();
+    mesh.local_bounds = {};
+    mesh.face_count = 0;
+    mesh.triangle_face_count = 0;
     mesh.chunk_coord = neighborhood.center_identity.coordinate;
     mesh.provided_halo_radius = neighborhood.halo_radius;
     mesh.required_halo_radius = neighborhood.halo_radius;
@@ -1136,6 +1144,15 @@ ChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborhood,
                                 const BlockRenderTableSnapshot& render_table) {
     HEARTSTEAD_PROFILE_ZONE_NAMED("chunk_mesh.reference");
     return build_snapshot_surface_mesh(neighborhood, render_table, false);
+}
+
+core::Result<ChunkMesh>
+ChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborhood,
+                                const BlockRenderTableSnapshot& render_table,
+                                ChunkMesh reusable_mesh) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("chunk_mesh.reference_reuse");
+    return build_snapshot_surface_mesh(neighborhood, render_table, false,
+                                       std::move(reusable_mesh));
 }
 
 core::Result<ChunkMesh>

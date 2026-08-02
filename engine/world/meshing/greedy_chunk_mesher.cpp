@@ -343,7 +343,7 @@ struct CubeCellSummary {
         return static_cast<std::uint32_t>(words[index / 64U] >> (index % 64U));
     }
 
-    [[nodiscard]] std::size_t exposed_unit_face_upper_bound() const noexcept {
+    [[nodiscard]] std::size_t adjacent_pair_count() const noexcept {
         std::size_t adjacent_pairs = 0;
         for (std::uint16_t z = 0; z < edge; ++z) {
             for (std::uint16_t y = 0; y < edge; ++y) {
@@ -360,8 +360,9 @@ struct CubeCellSummary {
                 }
             }
         }
-        return count * 6U - adjacent_pairs * 2U;
+        return adjacent_pairs;
     }
+
 };
 
 [[nodiscard]] CubeCellSummary
@@ -458,7 +459,16 @@ GreedyChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborh
     if (cube_cells.count == 0) {
         // Specialized geometry remains on independent, reference-checked emitters while the full
         // cube hot loop is optimized. Empty chunks also take this harmless path.
-        return ChunkMesher::build_surface_mesh(neighborhood, render_table);
+        return ChunkMesher::build_surface_mesh(neighborhood, render_table,
+                                               std::move(reusable_mesh));
+    }
+    const auto adjacent_pairs = cube_cells.adjacent_pair_count();
+    if (!neighborhood.meshing_masks.has_directional_occluders && adjacent_pairs == 0) {
+        // With no face-adjacent greedy cubes, two same-direction faces cannot share a tangent
+        // edge. Every greedy result is therefore a unit quad, and the pooled culled emitter avoids
+        // paying for a merge pass that cannot reduce geometry.
+        return ChunkMesher::build_surface_mesh(neighborhood, render_table,
+                                               std::move(reusable_mesh));
     }
 
     ChunkMesh mesh = std::move(reusable_mesh);
@@ -472,8 +482,8 @@ GreedyChunkMesher::build_surface_mesh(const ChunkNeighborhoodSnapshot& neighborh
     mesh.chunk_coord = neighborhood.center_identity.coordinate;
     mesh.provided_halo_radius = neighborhood.halo_radius;
     mesh.required_halo_radius = neighborhood.halo_radius;
-    const auto reserve_quads =
-        std::min<std::size_t>(cube_cells.exposed_unit_face_upper_bound(), 16U * 1024U);
+    const auto reserve_quads = std::min<std::size_t>(
+        cube_cells.count * 6U - adjacent_pairs * 2U, 16U * 1024U);
     mesh.vertices.reserve(reserve_quads * 4U);
     mesh.indices.reserve(reserve_quads * 6U);
 
