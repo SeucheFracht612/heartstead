@@ -54,13 +54,16 @@ benchmark composes the broader environment stack into a stable integration workl
 ### Performance and profiling
 
 The deterministic benchmark family retains raw samples and percentile summaries. Renderer schema
-v4, chunk-streaming schema v2, and voxel-response schema v1 record source/build/machine provenance
-and enforce workload-specific absolute gates. Clean reference runs cover renderer/edit workloads,
-generated and indexed saved-delta publication, exact collision publication through headless and
-Jolt physics, and complete resident-field relighting. An optimized `profiling-release` preset links
-on-demand Tracy instrumentation across the main runtime, renderer, worker, chunk, lighting,
-collision, and streaming boundaries; normal builds compile those call sites to no-ops. The broader
-asynchronous I/O, upload/visibility, persistence-scale, and multiplayer work remains staged in the
+v4, chunk-streaming schema v2, voxel-response schema v1, and chunk-render-readiness schema v1 record
+source/build/machine/device provenance and enforce workload-specific absolute gates. Clean
+reference runs cover renderer/edit workloads, generated and indexed saved-delta publication, exact
+collision publication through headless and Jolt physics, complete resident-field relighting, and
+required generated chunks through current mesh residency, upload, visibility filtering, and exact
+draw-command construction on headless and Vulkan devices. An optimized `profiling-release` preset
+links on-demand Tracy instrumentation across the main runtime, renderer, worker, chunk, lighting,
+collision, and streaming boundaries; normal builds compile those call sites to no-ops. Physical
+disk/cache and persistence-scale workloads, general-controller loader adoption, actual GPU
+execution/presentation timing, and multiplayer scale remain staged in the
 [voxel optimization roadmap](performance/voxel_optimization_roadmap.md).
 
 The retained UI path uses a packaged Noto Sans font rendered from a deterministic SDF atlas,
@@ -124,6 +127,7 @@ The default build defines these applications:
 - `heartstead_voxel_benchmark`
 - `heartstead_voxel_meshing_benchmark`
 - `heartstead_chunk_streaming_benchmark`
+- `heartstead_chunk_render_readiness_benchmark`
 - `heartstead_voxel_response_benchmark`
 - `heartstead_audio_benchmark`
 - `heartstead_ui_benchmark`
@@ -175,3 +179,5 @@ ThreadSanitizer presets are available. See [Testing](dev/testing.md) for the exp
 matrix and [Renderer benchmarks](performance/renderer_benchmarks.md) for reproducible performance
 measurement. The [Voxel response benchmarks](performance/voxel_response_benchmarks.md) document
 the isolated collision/relight lifecycle gates and their exact headless/Jolt calibration boundary.
+The [Chunk render-readiness benchmarks](performance/chunk_render_readiness_benchmarks.md) document
+the required generated load-to-draw-command gate and its explicit pre-GPU-execution boundary.

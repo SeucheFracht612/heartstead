@@ -149,6 +149,13 @@ then requires exact per-target replacement with no flat-view rebuild during publ
   - emits material/render-phase sections plus rich-model instances separately from indexed terrain
   - preserves voxel type, light, and state bits per vertex
 
+The fixed required-zone workload in
+[Chunk render-readiness benchmarks](../performance/chunk_render_readiness_benchmarks.md) joins these
+boundaries end to end: bounded load publication enters `ChunkRenderSystem`, asynchronous workers
+publish only current dependency-matched meshes, RHI uploads create exact resident GPU-cache entries,
+and the timing endpoint is the first matching production draw command. GPU execution,
+presentation, and display scan-out remain outside that endpoint.
+
 Neighbor invalidation marks rebuild state only. It must not mutate neighboring voxel
 data. Save and replication dirtiness remain attached to chunks whose stored data changed.
 Generated chunks and loaded saved edit deltas only mark mesh, collision, and lighting

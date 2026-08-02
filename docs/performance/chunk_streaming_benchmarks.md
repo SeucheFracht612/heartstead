@@ -129,13 +129,16 @@ resident publication through the bounded asynchronous path without making narrow
 scale with unrelated edit history. Save and replication flushes use the same per-chunk index, while
 full snapshot export still intentionally materializes the deterministic flat compatibility view.
 The saved source is in memory, so this does not close physical-file read or cold-cache behavior.
-The benchmark also stops before lighting, collision cooking, replication transport, client
-residency, meshing, GPU upload, draw eligibility, and display. Calling this "time-to-visible" would
-therefore be incorrect.
+This benchmark also stops before lighting, collision cooking, replication transport, client
+residency, meshing, GPU upload, draw eligibility, and display. Calling this workload alone
+"time-to-visible" would therefore be incorrect. The companion
+[chunk render-readiness benchmark](chunk_render_readiness_benchmarks.md) now carries a fixed
+generated required population through this scheduler, asynchronous meshing, RHI upload, exact GPU
+cache residency, visibility filtering, and production draw-command construction.
 
 Resident isolated collision publication and whole-field relight convergence now have separate
 headless/Jolt gates in [Voxel response benchmarks](voxel_response_benchmarks.md). M5 still requires
-an end-to-end required-chunk visibility distribution, save-under-streaming and
-large-snapshot-capture measurements, physical-disk/cache coverage, and an explicit upload-response
-gate. The general generated-world runtime controller also has not yet adopted the loader; the live
-renderer-proof controller is currently the application path that exercises it.
+save-under-streaming and large-snapshot-capture measurements, physical-disk/cache coverage, general
+generated-world runtime-controller adoption, and GPU-execution/presentation/display timing beyond
+the draw-eligibility endpoint. The live renderer-proof controller is currently the application path
+that exercises the asynchronous loader.

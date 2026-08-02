@@ -38,6 +38,22 @@ owner publication from physical filesystem variability. All limits stop at autho
 block-data publication and do not claim lighting, collision, client replication, meshing, GPU
 upload, draw eligibility, or display latency.
 
+The chunk-render-readiness benchmark separately gates the production generated-data path through
+exact current draw-command construction:
+
+| Metric | Default limit |
+| --- | ---: |
+| Required interest to exact current draw command P95 | 250 ms |
+| Owner-side upload preparation per update | 0.5 ms |
+| Synchronous GPU fence wait | 0 ms |
+| Mesh builds per published mesh | 2.5 |
+
+Every target shares one pre-admission interest timestamp and must finish with a current mesh-stage
+request, exact content/render/dependency revisions, a non-empty resident GPU-cache entry, and a
+matching draw command. Headless runs validate host-side RHI ownership and draw construction;
+explicit Vulkan runs additionally create physical buffers and submit copies without silently
+falling back. Both endpoints precede GPU draw execution, presentation, and display scan-out.
+
 The isolated voxel-response benchmark separately gates resident edit propagation:
 
 | Metric | Default limit |
@@ -68,7 +84,9 @@ or unbounded allocation.
 See [Renderer benchmarks](../performance/renderer_benchmarks.md) for workloads, timing semantics,
 comparison rules, command usage, and dated measurements. See
 [Chunk streaming benchmarks](../performance/chunk_streaming_benchmarks.md) for the open-loop
-admission and resident-publication contract, and
+admission and resident-publication contract,
+[Chunk render-readiness benchmarks](../performance/chunk_render_readiness_benchmarks.md) for the
+generated load-to-draw-command contract and physical-device boundary, and
 [Voxel response benchmarks](../performance/voxel_response_benchmarks.md) for collision/relight
 timing, invariants, tuning evidence, and dated headless/Jolt measurements. See the
 [voxel optimization roadmap](../performance/voxel_optimization_roadmap.md) for the broader staged

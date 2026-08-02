@@ -128,6 +128,8 @@ Start at the [documentation index](docs/README.md).
 - [Testing](docs/dev/testing.md) — test presets, sanitizers, smoke tests, and change verification.
 - [Voxel optimization roadmap](docs/performance/voxel_optimization_roadmap.md) — measured staged
   work from profiling through storage, streaming, scale, and trace-gated GPU techniques.
+- [Chunk render-readiness benchmarks](docs/performance/chunk_render_readiness_benchmarks.md) —
+  generated interest through exact mesh upload and production draw-command eligibility.
 - [Asset pipeline](docs/asset_pipeline.md) — contributor formats, importing, cooking, and limits.
 - [Asset Lab](docs/asset_lab.md) — production asset and presentation inspection.
 - [Environment rendering](docs/architecture/environment_rendering.md) — atmosphere, water,

@@ -137,7 +137,9 @@ current complete-field algorithm only at this corpus size; larger residency and 
 remain separate workloads.
 
 The benchmark stops before replication transport, client residency, remeshing, upload,
-draw eligibility, display scan-out, and newly requested chunk loading. It does not close
-interest-to-visible latency, upload response, save-under-streaming, large snapshot capture,
-physical-disk/cache behavior, or general generated-world loader adoption. Those remain M5 work in
-the [Voxel optimization roadmap](voxel_optimization_roadmap.md).
+draw eligibility, display scan-out, and newly requested chunk loading. The separate
+[chunk render-readiness benchmark](chunk_render_readiness_benchmarks.md) now closes generated
+required-chunk loading through exact current draw-command construction, including meshing and RHI
+upload. Save-under-streaming, large snapshot capture, physical-disk/cache behavior, general
+generated-world loader adoption, and actual GPU execution/presentation/display timing remain M5
+work in the [Voxel optimization roadmap](voxel_optimization_roadmap.md).
