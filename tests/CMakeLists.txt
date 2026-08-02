@@ -242,6 +242,13 @@ target_compile_definitions(
 heartstead_configure_test_target(heartstead_runtime_spine_tests)
 heartstead_register_unit_test(heartstead_runtime_spine_tests)
 
+add_executable(heartstead_client_chunk_subscription_tests
+               client_chunk_subscription_tests.cpp)
+target_link_libraries(heartstead_client_chunk_subscription_tests
+                      PRIVATE Heartstead::GameRuntime)
+heartstead_configure_test_target(heartstead_client_chunk_subscription_tests)
+heartstead_register_unit_test(heartstead_client_chunk_subscription_tests)
+
 add_executable(heartstead_presentation_world_tests presentation_world_tests.cpp)
 target_link_libraries(heartstead_presentation_world_tests PRIVATE Heartstead::GameRuntime)
 heartstead_configure_test_target(heartstead_presentation_world_tests)
@@ -323,6 +330,8 @@ heartstead_add_foundation_test(heartstead_chunk_load_scheduler_tests
                                chunk_load_scheduler_tests.cpp)
 heartstead_add_foundation_test(heartstead_chunk_streaming_policy_tests
                                chunk_streaming_policy_tests.cpp)
+heartstead_add_foundation_test(heartstead_chunk_subscription_tests
+                               chunk_subscription_tests.cpp)
 heartstead_add_foundation_test(heartstead_predictive_streaming_benchmark_tests
                                predictive_streaming_benchmark_tests.cpp)
 heartstead_add_foundation_test(heartstead_chunk_edit_index_tests chunk_edit_index_tests.cpp)

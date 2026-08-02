@@ -45,6 +45,7 @@ struct ClientRuntimeStats {
     double maximum_correction_distance = 0.0;
     std::uint32_t chunk_snapshot_slice_count = 0;
     std::uint32_t completed_chunk_snapshot_count = 0;
+    std::uint32_t chunk_subscription_removal_count = 0;
     world::WorldClientReplicationApplyReport replication;
     ClientReplicationDispatchStats feature_replication;
 };
@@ -96,6 +97,7 @@ class ClientRuntime final {
     struct ChunkSnapshotApplyStats {
         std::uint32_t slice_count = 0;
         std::uint32_t completed_chunk_count = 0;
+        std::uint32_t removal_count = 0;
     };
 
     struct ChunkSnapshotAssembly {

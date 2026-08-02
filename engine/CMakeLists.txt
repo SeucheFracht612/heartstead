@@ -210,6 +210,7 @@ target_sources(
     world/chunks/chunk_stage_ledger.cpp
     world/chunks/chunk_edit_delta_codec.cpp
     world/chunks/chunk_replication.cpp
+    world/chunks/chunk_subscription.cpp
     world/collision/chunk_collision.cpp
     world/fluids/chunk_fluid_system.cpp
     world/fluids/fluid_simulation.cpp

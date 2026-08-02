@@ -141,6 +141,8 @@ debug::InspectionData GameInspector::inspect(const ClientRuntimeStats& stats) {
     add_field(data, "chunk_snapshot_slice_count", std::to_string(stats.chunk_snapshot_slice_count));
     add_field(data, "completed_chunk_snapshot_count",
               std::to_string(stats.completed_chunk_snapshot_count));
+    add_field(data, "chunk_subscription_removal_count",
+              std::to_string(stats.chunk_subscription_removal_count));
     add_field(data, "replication_batch_count",
               std::to_string(stats.replication.drained_batch_count));
     add_field(data, "replication_event_count", std::to_string(stats.replication.total_event_count));

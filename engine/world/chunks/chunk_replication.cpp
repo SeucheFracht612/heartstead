@@ -353,4 +353,42 @@ chunk_snapshot_slice_from_transport(const net::TransportEnvelope& envelope) {
                : ChunkSnapshotSliceTextCodec::decode(envelope.message.payload);
 }
 
+net::TransportMessage make_chunk_subscription_removal_message(ChunkSubscriptionRemoval removal,
+                                                              std::uint64_t transport_sequence,
+                                                              std::int64_t timestamp_ms) {
+    net::BinaryMessageWriter writer;
+    writer.u32(0x31524348U);
+    writer.var_i64(removal.coordinate.x);
+    writer.var_i64(removal.coordinate.y);
+    writer.var_i64(removal.coordinate.z);
+    return {net::TransportMessageKind::replication,
+            net::TransportChannel::reliable,
+            transport_sequence,
+            std::string(chunk_subscription_removal_payload_type),
+            writer.take(),
+            timestamp_ms};
+}
+
+core::Result<ChunkSubscriptionRemoval>
+chunk_subscription_removal_from_transport(const net::TransportEnvelope& envelope) {
+    if (envelope.message.kind != net::TransportMessageKind::replication ||
+        envelope.message.channel != net::TransportChannel::reliable ||
+        envelope.message.payload_type != chunk_subscription_removal_payload_type) {
+        return core::Result<ChunkSubscriptionRemoval>::failure(
+            "chunk_subscription.invalid_removal_transport",
+            "transport envelope is not a reliable chunk subscription removal");
+    }
+    net::BinaryMessageReader reader(envelope.message.payload);
+    std::uint32_t magic_value = 0;
+    ChunkSubscriptionRemoval removal;
+    if (!reader.u32(magic_value) || magic_value != 0x31524348U ||
+        !reader.var_i64(removal.coordinate.x) || !reader.var_i64(removal.coordinate.y) ||
+        !reader.var_i64(removal.coordinate.z) || !reader.finished()) {
+        return core::Result<ChunkSubscriptionRemoval>::failure(
+            "chunk_subscription.invalid_removal_payload",
+            "chunk subscription removal payload is malformed or has trailing bytes");
+    }
+    return core::Result<ChunkSubscriptionRemoval>::success(removal);
+}
+
 } // namespace heartstead::world

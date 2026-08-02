@@ -101,8 +101,9 @@ admission failure for their owning retry, resync, or disconnect policy.
 
 The remote transport is intended for controlled LAN and testing. It does not provide encryption,
 account authentication, forward secrecy, NAT traversal, matchmaking, or a complete congestion
-controller. Relevance-driven chunk subscriptions and calibrated multiplayer scale/soak gates
-remain.
+controller. A bounded, hysteretic chunk-subscription planner and reliable client unsubscribe path
+now exist, but server-runtime adoption, voxel-traffic relevance filtering, and calibrated
+multiplayer scale/soak gates remain.
 
 ### Persistence
 

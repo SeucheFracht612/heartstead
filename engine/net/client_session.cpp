@@ -211,6 +211,30 @@ ClientSession::drain_replication_messages(std::string_view payload_type,
     return drained;
 }
 
+std::vector<TransportEnvelope>
+ClientSession::drain_replication_messages_matching(std::span<const std::string_view> payload_types,
+                                                   std::size_t maximum_count) {
+    if (payload_types.empty()) {
+        return drain_replication_messages(std::string_view{}, maximum_count);
+    }
+
+    std::vector<TransportEnvelope> drained;
+    std::vector<TransportEnvelope> remaining;
+    drained.reserve(std::min(maximum_count, replication_messages_.size()));
+    remaining.reserve(replication_messages_.size());
+    for (auto& envelope : replication_messages_) {
+        const auto type_matches =
+            std::ranges::find(payload_types, envelope.message.payload_type) != payload_types.end();
+        if (type_matches && drained.size() < maximum_count) {
+            drained.push_back(std::move(envelope));
+        } else {
+            remaining.push_back(std::move(envelope));
+        }
+    }
+    replication_messages_ = std::move(remaining);
+    return drained;
+}
+
 core::Status ClientSession::require_connected() const {
     if (!is_connected()) {
         return core::Status::failure("client_session.not_connected",

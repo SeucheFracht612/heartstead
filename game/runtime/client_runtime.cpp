@@ -284,6 +284,7 @@ ClientRuntime::synchronize(std::uint64_t render_tick, std::size_t maximum_chunk_
     stats.maximum_correction_distance = maximum_correction_distance;
     stats.chunk_snapshot_slice_count = completed_chunks.value().slice_count;
     stats.completed_chunk_snapshot_count = completed_chunks.value().completed_chunk_count;
+    stats.chunk_subscription_removal_count = completed_chunks.value().removal_count;
     stats.replication = std::move(replication).value();
     stats.feature_replication = feature_replication;
     messages_since_sync_ = 0;
@@ -510,15 +511,36 @@ void ClientRuntime::clear_command_results() noexcept {
 
 core::Result<ClientRuntime::ChunkSnapshotApplyStats>
 ClientRuntime::apply_queued_chunk_snapshots(std::size_t maximum_slices) {
-    auto messages = session_.drain_replication_messages(world::chunk_snapshot_slice_payload_type,
-                                                        maximum_slices);
-    const auto remaining_slice_budget = maximum_slices - messages.size();
-    auto legacy_messages = session_.drain_replication_messages(
-        world::legacy_chunk_snapshot_slice_payload_type, remaining_slice_budget);
-    messages.insert(messages.end(), std::make_move_iterator(legacy_messages.begin()),
-                    std::make_move_iterator(legacy_messages.end()));
+    constexpr std::array chunk_replication_types{
+        world::chunk_snapshot_slice_payload_type,
+        world::legacy_chunk_snapshot_slice_payload_type,
+        world::chunk_subscription_removal_payload_type,
+    };
+    auto messages = session_.drain_replication_messages_matching(
+        std::span<const std::string_view>(chunk_replication_types), maximum_slices);
+    if (messages.size() > std::numeric_limits<std::uint32_t>::max()) {
+        return core::Result<ChunkSnapshotApplyStats>::failure(
+            "client_runtime.chunk_replication_count_overflow",
+            "chunk replication synchronization count exceeds one frame's diagnostic range");
+    }
+    std::uint32_t slice_count = 0;
     std::uint32_t completed_count = 0;
+    std::uint32_t removal_count = 0;
     for (const auto& message : messages) {
+        if (message.message.payload_type == world::chunk_subscription_removal_payload_type) {
+            auto removal = world::chunk_subscription_removal_from_transport(message);
+            if (!removal) {
+                return core::Result<ChunkSnapshotApplyStats>::failure(removal.error().code,
+                                                                      removal.error().message);
+            }
+            const auto coordinate = removal.value().coordinate;
+            chunk_snapshot_assemblies_.erase(coordinate);
+            remote_chunks_.erase(coordinate);
+            (void)world_.chunks().erase(coordinate);
+            ++removal_count;
+            continue;
+        }
+        ++slice_count;
         auto slice = world::chunk_snapshot_slice_from_transport(message);
         if (!slice) {
             return core::Result<ChunkSnapshotApplyStats>::failure(slice.error().code,
@@ -582,13 +604,8 @@ ClientRuntime::apply_queued_chunk_snapshots(std::size_t maximum_slices) {
         chunk_snapshot_assemblies_.erase(coordinate);
         ++completed_count;
     }
-    if (messages.size() > std::numeric_limits<std::uint32_t>::max()) {
-        return core::Result<ChunkSnapshotApplyStats>::failure(
-            "client_runtime.chunk_snapshot_count_overflow",
-            "chunk snapshot synchronization count exceeds one frame's diagnostic range");
-    }
     return core::Result<ChunkSnapshotApplyStats>::success(
-        {static_cast<std::uint32_t>(messages.size()), completed_count});
+        {slice_count, completed_count, removal_count});
 }
 
 } // namespace heartstead::game

@@ -5,6 +5,7 @@
 #include "engine/world/chunks/chunk_identity.hpp"
 #include "engine/world/voxels/voxel_chunk.hpp"
 
+#include <compare>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -16,6 +17,8 @@ inline constexpr std::string_view legacy_chunk_snapshot_slice_payload_type =
     "chunk.snapshot_slice.v1";
 inline constexpr std::string_view chunk_snapshot_slice_payload_type =
     "chunk.snapshot_slice.bin.v1";
+inline constexpr std::string_view chunk_subscription_removal_payload_type =
+    "chunk.subscription_remove.bin.v1";
 
 struct ChunkSnapshotSlice {
     ChunkIdentity identity;
@@ -24,6 +27,13 @@ struct ChunkSnapshotSlice {
     std::vector<VoxelCell> cells;
 
     [[nodiscard]] core::Status validate() const;
+};
+
+struct ChunkSubscriptionRemoval {
+    ChunkCoord coordinate;
+
+    friend auto operator<=>(const ChunkSubscriptionRemoval&,
+                            const ChunkSubscriptionRemoval&) = default;
 };
 
 [[nodiscard]] core::Result<std::vector<ChunkSnapshotSlice>>
@@ -47,5 +57,9 @@ make_chunk_snapshot_slice_message(const ChunkSnapshotSlice& slice,
                                   std::int64_t timestamp_ms);
 [[nodiscard]] core::Result<ChunkSnapshotSlice>
 chunk_snapshot_slice_from_transport(const net::TransportEnvelope& envelope);
+[[nodiscard]] net::TransportMessage make_chunk_subscription_removal_message(
+    ChunkSubscriptionRemoval removal, std::uint64_t transport_sequence, std::int64_t timestamp_ms);
+[[nodiscard]] core::Result<ChunkSubscriptionRemoval>
+chunk_subscription_removal_from_transport(const net::TransportEnvelope& envelope);
 
 } // namespace heartstead::world

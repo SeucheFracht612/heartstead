@@ -345,9 +345,17 @@ clients, and zero backlog on the second recovery tick. This follows the bounded-
 warning in [RFC 6458](https://www.rfc-editor.org/rfc/rfc6458#section-3.1.2), without claiming a
 complete congestion controller.
 
-Relevance-driven chunk subscriptions, real multi-client spread/convergence/traversal benchmarks,
-calibrated backlog recovery under network impairment, server P99, and long-soak evidence remain
-before the replication/multiplayer slice is accepted.
+A bounded chunk-subscription foundation now validates per-client caps and transition quotas, plans
+nearest-first desired additions plus farthest-first removals with retain hysteresis, and evicts
+non-desired hysteresis residents under cap pressure so current interest cannot starve. The reliable
+binary unsubscribe protocol is consumed in FIFO order with snapshot slices; clients discard partial
+assemblies, remembered revisions, and resident chunks on removal. Focused tests cover convergence,
+teleports, cap-pressure recovery, signed-coordinate extremes, malformed payloads, multi-type queue
+ordering, and client removal/resubscription behavior. `ServerRuntime` adoption is intentionally not
+claimed yet. Player-centered runtime subscriptions, relevance filtering for other voxel traffic,
+real multi-client spread/convergence/traversal benchmarks, calibrated backlog recovery under network
+impairment, server P99, and long-soak evidence remain before the replication/multiplayer slice is
+accepted.
 
 ### M7 — trace-gated GPU work
 

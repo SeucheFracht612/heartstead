@@ -149,6 +149,9 @@ Client protocol session inspection reports accepted server/client ids, next comm
 pending command count, queued result count, queued replication batch/event counts, and the last
 accepted replication sequence. It also reports server disconnect reason code/message and the
 disconnect timestamp once a session has been closed.
+Client runtime synchronization separately reports applied chunk-snapshot slices, completed chunk
+snapshots, and reliable chunk-subscription removals, so unsubscribe traffic cannot masquerade as
+snapshot throughput.
 Simulation LOD inspection reports policy radii and tick intervals, raw subject identity,
 process ids, coordinates, persistence, sleeping/forced state, per-subject LOD decisions, offline
 timestamp deltas, due-tick state, frame-plan counts, and counter mismatches in manually

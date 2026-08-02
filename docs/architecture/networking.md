@@ -198,6 +198,34 @@ contract. This path is rejected for socket-backed clients, does not admit data b
 global/per-client backlog caps, and has its own profiling zone. Remote bootstrap remains incremental
 and subject to the ordinary tick and one-second limits.
 
+### Chunk subscription foundation
+
+Chunk residency now has a deterministic per-client planning contract below the runtime adoption
+layer. The default desired cylinder has horizontal radius 2 and vertical radius 1 (39 chunks); a
+wider 3-by-2 retain cylinder supplies hysteresis. Policy validation imposes a 4,096-chunk hard
+ceiling, while the default client cap is 128 chunks and each planning update may add 4 and remove
+16. Existing subscriptions must be unique and already within the cap.
+
+The pure planner adds nearest desired chunks first and removes chunks outside the retain volume
+farthest first. It reports quota-deferred additions/removals and capacity-deferred additions
+explicitly. Hysteresis cannot permanently starve current interest: if retained, non-desired chunks
+fill the cap, the planner spends remaining removal budget evicting the farthest of them so desired
+chunks can enter. Output subscriptions are sorted, unique, and bounded even at signed 64-bit world
+coordinate limits. Tracy builds expose the planning zone, subscription count, and deferred-addition
+count.
+
+`chunk.subscription_remove.bin.v1` is the reliable, versioned unsubscribe payload. Client intake
+selects binary snapshots, legacy snapshots, and removals in original queue order rather than
+draining each type separately. Applying a removal discards any partial snapshot assembly, the
+remembered remote revision, and the resident client chunk; synchronization and inspection report
+the count separately from snapshot slices. This order is required when an unsubscribe follows
+already-queued slices in the reliable FIFO.
+
+This is the protocol and policy foundation only. `ServerRuntime` does not yet derive player centers,
+persist per-client subscription sets, or restrict snapshot publication with this planner. Runtime
+adoption, relevance filtering for other voxel replication, and the multi-client
+spread/convergence/traversal benchmark remain separate M6 work.
+
 ## Prediction and interpolation
 
 The remote client uses the same movement controller as the authoritative server, retaining a bounded
