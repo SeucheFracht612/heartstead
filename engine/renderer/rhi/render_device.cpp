@@ -86,6 +86,7 @@ class HeadlessRenderDevice final : public IRenderDevice {
         result.supports_multi_draw_indirect = true;
         result.supports_draw_indirect_first_instance = true;
         result.supports_draw_indirect_count = true;
+        result.maximum_draw_indirect_count = std::numeric_limits<std::uint32_t>::max();
         result.supports_frame_submission = true;
         result.supports_depth = true;
         result.headless = true;

@@ -721,6 +721,7 @@ struct RenderDeviceCapabilities {
     bool supports_multi_draw_indirect = false;
     bool supports_draw_indirect_first_instance = false;
     bool supports_draw_indirect_count = false;
+    std::uint32_t maximum_draw_indirect_count = 1;
     bool supports_frame_submission = false;
     bool supports_depth = false;
     bool headless = true;

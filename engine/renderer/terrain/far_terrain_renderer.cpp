@@ -633,7 +633,8 @@ FarTerrainRenderer::build_draws(const RenderCamera& camera,
     };
     const auto capabilities = device_->capabilities();
     if (!visible.empty() && capabilities.supports_multi_draw_indirect &&
-        capabilities.supports_draw_indirect_first_instance) {
+        capabilities.supports_draw_indirect_first_instance &&
+        capabilities.maximum_draw_indirect_count > 1U) {
         using BufferPair = std::pair<rhi::RenderResourceHandle, rhi::RenderResourceHandle>;
         std::map<BufferPair, std::vector<const VisiblePatch*>> groups;
         for (const auto& item : visible) {
@@ -651,19 +652,25 @@ FarTerrainRenderer::build_draws(const RenderCamera& camera,
         };
         std::vector<GroupRange> ranges;
         for (const auto& [buffers, items] : groups) {
-            GroupRange range{buffers, commands.size(), items.size()};
-            for (const auto* item : items) {
-                const auto data_index = static_cast<std::uint32_t>(draw_data.size());
-                commands.push_back(
-                    {item->patch->index_count, 1U,
-                     static_cast<std::uint32_t>(item->patch->index_allocation.offset /
-                                                sizeof(std::uint32_t)),
-                     static_cast<std::int32_t>(item->patch->vertex_allocation.offset /
-                                               sizeof(FarTerrainGpuVertex)),
-                     data_index});
-                draw_data.push_back({item->origin, item->seed});
+            std::size_t offset = 0;
+            while (offset < items.size()) {
+                const auto count = std::min<std::size_t>(
+                    items.size() - offset, capabilities.maximum_draw_indirect_count);
+                GroupRange range{buffers, commands.size(), count};
+                for (const auto* item : std::span{items}.subspan(offset, count)) {
+                    const auto data_index = static_cast<std::uint32_t>(draw_data.size());
+                    commands.push_back(
+                        {item->patch->index_count, 1U,
+                         static_cast<std::uint32_t>(item->patch->index_allocation.offset /
+                                                    sizeof(std::uint32_t)),
+                         static_cast<std::int32_t>(item->patch->vertex_allocation.offset /
+                                                   sizeof(FarTerrainGpuVertex)),
+                         data_index});
+                    draw_data.push_back({item->origin, item->seed});
+                }
+                ranges.push_back(range);
+                offset += count;
             }
-            ranges.push_back(range);
         }
         frame_buffer_index_ = (frame_buffer_index_ + 1U) % indirect_buffers_.size();
         const auto command_bytes = std::as_bytes(std::span{commands});

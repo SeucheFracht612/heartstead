@@ -1509,6 +1509,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         result.supports_multi_draw_indirect = multi_draw_indirect_;
         result.supports_draw_indirect_first_instance = draw_indirect_first_instance_;
         result.supports_draw_indirect_count = draw_indirect_count_;
+        result.maximum_draw_indirect_count = properties_.limits.maxDrawIndirectCount;
         result.supports_frame_submission = true;
         result.supports_depth = depth_format_ != VK_FORMAT_UNDEFINED;
         result.supports_memory_budget = memory_budget_;
