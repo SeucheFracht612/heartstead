@@ -107,8 +107,7 @@ prepare_placement_item(const PlaceVoxelCommand& command, core::SaveId inventory_
             "voxel_command.missing_inventory",
             "voxel placement requires the connected player's inventory");
     }
-    const auto stack = std::ranges::find(inventory->stacks,
-                                         *voxel->interaction.break_resource_item,
+    const auto stack = std::ranges::find(inventory->stacks, *voxel->interaction.break_resource_item,
                                          &items::ItemStack::prototype_id);
     if (stack == inventory->stacks.end() || stack->count == 0) {
         return core::Result<PreparedPlacementItem>::failure(
@@ -160,8 +159,7 @@ prepare_resource_grant(world::VoxelCell previous, core::SaveId inventory_owner,
     auto* inventory = context.world_state->inventories().find(inventory_owner);
     if (inventory == nullptr) {
         return core::Result<std::optional<PreparedResourceGrant>>::failure(
-            "voxel_command.missing_inventory",
-            "voxel resource reward inventory is not loaded");
+            "voxel_command.missing_inventory", "voxel resource reward inventory is not loaded");
     }
     if (context.prototypes == nullptr) {
         return core::Result<std::optional<PreparedResourceGrant>>::failure(
@@ -182,8 +180,8 @@ prepare_resource_grant(world::VoxelCell previous, core::SaveId inventory_owner,
     }
     auto stack = definition.value().create_stack(1);
     if (!stack) {
-        return core::Result<std::optional<PreparedResourceGrant>>::failure(
-            stack.error().code, stack.error().message);
+        return core::Result<std::optional<PreparedResourceGrant>>::failure(stack.error().code,
+                                                                           stack.error().message);
     }
 
     PreparedResourceGrant grant;
@@ -207,12 +205,11 @@ void commit_resource_grant(PreparedResourceGrant grant, core::SaveId inventory_o
         grant.inventory->stacks.push_back(std::move(grant.stack));
     }
     (void)operation.record_mutation("grant voxel resource item");
-    operation.emit_event(
-        {std::string(voxel_resource_granted_event_type), inventory_owner,
-         (grant.merge_index.has_value()
-              ? grant.inventory->stacks[*grant.merge_index].prototype_id.value()
-              : grant.inventory->stacks.back().prototype_id.value()) +
-             '@' + encode_position(position)});
+    operation.emit_event({std::string(voxel_resource_granted_event_type), inventory_owner,
+                          (grant.merge_index.has_value()
+                               ? grant.inventory->stacks[*grant.merge_index].prototype_id.value()
+                               : grant.inventory->stacks.back().prototype_id.value()) +
+                              '@' + encode_position(position)});
 }
 
 [[nodiscard]] core::Status commit_voxel(world::BlockCoord position, world::VoxelCell next,
@@ -233,6 +230,12 @@ void commit_resource_grant(PreparedResourceGrant grant, core::SaveId inventory_o
     if (!previous) {
         return core::Status::failure(previous.error().code, previous.error().message);
     }
+    const auto collision_changed =
+        !context.voxel_palette->same_collision_geometry(previous.value(), next);
+    const auto lighting_changed =
+        !context.voxel_palette->same_lighting_behavior(previous.value(), next);
+    const auto fluid_changed =
+        !context.voxel_palette->same_fluid_simulation_behavior(previous.value(), next);
     auto status = context.world_state->chunks().set(address.chunk, address.local, next,
                                                     context.world_state->dirty_regions(),
                                                     *context.voxel_palette);
@@ -240,16 +243,26 @@ void commit_resource_grant(PreparedResourceGrant grant, core::SaveId inventory_o
         return status;
     }
     chunk = context.world_state->chunks().find(address.chunk);
-    const world::VoxelChangeRecord change{position, previous.value(), next, chunk->identity(),
-                                          chunk->content_revision()};
+    auto current = chunk->get(address.local);
+    if (!current) {
+        return core::Status::failure(current.error().code, current.error().message);
+    }
+    const world::VoxelChangeRecord change{position, previous.value(), current.value(),
+                                          chunk->identity(), chunk->content_revision()};
     status = operation.record_mutation("set terrain voxel");
     if (!status) {
         return status;
     }
     operation.record_derived_update("chunk_mesh");
-    operation.record_derived_update("chunk_collision");
-    operation.record_derived_update("chunk_lighting");
-    operation.record_derived_update("voxel_fluids");
+    if (collision_changed) {
+        operation.record_derived_update("chunk_collision");
+    }
+    if (lighting_changed) {
+        operation.record_derived_update("chunk_lighting");
+    }
+    if (fluid_changed) {
+        operation.record_derived_update("voxel_fluids");
+    }
     operation.emit_event({std::string(world::voxel_changed_event_type),
                           {},
                           world::VoxelChangeTextCodec::encode(change),
@@ -323,8 +336,7 @@ core::Result<RemoveVoxelCommand> VoxelCommandTextCodec::decode_remove(std::strin
 
 core::Status execute_place_voxel(const PlaceVoxelCommand& command,
                                  const movement::PlayerControllerState& player,
-                                 core::SaveId inventory_owner,
-                                 const net::CommandEnvelope& envelope,
+                                 core::SaveId inventory_owner, const net::CommandEnvelope& envelope,
                                  const net::CommandExecutionContext& context,
                                  world::WorldOperation& operation,
                                  const VoxelPlacementValidator& validate_placement) {
@@ -404,8 +416,7 @@ core::Status execute_remove_voxel(const RemoveVoxelCommand& command,
     }
     auto resource_grant = prepare_resource_grant(previous.value(), inventory_owner, context);
     if (!resource_grant) {
-        return core::Status::failure(resource_grant.error().code,
-                                     resource_grant.error().message);
+        return core::Status::failure(resource_grant.error().code, resource_grant.error().message);
     }
     status = commit_voxel(command.position, world::VoxelCell::air(), envelope, context, operation);
     if (!status) {

@@ -177,33 +177,6 @@ void revoke_private_subject_access(net::HostSession& host, core::NetId client_id
     host.set_replication_relevance_policy(std::move(policy));
 }
 
-[[nodiscard]] bool collision_geometry_matches(world::VoxelCell lhs, world::VoxelCell rhs,
-                                              const world::VoxelPalette& palette) noexcept {
-    if (lhs.type == rhs.type) {
-        return true;
-    }
-    const auto* lhs_definition = palette.find_by_type(lhs.type);
-    const auto* rhs_definition = palette.find_by_type(rhs.type);
-    const auto bounds_match = [](const world::VoxelDefinition* first,
-                                 const world::VoxelDefinition* second) {
-        const auto first_size = first == nullptr ? std::size_t{0} : first->collision_bounds.size();
-        const auto second_size =
-            second == nullptr ? std::size_t{0} : second->collision_bounds.size();
-        if (first_size != second_size) {
-            return false;
-        }
-        for (std::size_t index = 0; index < first_size; ++index) {
-            const auto& first_bounds = first->collision_bounds[index];
-            const auto& second_bounds = second->collision_bounds[index];
-            if (first_bounds.min != second_bounds.min || first_bounds.max != second_bounds.max) {
-                return false;
-            }
-        }
-        return true;
-    };
-    return bounds_match(lhs_definition, rhs_definition);
-}
-
 [[nodiscard]] double point_interval_distance(double point, double minimum,
                                              double maximum) noexcept {
     return point < minimum ? minimum - point : point > maximum ? point - maximum : 0.0;
@@ -500,15 +473,13 @@ core::Status ServerRuntime::initialize() {
                 return core::Status::failure(result.error().code, result.error().message);
             }
             current_commands_ = std::move(result).value();
-            std::uint64_t spatial_event_count = 0;
-            std::uint64_t relevant_spatial_delivery_count = 0;
-            std::uint64_t filtered_spatial_delivery_count = 0;
+            [[maybe_unused]] std::uint64_t spatial_event_count = 0;
+            [[maybe_unused]] std::uint64_t relevant_spatial_delivery_count = 0;
+            [[maybe_unused]] std::uint64_t filtered_spatial_delivery_count = 0;
             for (const auto& relevance : current_commands_.replication_relevance_reports) {
                 spatial_event_count += relevance.spatial_event_count;
-                relevant_spatial_delivery_count +=
-                    relevance.relevant_spatial_event_delivery_count;
-                filtered_spatial_delivery_count +=
-                    relevance.filtered_spatial_event_delivery_count;
+                relevant_spatial_delivery_count += relevance.relevant_spatial_event_delivery_count;
+                filtered_spatial_delivery_count += relevance.filtered_spatial_event_delivery_count;
             }
             HEARTSTEAD_PROFILE_PLOT("network.spatial_events", spatial_event_count);
             HEARTSTEAD_PROFILE_PLOT("network.spatial_event_deliveries",
@@ -542,10 +513,9 @@ core::Status ServerRuntime::initialize() {
                     if (!change) {
                         return core::Status::failure(change.error().code, change.error().message);
                     }
-                    collision_world_changed =
-                        collision_world_changed ||
-                        !collision_geometry_matches(change.value().previous, change.value().current,
-                                                    *desc_.voxel_palette);
+                    collision_world_changed = collision_world_changed ||
+                                              !desc_.voxel_palette->same_collision_geometry(
+                                                  change.value().previous, change.value().current);
                     if (context.events != nullptr) {
                         auto event_status = context.events->voxel_changed.append(
                             {change.value().position, change.value().previous,
@@ -727,6 +697,10 @@ core::Status ServerRuntime::initialize() {
                 return core::Status::failure(delivery.error().code, delivery.error().message);
             }
             current_replication_ = std::move(delivery).value();
+            auto publication_status = advance_chunk_publications_from_voxel_deltas();
+            if (!publication_status) {
+                return publication_status;
+            }
             auto chunk_status = synchronize_chunk_subscriptions();
             if (!chunk_status) {
                 return chunk_status;
@@ -953,9 +927,8 @@ core::Status ServerRuntime::remove_player_connection(core::NetId client_id) {
     const auto removed_player_save_id = player == nullptr ? core::SaveId{} : player->save_id;
     player_connections_.erase(found);
     auto policy = host_.replication_relevance_policy();
-    std::erase_if(policy.chunk_interest_rules, [client_id](const auto& rule) {
-        return rule.client_id == client_id;
-    });
+    std::erase_if(policy.chunk_interest_rules,
+                  [client_id](const auto& rule) { return rule.client_id == client_id; });
     host_.set_replication_relevance_policy(std::move(policy));
     if (removed_player_save_id.is_valid()) {
         revoke_private_subject_access(host_, client_id, removed_player_save_id);
@@ -1730,12 +1703,12 @@ core::Status ServerRuntime::stream_chunks() {
             const auto dx = axis_distance(previous->second.x, current_chunk.x);
             const auto dy = axis_distance(previous->second.y, current_chunk.y);
             const auto dz = axis_distance(previous->second.z, current_chunk.z);
-            motion.teleport = dx > teleport_threshold || dy > teleport_threshold ||
-                              dz > teleport_threshold;
+            motion.teleport =
+                dx > teleport_threshold || dy > teleport_threshold || dz > teleport_threshold;
             if (!motion.teleport) {
                 // The component guard above bounds every product to at most 32^2.
-                motion.teleport = dx * dx + dy * dy + dz * dz >
-                                  teleport_threshold * teleport_threshold;
+                motion.teleport =
+                    dx * dx + dy * dy + dz * dz > teleport_threshold * teleport_threshold;
             }
         }
         current_viewer_chunks.emplace(player->net_id.value(), current_chunk);
@@ -2009,6 +1982,79 @@ core::Status ServerRuntime::replicate_entity_motion(std::uint64_t simulation_tic
     return core::Status::ok();
 }
 
+core::Status ServerRuntime::advance_chunk_publications_from_voxel_deltas() {
+    if (current_replication_.commands.size() != current_commands_.command_reports.size()) {
+        return core::Status::failure(
+            "server_runtime.delta_publication_command_count_mismatch",
+            "replication delta delivery count does not match the authoritative command reports");
+    }
+    for (std::size_t index = 0; index < current_replication_.commands.size(); ++index) {
+        const auto& delivery = current_replication_.commands[index];
+        const auto& command = current_commands_.command_reports[index];
+        const auto command_replication_sequence =
+            command.replication_sequence != 0 ? command.replication_sequence : command.sequence;
+        if (command_replication_sequence != delivery.replication_sequence ||
+            command.sequence != delivery.command_sequence ||
+            command.client_id != delivery.source_client_id) {
+            return core::Status::failure(
+                "server_runtime.delta_publication_command_mismatch",
+                "replication delta delivery does not match its authoritative command report");
+        }
+        if (delivery.skipped || delivery.recipients.empty()) {
+            continue;
+        }
+
+        for (const auto& event : command.events) {
+            if (event.type != world::voxel_changed_event_type) {
+                continue;
+            }
+            auto change = world::VoxelChangeTextCodec::decode(event.message);
+            if (!change) {
+                return core::Status::failure(change.error().code, change.error().message);
+            }
+            const auto coordinate = world::chunk_coord_for_block(change.value().position);
+            if (!event.routing_chunk.has_value() || *event.routing_chunk != coordinate) {
+                return core::Status::failure(
+                    "server_runtime.delta_publication_route_mismatch",
+                    "voxel replication event route does not match its authoritative chunk");
+            }
+            for (const auto recipient : delivery.recipients) {
+                if (!net::ReplicationRelevance::event_is_visible(
+                        host_.replication_relevance_policy(), recipient, event)) {
+                    continue;
+                }
+                const auto connection = player_connections_.find(recipient.value());
+                if (connection == player_connections_.end()) {
+                    ++current_chunk_subscriptions_.delta_publication_gap_count;
+                    continue;
+                }
+                const auto publication = connection->second.chunk_publications.find(coordinate);
+                const auto contiguous_revision =
+                    publication != connection->second.chunk_publications.end() &&
+                    publication->second.complete &&
+                    publication->second.identity == change.value().chunk_identity &&
+                    publication->second.content_revision !=
+                        std::numeric_limits<std::uint64_t>::max() &&
+                    publication->second.content_revision + 1 == change.value().content_revision;
+                if (!contiguous_revision) {
+                    ++current_chunk_subscriptions_.delta_publication_gap_count;
+                    continue;
+                }
+
+                publication->second.content_revision = change.value().content_revision;
+                ++current_chunk_subscriptions_.delta_advanced_publication_count;
+                const auto* authoritative = world_.chunks().find(coordinate);
+                if (authoritative != nullptr &&
+                    authoritative->identity() == publication->second.identity &&
+                    authoritative->content_revision() == publication->second.content_revision) {
+                    ++current_chunk_subscriptions_.delta_avoided_snapshot_count;
+                }
+            }
+        }
+    }
+    return core::Status::ok();
+}
+
 core::Status ServerRuntime::synchronize_chunk_subscriptions() {
     HEARTSTEAD_PROFILE_ZONE_NAMED("network.chunk_subscription_sync");
     const auto finalize_stats = [this]() {
@@ -2050,6 +2096,12 @@ core::Status ServerRuntime::synchronize_chunk_subscriptions() {
                                 current_chunk_subscriptions_.snapshot_slice_message_count);
         HEARTSTEAD_PROFILE_PLOT("network.chunk_snapshot_deferred",
                                 current_chunk_subscriptions_.deferred_snapshot_count);
+        HEARTSTEAD_PROFILE_PLOT("network.chunk_delta_advanced_publications",
+                                current_chunk_subscriptions_.delta_advanced_publication_count);
+        HEARTSTEAD_PROFILE_PLOT("network.chunk_delta_avoided_snapshots",
+                                current_chunk_subscriptions_.delta_avoided_snapshot_count);
+        HEARTSTEAD_PROFILE_PLOT("network.chunk_delta_publication_gaps",
+                                current_chunk_subscriptions_.delta_publication_gap_count);
         refresh_replication_chunk_interest();
     };
     if (desc_.direct_local_chunk_replication && renderer_proof_streaming_enabled_) {
@@ -2301,7 +2353,7 @@ core::Status ServerRuntime::synchronize_client_chunk_subscription(
             cached->second.content_revision != chunk->content_revision()) {
             if (enforce_serialization_budget &&
                 current_chunk_subscriptions_.snapshot_serialization_time_us >=
-                desc_.max_chunk_snapshot_serialization_time_us_per_tick) {
+                    desc_.max_chunk_snapshot_serialization_time_us_per_tick) {
                 ++connection.deferred_chunk_snapshots;
                 ++current_chunk_subscriptions_.deferred_snapshot_count;
                 ++current_chunk_subscriptions_.serialization_budget_deferred_snapshot_count;

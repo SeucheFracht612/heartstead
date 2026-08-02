@@ -278,6 +278,11 @@ void test_voxel_events_follow_published_chunk_interest_and_late_snapshot_recover
     assert(session->submit_remove_voxel({game::foundation::boundary_edit_upper}, now_ms));
     auto edit_frame = run_frame(runtime, now_ms);
     assert(edit_frame.server_ticks.front().commands.replication_relevance_reports.size() == 1);
+    const auto& edit_subscriptions = edit_frame.server_ticks.front().chunk_subscriptions;
+    assert(edit_subscriptions.delta_advanced_publication_count == 1);
+    assert(edit_subscriptions.delta_avoided_snapshot_count == 1);
+    assert(edit_subscriptions.delta_publication_gap_count == 0);
+    assert(edit_subscriptions.snapshot_chunk_count == 0);
     const auto& relevance =
         edit_frame.server_ticks.front().commands.replication_relevance_reports.front();
     assert(relevance.spatial_event_count == 1);

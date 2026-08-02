@@ -99,6 +99,10 @@ class VoxelPalette {
     [[nodiscard]] const BlockModelDatabase& block_models() const noexcept;
     [[nodiscard]] const BlockModelDefinition& model_for(const VoxelDefinition& definition) const;
     [[nodiscard]] const BlockModelDefinition* model_for_type(std::uint16_t type) const noexcept;
+    [[nodiscard]] bool same_collision_geometry(VoxelCell first, VoxelCell second) const noexcept;
+    [[nodiscard]] bool same_lighting_behavior(VoxelCell first, VoxelCell second) const noexcept;
+    [[nodiscard]] bool same_fluid_simulation_behavior(VoxelCell first,
+                                                      VoxelCell second) const noexcept;
     [[nodiscard]] std::uint16_t mesh_invalidation_radius(VoxelCell cell) const noexcept;
     [[nodiscard]] std::uint16_t neighbor_dependency_radius(VoxelCell cell) const noexcept;
     [[nodiscard]] std::size_t size() const noexcept;

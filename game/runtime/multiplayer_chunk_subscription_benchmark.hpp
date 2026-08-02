@@ -22,6 +22,8 @@ enum class MultiplayerChunkSubscriptionPhase : std::uint8_t {
     cluster_transition,
     spread_transition,
     traversal_transition,
+    hot_edit_transition,
+    hot_edit,
     steady_state,
 };
 
@@ -32,6 +34,7 @@ struct MultiplayerChunkSubscriptionBenchmarkConfig {
     std::uint64_t seed = 0x4d554c5449434855ULL;
     std::uint32_t client_count = 8;
     std::uint32_t traversal_steps = 6;
+    std::uint32_t hot_edit_ticks = 120;
     std::uint32_t steady_ticks = 24;
     std::uint32_t warmup_timeout_ticks = 4'096;
     std::uint32_t transition_timeout_ticks = 32;
@@ -44,6 +47,9 @@ struct MultiplayerChunkSubscriptionBenchmarkConfig {
     double maximum_server_tick_p95_ms = 12.5;
     double maximum_server_tick_p99_ms = 16.667;
     double maximum_server_tick_ms = 50.0;
+    double maximum_hot_edit_server_tick_p95_ms = 12.5;
+    double maximum_hot_edit_server_tick_p99_ms = 16.667;
+    double maximum_hot_edit_server_tick_ms = 50.0;
     std::uint32_t maximum_transition_convergence_ticks = 16;
     std::uint32_t maximum_backlog_recovery_ticks = 2;
     double minimum_shared_snapshot_reuse_ratio = 2.0;
@@ -51,6 +57,7 @@ struct MultiplayerChunkSubscriptionBenchmarkConfig {
     std::uint64_t maximum_snapshot_serialization_time_us_per_tick = 4'000;
     std::uint64_t maximum_snapshot_serialization_time_overshoot_us = 1'000;
     std::uint64_t maximum_wire_bytes_per_client_per_tick = 320u * 1024u;
+    std::uint64_t maximum_hot_edit_wire_bytes_per_client_per_tick = 2u * 1024u;
 
     [[nodiscard]] core::Status validate() const;
 };
@@ -61,12 +68,23 @@ struct MultiplayerChunkClientTickTraffic {
     std::uint32_t unreliable_messages = 0;
     std::uint32_t chunk_snapshot_slice_messages = 0;
     std::uint32_t chunk_removal_messages = 0;
+    std::uint32_t command_result_messages = 0;
+    std::uint32_t world_event_messages = 0;
+    std::uint32_t world_delta_messages = 0;
     std::uint64_t reliable_wire_bytes = 0;
     std::uint64_t unreliable_wire_bytes = 0;
     std::uint64_t chunk_snapshot_wire_bytes = 0;
     std::uint64_t chunk_removal_wire_bytes = 0;
+    std::uint64_t world_event_wire_bytes = 0;
+    std::uint64_t world_delta_wire_bytes = 0;
     std::uint32_t completed_chunk_snapshots = 0;
     std::uint32_t applied_chunk_removals = 0;
+    std::uint32_t applied_voxel_edits = 0;
+};
+
+struct MultiplayerSimulationSystemTickTiming {
+    std::string name;
+    double time_ms = 0.0;
 };
 
 struct MultiplayerChunkSubscriptionTickSample {
@@ -74,6 +92,7 @@ struct MultiplayerChunkSubscriptionTickSample {
     std::uint32_t phase_ordinal = 0;
     std::uint64_t tick = 0;
     std::uint64_t server_tick_time_us = 0;
+    double simulation_time_ms = 0.0;
     std::uint32_t connected_client_count = 0;
     std::size_t subscription_count = 0;
     std::size_t maximum_client_subscription_count = 0;
@@ -94,9 +113,24 @@ struct MultiplayerChunkSubscriptionTickSample {
     std::uint64_t snapshot_serialization_time_overshoot_us = 0;
     std::uint64_t serialization_budget_deferred_snapshot_count = 0;
     std::uint32_t reliable_admission_deferral_count = 0;
+    std::uint32_t spatial_event_count = 0;
+    std::uint64_t relevant_spatial_event_delivery_count = 0;
+    std::uint64_t filtered_spatial_event_delivery_count = 0;
+    std::uint64_t filtered_spatial_event_payload_bytes = 0;
+    std::uint32_t replication_delta_message_count = 0;
+    std::uint32_t delta_advanced_publication_count = 0;
+    std::uint32_t delta_avoided_snapshot_count = 0;
+    std::uint32_t delta_publication_gap_count = 0;
+    double fluid_topology_time_ms = 0.0;
+    double fluid_dirty_collection_time_ms = 0.0;
+    std::size_t fluid_active_cell_count = 0;
+    std::size_t fluid_processed_cell_count = 0;
+    std::uint32_t verified_hot_edit_client_state_count = 0;
+    std::uint64_t verified_hot_edit_cross_region_exclusion_count = 0;
     std::size_t pending_reliable_message_count = 0;
     std::uint64_t pending_reliable_bytes = 0;
     std::uint32_t disconnected_client_count = 0;
+    std::vector<MultiplayerSimulationSystemTickTiming> system_timings;
     std::vector<MultiplayerChunkClientTickTraffic> clients;
 };
 
@@ -114,10 +148,16 @@ struct MultiplayerChunkClientTrafficSummary {
     std::uint64_t unreliable_messages = 0;
     std::uint64_t chunk_snapshot_slice_messages = 0;
     std::uint64_t chunk_removal_messages = 0;
+    std::uint64_t command_result_messages = 0;
+    std::uint64_t world_event_messages = 0;
+    std::uint64_t world_delta_messages = 0;
     std::uint64_t reliable_wire_bytes = 0;
     std::uint64_t unreliable_wire_bytes = 0;
     std::uint64_t chunk_snapshot_wire_bytes = 0;
     std::uint64_t chunk_removal_wire_bytes = 0;
+    std::uint64_t world_event_wire_bytes = 0;
+    std::uint64_t world_delta_wire_bytes = 0;
+    std::uint64_t applied_voxel_edits = 0;
     std::uint64_t maximum_wire_bytes_per_tick = 0;
 };
 
@@ -127,6 +167,29 @@ struct MultiplayerChunkSubscriptionBenchmarkSummary {
     double server_tick_p95_ms = 0.0;
     double server_tick_p99_ms = 0.0;
     double maximum_server_tick_ms = 0.0;
+    std::uint64_t hot_edit_tick_count = 0;
+    double hot_edit_server_tick_p50_ms = 0.0;
+    double hot_edit_server_tick_p95_ms = 0.0;
+    double hot_edit_server_tick_p99_ms = 0.0;
+    double maximum_hot_edit_server_tick_ms = 0.0;
+    std::uint64_t hot_edit_command_count = 0;
+    std::uint64_t hot_edit_command_result_message_count = 0;
+    std::uint64_t hot_edit_world_event_message_count = 0;
+    std::uint64_t hot_edit_replication_delta_message_count = 0;
+    std::uint64_t hot_edit_delta_advanced_publication_count = 0;
+    std::uint64_t hot_edit_delta_avoided_snapshot_count = 0;
+    std::uint64_t hot_edit_delta_publication_gap_count = 0;
+    std::uint64_t hot_edit_relevant_spatial_event_delivery_count = 0;
+    std::uint64_t hot_edit_filtered_spatial_event_delivery_count = 0;
+    std::uint64_t hot_edit_filtered_spatial_event_payload_bytes = 0;
+    std::uint64_t hot_edit_world_event_wire_bytes = 0;
+    std::uint64_t hot_edit_world_delta_wire_bytes = 0;
+    std::uint64_t hot_edit_applied_voxel_edit_count = 0;
+    std::uint64_t maximum_hot_edit_wire_bytes_per_client_per_tick = 0;
+    std::uint64_t verified_hot_edit_client_states = 0;
+    std::uint64_t expected_hot_edit_client_states = 0;
+    std::uint64_t verified_hot_edit_cross_region_exclusions = 0;
+    std::uint64_t expected_hot_edit_cross_region_exclusions = 0;
     std::uint32_t maximum_transition_convergence_ticks = 0;
     std::uint32_t observed_backlog_burst_count = 0;
     std::uint32_t maximum_backlog_recovery_ticks = 0;
@@ -172,7 +235,7 @@ struct MultiplayerChunkSubscriptionBenchmarkGateEvaluation {
 };
 
 struct MultiplayerChunkSubscriptionBenchmarkReport {
-    static constexpr std::uint32_t schema_version = 1;
+    static constexpr std::uint32_t schema_version = 2;
 
     MultiplayerChunkSubscriptionBenchmarkConfig config;
     profiling::RuntimeMetadata runtime;

@@ -40,6 +40,8 @@ struct ChunkFluidSystemStats {
     std::uint64_t total_changed_cells = 0;
     std::uint64_t budget_exhaustions = 0;
     std::uint64_t apply_budget_overruns = 0;
+    double last_topology_reconciliation_ms = 0.0;
+    double last_dirty_collection_ms = 0.0;
     double last_snapshot_ms = 0.0;
     double last_simulation_ms = 0.0;
     double last_apply_ms = 0.0;

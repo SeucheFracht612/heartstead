@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -38,6 +39,12 @@ enum class ChunkDirtyFlag : std::uint8_t {
     lighting = 1u << 2u,
     save = 1u << 3u,
     replication = 1u << 4u,
+};
+
+struct VoxelDerivedInvalidation {
+    bool mesh = true;
+    bool collision = true;
+    bool lighting = true;
 };
 
 class ChunkDirtyState {
@@ -73,6 +80,8 @@ class VoxelChunk {
     [[nodiscard]] core::Result<VoxelCell> get(VoxelCoord coord) const;
 
     [[nodiscard]] core::Status set(VoxelCoord coord, VoxelCell cell);
+    [[nodiscard]] core::Status set(VoxelCoord coord, VoxelCell cell,
+                                   VoxelDerivedInvalidation invalidation);
     [[nodiscard]] core::Status apply_saved_cell(VoxelCoord coord, VoxelCell cell);
     [[nodiscard]] core::Result<std::size_t>
     apply_derived_light(std::span<const std::uint8_t> light);
@@ -95,12 +104,15 @@ class VoxelChunk {
 
     [[nodiscard]] static bool contains(VoxelCoord coord) noexcept;
     [[nodiscard]] static std::size_t index_of(VoxelCoord coord) noexcept;
+    void ensure_unique_cells();
     void invalidate(ChunkDirtyFlag flag) noexcept;
     void assign_load_generation(std::uint64_t generation) noexcept;
     void advance_content_revision() noexcept;
 
     ChunkCoord coord_;
-    std::vector<VoxelCell> cells_;
+    // World-command staging copies WorldState for rollback. Keep the large immutable cell field
+    // shared across value copies and detach only through VoxelChunk's private mutation paths.
+    std::shared_ptr<std::vector<VoxelCell>> cells_;
     VoxelOccupancyMask occupancy_;
     ChunkDirtyState dirty_;
     ChunkStageLedger stages_;

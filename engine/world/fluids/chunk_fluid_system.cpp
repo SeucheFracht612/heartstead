@@ -1,5 +1,7 @@
 #include "engine/world/fluids/chunk_fluid_system.hpp"
 
+#include "engine/profiling/profiler.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -20,13 +22,6 @@ using Clock = std::chrono::steady_clock;
     return coordinate.x >= minimum.x && coordinate.x <= maximum.x &&
            coordinate.y >= minimum.y && coordinate.y <= maximum.y &&
            coordinate.z >= minimum.z && coordinate.z <= maximum.z;
-}
-
-[[nodiscard]] bool block_in_bounds(BlockCoord coordinate,
-                                   const dirty::DirtyRegionBounds& bounds) noexcept {
-    return coordinate.x >= bounds.min.x && coordinate.x <= bounds.max.x &&
-           coordinate.y >= bounds.min.y && coordinate.y <= bounds.max.y &&
-           coordinate.z >= bounds.min.z && coordinate.z <= bounds.max.z;
 }
 
 } // namespace
@@ -72,6 +67,8 @@ core::Status ChunkFluidSystem::update(ChunkDatabase& chunks,
     stats_.proposals_this_update = 0;
     stats_.changed_cells_this_update = 0;
     stats_.changed_chunks_this_update = 0;
+    stats_.last_topology_reconciliation_ms = 0.0;
+    stats_.last_dirty_collection_ms = 0.0;
     stats_.last_snapshot_ms = 0.0;
     stats_.last_simulation_ms = 0.0;
     stats_.last_apply_ms = 0.0;
@@ -81,8 +78,14 @@ core::Status ChunkFluidSystem::update(ChunkDatabase& chunks,
     if (!status) {
         return status;
     }
+    const auto topology_begin = Clock::now();
     reconcile_topology(chunks);
+    stats_.last_topology_reconciliation_ms = elapsed_milliseconds(topology_begin);
+    const auto dirty_begin = Clock::now();
     collect_dirty(chunks, dirty_regions);
+    stats_.last_dirty_collection_ms = elapsed_milliseconds(dirty_begin);
+    HEARTSTEAD_PROFILE_PLOT("voxel_fluid.topology_ms", stats_.last_topology_reconciliation_ms);
+    HEARTSTEAD_PROFILE_PLOT("voxel_fluid.dirty_collection_ms", stats_.last_dirty_collection_ms);
     stats_.active_cell_count = active_.size();
     if (!stats_.step_due || active_.empty()) {
         return core::Status::ok();
@@ -193,18 +196,32 @@ void ChunkFluidSystem::activate_region(const ChunkDatabase& chunks,
                                        const dirty::DirtyRegionBounds& bounds) {
     const auto minimum_chunk = chunk_coord_for_block(bounds.min);
     const auto maximum_chunk = chunk_coord_for_block(bounds.max);
+    const auto minimum_local = local_coord_for_block(bounds.min);
+    const auto maximum_local = local_coord_for_block(bounds.max);
     for (const auto identity : chunks.identities()) {
         if (!chunk_in_bounds(identity.coordinate, minimum_chunk, maximum_chunk)) {
             continue;
         }
-        for (std::uint16_t z = 0; z < VoxelChunk::edge_length; ++z) {
-            for (std::uint16_t y = 0; y < VoxelChunk::edge_length; ++y) {
-                for (std::uint16_t x = 0; x < VoxelChunk::edge_length; ++x) {
-                    const VoxelCoord local{x, y, z};
-                    auto block = chunk_local_to_block(identity.coordinate, local);
-                    if (block && block_in_bounds(block.value(), bounds)) {
-                        active_.insert({identity.coordinate, local});
-                    }
+        const VoxelCoord local_min{
+            identity.coordinate.x == minimum_chunk.x ? minimum_local.x : std::uint16_t{0},
+            identity.coordinate.y == minimum_chunk.y ? minimum_local.y : std::uint16_t{0},
+            identity.coordinate.z == minimum_chunk.z ? minimum_local.z : std::uint16_t{0},
+        };
+        const VoxelCoord local_max{
+            identity.coordinate.x == maximum_chunk.x
+                ? maximum_local.x
+                : static_cast<std::uint16_t>(VoxelChunk::edge_length - 1U),
+            identity.coordinate.y == maximum_chunk.y
+                ? maximum_local.y
+                : static_cast<std::uint16_t>(VoxelChunk::edge_length - 1U),
+            identity.coordinate.z == maximum_chunk.z
+                ? maximum_local.z
+                : static_cast<std::uint16_t>(VoxelChunk::edge_length - 1U),
+        };
+        for (std::uint16_t z = local_min.z; z <= local_max.z; ++z) {
+            for (std::uint16_t y = local_min.y; y <= local_max.y; ++y) {
+                for (std::uint16_t x = local_min.x; x <= local_max.x; ++x) {
+                    active_.insert({identity.coordinate, {x, y, z}});
                 }
             }
         }

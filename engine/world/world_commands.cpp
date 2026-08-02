@@ -1201,6 +1201,12 @@ resolve_process_modifiers(const WorldState& state, const modding::PrototypeRegis
                 "metadata-backed blocks require a specialized authoritative placement command");
         cell = {definition->type, definition->light_emission, 0, 0};
     }
+    const auto collision_changed =
+        !context.voxel_palette->same_collision_geometry(previous.value(), cell);
+    const auto lighting_changed =
+        !context.voxel_palette->same_lighting_behavior(previous.value(), cell);
+    const auto fluid_changed =
+        !context.voxel_palette->same_fluid_simulation_behavior(previous.value(), cell);
 
     auto status = context.world_state->chunks().set(payload.value().chunk, payload.value().voxel,
                                                     cell, context.world_state->dirty_regions(),
@@ -1214,8 +1220,12 @@ resolve_process_modifiers(const WorldState& state, const modding::PrototypeRegis
         return core::Status::failure("world_command.chunk_not_loaded",
                                      "voxel edit removed its resident chunk unexpectedly");
     }
-    const VoxelChangeRecord change{position.value(), previous.value(), cell, chunk->identity(),
-                                   chunk->content_revision()};
+    auto current = chunk->get(payload.value().voxel);
+    if (!current) {
+        return core::Status::failure(current.error().code, current.error().message);
+    }
+    const VoxelChangeRecord change{position.value(), previous.value(), current.value(),
+                                   chunk->identity(), chunk->content_revision()};
     status = change.validate();
     if (!status) {
         return status;
@@ -1226,11 +1236,19 @@ resolve_process_modifiers(const WorldState& state, const modding::PrototypeRegis
         return status;
     }
     operation.record_derived_update("chunk_mesh");
-    operation.record_derived_update("chunk_collision");
-    operation.record_derived_update("chunk_lighting");
-    operation.emit_event(
-        {std::string(voxel_changed_event_type), {}, VoxelChangeTextCodec::encode(change),
-         payload.value().chunk});
+    if (collision_changed) {
+        operation.record_derived_update("chunk_collision");
+    }
+    if (lighting_changed) {
+        operation.record_derived_update("chunk_lighting");
+    }
+    if (fluid_changed) {
+        operation.record_derived_update("voxel_fluids");
+    }
+    operation.emit_event({std::string(voxel_changed_event_type),
+                          {},
+                          VoxelChangeTextCodec::encode(change),
+                          payload.value().chunk});
     operation.mark_replication_dirty();
     operation.mark_save_dirty();
     return core::Status::ok();

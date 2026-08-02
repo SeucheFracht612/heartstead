@@ -255,13 +255,12 @@ validate_interaction_references(const VoxelDefinition& definition,
     };
 
     auto status = require_kind(definition.interaction.break_resource_item,
-                               modding::PrototypeKinds::item,
-                               "interaction.break_resource_item");
+                               modding::PrototypeKinds::item, "interaction.break_resource_item");
     if (!status) {
         return status;
     }
-    status = require_kind(definition.interaction.break_particle,
-                               modding::PrototypeKinds::particle, "interaction.break_particle");
+    status = require_kind(definition.interaction.break_particle, modding::PrototypeKinds::particle,
+                          "interaction.break_particle");
     if (!status) {
         return status;
     }
@@ -449,6 +448,77 @@ const BlockModelDefinition* VoxelPalette::model_for_type(std::uint16_t type) con
         return nullptr;
     }
     return &model_for(*definition);
+}
+
+bool VoxelPalette::same_collision_geometry(VoxelCell first, VoxelCell second) const noexcept {
+    if (first.type == second.type) {
+        return true;
+    }
+    const auto* first_definition = find_by_type(first.type);
+    const auto* second_definition = find_by_type(second.type);
+    const auto first_size =
+        first_definition == nullptr ? std::size_t{0} : first_definition->collision_bounds.size();
+    const auto second_size =
+        second_definition == nullptr ? std::size_t{0} : second_definition->collision_bounds.size();
+    if (first_size != second_size) {
+        return false;
+    }
+    for (std::size_t index = 0; index < first_size; ++index) {
+        const auto& first_bounds = first_definition->collision_bounds[index];
+        const auto& second_bounds = second_definition->collision_bounds[index];
+        if (first_bounds.min != second_bounds.min || first_bounds.max != second_bounds.max) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool VoxelPalette::same_lighting_behavior(VoxelCell first, VoxelCell second) const noexcept {
+    if (first.type == second.type) {
+        return true;
+    }
+    const auto light_behavior = [this](std::uint16_t type) {
+        const auto* definition = find_by_type(type);
+        if (definition != nullptr) {
+            return std::pair{definition->light_emission, definition->light_absorption};
+        }
+        return type == VoxelDefinition::air_type ? std::pair{std::uint8_t{0}, std::uint8_t{0}}
+                                                 : std::pair{std::uint8_t{0}, std::uint8_t{255}};
+    };
+    return light_behavior(first.type) == light_behavior(second.type);
+}
+
+bool VoxelPalette::same_fluid_simulation_behavior(VoxelCell first,
+                                                  VoxelCell second) const noexcept {
+    enum class FluidSimulationOccupancy {
+        open,
+        blocking,
+        fluid,
+    };
+    const auto occupancy = [this](VoxelCell cell) {
+        if (cell.is_air()) {
+            return FluidSimulationOccupancy::open;
+        }
+        const auto* definition = find_by_type(cell.type);
+        return definition != nullptr &&
+                       definition->logical_occupancy == BlockLogicalOccupancy::fluid
+                   ? FluidSimulationOccupancy::fluid
+                   : FluidSimulationOccupancy::blocking;
+    };
+    const auto first_occupancy = occupancy(first);
+    const auto second_occupancy = occupancy(second);
+    if (first_occupancy != second_occupancy) {
+        return false;
+    }
+    if (first_occupancy != FluidSimulationOccupancy::fluid) {
+        // The fluid solver distinguishes open air, fluids, and blocking cells. Material,
+        // collision, lighting, and rich-block state do not alter a blocking cell's behavior.
+        return true;
+    }
+    // Fluid type controls compatibility; state controls amount, source, falling, and flow.
+    // Metadata-backed fluids are rejected by the solver, so retain it in the equivalence key.
+    return first.type == second.type && first.state_bits == second.state_bits &&
+           first.metadata_handle == second.metadata_handle;
 }
 
 std::uint16_t VoxelPalette::mesh_invalidation_radius(VoxelCell cell) const noexcept {

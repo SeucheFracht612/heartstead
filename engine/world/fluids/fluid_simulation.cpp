@@ -213,11 +213,13 @@ core::Status FluidBlockTable::validate() const {
 FluidBlockTable build_fluid_block_table(const VoxelPalette& palette) {
     FluidBlockTable result;
     result.revision = palette.render_revision();
-    result.blocks.resize(1);
-    for (const auto* definition : palette.definitions()) {
-        if (definition->type >= result.blocks.size()) {
-            result.blocks.resize(static_cast<std::size_t>(definition->type) + 1);
-        }
+    const auto definitions = palette.definitions();
+    std::uint16_t maximum_type = VoxelDefinition::air_type;
+    for (const auto* definition : definitions) {
+        maximum_type = std::max(maximum_type, definition->type);
+    }
+    result.blocks.resize(static_cast<std::size_t>(maximum_type) + 1U);
+    for (const auto* definition : definitions) {
         result.blocks[definition->type].fluid =
             definition->logical_occupancy == BlockLogicalOccupancy::fluid;
     }

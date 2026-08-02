@@ -241,6 +241,9 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     std::uint64_t chunk_snapshot_deferred_count = 0;
     std::uint64_t chunk_snapshot_serialization_budget_deferred_count = 0;
     std::uint32_t chunk_subscription_reliable_admission_deferral_count = 0;
+    std::uint64_t chunk_delta_advanced_publication_count = 0;
+    std::uint64_t chunk_delta_avoided_snapshot_count = 0;
+    std::uint64_t chunk_delta_publication_gap_count = 0;
     std::uint32_t physics_body_count = 0;
     std::size_t collision_body_count = 0;
     std::uint64_t collision_box_count = 0;
@@ -252,6 +255,8 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     double relight_apply_ms = 0.0;
     std::size_t fluid_active_cells = 0;
     std::size_t fluid_processed_cells = 0;
+    double fluid_topology_ms = 0.0;
+    double fluid_dirty_collection_ms = 0.0;
     double fluid_simulation_ms = 0.0;
     double fluid_apply_ms = 0.0;
     std::size_t chunk_load_in_flight = 0;
@@ -358,6 +363,9 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
             chunks.serialization_budget_deferred_snapshot_count;
         chunk_subscription_reliable_admission_deferral_count +=
             chunks.reliable_admission_deferral_count;
+        chunk_delta_advanced_publication_count += chunks.delta_advanced_publication_count;
+        chunk_delta_avoided_snapshot_count += chunks.delta_avoided_snapshot_count;
+        chunk_delta_publication_gap_count += chunks.delta_publication_gap_count;
         physics_body_count = tick.physics.body_count;
         collision_body_count = tick.chunk_collision.resident_body_count;
         collision_box_count = tick.chunk_collision.current_collision_boxes;
@@ -370,6 +378,8 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
         relight_apply_ms = tick.chunk_lighting.last_apply_ms;
         fluid_active_cells = tick.chunk_fluids.active_cell_count;
         fluid_processed_cells = tick.chunk_fluids.processed_cells_this_update;
+        fluid_topology_ms = tick.chunk_fluids.last_topology_reconciliation_ms;
+        fluid_dirty_collection_ms = tick.chunk_fluids.last_dirty_collection_ms;
         fluid_simulation_ms = tick.chunk_fluids.last_simulation_ms;
         fluid_apply_ms = tick.chunk_fluids.last_apply_ms;
         chunk_load_in_flight = tick.chunk_loading.in_flight_requests;
@@ -488,6 +498,12 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
               std::to_string(chunk_snapshot_serialization_budget_deferred_count));
     add_field(data, "chunk_subscription_reliable_admission_deferral_count",
               std::to_string(chunk_subscription_reliable_admission_deferral_count));
+    add_field(data, "chunk_delta_advanced_publication_count",
+              std::to_string(chunk_delta_advanced_publication_count));
+    add_field(data, "chunk_delta_avoided_snapshot_count",
+              std::to_string(chunk_delta_avoided_snapshot_count));
+    add_field(data, "chunk_delta_publication_gap_count",
+              std::to_string(chunk_delta_publication_gap_count));
     add_field(data, "physics_body_count", std::to_string(physics_body_count));
     add_field(data, "chunk_collision_body_count", std::to_string(collision_body_count));
     add_field(data, "chunk_collision_box_count", std::to_string(collision_box_count));
@@ -499,6 +515,8 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     add_field(data, "voxel_relight_apply_ms", std::to_string(relight_apply_ms));
     add_field(data, "voxel_fluid_active_cells", std::to_string(fluid_active_cells));
     add_field(data, "voxel_fluid_processed_cells", std::to_string(fluid_processed_cells));
+    add_field(data, "voxel_fluid_topology_ms", std::to_string(fluid_topology_ms));
+    add_field(data, "voxel_fluid_dirty_collection_ms", std::to_string(fluid_dirty_collection_ms));
     add_field(data, "voxel_fluid_simulation_ms", std::to_string(fluid_simulation_ms));
     add_field(data, "voxel_fluid_apply_ms", std::to_string(fluid_apply_ms));
     add_field(data, "chunk_load_in_flight", std::to_string(chunk_load_in_flight));
@@ -694,6 +712,10 @@ debug::InspectionData GameInspector::inspect(const RuntimeSession& session) {
                   std::to_string(collision_stats.total_abandoned_collision_invalidations));
         const auto& fluid_stats = server->chunk_fluids().stats();
         add_field(data, "voxel_fluid_active_cells", std::to_string(fluid_stats.active_cell_count));
+        add_field(data, "voxel_fluid_topology_ms",
+                  std::to_string(fluid_stats.last_topology_reconciliation_ms));
+        add_field(data, "voxel_fluid_dirty_collection_ms",
+                  std::to_string(fluid_stats.last_dirty_collection_ms));
         add_field(data, "voxel_fluid_steps", std::to_string(fluid_stats.steps));
         add_field(data, "voxel_fluid_changed_cells",
                   std::to_string(fluid_stats.total_changed_cells));

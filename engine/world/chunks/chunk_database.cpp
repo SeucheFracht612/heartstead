@@ -239,6 +239,12 @@ core::Result<VoxelCell> ChunkDatabase::get(ChunkCoord chunk_coord, VoxelCoord vo
 }
 
 core::Status ChunkDatabase::set(ChunkCoord chunk_coord, VoxelCoord voxel_coord, VoxelCell cell) {
+    return set_with_invalidation(chunk_coord, voxel_coord, cell, {});
+}
+
+core::Status ChunkDatabase::set_with_invalidation(ChunkCoord chunk_coord, VoxelCoord voxel_coord,
+                                                  VoxelCell cell,
+                                                  VoxelDerivedInvalidation invalidation) {
     if (!is_valid_local_coord(voxel_coord)) {
         return core::Status::failure("chunk.coord_out_of_bounds",
                                      "voxel coordinate is outside the chunk");
@@ -250,7 +256,6 @@ core::Status ChunkDatabase::set(ChunkCoord chunk_coord, VoxelCoord voxel_coord, 
     if (previous == cell) {
         return core::Status::ok();
     }
-
     auto history_position = edit_history_by_chunk_.find(chunk_coord);
     auto* history =
         history_position == edit_history_by_chunk_.end() ? nullptr : &history_position->second;
@@ -290,7 +295,7 @@ core::Status ChunkDatabase::set(ChunkCoord chunk_coord, VoxelCoord voxel_coord, 
     const auto neighbors = boundary_neighbors(chunk_coord, voxel_coord);
 
     auto& chunk = resident == nullptr ? get_or_create(chunk_coord) : *resident;
-    auto status = chunk.set(voxel_coord, cell);
+    auto status = chunk.set(voxel_coord, cell, invalidation);
     if (!status) {
         if (inserted_empty_history && history->empty()) {
             edit_history_by_chunk_.erase(history_position);
@@ -314,9 +319,15 @@ core::Status ChunkDatabase::set(ChunkCoord chunk_coord, VoxelCoord voxel_coord, 
     for (const auto neighbor : neighbors) {
         auto* neighbor_chunk = find(neighbor);
         if (neighbor_chunk != nullptr) {
-            neighbor_chunk->mark_dirty(ChunkDirtyFlag::mesh);
-            neighbor_chunk->mark_dirty(ChunkDirtyFlag::collision);
-            neighbor_chunk->mark_dirty(ChunkDirtyFlag::lighting);
+            if (invalidation.mesh) {
+                neighbor_chunk->mark_dirty(ChunkDirtyFlag::mesh);
+            }
+            if (invalidation.collision) {
+                neighbor_chunk->mark_dirty(ChunkDirtyFlag::collision);
+            }
+            if (invalidation.lighting) {
+                neighbor_chunk->mark_dirty(ChunkDirtyFlag::lighting);
+            }
         }
     }
     return core::Status::ok();
@@ -382,20 +393,64 @@ core::Status ChunkDatabase::set(ChunkCoord chunk_coord, VoxelCoord voxel_coord, 
     if (previous == cell) {
         return core::Status::ok();
     }
+    const auto same_lighting_behavior = palette.same_lighting_behavior(previous, cell);
+    const auto same_fluid_behavior = palette.same_fluid_simulation_behavior(previous, cell);
+    if (same_lighting_behavior) {
+        // Light is derived state. A material-only replacement with identical propagation behavior
+        // keeps the solved value instead of manufacturing a whole-field relight.
+        cell.light = previous.light;
+    }
+    if (previous == cell) {
+        return core::Status::ok();
+    }
 
     const auto radius = std::max(palette.mesh_invalidation_radius(previous),
                                  palette.mesh_invalidation_radius(cell));
     const auto rich_neighbors = rich_mesh_invalidation_neighbors(chunk_coord, voxel_coord, radius);
+    const VoxelDerivedInvalidation invalidation{
+        true,
+        !palette.same_collision_geometry(previous, cell),
+        !same_lighting_behavior,
+    };
     auto staged_dirty = dirty_regions;
-    for (const auto neighbor : rich_neighbors) {
-        auto status = staged_dirty.mark_single(dirty::DirtyRegionKind::chunk_mesh,
-                                               dirty_coord_for_chunk(neighbor),
-                                               "rich block mesh invalidation");
+    auto status = mark_chunk_rebuild_regions(staged_dirty, chunk_coord, "voxel edit", invalidation);
+    if (!status) {
+        return status;
+    }
+    for (const auto neighbor : boundary_neighbors(chunk_coord, voxel_coord)) {
+        if (find(neighbor) == nullptr) {
+            continue;
+        }
+        status =
+            mark_chunk_rebuild_regions(staged_dirty, neighbor, "boundary voxel edit", invalidation);
         if (!status) {
             return status;
         }
     }
-    auto status = set(chunk_coord, voxel_coord, cell, staged_dirty);
+    if (!same_fluid_behavior) {
+        auto block = chunk_local_to_block(chunk_coord, voxel_coord);
+        if (!block) {
+            return core::Status::failure(block.error().code, block.error().message);
+        }
+        auto bounds = dirty::DirtyRegionBounds::single(block.value());
+        if (auto expanded = bounds.expanded(1); expanded) {
+            bounds = expanded.value();
+        }
+        status = staged_dirty.mark(dirty::DirtyRegionKind::water_network, bounds,
+                                   "voxel fluid activation");
+        if (!status) {
+            return status;
+        }
+    }
+    for (const auto neighbor : rich_neighbors) {
+        status = staged_dirty.mark_single(dirty::DirtyRegionKind::chunk_mesh,
+                                          dirty_coord_for_chunk(neighbor),
+                                          "rich block mesh invalidation");
+        if (!status) {
+            return status;
+        }
+    }
+    status = set_with_invalidation(chunk_coord, voxel_coord, cell, invalidation);
     if (!status) {
         return status;
     }
@@ -864,20 +919,28 @@ dirty::DirtyRegionCoord ChunkDatabase::dirty_coord_for_chunk(ChunkCoord coord) n
 }
 
 core::Status ChunkDatabase::mark_chunk_rebuild_regions(dirty::DirtyRegionTracker& dirty_regions,
-                                                       ChunkCoord coord, std::string reason) {
+                                                       ChunkCoord coord, std::string reason,
+                                                       VoxelDerivedInvalidation invalidation) {
     const auto dirty_coord = dirty_coord_for_chunk(coord);
-    auto status =
-        dirty_regions.mark_single(dirty::DirtyRegionKind::chunk_mesh, dirty_coord, reason);
-    if (!status) {
-        return status;
+    if (invalidation.mesh) {
+        auto status =
+            dirty_regions.mark_single(dirty::DirtyRegionKind::chunk_mesh, dirty_coord, reason);
+        if (!status) {
+            return status;
+        }
     }
-    status =
-        dirty_regions.mark_single(dirty::DirtyRegionKind::chunk_collision, dirty_coord, reason);
-    if (!status) {
-        return status;
+    if (invalidation.collision) {
+        auto status =
+            dirty_regions.mark_single(dirty::DirtyRegionKind::chunk_collision, dirty_coord, reason);
+        if (!status) {
+            return status;
+        }
     }
-    return dirty_regions.mark_single(dirty::DirtyRegionKind::chunk_lighting, dirty_coord,
-                                     std::move(reason));
+    if (invalidation.lighting) {
+        return dirty_regions.mark_single(dirty::DirtyRegionKind::chunk_lighting, dirty_coord,
+                                         std::move(reason));
+    }
+    return core::Status::ok();
 }
 
 std::vector<ChunkCoord> ChunkDatabase::boundary_neighbors(ChunkCoord chunk_coord,

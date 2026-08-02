@@ -30,6 +30,7 @@ struct FluidFixture {
     heartstead::world::VoxelPalette palette;
     heartstead::world::RegionGraph regions;
     heartstead::core::PrototypeId stone_id = id("test:voxels/stone");
+    heartstead::core::PrototypeId clay_id = id("test:voxels/clay");
     heartstead::core::PrototypeId water_id = id("test:voxels/water");
 
     FluidFixture() {
@@ -40,6 +41,14 @@ struct FluidFixture {
         stone.terrain_material = "stone";
         stone.mining_tool = "pickaxe";
         assert(palette.add(std::move(stone)));
+
+        heartstead::world::VoxelDefinition clay;
+        clay.type = 3;
+        clay.prototype_id = clay_id;
+        clay.display_name = "Clay";
+        clay.terrain_material = "clay";
+        clay.mining_tool = "shovel";
+        assert(palette.add(std::move(clay)));
 
         heartstead::world::VoxelDefinition water;
         water.type = 2;
@@ -98,6 +107,27 @@ void test_palette_creates_full_finite_fluid_cells() {
     invalid.metadata_handle = 4;
     assert(!decode_fluid_cell(invalid, fixture.palette));
     assert(!decode_fluid_cell({1, 0, full_fluid_state_bits()}, fixture.palette));
+}
+
+void test_palette_fluid_behavior_equivalence_matches_solver_inputs() {
+    using namespace heartstead::world;
+    FluidFixture fixture;
+    const auto stone = fixture.palette.cell_for(fixture.stone_id).value();
+    const auto clay = fixture.palette.cell_for(fixture.clay_id).value();
+    const auto water = fixture.palette.cell_for(fixture.water_id).value();
+    auto flowing_water = water;
+    flowing_water.state_bits =
+        encode_fluid_state({4, false, false, FluidFlowDirection::positive_x}).value();
+
+    assert(fixture.palette.same_fluid_simulation_behavior(stone, clay));
+    assert(fixture.palette.same_fluid_simulation_behavior(stone, {99, 3, 7, 11}));
+    assert(fixture.palette.same_fluid_simulation_behavior(VoxelCell::air(), {0, 17, 9, 4}));
+    assert(!fixture.palette.same_fluid_simulation_behavior(stone, VoxelCell::air()));
+    assert(!fixture.palette.same_fluid_simulation_behavior(stone, water));
+    assert(!fixture.palette.same_fluid_simulation_behavior(water, flowing_water));
+    auto relit_water = water;
+    relit_water.light = 42;
+    assert(fixture.palette.same_fluid_simulation_behavior(water, relit_water));
 }
 
 void test_worldgen_seeds_ocean_sources_below_sea_level() {
@@ -381,6 +411,31 @@ void test_chunk_fluid_system_consumes_dirty_work_and_reports_backlog() {
     assert(system.value()->update(chunks, dirty_regions, fixture.palette, 1));
     assert(system.value()->stats().dirty_regions_consumed == 1);
     assert(dirty_regions.count(heartstead::dirty::DirtyRegionKind::water_network) == 0);
+
+    assert(chunks.set({0, 0, 0}, {4, 0, 4}, VoxelCell{3}, dirty_regions, fixture.palette));
+    assert(dirty_regions.count(heartstead::dirty::DirtyRegionKind::water_network) == 0);
+}
+
+void test_chunk_fluid_dirty_activation_clips_to_resident_bounds() {
+    using namespace heartstead::world;
+    FluidFixture fixture;
+    ChunkDatabase chunks;
+    (void)chunks.get_or_create({-1, 0, 0});
+    (void)chunks.get_or_create({0, 0, 0});
+    heartstead::dirty::DirtyRegionTracker dirty_regions;
+    ChunkFluidSystemConfig config;
+    config.simulation_tick_interval = 4;
+    auto system = ChunkFluidSystem::create(fixture.palette, config);
+    assert(system);
+    assert(system.value()->update(chunks, dirty_regions, fixture.palette, 0));
+    assert(system.value()->stats().active_cell_count == 0);
+
+    assert(dirty_regions.mark(heartstead::dirty::DirtyRegionKind::water_network,
+                              {{-1, 2, 3}, {0, 3, 4}}, "cross-boundary activation"));
+    assert(system.value()->update(chunks, dirty_regions, fixture.palette, 1));
+    assert(system.value()->stats().dirty_regions_consumed == 1);
+    assert(system.value()->stats().active_cell_count == 8);
+    assert(system.value()->stats().processed_cells_this_update == 0);
 }
 
 void test_save_reload_mid_flow_matches_uninterrupted_simulation() {
@@ -436,6 +491,7 @@ void test_save_reload_mid_flow_matches_uninterrupted_simulation() {
 int main() {
     test_fluid_state_round_trip_and_rejects_reserved_state();
     test_palette_creates_full_finite_fluid_cells();
+    test_palette_fluid_behavior_equivalence_matches_solver_inputs();
     test_worldgen_seeds_ocean_sources_below_sea_level();
     test_fluid_mesher_uses_levels_and_flow_uvs();
     test_fluid_mesher_matches_surface_at_chunk_border();
@@ -443,6 +499,7 @@ int main() {
     test_source_removal_cleans_up_and_budget_defers_work();
     test_stale_fluid_result_fails_before_application();
     test_chunk_fluid_system_consumes_dirty_work_and_reports_backlog();
+    test_chunk_fluid_dirty_activation_clips_to_resident_bounds();
     test_save_reload_mid_flow_matches_uninterrupted_simulation();
     return 0;
 }

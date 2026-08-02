@@ -65,7 +65,9 @@ std::uint8_t ChunkDirtyState::bits() const noexcept {
     return bits_;
 }
 
-VoxelChunk::VoxelChunk(ChunkCoord coord) : coord_(coord), cells_(total_cells, VoxelCell::air()) {}
+VoxelChunk::VoxelChunk(ChunkCoord coord)
+    : coord_(coord),
+      cells_(std::make_shared<std::vector<VoxelCell>>(total_cells, VoxelCell::air())) {}
 
 ChunkCoord VoxelChunk::coord() const noexcept {
     return coord_;
@@ -104,7 +106,7 @@ bool VoxelChunk::stage_ticket_is_current(ChunkStageTicket ticket) const noexcept
 }
 
 std::span<const VoxelCell> VoxelChunk::cells() const noexcept {
-    return cells_;
+    return *cells_;
 }
 
 core::Result<VoxelCell> VoxelChunk::get(VoxelCoord coord) const {
@@ -113,27 +115,39 @@ core::Result<VoxelCell> VoxelChunk::get(VoxelCoord coord) const {
                                                 "voxel coordinate is outside the chunk");
     }
 
-    return core::Result<VoxelCell>::success(cells_[index_of(coord)]);
+    return core::Result<VoxelCell>::success((*cells_)[index_of(coord)]);
 }
 
 core::Status VoxelChunk::set(VoxelCoord coord, VoxelCell cell) {
+    return set(coord, cell, {});
+}
+
+core::Status VoxelChunk::set(VoxelCoord coord, VoxelCell cell,
+                             VoxelDerivedInvalidation invalidation) {
     if (!contains(coord)) {
         return core::Status::failure("chunk.coord_out_of_bounds",
                                      "voxel coordinate is outside the chunk");
     }
 
     const auto index = index_of(coord);
-    auto& current = cells_[index];
-    if (current == cell) {
+    if ((*cells_)[index] == cell) {
         return core::Status::ok();
     }
 
+    ensure_unique_cells();
+    auto& current = (*cells_)[index];
     occupancy_.set_occupied(index, !cell.is_air());
     current = cell;
     advance_content_revision();
-    invalidate(ChunkDirtyFlag::mesh);
-    invalidate(ChunkDirtyFlag::collision);
-    invalidate(ChunkDirtyFlag::lighting);
+    if (invalidation.mesh) {
+        invalidate(ChunkDirtyFlag::mesh);
+    }
+    if (invalidation.collision) {
+        invalidate(ChunkDirtyFlag::collision);
+    }
+    if (invalidation.lighting) {
+        invalidate(ChunkDirtyFlag::lighting);
+    }
     invalidate(ChunkDirtyFlag::save);
     invalidate(ChunkDirtyFlag::replication);
     return core::Status::ok();
@@ -146,11 +160,12 @@ core::Status VoxelChunk::apply_saved_cell(VoxelCoord coord, VoxelCell cell) {
     }
 
     const auto index = index_of(coord);
-    auto& current = cells_[index];
-    if (current == cell) {
+    if ((*cells_)[index] == cell) {
         return core::Status::ok();
     }
 
+    ensure_unique_cells();
+    auto& current = (*cells_)[index];
     occupancy_.set_occupied(index, !cell.is_air());
     current = cell;
     advance_content_revision();
@@ -166,12 +181,19 @@ core::Result<std::size_t> VoxelChunk::apply_derived_light(std::span<const std::u
             "chunk.invalid_derived_light_count",
             "derived voxel light field cell count does not match chunk size");
     }
+    if (std::ranges::equal(*cells_, light, [](const VoxelCell& cell, std::uint8_t value) {
+            return cell.light == value;
+        })) {
+        return core::Result<std::size_t>::success(0);
+    }
+
+    ensure_unique_cells();
     std::size_t changed = 0;
-    for (std::size_t index = 0; index < cells_.size(); ++index) {
-        if (cells_[index].light == light[index]) {
+    for (std::size_t index = 0; index < cells_->size(); ++index) {
+        if ((*cells_)[index].light == light[index]) {
             continue;
         }
-        cells_[index].light = light[index];
+        (*cells_)[index].light = light[index];
         ++changed;
     }
     if (changed > 0) {
@@ -188,8 +210,8 @@ core::Status VoxelChunk::load_generated_cells(std::vector<VoxelCell> cells) {
                                      "generated chunk cell count does not match chunk size");
     }
 
-    cells_ = std::move(cells);
-    occupancy_.rebuild(cells_);
+    cells_ = std::make_shared<std::vector<VoxelCell>>(std::move(cells));
+    occupancy_.rebuild(*cells_);
     advance_content_revision();
     dirty_.clear_all();
     invalidate(ChunkDirtyFlag::mesh);
@@ -199,12 +221,14 @@ core::Status VoxelChunk::load_generated_cells(std::vector<VoxelCell> cells) {
 }
 
 void VoxelChunk::fill(VoxelCell cell) {
-    if (std::ranges::all_of(cells_, [cell](const VoxelCell& current) { return current == cell; })) {
+    if (std::ranges::all_of(*cells_,
+                            [cell](const VoxelCell& current) { return current == cell; })) {
         return;
     }
 
-    std::ranges::fill(cells_, cell);
-    occupancy_.rebuild(cells_);
+    ensure_unique_cells();
+    std::ranges::fill(*cells_, cell);
+    occupancy_.rebuild(*cells_);
     advance_content_revision();
     invalidate(ChunkDirtyFlag::mesh);
     invalidate(ChunkDirtyFlag::collision);
@@ -263,6 +287,12 @@ core::Status VoxelChunk::note_stage_stale(ChunkStageTicket ticket) {
 core::Status VoxelChunk::note_stage_cancelled(ChunkStageTicket ticket) {
     auto status = validate_ticket_identity(identity(), ticket);
     return status ? stages_.note_cancelled(ticket.stage, ticket.revision) : status;
+}
+
+void VoxelChunk::ensure_unique_cells() {
+    if (!cells_.unique()) {
+        cells_ = std::make_shared<std::vector<VoxelCell>>(*cells_);
+    }
 }
 
 void VoxelChunk::invalidate(ChunkDirtyFlag flag) noexcept {

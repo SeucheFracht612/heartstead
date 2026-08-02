@@ -502,16 +502,44 @@ core::Status ClientRuntime::record_accepted_voxel_edit(world::VoxelChangeRecord 
         return status;
     }
     const auto address = world::block_to_chunk_local(change.position);
+    const auto remote = remote_chunks_.find(address.chunk);
+    if (remote == remote_chunks_.end()) {
+        return core::Status::failure(
+            "client_runtime.accepted_voxel_base_missing",
+            "accepted voxel edit requires an authoritative chunk snapshot base");
+    }
+    const auto remote_generation = remote->second.first.load_generation;
+    const auto change_generation = change.chunk_identity.load_generation;
+    if (remote_generation < change_generation ||
+        (remote_generation == change_generation &&
+         remote->second.second < change.content_revision &&
+         (remote->second.second == std::numeric_limits<std::uint64_t>::max() ||
+          remote->second.second + 1 != change.content_revision))) {
+        return core::Status::failure(
+            "client_runtime.accepted_voxel_base_gap",
+            "accepted voxel edit is not contiguous with the client's authoritative chunk base");
+    }
     auto current = world_.chunks().get(address.chunk, address.local);
     if (!current) {
         return core::Status::failure(
             "client_runtime.accepted_voxel_chunk_missing",
             "accepted voxel edit was dispatched before its client chunk existed");
     }
-    if (current.value() != change.current) {
+    const auto delta_is_superseded =
+        remote_generation > change_generation ||
+        (remote_generation == change_generation && remote->second.second > change.content_revision);
+    const auto same_persistent_cell = [](world::VoxelCell left, world::VoxelCell right) {
+        return left.type == right.type && left.state_bits == right.state_bits &&
+               left.metadata_handle == right.metadata_handle;
+    };
+    if ((!delta_is_superseded && current.value() != change.current) ||
+        (delta_is_superseded && !same_persistent_cell(current.value(), change.current))) {
         return core::Status::failure(
             "client_runtime.accepted_voxel_not_applied",
             "accepted voxel edit was dispatched before its client world mutation");
+    }
+    if (remote_generation == change_generation && remote->second.second < change.content_revision) {
+        remote->second.second = change.content_revision;
     }
     accepted_voxel_edits_.push_back(std::move(change));
     return core::Status::ok();

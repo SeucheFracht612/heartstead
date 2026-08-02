@@ -1,9 +1,13 @@
 #include "game/runtime/multiplayer_chunk_subscription_benchmark.hpp"
 
 #include "engine/content/content_validation.hpp"
+#include "engine/net/command_payload.hpp"
+#include "engine/net/replication.hpp"
 #include "engine/net/transport_packet.hpp"
 #include "engine/profiling/profiler.hpp"
 #include "engine/world/chunks/chunk_replication.hpp"
+#include "engine/world/replication_delta.hpp"
+#include "engine/world/voxel_change.hpp"
 #include "game/foundation/foundation_world.hpp"
 #include "game/runtime/client_runtime.hpp"
 #include "game/runtime/game_runtime.hpp"
@@ -33,6 +37,10 @@ constexpr double fixed_delta_seconds = 1.0 / 60.0;
 constexpr std::int64_t maximum_path_component = 1'000'000;
 constexpr std::uint32_t stable_warmup_ticks = 3;
 constexpr std::size_t burst_chunks_per_client = 2;
+constexpr std::uint32_t minimum_hot_edit_ticks_for_p99 = 100;
+constexpr world::VoxelCoord hot_edit_voxel{31, 31, 31};
+constexpr std::string_view hot_edit_clay_prototype = "base:voxels/clay";
+constexpr std::string_view hot_edit_stone_prototype = "base:voxels/stone";
 
 struct BenchmarkClient {
     core::NetId id;
@@ -69,11 +77,31 @@ struct BenchmarkClient {
     return envelope.message.payload_type == world::chunk_subscription_removal_payload_type;
 }
 
+[[nodiscard]] bool is_world_event_message(const net::TransportEnvelope& envelope) noexcept {
+    return envelope.message.payload_type == net::replication_world_events_payload_type ||
+           envelope.message.payload_type == net::replication_world_events_legacy_payload_type;
+}
+
+[[nodiscard]] bool is_world_delta_message(const net::TransportEnvelope& envelope) noexcept {
+    return envelope.message.payload_type == world::replication_delta_snapshot_payload_type ||
+           envelope.message.payload_type == world::replication_delta_snapshot_legacy_payload_type;
+}
+
 [[nodiscard]] world::ChunkCoord offset_chunk(world::ChunkCoord coordinate, std::int64_t x,
                                              std::int64_t z) noexcept {
     coordinate.x += x;
     coordinate.z += z;
     return coordinate;
+}
+
+[[nodiscard]] std::string chunk_coord_text(world::ChunkCoord coordinate) {
+    return std::to_string(coordinate.x) + '|' + std::to_string(coordinate.y) + '|' +
+           std::to_string(coordinate.z);
+}
+
+[[nodiscard]] std::string voxel_coord_text(world::VoxelCoord coordinate) {
+    return std::to_string(coordinate.x) + '|' + std::to_string(coordinate.y) + '|' +
+           std::to_string(coordinate.z);
 }
 
 void write_json_string(std::ostream& output, std::string_view value) {
@@ -173,6 +201,17 @@ class BenchmarkRunner final {
             if (!status) {
                 return failure(status);
             }
+        }
+
+        status = run_transition(MultiplayerChunkSubscriptionPhase::hot_edit_transition, 0,
+                                hot_edit_centers_, hot_edit_markers_);
+        if (!status) {
+            return failure(status);
+        }
+
+        status = run_hot_edit_workload();
+        if (!status) {
+            return failure(status);
         }
 
         for (std::uint32_t tick = 0; tick < config_.steady_ticks; ++tick) {
@@ -319,6 +358,20 @@ class BenchmarkRunner final {
             }
             traversal_centers_.push_back(std::move(centers));
         }
+
+        const auto hot_spacing =
+            static_cast<std::int64_t>(config_.subscriptions.retain_horizontal_radius_chunks) * 2 +
+            1;
+        const auto hot_span = hot_spacing * (static_cast<std::int64_t>(config_.client_count) - 1);
+        const auto hot_start_x = -(hot_span / 2);
+        hot_edit_centers_.reserve(config_.client_count);
+        hot_edit_markers_.reserve(config_.client_count);
+        for (std::uint32_t client = 0; client < config_.client_count; ++client) {
+            const world::ChunkCoord center{
+                hot_start_x + hot_spacing * static_cast<std::int64_t>(client), 0, 64};
+            hot_edit_centers_.push_back(center);
+            hot_edit_markers_.push_back({center});
+        }
     }
 
     [[nodiscard]] core::Status preload_marker_chunks() {
@@ -334,6 +387,19 @@ class BenchmarkRunner final {
                 "multiplayer_chunk_subscription_benchmark.missing_marker_voxel",
                 "foundation scenario did not provide a solid marker voxel");
         }
+        const auto clay_id = core::PrototypeId::parse(hot_edit_clay_prototype);
+        const auto stone_id = core::PrototypeId::parse(hot_edit_stone_prototype);
+        const auto* clay = clay_id ? server_->voxel_palette().find_by_prototype(*clay_id) : nullptr;
+        const auto* stone =
+            stone_id ? server_->voxel_palette().find_by_prototype(*stone_id) : nullptr;
+        if (clay == nullptr || stone == nullptr || clay->metadata_required ||
+            stone->metadata_required) {
+            return core::Status::failure(
+                "multiplayer_chunk_subscription_benchmark.missing_hot_edit_voxels",
+                "hot-edit workload requires ordinary clay and stone voxel prototypes");
+        }
+        hot_edit_clay_cell_ = {clay->type, clay->light_emission, 0, 0};
+        hot_edit_stone_cell_ = {stone->type, stone->light_emission, 0, 0};
 
         std::vector<world::ChunkCoord> markers = cluster_markers_;
         for (const auto& client_markers : spread_markers_) {
@@ -341,6 +407,9 @@ class BenchmarkRunner final {
         }
         for (const auto& step : traversal_centers_) {
             markers.insert(markers.end(), step.begin(), step.end());
+        }
+        for (const auto& client_markers : hot_edit_markers_) {
+            markers.insert(markers.end(), client_markers.begin(), client_markers.end());
         }
         std::ranges::sort(markers);
         markers.erase(std::unique(markers.begin(), markers.end()), markers.end());
@@ -360,6 +429,14 @@ class BenchmarkRunner final {
             }
             // Marker chunks exist to make relevance and serialization observable. Their lighting,
             // collision, and save work is settled before timing begins.
+            chunk.clear_all_dirty();
+        }
+        for (const auto coordinate : hot_edit_centers_) {
+            auto& chunk = server_->world().chunks().get_or_create(coordinate);
+            auto status = chunk.set(hot_edit_voxel, hot_edit_clay_cell_);
+            if (!status) {
+                return status;
+            }
             chunk.clear_all_dirty();
         }
         return core::Status::ok();
@@ -502,6 +579,193 @@ class BenchmarkRunner final {
         return true;
     }
 
+    [[nodiscard]] core::Result<std::string>
+    make_hot_edit_payload(world::ChunkCoord chunk, std::string_view prototype) const {
+        net::CommandPayload payload;
+        auto status = payload.set("chunk", chunk_coord_text(chunk));
+        if (!status) {
+            return core::Result<std::string>::failure(status.error().code, status.error().message);
+        }
+        status = payload.set("voxel", voxel_coord_text(hot_edit_voxel));
+        if (!status) {
+            return core::Result<std::string>::failure(status.error().code, status.error().message);
+        }
+        status = payload.set("prototype", std::string(prototype));
+        if (!status) {
+            return core::Result<std::string>::failure(status.error().code, status.error().message);
+        }
+        return core::Result<std::string>::success(net::CommandPayloadTextCodec::encode(payload));
+    }
+
+    [[nodiscard]] core::Status run_hot_edit_workload() {
+        if (hot_edit_centers_.size() != clients_.size()) {
+            return core::Status::failure(
+                "multiplayer_chunk_subscription_benchmark.missing_hot_edit_targets",
+                "hot-edit workload requires one final published traversal chunk per client");
+        }
+        const auto& targets = hot_edit_centers_;
+        for (std::uint32_t ordinal = 0; ordinal < config_.hot_edit_ticks; ++ordinal) {
+            std::vector<world::VoxelCell> previous_cells;
+            previous_cells.reserve(clients_.size());
+            for (std::size_t index = 0; index < clients_.size(); ++index) {
+                const auto* authoritative = server_->world().chunks().find(targets[index]);
+                const auto* replica =
+                    clients_[index].runtime->world().chunks().find(targets[index]);
+                if (authoritative == nullptr || replica == nullptr) {
+                    return core::Status::failure(
+                        "multiplayer_chunk_subscription_benchmark.hot_edit_base_mismatch",
+                        "hot-edit target chunk is missing from the authoritative server or its "
+                        "interested client before command submission");
+                }
+                if (!clients_[index].runtime->local_chunk_snapshot_is_current(*authoritative)) {
+                    return core::Status::failure(
+                        "multiplayer_chunk_subscription_benchmark.hot_edit_base_mismatch",
+                        "hot-edit target base mismatch for client " +
+                            std::to_string(clients_[index].id.value()) + ": authoritative " +
+                            std::to_string(authoritative->identity().load_generation) + '/' +
+                            std::to_string(authoritative->content_revision()));
+                }
+                auto previous = authoritative->get(hot_edit_voxel);
+                auto replica_previous = replica->get(hot_edit_voxel);
+                if (!previous || !replica_previous ||
+                    previous.value() != replica_previous.value()) {
+                    return core::Status::failure(
+                        "multiplayer_chunk_subscription_benchmark.hot_edit_cell_mismatch",
+                        "hot-edit target cell must match on the authoritative server and client");
+                }
+                previous_cells.push_back(previous.value());
+
+                const auto prototype = previous.value() == hot_edit_clay_cell_
+                                           ? hot_edit_stone_prototype
+                                           : hot_edit_clay_prototype;
+                auto payload = make_hot_edit_payload(targets[index], prototype);
+                if (!payload) {
+                    return core::Status::failure(payload.error().code, payload.error().message);
+                }
+                auto command = clients_[index].runtime->create_command(
+                    "world.set_voxel", std::move(payload).value(), now_ms_ + 17);
+                if (!command) {
+                    return core::Status::failure(command.error().code, command.error().message);
+                }
+                auto status =
+                    server_->submit_command(clients_[index].id, std::move(command).value());
+                if (!status) {
+                    return status;
+                }
+            }
+
+            auto tick_result = run_tick(MultiplayerChunkSubscriptionPhase::hot_edit, ordinal, true);
+            if (!tick_result) {
+                return core::Status::failure(tick_result.error().code, tick_result.error().message);
+            }
+            auto status = verify_hot_edit_tick(tick_result.value(), targets, previous_cells);
+            if (!status) {
+                return status;
+            }
+        }
+        return core::Status::ok();
+    }
+
+    [[nodiscard]] core::Status
+    verify_hot_edit_tick(const ServerRuntimeTickStats& stats,
+                         const std::vector<world::ChunkCoord>& targets,
+                         const std::vector<world::VoxelCell>& previous_cells) {
+        if (report_.raw_ticks.empty() || targets.size() != clients_.size() ||
+            previous_cells.size() != clients_.size()) {
+            return core::Status::failure(
+                "multiplayer_chunk_subscription_benchmark.incomplete_hot_edit_tick",
+                "hot-edit verification is missing raw tick, target, or prior-cell evidence");
+        }
+        auto& sample = report_.raw_ticks.back();
+        const auto client_count = static_cast<std::uint64_t>(clients_.size());
+        const auto expected_filtered = client_count * (client_count - 1U);
+        if (stats.commands.command_reports.size() != clients_.size() ||
+            stats.commands.replication_relevance_reports.size() != clients_.size() ||
+            stats.replication.sent_message_count != clients_.size() ||
+            sample.snapshot_chunk_count != 0 || sample.spatial_event_count != clients_.size() ||
+            sample.relevant_spatial_event_delivery_count != client_count ||
+            sample.filtered_spatial_event_delivery_count != expected_filtered ||
+            sample.replication_delta_message_count != clients_.size() ||
+            sample.delta_advanced_publication_count != clients_.size() ||
+            sample.delta_avoided_snapshot_count != clients_.size() ||
+            sample.delta_publication_gap_count != 0 || sample.fluid_active_cell_count != 0 ||
+            sample.fluid_processed_cell_count != 0 || sample.pending_reliable_message_count != 0) {
+            return core::Status::failure(
+                "multiplayer_chunk_subscription_benchmark.hot_edit_fanout_mismatch",
+                "hot-edit commands must produce one relevant event and delta per region, filter "
+                "every cross-region recipient, and drain their reliable output in the same tick");
+        }
+        if (std::ranges::any_of(
+                stats.commands.command_reports,
+                [](const auto& command) {
+                    return command.command_type != "world.set_voxel" || !command.success ||
+                           !command.committed_world_mutation || command.events.size() != 1 ||
+                           command.events.front().type != world::voxel_changed_event_type ||
+                           command.operation_trace.derived_updates.size() != 1 ||
+                           command.operation_trace.derived_updates.front() != "chunk_mesh";
+                }) ||
+            std::ranges::any_of(stats.commands.replication_relevance_reports,
+                                [client_count](const auto& relevance) {
+                                    return relevance.command_type != "world.set_voxel" ||
+                                           relevance.spatial_event_count != 1 ||
+                                           relevance.candidate_client_count != client_count ||
+                                           relevance.relevant_client_count != 1 ||
+                                           relevance.filtered_client_count != client_count - 1U ||
+                                           relevance.relevant_spatial_event_delivery_count != 1 ||
+                                           relevance.filtered_spatial_event_delivery_count !=
+                                               client_count - 1U;
+                                })) {
+            return core::Status::failure(
+                "multiplayer_chunk_subscription_benchmark.invalid_hot_edit_command",
+                "hot-edit command and relevance reports must retain committed one-region edits");
+        }
+
+        for (std::size_t index = 0; index < clients_.size(); ++index) {
+            const auto& traffic = sample.clients[index];
+            if (traffic.client_id != clients_[index].id || traffic.command_result_messages != 1 ||
+                traffic.world_event_messages != 1 || traffic.world_delta_messages != 1 ||
+                traffic.applied_voxel_edits != 1) {
+                return core::Status::failure(
+                    "multiplayer_chunk_subscription_benchmark.hot_edit_delivery_mismatch",
+                    "each interested client must receive one command result, raw event, typed "
+                    "delta, and applied voxel edit without cross-region fan-out");
+            }
+
+            const auto* authoritative = server_->world().chunks().find(targets[index]);
+            const auto* replica = clients_[index].runtime->world().chunks().find(targets[index]);
+            if (authoritative == nullptr || replica == nullptr ||
+                !clients_[index].runtime->local_chunk_snapshot_is_current(*authoritative)) {
+                return core::Status::failure(
+                    "multiplayer_chunk_subscription_benchmark.hot_edit_revision_mismatch",
+                    "interested client must converge to the authoritative hot-edit chunk revision");
+            }
+            auto authoritative_cell = authoritative->get(hot_edit_voxel);
+            auto replica_cell = replica->get(hot_edit_voxel);
+            auto position = world::chunk_local_to_block(targets[index], hot_edit_voxel);
+            const auto accepted = clients_[index].runtime->accepted_voxel_edits();
+            const auto expected_cell = previous_cells[index] == hot_edit_clay_cell_
+                                           ? hot_edit_stone_cell_
+                                           : hot_edit_clay_cell_;
+            if (!authoritative_cell || !replica_cell || !position || accepted.size() != 1 ||
+                authoritative_cell.value() != expected_cell ||
+                replica_cell.value() != authoritative_cell.value() ||
+                accepted.front().position != position.value() ||
+                accepted.front().previous != previous_cells[index] ||
+                accepted.front().current != authoritative_cell.value() ||
+                accepted.front().chunk_identity != authoritative->identity() ||
+                accepted.front().content_revision != authoritative->content_revision()) {
+                return core::Status::failure(
+                    "multiplayer_chunk_subscription_benchmark.hot_edit_state_mismatch",
+                    "accepted voxel edit and client cell must exactly match authoritative "
+                    "identity, "
+                    "revision, previous value, and current value");
+            }
+            ++sample.verified_hot_edit_client_state_count;
+            sample.verified_hot_edit_cross_region_exclusion_count += client_count - 1U;
+        }
+        return core::Status::ok();
+    }
+
     [[nodiscard]] core::Result<ServerRuntimeTickStats>
     run_tick(MultiplayerChunkSubscriptionPhase phase, std::uint32_t phase_ordinal, bool record) {
         now_ms_ += 17;
@@ -517,6 +781,12 @@ class BenchmarkRunner final {
         sample.phase_ordinal = phase_ordinal;
         sample.tick = next_tick_++;
         sample.server_tick_time_us = elapsed_us;
+        sample.simulation_time_ms = result.value().simulation.total_ms;
+        const auto scheduler_timings = server_->scheduler().timings();
+        sample.system_timings.reserve(scheduler_timings.size());
+        for (const auto& timing : scheduler_timings) {
+            sample.system_timings.push_back({timing.name, timing.last_ms});
+        }
         const auto& subscription = result.value().chunk_subscriptions;
         sample.connected_client_count =
             static_cast<std::uint32_t>(server_->host().connected_client_count());
@@ -542,6 +812,23 @@ class BenchmarkRunner final {
         sample.serialization_budget_deferred_snapshot_count =
             subscription.serialization_budget_deferred_snapshot_count;
         sample.reliable_admission_deferral_count = subscription.reliable_admission_deferral_count;
+        sample.delta_advanced_publication_count = subscription.delta_advanced_publication_count;
+        sample.delta_avoided_snapshot_count = subscription.delta_avoided_snapshot_count;
+        sample.delta_publication_gap_count = subscription.delta_publication_gap_count;
+        sample.fluid_topology_time_ms = result.value().chunk_fluids.last_topology_reconciliation_ms;
+        sample.fluid_dirty_collection_time_ms =
+            result.value().chunk_fluids.last_dirty_collection_ms;
+        sample.fluid_active_cell_count = result.value().chunk_fluids.active_cell_count;
+        sample.fluid_processed_cell_count = result.value().chunk_fluids.processed_cells_this_update;
+        for (const auto& relevance : result.value().commands.replication_relevance_reports) {
+            sample.spatial_event_count += relevance.spatial_event_count;
+            sample.relevant_spatial_event_delivery_count +=
+                relevance.relevant_spatial_event_delivery_count;
+            sample.filtered_spatial_event_delivery_count +=
+                relevance.filtered_spatial_event_delivery_count;
+            sample.filtered_spatial_event_payload_bytes += relevance.filtered_spatial_payload_bytes;
+        }
+        sample.replication_delta_message_count = result.value().replication.sent_message_count;
         sample.pending_reliable_message_count = server_->host().pending_outbound_message_count();
         sample.pending_reliable_bytes = server_->host().pending_outbound_bytes();
         sample.disconnected_client_count = static_cast<std::uint32_t>(
@@ -589,6 +876,15 @@ class BenchmarkRunner final {
                     ++traffic->chunk_removal_messages;
                     traffic->chunk_removal_wire_bytes += wire_bytes;
                 }
+                if (envelope.message.kind == net::TransportMessageKind::command_result) {
+                    ++traffic->command_result_messages;
+                } else if (is_world_event_message(envelope)) {
+                    ++traffic->world_event_messages;
+                    traffic->world_event_wire_bytes += wire_bytes;
+                } else if (is_world_delta_message(envelope)) {
+                    ++traffic->world_delta_messages;
+                    traffic->world_delta_wire_bytes += wire_bytes;
+                }
             }
         }
         auto status = client.runtime->receive(messages.value());
@@ -604,6 +900,9 @@ class BenchmarkRunner final {
             traffic->completed_chunk_snapshots =
                 synchronized.value().completed_chunk_snapshot_count;
             traffic->applied_chunk_removals = synchronized.value().chunk_subscription_removal_count;
+            for (const auto& batch : synchronized.value().replication.batches) {
+                traffic->applied_voxel_edits += batch.delta_apply_report.voxel_edits_applied;
+            }
         }
         if (!client.runtime->is_connected()) {
             return core::Status::failure(
@@ -642,12 +941,40 @@ class BenchmarkRunner final {
         summary.measured_tick_count = report_.raw_ticks.size();
         std::vector<std::uint64_t> tick_times;
         tick_times.reserve(report_.raw_ticks.size());
+        std::vector<std::uint64_t> hot_edit_tick_times;
+        hot_edit_tick_times.reserve(config_.hot_edit_ticks);
         std::map<core::NetId, MultiplayerChunkClientTrafficSummary> client_totals;
         bool backlog_active = false;
         std::uint32_t backlog_recovery_ticks = 0;
+        summary.expected_hot_edit_client_states =
+            static_cast<std::uint64_t>(config_.hot_edit_ticks) * config_.client_count;
+        summary.expected_hot_edit_cross_region_exclusions =
+            summary.expected_hot_edit_client_states * (config_.client_count - 1U);
 
         for (const auto& sample : report_.raw_ticks) {
             tick_times.push_back(sample.server_tick_time_us);
+            if (sample.phase == MultiplayerChunkSubscriptionPhase::hot_edit) {
+                hot_edit_tick_times.push_back(sample.server_tick_time_us);
+                ++summary.hot_edit_tick_count;
+                summary.hot_edit_command_count += sample.spatial_event_count;
+                summary.hot_edit_replication_delta_message_count +=
+                    sample.replication_delta_message_count;
+                summary.hot_edit_delta_advanced_publication_count +=
+                    sample.delta_advanced_publication_count;
+                summary.hot_edit_delta_avoided_snapshot_count +=
+                    sample.delta_avoided_snapshot_count;
+                summary.hot_edit_delta_publication_gap_count += sample.delta_publication_gap_count;
+                summary.hot_edit_relevant_spatial_event_delivery_count +=
+                    sample.relevant_spatial_event_delivery_count;
+                summary.hot_edit_filtered_spatial_event_delivery_count +=
+                    sample.filtered_spatial_event_delivery_count;
+                summary.hot_edit_filtered_spatial_event_payload_bytes +=
+                    sample.filtered_spatial_event_payload_bytes;
+                summary.verified_hot_edit_client_states +=
+                    sample.verified_hot_edit_client_state_count;
+                summary.verified_hot_edit_cross_region_exclusions +=
+                    sample.verified_hot_edit_cross_region_exclusion_count;
+            }
             summary.maximum_client_subscription_count =
                 std::max(summary.maximum_client_subscription_count,
                          sample.maximum_client_subscription_count);
@@ -705,10 +1032,16 @@ class BenchmarkRunner final {
                 total.unreliable_messages += traffic.unreliable_messages;
                 total.chunk_snapshot_slice_messages += traffic.chunk_snapshot_slice_messages;
                 total.chunk_removal_messages += traffic.chunk_removal_messages;
+                total.command_result_messages += traffic.command_result_messages;
+                total.world_event_messages += traffic.world_event_messages;
+                total.world_delta_messages += traffic.world_delta_messages;
                 total.reliable_wire_bytes += traffic.reliable_wire_bytes;
                 total.unreliable_wire_bytes += traffic.unreliable_wire_bytes;
                 total.chunk_snapshot_wire_bytes += traffic.chunk_snapshot_wire_bytes;
                 total.chunk_removal_wire_bytes += traffic.chunk_removal_wire_bytes;
+                total.world_event_wire_bytes += traffic.world_event_wire_bytes;
+                total.world_delta_wire_bytes += traffic.world_delta_wire_bytes;
+                total.applied_voxel_edits += traffic.applied_voxel_edits;
                 const auto wire_bytes = traffic.reliable_wire_bytes + traffic.unreliable_wire_bytes;
                 total.maximum_wire_bytes_per_tick =
                     std::max(total.maximum_wire_bytes_per_tick, wire_bytes);
@@ -716,6 +1049,16 @@ class BenchmarkRunner final {
                 summary.unreliable_wire_bytes += traffic.unreliable_wire_bytes;
                 summary.maximum_wire_bytes_per_client_per_tick =
                     std::max(summary.maximum_wire_bytes_per_client_per_tick, wire_bytes);
+                if (sample.phase == MultiplayerChunkSubscriptionPhase::hot_edit) {
+                    summary.hot_edit_command_result_message_count +=
+                        traffic.command_result_messages;
+                    summary.hot_edit_world_event_message_count += traffic.world_event_messages;
+                    summary.hot_edit_world_event_wire_bytes += traffic.world_event_wire_bytes;
+                    summary.hot_edit_world_delta_wire_bytes += traffic.world_delta_wire_bytes;
+                    summary.hot_edit_applied_voxel_edit_count += traffic.applied_voxel_edits;
+                    summary.maximum_hot_edit_wire_bytes_per_client_per_tick = std::max(
+                        summary.maximum_hot_edit_wire_bytes_per_client_per_tick, wire_bytes);
+                }
             }
         }
 
@@ -726,6 +1069,13 @@ class BenchmarkRunner final {
             tick_times.empty()
                 ? 0.0
                 : static_cast<double>(*std::ranges::max_element(tick_times)) / 1'000.0;
+        summary.hot_edit_server_tick_p50_ms = percentile_ms(hot_edit_tick_times, 50);
+        summary.hot_edit_server_tick_p95_ms = percentile_ms(hot_edit_tick_times, 95);
+        summary.hot_edit_server_tick_p99_ms = percentile_ms(hot_edit_tick_times, 99);
+        summary.maximum_hot_edit_server_tick_ms =
+            hot_edit_tick_times.empty()
+                ? 0.0
+                : static_cast<double>(*std::ranges::max_element(hot_edit_tick_times)) / 1'000.0;
         for (const auto& transition : report_.transitions) {
             summary.maximum_transition_convergence_ticks = std::max(
                 summary.maximum_transition_convergence_ticks, transition.ticks_to_converge);
@@ -774,6 +1124,12 @@ class BenchmarkRunner final {
                 config_.maximum_server_tick_p99_ms);
         maximum("maximum_server_tick_ms", summary.maximum_server_tick_ms,
                 config_.maximum_server_tick_ms);
+        maximum("hot_edit_server_tick_p95_ms", summary.hot_edit_server_tick_p95_ms,
+                config_.maximum_hot_edit_server_tick_p95_ms);
+        maximum("hot_edit_server_tick_p99_ms", summary.hot_edit_server_tick_p99_ms,
+                config_.maximum_hot_edit_server_tick_p99_ms);
+        maximum("maximum_hot_edit_server_tick_ms", summary.maximum_hot_edit_server_tick_ms,
+                config_.maximum_hot_edit_server_tick_ms);
         maximum("maximum_transition_convergence_ticks",
                 summary.maximum_transition_convergence_ticks,
                 config_.maximum_transition_convergence_ticks);
@@ -790,6 +1146,9 @@ class BenchmarkRunner final {
         maximum("maximum_wire_bytes_per_client_per_tick",
                 static_cast<double>(summary.maximum_wire_bytes_per_client_per_tick),
                 static_cast<double>(config_.maximum_wire_bytes_per_client_per_tick));
+        maximum("maximum_hot_edit_wire_bytes_per_client_per_tick",
+                static_cast<double>(summary.maximum_hot_edit_wire_bytes_per_client_per_tick),
+                static_cast<double>(config_.maximum_hot_edit_wire_bytes_per_client_per_tick));
         maximum("maximum_client_subscription_count",
                 static_cast<double>(summary.maximum_client_subscription_count),
                 static_cast<double>(config_.subscriptions.max_chunks_per_client));
@@ -811,6 +1170,12 @@ class BenchmarkRunner final {
         minimum("verified_cross_region_exclusions",
                 static_cast<double>(summary.verified_cross_region_exclusions),
                 static_cast<double>(summary.expected_cross_region_exclusions));
+        minimum("verified_hot_edit_client_states",
+                static_cast<double>(summary.verified_hot_edit_client_states),
+                static_cast<double>(summary.expected_hot_edit_client_states));
+        minimum("verified_hot_edit_cross_region_exclusions",
+                static_cast<double>(summary.verified_hot_edit_cross_region_exclusions),
+                static_cast<double>(summary.expected_hot_edit_cross_region_exclusions));
         minimum("final_converged_client_count", summary.final_converged_client_count,
                 config_.client_count);
         gates.passed = gates.violations.empty();
@@ -828,6 +1193,10 @@ class BenchmarkRunner final {
     std::vector<world::ChunkCoord> spread_centers_;
     std::vector<std::vector<world::ChunkCoord>> spread_markers_;
     std::vector<std::vector<world::ChunkCoord>> traversal_centers_;
+    std::vector<world::ChunkCoord> hot_edit_centers_;
+    std::vector<std::vector<world::ChunkCoord>> hot_edit_markers_;
+    world::VoxelCell hot_edit_clay_cell_;
+    world::VoxelCell hot_edit_stone_cell_;
     std::uint64_t next_tick_ = 1;
     std::int64_t now_ms_ = 0;
 };
@@ -861,12 +1230,18 @@ void write_client_traffic(std::ostream& output, const MultiplayerChunkClientTick
            << ", \"unreliable_messages\": " << traffic.unreliable_messages
            << ", \"chunk_snapshot_slice_messages\": " << traffic.chunk_snapshot_slice_messages
            << ", \"chunk_removal_messages\": " << traffic.chunk_removal_messages
+           << ", \"command_result_messages\": " << traffic.command_result_messages
+           << ", \"world_event_messages\": " << traffic.world_event_messages
+           << ", \"world_delta_messages\": " << traffic.world_delta_messages
            << ", \"reliable_wire_bytes\": " << traffic.reliable_wire_bytes
            << ", \"unreliable_wire_bytes\": " << traffic.unreliable_wire_bytes
            << ", \"chunk_snapshot_wire_bytes\": " << traffic.chunk_snapshot_wire_bytes
            << ", \"chunk_removal_wire_bytes\": " << traffic.chunk_removal_wire_bytes
+           << ", \"world_event_wire_bytes\": " << traffic.world_event_wire_bytes
+           << ", \"world_delta_wire_bytes\": " << traffic.world_delta_wire_bytes
            << ", \"completed_chunk_snapshots\": " << traffic.completed_chunk_snapshots
-           << ", \"applied_chunk_removals\": " << traffic.applied_chunk_removals << '}';
+           << ", \"applied_chunk_removals\": " << traffic.applied_chunk_removals
+           << ", \"applied_voxel_edits\": " << traffic.applied_voxel_edits << '}';
 }
 
 } // namespace
@@ -880,6 +1255,10 @@ multiplayer_chunk_subscription_phase_name(MultiplayerChunkSubscriptionPhase phas
         return "spread_transition";
     case MultiplayerChunkSubscriptionPhase::traversal_transition:
         return "traversal_transition";
+    case MultiplayerChunkSubscriptionPhase::hot_edit_transition:
+        return "hot_edit_transition";
+    case MultiplayerChunkSubscriptionPhase::hot_edit:
+        return "hot_edit";
     case MultiplayerChunkSubscriptionPhase::steady_state:
         return "steady_state";
     }
@@ -891,12 +1270,14 @@ core::Status MultiplayerChunkSubscriptionBenchmarkConfig::validate() const {
     if (!status) {
         return status;
     }
-    if (client_count < 2 || client_count > 32 || traversal_steps == 0 || steady_ticks == 0 ||
+    if (client_count < 2 || client_count > 32 || traversal_steps == 0 ||
+        hot_edit_ticks < minimum_hot_edit_ticks_for_p99 ||
+        hot_edit_ticks > static_cast<std::uint32_t>(maximum_path_component) || steady_ticks == 0 ||
         warmup_timeout_ticks == 0 || transition_timeout_ticks == 0) {
         return core::Status::failure(
             "multiplayer_chunk_subscription_benchmark.invalid_workload",
-            "benchmark requires 2-32 clients and nonzero traversal, steady, warmup, and transition "
-            "bounds");
+            "benchmark requires 2-32 clients, at least 100 hot-edit samples for P99, and nonzero "
+            "traversal, steady, warmup, and transition bounds");
     }
     const auto minimum_spread =
         static_cast<std::int64_t>(subscriptions.retain_horizontal_radius_chunks) * 2 + 1;
@@ -922,11 +1303,15 @@ core::Status MultiplayerChunkSubscriptionBenchmarkConfig::validate() const {
     }
     if (!finite_positive(maximum_server_tick_p95_ms) ||
         !finite_positive(maximum_server_tick_p99_ms) || !finite_positive(maximum_server_tick_ms) ||
+        !finite_positive(maximum_hot_edit_server_tick_p95_ms) ||
+        !finite_positive(maximum_hot_edit_server_tick_p99_ms) ||
+        !finite_positive(maximum_hot_edit_server_tick_ms) ||
         maximum_transition_convergence_ticks == 0 || maximum_backlog_recovery_ticks == 0 ||
         !finite_positive(minimum_shared_snapshot_reuse_ratio) ||
         !finite_positive(maximum_disjoint_snapshot_reuse_ratio) ||
         maximum_snapshot_serialization_time_us_per_tick == 0 ||
-        maximum_wire_bytes_per_client_per_tick == 0) {
+        maximum_wire_bytes_per_client_per_tick == 0 ||
+        maximum_hot_edit_wire_bytes_per_client_per_tick == 0) {
         return core::Status::failure(
             "multiplayer_chunk_subscription_benchmark.invalid_gates",
             "latency, convergence, reuse, serialization, and wire-byte gates must be positive");
@@ -939,7 +1324,7 @@ core::Status MultiplayerChunkSubscriptionBenchmarkReport::validate() const {
     if (!status) {
         return status;
     }
-    const auto expected_transitions = static_cast<std::size_t>(config.traversal_steps) + 2U;
+    const auto expected_transitions = static_cast<std::size_t>(config.traversal_steps) + 3U;
     if (raw_ticks.empty() || raw_ticks.size() != summary.measured_tick_count ||
         transitions.size() != expected_transitions ||
         summary.clients.size() != config.client_count) {
@@ -950,6 +1335,15 @@ core::Status MultiplayerChunkSubscriptionBenchmarkReport::validate() const {
     std::uint64_t previous_tick = 0;
     for (const auto& sample : raw_ticks) {
         if (sample.tick <= previous_tick || sample.connected_client_count != config.client_count ||
+            !std::isfinite(sample.simulation_time_ms) || sample.simulation_time_ms < 0.0 ||
+            !std::isfinite(sample.fluid_topology_time_ms) || sample.fluid_topology_time_ms < 0.0 ||
+            !std::isfinite(sample.fluid_dirty_collection_time_ms) ||
+            sample.fluid_dirty_collection_time_ms < 0.0 || sample.system_timings.empty() ||
+            std::ranges::any_of(sample.system_timings,
+                                [](const auto& timing) {
+                                    return timing.name.empty() || !std::isfinite(timing.time_ms) ||
+                                           timing.time_ms < 0.0;
+                                }) ||
             sample.clients.size() != config.client_count || sample.disconnected_client_count != 0 ||
             sample.partial_snapshot_count != 0 ||
             sample.maximum_client_subscription_count > config.subscriptions.max_chunks_per_client ||
@@ -973,17 +1367,73 @@ core::Status MultiplayerChunkSubscriptionBenchmarkReport::validate() const {
                 "multiplayer_chunk_subscription_benchmark.invalid_client_order",
                 "per-tick client traffic must be unique and deterministically ordered");
         }
+        if (sample.phase == MultiplayerChunkSubscriptionPhase::hot_edit) {
+            const auto client_count = static_cast<std::uint64_t>(config.client_count);
+            const auto expected_filtered = client_count * (client_count - 1U);
+            if (sample.spatial_event_count != config.client_count ||
+                sample.snapshot_chunk_count != 0 ||
+                sample.relevant_spatial_event_delivery_count != client_count ||
+                sample.filtered_spatial_event_delivery_count != expected_filtered ||
+                sample.filtered_spatial_event_payload_bytes == 0 ||
+                sample.replication_delta_message_count != config.client_count ||
+                sample.delta_advanced_publication_count != config.client_count ||
+                sample.delta_avoided_snapshot_count != config.client_count ||
+                sample.delta_publication_gap_count != 0 || sample.fluid_active_cell_count != 0 ||
+                sample.fluid_processed_cell_count != 0 ||
+                sample.verified_hot_edit_client_state_count != config.client_count ||
+                sample.verified_hot_edit_cross_region_exclusion_count != expected_filtered ||
+                std::ranges::any_of(sample.clients, [](const auto& traffic) {
+                    return traffic.command_result_messages != 1 ||
+                           traffic.world_event_messages != 1 || traffic.world_delta_messages != 1 ||
+                           traffic.applied_voxel_edits != 1 ||
+                           traffic.world_event_wire_bytes == 0 ||
+                           traffic.world_delta_wire_bytes == 0;
+                })) {
+                return core::Status::failure(
+                    "multiplayer_chunk_subscription_benchmark.invalid_hot_edit_sample",
+                    "every hot-edit tick must retain exact command, relevance, wire, apply, and "
+                    "cross-region exclusion evidence");
+            }
+        } else if (sample.verified_hot_edit_client_state_count != 0 ||
+                   sample.verified_hot_edit_cross_region_exclusion_count != 0) {
+            return core::Status::failure(
+                "multiplayer_chunk_subscription_benchmark.misplaced_hot_edit_evidence",
+                "hot-edit verification evidence may only appear on hot-edit tick samples");
+        }
     }
     if (std::ranges::any_of(transitions, [](const auto& transition) {
             return !transition.converged || transition.ticks_to_converge == 0;
         })) {
         return core::Status::failure(
             "multiplayer_chunk_subscription_benchmark.incomplete_transition",
-            "every cluster, spread, and traversal transition must converge");
+            "every cluster, spread, traversal, and hot-edit transition must converge");
     }
+    const auto expected_hot_edit_commands =
+        static_cast<std::uint64_t>(config.hot_edit_ticks) * config.client_count;
+    const auto expected_hot_edit_exclusions =
+        expected_hot_edit_commands * (config.client_count - 1U);
     if (summary.observed_backlog_burst_count == 0 ||
         summary.cluster_snapshot_serialization_operation_count == 0 ||
         summary.spread_snapshot_serialization_operation_count == 0 ||
+        summary.hot_edit_tick_count != config.hot_edit_ticks ||
+        summary.hot_edit_command_count != expected_hot_edit_commands ||
+        summary.hot_edit_command_result_message_count != expected_hot_edit_commands ||
+        summary.hot_edit_world_event_message_count != expected_hot_edit_commands ||
+        summary.hot_edit_replication_delta_message_count != expected_hot_edit_commands ||
+        summary.hot_edit_delta_advanced_publication_count != expected_hot_edit_commands ||
+        summary.hot_edit_delta_avoided_snapshot_count != expected_hot_edit_commands ||
+        summary.hot_edit_delta_publication_gap_count != 0 ||
+        summary.hot_edit_relevant_spatial_event_delivery_count != expected_hot_edit_commands ||
+        summary.hot_edit_filtered_spatial_event_delivery_count != expected_hot_edit_exclusions ||
+        summary.hot_edit_filtered_spatial_event_payload_bytes == 0 ||
+        summary.hot_edit_world_event_wire_bytes == 0 ||
+        summary.hot_edit_world_delta_wire_bytes == 0 ||
+        summary.hot_edit_applied_voxel_edit_count != expected_hot_edit_commands ||
+        summary.expected_hot_edit_client_states != expected_hot_edit_commands ||
+        summary.verified_hot_edit_client_states != summary.expected_hot_edit_client_states ||
+        summary.expected_hot_edit_cross_region_exclusions != expected_hot_edit_exclusions ||
+        summary.verified_hot_edit_cross_region_exclusions !=
+            summary.expected_hot_edit_cross_region_exclusions ||
         summary.final_pending_reliable_messages != 0 || summary.final_pending_reliable_bytes != 0 ||
         summary.final_converged_client_count != config.client_count ||
         summary.disconnected_client_count != 0 || summary.maximum_partial_snapshot_count != 0 ||
@@ -991,12 +1441,16 @@ core::Status MultiplayerChunkSubscriptionBenchmarkReport::validate() const {
         summary.verified_cross_region_exclusions != summary.expected_cross_region_exclusions) {
         return core::Status::failure(
             "multiplayer_chunk_subscription_benchmark.invalid_final_state",
-            "benchmark did not retain sharing, disjoint relevance, backlog recovery, and clean "
-            "final-state evidence");
+            "benchmark did not retain sharing, disjoint relevance, exact hot-edit delivery, "
+            "backlog recovery, and clean final-state evidence");
     }
     if (!std::isfinite(summary.server_tick_p50_ms) || !std::isfinite(summary.server_tick_p95_ms) ||
         !std::isfinite(summary.server_tick_p99_ms) ||
         !std::isfinite(summary.maximum_server_tick_ms) ||
+        !std::isfinite(summary.hot_edit_server_tick_p50_ms) ||
+        !std::isfinite(summary.hot_edit_server_tick_p95_ms) ||
+        !std::isfinite(summary.hot_edit_server_tick_p99_ms) ||
+        !std::isfinite(summary.maximum_hot_edit_server_tick_ms) ||
         !std::isfinite(summary.shared_snapshot_reuse_ratio) ||
         !std::isfinite(summary.disjoint_snapshot_reuse_ratio)) {
         return core::Status::failure(
@@ -1025,6 +1479,7 @@ std::string MultiplayerChunkSubscriptionBenchmarkReport::to_json() const {
            << "    \"seed\": " << config.seed << ",\n"
            << "    \"client_count\": " << config.client_count << ",\n"
            << "    \"traversal_steps\": " << config.traversal_steps << ",\n"
+           << "    \"hot_edit_ticks\": " << config.hot_edit_ticks << ",\n"
            << "    \"steady_ticks\": " << config.steady_ticks << ",\n"
            << "    \"warmup_timeout_ticks\": " << config.warmup_timeout_ticks << ",\n"
            << "    \"transition_timeout_ticks\": " << config.transition_timeout_ticks << ",\n"
@@ -1050,6 +1505,12 @@ std::string MultiplayerChunkSubscriptionBenchmarkReport::to_json() const {
            << ",\n    \"maximum_server_tick_p95_ms\": " << config.maximum_server_tick_p95_ms
            << ",\n    \"maximum_server_tick_p99_ms\": " << config.maximum_server_tick_p99_ms
            << ",\n    \"maximum_server_tick_ms\": " << config.maximum_server_tick_ms
+           << ",\n    \"maximum_hot_edit_server_tick_p95_ms\": "
+           << config.maximum_hot_edit_server_tick_p95_ms
+           << ",\n    \"maximum_hot_edit_server_tick_p99_ms\": "
+           << config.maximum_hot_edit_server_tick_p99_ms
+           << ",\n    \"maximum_hot_edit_server_tick_ms\": "
+           << config.maximum_hot_edit_server_tick_ms
            << ",\n    \"maximum_transition_convergence_ticks\": "
            << config.maximum_transition_convergence_ticks
            << ",\n    \"maximum_backlog_recovery_ticks\": " << config.maximum_backlog_recovery_ticks
@@ -1062,7 +1523,9 @@ std::string MultiplayerChunkSubscriptionBenchmarkReport::to_json() const {
            << ",\n    \"maximum_snapshot_serialization_time_overshoot_us\": "
            << config.maximum_snapshot_serialization_time_overshoot_us
            << ",\n    \"maximum_wire_bytes_per_client_per_tick\": "
-           << config.maximum_wire_bytes_per_client_per_tick << "\n  },\n";
+           << config.maximum_wire_bytes_per_client_per_tick
+           << ",\n    \"maximum_hot_edit_wire_bytes_per_client_per_tick\": "
+           << config.maximum_hot_edit_wire_bytes_per_client_per_tick << "\n  },\n";
 
     const auto& value = summary;
     output
@@ -1072,6 +1535,42 @@ std::string MultiplayerChunkSubscriptionBenchmarkReport::to_json() const {
         << "    \"server_tick_p95_ms\": " << value.server_tick_p95_ms << ",\n"
         << "    \"server_tick_p99_ms\": " << value.server_tick_p99_ms << ",\n"
         << "    \"maximum_server_tick_ms\": " << value.maximum_server_tick_ms << ",\n"
+        << "    \"hot_edit_tick_count\": " << value.hot_edit_tick_count << ",\n"
+        << "    \"hot_edit_server_tick_p50_ms\": " << value.hot_edit_server_tick_p50_ms
+        << ",\n    \"hot_edit_server_tick_p95_ms\": " << value.hot_edit_server_tick_p95_ms
+        << ",\n    \"hot_edit_server_tick_p99_ms\": " << value.hot_edit_server_tick_p99_ms
+        << ",\n    \"maximum_hot_edit_server_tick_ms\": " << value.maximum_hot_edit_server_tick_ms
+        << ",\n    \"hot_edit_command_count\": " << value.hot_edit_command_count
+        << ",\n    \"hot_edit_command_result_message_count\": "
+        << value.hot_edit_command_result_message_count
+        << ",\n    \"hot_edit_world_event_message_count\": "
+        << value.hot_edit_world_event_message_count
+        << ",\n    \"hot_edit_replication_delta_message_count\": "
+        << value.hot_edit_replication_delta_message_count
+        << ",\n    \"hot_edit_delta_advanced_publication_count\": "
+        << value.hot_edit_delta_advanced_publication_count
+        << ",\n    \"hot_edit_delta_avoided_snapshot_count\": "
+        << value.hot_edit_delta_avoided_snapshot_count
+        << ",\n    \"hot_edit_delta_publication_gap_count\": "
+        << value.hot_edit_delta_publication_gap_count
+        << ",\n    \"hot_edit_relevant_spatial_event_delivery_count\": "
+        << value.hot_edit_relevant_spatial_event_delivery_count
+        << ",\n    \"hot_edit_filtered_spatial_event_delivery_count\": "
+        << value.hot_edit_filtered_spatial_event_delivery_count
+        << ",\n    \"hot_edit_filtered_spatial_event_payload_bytes\": "
+        << value.hot_edit_filtered_spatial_event_payload_bytes
+        << ",\n    \"hot_edit_world_event_wire_bytes\": " << value.hot_edit_world_event_wire_bytes
+        << ",\n    \"hot_edit_world_delta_wire_bytes\": " << value.hot_edit_world_delta_wire_bytes
+        << ",\n    \"hot_edit_applied_voxel_edit_count\": "
+        << value.hot_edit_applied_voxel_edit_count
+        << ",\n    \"maximum_hot_edit_wire_bytes_per_client_per_tick\": "
+        << value.maximum_hot_edit_wire_bytes_per_client_per_tick
+        << ",\n    \"verified_hot_edit_client_states\": " << value.verified_hot_edit_client_states
+        << ",\n    \"expected_hot_edit_client_states\": " << value.expected_hot_edit_client_states
+        << ",\n    \"verified_hot_edit_cross_region_exclusions\": "
+        << value.verified_hot_edit_cross_region_exclusions
+        << ",\n    \"expected_hot_edit_cross_region_exclusions\": "
+        << value.expected_hot_edit_cross_region_exclusions << ",\n"
         << "    \"maximum_transition_convergence_ticks\": "
         << value.maximum_transition_convergence_ticks << ",\n"
         << "    \"observed_backlog_burst_count\": " << value.observed_backlog_burst_count << ",\n"
@@ -1121,10 +1620,16 @@ std::string MultiplayerChunkSubscriptionBenchmarkReport::to_json() const {
                << ", \"unreliable_messages\": " << client.unreliable_messages
                << ", \"chunk_snapshot_slice_messages\": " << client.chunk_snapshot_slice_messages
                << ", \"chunk_removal_messages\": " << client.chunk_removal_messages
+               << ", \"command_result_messages\": " << client.command_result_messages
+               << ", \"world_event_messages\": " << client.world_event_messages
+               << ", \"world_delta_messages\": " << client.world_delta_messages
                << ", \"reliable_wire_bytes\": " << client.reliable_wire_bytes
                << ", \"unreliable_wire_bytes\": " << client.unreliable_wire_bytes
                << ", \"chunk_snapshot_wire_bytes\": " << client.chunk_snapshot_wire_bytes
                << ", \"chunk_removal_wire_bytes\": " << client.chunk_removal_wire_bytes
+               << ", \"world_event_wire_bytes\": " << client.world_event_wire_bytes
+               << ", \"world_delta_wire_bytes\": " << client.world_delta_wire_bytes
+               << ", \"applied_voxel_edits\": " << client.applied_voxel_edits
                << ", \"maximum_wire_bytes_per_tick\": " << client.maximum_wire_bytes_per_tick << '}'
                << (index + 1 == value.clients.size() ? "\n" : ",\n");
     }
@@ -1147,6 +1652,7 @@ std::string MultiplayerChunkSubscriptionBenchmarkReport::to_json() const {
         write_json_string(output, multiplayer_chunk_subscription_phase_name(sample.phase));
         output << ", \"phase_ordinal\": " << sample.phase_ordinal << ", \"tick\": " << sample.tick
                << ", \"server_tick_time_us\": " << sample.server_tick_time_us
+               << ", \"simulation_time_ms\": " << sample.simulation_time_ms
                << ", \"connected_client_count\": " << sample.connected_client_count
                << ", \"subscription_count\": " << sample.subscription_count
                << ", \"maximum_client_subscription_count\": "
@@ -1172,10 +1678,40 @@ std::string MultiplayerChunkSubscriptionBenchmarkReport::to_json() const {
                << sample.serialization_budget_deferred_snapshot_count
                << ", \"reliable_admission_deferral_count\": "
                << sample.reliable_admission_deferral_count
+               << ", \"spatial_event_count\": " << sample.spatial_event_count
+               << ", \"relevant_spatial_event_delivery_count\": "
+               << sample.relevant_spatial_event_delivery_count
+               << ", \"filtered_spatial_event_delivery_count\": "
+               << sample.filtered_spatial_event_delivery_count
+               << ", \"filtered_spatial_event_payload_bytes\": "
+               << sample.filtered_spatial_event_payload_bytes
+               << ", \"replication_delta_message_count\": "
+               << sample.replication_delta_message_count
+               << ", \"delta_advanced_publication_count\": "
+               << sample.delta_advanced_publication_count
+               << ", \"delta_avoided_snapshot_count\": " << sample.delta_avoided_snapshot_count
+               << ", \"delta_publication_gap_count\": " << sample.delta_publication_gap_count
+               << ", \"fluid_topology_time_ms\": " << sample.fluid_topology_time_ms
+               << ", \"fluid_dirty_collection_time_ms\": " << sample.fluid_dirty_collection_time_ms
+               << ", \"fluid_active_cell_count\": " << sample.fluid_active_cell_count
+               << ", \"fluid_processed_cell_count\": " << sample.fluid_processed_cell_count
+               << ", \"verified_hot_edit_client_state_count\": "
+               << sample.verified_hot_edit_client_state_count
+               << ", \"verified_hot_edit_cross_region_exclusion_count\": "
+               << sample.verified_hot_edit_cross_region_exclusion_count
                << ", \"pending_reliable_message_count\": " << sample.pending_reliable_message_count
                << ", \"pending_reliable_bytes\": " << sample.pending_reliable_bytes
                << ", \"disconnected_client_count\": " << sample.disconnected_client_count
-               << ", \"clients\": [";
+               << ", \"system_timings\": [";
+        for (std::size_t system = 0; system < sample.system_timings.size(); ++system) {
+            if (system != 0) {
+                output << ", ";
+            }
+            output << "{\"name\": ";
+            write_json_string(output, sample.system_timings[system].name);
+            output << ", \"time_ms\": " << sample.system_timings[system].time_ms << '}';
+        }
+        output << "], \"clients\": [";
         for (std::size_t client = 0; client < sample.clients.size(); ++client) {
             if (client != 0) {
                 output << ", ";

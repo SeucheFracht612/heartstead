@@ -19,17 +19,22 @@ void test_small_multiplayer_benchmark_retains_scaling_evidence(
     benchmark::MultiplayerChunkSubscriptionBenchmarkConfig config;
     config.client_count = 2;
     config.traversal_steps = 1;
+    config.hot_edit_ticks = 100;
     config.steady_ticks = 3;
     config.maximum_server_tick_p95_ms = 10'000.0;
     config.maximum_server_tick_p99_ms = 10'000.0;
     config.maximum_server_tick_ms = 10'000.0;
+    config.maximum_hot_edit_server_tick_p95_ms = 10'000.0;
+    config.maximum_hot_edit_server_tick_p99_ms = 10'000.0;
+    config.maximum_hot_edit_server_tick_ms = 10'000.0;
     config.maximum_snapshot_serialization_time_us_per_tick = 10'000'000;
     config.maximum_wire_bytes_per_client_per_tick = 10'000'000;
+    config.maximum_hot_edit_wire_bytes_per_client_per_tick = 10'000'000;
 
     auto report = benchmark::run_multiplayer_chunk_subscription_benchmark(config, content_report);
     assert(report);
     assert(report.value().validate());
-    assert(report.value().transitions.size() == config.traversal_steps + 2U);
+    assert(report.value().transitions.size() == config.traversal_steps + 3U);
     assert(report.value().summary.measured_tick_count == report.value().raw_ticks.size());
     assert(report.value().summary.shared_snapshot_reuse_ratio >=
            static_cast<double>(config.client_count));
@@ -41,13 +46,34 @@ void test_small_multiplayer_benchmark_retains_scaling_evidence(
     assert(report.value().summary.final_converged_client_count == config.client_count);
     assert(report.value().summary.verified_cross_region_exclusions ==
            report.value().summary.expected_cross_region_exclusions);
+    const auto expected_hot_edit_commands =
+        static_cast<std::uint64_t>(config.hot_edit_ticks) * config.client_count;
+    assert(report.value().summary.hot_edit_tick_count == config.hot_edit_ticks);
+    assert(report.value().summary.hot_edit_command_count == expected_hot_edit_commands);
+    assert(report.value().summary.hot_edit_command_result_message_count ==
+           expected_hot_edit_commands);
+    assert(report.value().summary.hot_edit_world_event_message_count == expected_hot_edit_commands);
+    assert(report.value().summary.hot_edit_replication_delta_message_count ==
+           expected_hot_edit_commands);
+    assert(report.value().summary.hot_edit_delta_advanced_publication_count ==
+           expected_hot_edit_commands);
+    assert(report.value().summary.hot_edit_delta_avoided_snapshot_count ==
+           expected_hot_edit_commands);
+    assert(report.value().summary.hot_edit_delta_publication_gap_count == 0);
+    assert(report.value().summary.hot_edit_applied_voxel_edit_count == expected_hot_edit_commands);
+    assert(report.value().summary.verified_hot_edit_client_states ==
+           report.value().summary.expected_hot_edit_client_states);
+    assert(report.value().summary.verified_hot_edit_cross_region_exclusions ==
+           report.value().summary.expected_hot_edit_cross_region_exclusions);
     assert(report.value().gates_passed());
 
     const auto json = report.value().to_json();
-    assert(json.find("\"schema_version\": 1") != std::string::npos);
+    assert(json.find("\"schema_version\": 2") != std::string::npos);
     assert(json.find("\"benchmark\": \"multiplayer_chunk_subscriptions\"") != std::string::npos);
     assert(json.find("\"shared_snapshot_reuse_ratio\"") != std::string::npos);
     assert(json.find("\"verified_cross_region_exclusions\"") != std::string::npos);
+    assert(json.find("\"hot_edit_server_tick_p99_ms\"") != std::string::npos);
+    assert(json.find("\"verified_hot_edit_cross_region_exclusions\"") != std::string::npos);
     assert(json.find("\"raw_ticks\"") != std::string::npos);
 }
 

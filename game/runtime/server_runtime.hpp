@@ -98,6 +98,9 @@ struct ServerChunkSubscriptionTickStats {
     std::uint64_t deferred_snapshot_count = 0;
     std::uint64_t serialization_budget_deferred_snapshot_count = 0;
     std::uint32_t reliable_admission_deferral_count = 0;
+    std::uint32_t delta_advanced_publication_count = 0;
+    std::uint32_t delta_avoided_snapshot_count = 0;
+    std::uint32_t delta_publication_gap_count = 0;
 };
 
 struct ServerChunkStreamingTickStats {
@@ -269,6 +272,7 @@ class ServerRuntime final {
     [[nodiscard]] core::Status replicate_players();
     [[nodiscard]] core::Status replicate_entity_motion(std::uint64_t simulation_tick);
     [[nodiscard]] core::Status synchronize_chunk_subscriptions();
+    [[nodiscard]] core::Status advance_chunk_publications_from_voxel_deltas();
     [[nodiscard]] core::Status synchronize_client_chunk_subscription(
         core::NetId client_id, world::ChunkSubscriptionTransitionBudget transition_budget,
         std::map<world::ChunkCoord, EncodedChunkSnapshot>& snapshot_cache,

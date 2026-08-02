@@ -6064,6 +6064,43 @@ void test_voxel_palette() {
     assert(clay_cell);
     assert(clay_cell.value().type == 1);
     assert(clay_cell.value().light == 3);
+    const auto stone_cell = palette.value().cell_for(stone_id);
+    assert(stone_cell);
+    assert(palette.value().same_collision_geometry(clay_cell.value(), stone_cell.value()));
+    assert(palette.value().same_lighting_behavior(clay_cell.value(), stone_cell.value()));
+    assert(!palette.value().same_collision_geometry(clay_cell.value(),
+                                                    heartstead::world::VoxelCell::air()));
+    assert(!palette.value().same_lighting_behavior(clay_cell.value(),
+                                                   heartstead::world::VoxelCell::air()));
+
+    heartstead::world::ChunkDatabase selective_chunks;
+    constexpr heartstead::world::ChunkCoord selective_coord{0, 0, 0};
+    constexpr heartstead::world::VoxelCoord selective_voxel{5, 5, 5};
+    static_cast<void>(selective_chunks.get_or_create(selective_coord));
+    assert(selective_chunks.set(selective_coord, selective_voxel, clay_cell.value()));
+    selective_chunks.clear_all_dirty();
+    heartstead::dirty::DirtyRegionTracker selective_dirty;
+    assert(selective_chunks.set(selective_coord, selective_voxel, stone_cell.value(),
+                                selective_dirty, palette.value()));
+    const auto* selectively_invalidated = selective_chunks.find(selective_coord);
+    assert(selectively_invalidated != nullptr);
+    assert(selectively_invalidated->dirty().contains(heartstead::world::ChunkDirtyFlag::mesh));
+    assert(
+        !selectively_invalidated->dirty().contains(heartstead::world::ChunkDirtyFlag::collision));
+    assert(!selectively_invalidated->dirty().contains(heartstead::world::ChunkDirtyFlag::lighting));
+    assert(selective_dirty.count(heartstead::dirty::DirtyRegionKind::chunk_mesh) == 1);
+    assert(selective_dirty.count(heartstead::dirty::DirtyRegionKind::chunk_collision) == 0);
+    assert(selective_dirty.count(heartstead::dirty::DirtyRegionKind::chunk_lighting) == 0);
+
+    selective_chunks.clear_all_dirty();
+    selective_dirty.clear();
+    assert(selective_chunks.set(selective_coord, selective_voxel,
+                                heartstead::world::VoxelCell::air(), selective_dirty,
+                                palette.value()));
+    assert(selectively_invalidated->dirty().contains(heartstead::world::ChunkDirtyFlag::collision));
+    assert(selectively_invalidated->dirty().contains(heartstead::world::ChunkDirtyFlag::lighting));
+    assert(selective_dirty.count(heartstead::dirty::DirtyRegionKind::chunk_collision) == 1);
+    assert(selective_dirty.count(heartstead::dirty::DirtyRegionKind::chunk_lighting) == 1);
 
     auto missing = heartstead::core::PrototypeId::parse("base:voxels/missing").value();
     assert(!palette.value().cell_for(missing));
@@ -6129,6 +6166,37 @@ void test_world_voxel_chunk() {
 
     auto outside = chunk.get({heartstead::world::VoxelChunk::edge_length, 0, 0});
     assert(!outside);
+
+    heartstead::world::VoxelChunk copy_source({4, 5, 6});
+    copy_source.fill(heartstead::world::VoxelCell{7, 3});
+    auto set_copy = copy_source;
+    assert(set_copy.cells().data() == copy_source.cells().data());
+    assert(set_copy.set({1, 2, 3}, heartstead::world::VoxelCell{8, 4}));
+    assert(set_copy.cells().data() != copy_source.cells().data());
+    assert(set_copy.get({1, 2, 3}).value().type == 8);
+    assert(copy_source.get({1, 2, 3}).value().type == 7);
+    assert(set_copy.occupancy().validate_against(set_copy.cells(), set_copy.content_revision()));
+    assert(copy_source.occupancy().validate_against(copy_source.cells(),
+                                                    copy_source.content_revision()));
+
+    auto saved_copy = copy_source;
+    assert(saved_copy.apply_saved_cell({2, 3, 4}, heartstead::world::VoxelCell{9, 5}));
+    assert(saved_copy.cells().data() != copy_source.cells().data());
+    assert(copy_source.get({2, 3, 4}).value().type == 7);
+
+    auto light_copy = copy_source;
+    std::vector<std::uint8_t> derived_light(heartstead::world::VoxelChunk::total_cells, 11);
+    assert(light_copy.apply_derived_light(derived_light).value() ==
+           heartstead::world::VoxelChunk::total_cells);
+    assert(light_copy.cells().data() != copy_source.cells().data());
+    assert(light_copy.get({0, 0, 0}).value().light == 11);
+    assert(copy_source.get({0, 0, 0}).value().light == 3);
+
+    auto fill_copy = copy_source;
+    fill_copy.fill(heartstead::world::VoxelCell{10, 6});
+    assert(fill_copy.cells().data() != copy_source.cells().data());
+    assert(fill_copy.get({31, 31, 31}).value().type == 10);
+    assert(copy_source.get({31, 31, 31}).value().type == 7);
 
     constexpr std::int64_t far_coord = 1LL << 40;
     heartstead::world::VoxelChunk far_chunk({far_coord, -far_coord, far_coord + 7});
@@ -11404,6 +11472,39 @@ void test_world_command_registry() {
     assert(voxel.value().type == 12);
     assert(voxel.value().light == 7);
     assert(!state.dirty_regions().empty());
+
+    const auto rollback_revision = state.chunks().find({0, 0, 0})->content_revision();
+    const auto* rollback_cells = state.chunks().find({0, 0, 0})->cells().data();
+    assert(dispatcher.register_command(heartstead::net::CommandDescriptor{
+        "debug.fail_voxel_transaction",
+        true,
+        true,
+        [](const heartstead::net::CommandEnvelope&,
+           const heartstead::net::CommandExecutionContext& transaction_context,
+           heartstead::world::WorldOperation& operation) {
+            auto mutation = operation.record_mutation("mutate staged voxel before failure");
+            if (!mutation) {
+                return mutation;
+            }
+            auto status = transaction_context.world_state->chunks().set(
+                {0, 0, 0}, {2, 3, 4}, heartstead::world::VoxelCell::air());
+            if (!status) {
+                return status;
+            }
+            return heartstead::core::Status::failure(
+                "debug.intentional_voxel_transaction_failure",
+                "intentional failure after staged voxel mutation");
+        },
+    }));
+    auto failed_voxel_transaction = voxel_command;
+    failed_voxel_transaction.sequence = 2;
+    failed_voxel_transaction.type = "debug.fail_voxel_transaction";
+    auto failed_voxel_result = dispatcher.dispatch(failed_voxel_transaction, context);
+    assert(!failed_voxel_result);
+    assert(failed_voxel_result.error().code == "debug.intentional_voxel_transaction_failure");
+    assert(state.chunks().find({0, 0, 0})->content_revision() == rollback_revision);
+    assert(state.chunks().find({0, 0, 0})->cells().data() == rollback_cells);
+    assert(state.chunks().get({0, 0, 0}, {2, 3, 4}).value() == voxel.value());
     state.dirty_regions().clear();
 
     heartstead::net::CommandEnvelope build_command;
@@ -12743,8 +12844,7 @@ void test_host_session() {
     };
     auto spatial_report = net::ReplicationRelevance::evaluate(
         relevance_policy, spatial_batch,
-        {core::NetId::from_value(7), core::NetId::from_value(8),
-         core::NetId::from_value(9)});
+        {core::NetId::from_value(7), core::NetId::from_value(8), core::NetId::from_value(9)});
     assert(spatial_report.spatial_event_count == 1);
     assert(spatial_report.relevant_client_count == 1);
     assert(spatial_report.filtered_client_count == 2);
@@ -12755,11 +12855,11 @@ void test_host_session() {
     assert(spatial_report.decisions[0].relevant_spatial_event_count == 1);
     assert(spatial_report.decisions[1].reason == "filtered_chunk");
     assert(spatial_report.decisions[1].filtered_spatial_event_count == 1);
-    assert(net::ReplicationRelevance::filter_for_client(
-               relevance_policy, spatial_batch, core::NetId::from_value(7))
+    assert(net::ReplicationRelevance::filter_for_client(relevance_policy, spatial_batch,
+                                                        core::NetId::from_value(7))
                .events.size() == 1);
-    assert(net::ReplicationRelevance::filter_for_client(
-               relevance_policy, spatial_batch, core::NetId::from_value(8))
+    assert(net::ReplicationRelevance::filter_for_client(relevance_policy, spatial_batch,
+                                                        core::NetId::from_value(8))
                .events.empty());
     world::WorldState spatial_state;
     const auto spatial_delta = world::materialize_replication_delta(spatial_state, spatial_batch);

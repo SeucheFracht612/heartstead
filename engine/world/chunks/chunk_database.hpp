@@ -123,6 +123,9 @@ class ChunkDatabase {
                                    dirty::DirtyRegionTracker* dirty_regions);
     [[nodiscard]] core::Status apply_saved_edits_impl(std::span<const VoxelEditRecord> edits,
                                                       dirty::DirtyRegionTracker* dirty_regions);
+    [[nodiscard]] core::Status set_with_invalidation(ChunkCoord chunk_coord, VoxelCoord voxel_coord,
+                                                     VoxelCell cell,
+                                                     VoxelDerivedInvalidation invalidation);
     [[nodiscard]] static core::Status
     validate_saved_edit_batch(std::span<const VoxelEditRecord> edits,
                               const ChunkCoord* expected_chunk = nullptr);
@@ -138,7 +141,7 @@ class ChunkDatabase {
     [[nodiscard]] static dirty::DirtyRegionCoord dirty_coord_for_chunk(ChunkCoord coord) noexcept;
     [[nodiscard]] static core::Status
     mark_chunk_rebuild_regions(dirty::DirtyRegionTracker& dirty_regions, ChunkCoord coord,
-                               std::string reason);
+                               std::string reason, VoxelDerivedInvalidation invalidation = {});
     [[nodiscard]] static std::vector<ChunkCoord> boundary_neighbors(ChunkCoord chunk_coord,
                                                                     VoxelCoord voxel_coord);
     [[nodiscard]] static std::vector<ChunkCoord> face_neighbors(ChunkCoord chunk_coord);
