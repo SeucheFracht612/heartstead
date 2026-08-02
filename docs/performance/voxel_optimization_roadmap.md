@@ -296,8 +296,13 @@ production scheduler, reserves demand capacity, publishes outcomes back into the
 the resulting clean evictions. The paired
 [predictive streaming benchmark](predictive_streaming_benchmarks.md) compares that path against a
 no-prefetch baseline while retaining real hit/waste/cancellation, visible-hole, owner-publication,
-and memory-slope evidence. Clean calibration and general runtime adoption remain before this M6
-streaming slice is accepted.
+and memory-slope evidence. Three clean Release processes passed every gate with identical behavioral
+results: prediction reduced visible-hole steps from 59/67 to 30/67, raised immediate residency from
+11.94% to 55.22%, resolved at 82.61% accuracy with 85.07% timely coverage, completed all four
+cancellation requests, and held the late-soak residency slope at zero. Median baseline/predictive
+visible-hole P95 was 6.604/5.683 ms and median worst owner publication was 43 us. See the
+[clean reference calibration](predictive_streaming_benchmarks.md#clean-reference-calibration).
+General runtime adoption remains before this M6 streaming slice is accepted.
 
 ### M7 — trace-gated GPU work
 

@@ -91,6 +91,33 @@ build/default-release/tests/heartstead_predictive_streaming_benchmark_tests
 Large/raw reports stay outside Git. Calibrations must use a clean tracked tree and record independent
 processes rather than treating repeated trials in one process as independent machines.
 
+## Clean reference calibration
+
+Three independent Release processes from clean commit
+`58ce062e9c59592a1be35aa06656dd9c568591f7` passed every gate and fail-closed invariant on an
+Intel Core Ultra 7 258V with GCC 13.3.0 on Linux 6.17.0-1030-oem. Each process ran an isolated
+baseline trial followed by an isolated predictive trial; the reports recorded `git_dirty=false`.
+
+| Process | Baseline holes | Predictive holes | Predictive immediate hit | Accuracy | Waste | Cancellation | Soak slope |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 59/67 | 30/67 | 55.22% | 82.61% | 12 | 4/4 | 0.00 chunks/step |
+| 2 | 59/67 | 30/67 | 55.22% | 82.61% | 12 | 4/4 | 0.00 chunks/step |
+| 3 | 59/67 | 30/67 | 55.22% | 82.61% | 12 | 4/4 | 0.00 chunks/step |
+
+| Process | Baseline hole P95 | Predictive hole P95 | Worst owner publication | Maximum/final predictive residency |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 5.603 ms | 5.712 ms | 43 us | 16/3 chunks |
+| 2 | 6.604 ms | 5.683 ms | 46 us | 16/3 chunks |
+| 3 | 6.649 ms | 5.551 ms | 25 us | 16/3 chunks |
+| **Median** | **6.604 ms** | **5.683 ms** | **43 us** | **16/3 chunks** |
+
+Across these processes the predictive policy reduced visible-hole steps by 49.2% relative to the
+baseline and raised immediate residency from 11.94% to 55.22%. Timely coverage was 85.07% in every
+run. All submissions were accounted for as publication or cancellation, no trial ended with pending
+work or reservations, no failed/stale/rejected/duplicate work occurred, and no late-soak residency
+growth was observed. These values calibrate the deterministic headless workload below; they are not
+client display, network, or whole-process memory results.
+
 ## Scope limit
 
 This is a headless generation/residency benchmark. It does not yet measure saved-delta I/O, client
