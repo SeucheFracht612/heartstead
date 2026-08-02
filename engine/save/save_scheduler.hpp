@@ -7,13 +7,16 @@
 #include "engine/save/save_snapshot.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace heartstead::save {
@@ -34,9 +37,21 @@ struct SaveSnapshotMemoryEstimate {
 estimate_save_snapshot_memory(const SaveSnapshot& snapshot) noexcept;
 
 struct SaveRequest {
+    SaveRequest() = default;
+    SaveRequest(std::filesystem::path root, SaveSnapshot requested_snapshot,
+                bool compact = true)
+        : database_root(std::move(root)), snapshot(std::move(requested_snapshot)),
+          compact_after_acceptance(compact) {}
+
     std::filesystem::path database_root;
     SaveSnapshot snapshot;
     bool compact_after_acceptance = true;
+    struct SlotMetadataUpdate {
+        std::filesystem::path catalog_root;
+        std::string slot_id;
+        std::uint64_t saved_at_ms = 0;
+    };
+    std::optional<SlotMetadataUpdate> slot_metadata_update;
 };
 
 enum class SaveResultState : std::uint8_t {
@@ -50,6 +65,7 @@ struct SaveResult {
     SaveResultState state = SaveResultState::failed;
     bool durably_accepted = false;
     bool compacted = false;
+    bool slot_metadata_updated = false;
     std::uint64_t journal_sequence = 0;
     std::size_t encoded_bytes = 0;
     std::size_t reserved_working_bytes = 0;
@@ -60,6 +76,8 @@ struct SaveResult {
     std::string error_message;
     std::string compaction_error_code;
     std::string compaction_error_message;
+    std::string metadata_error_code;
+    std::string metadata_error_message;
 };
 
 struct SaveSchedulerConfig {
@@ -82,6 +100,7 @@ struct SaveSchedulerStats {
     std::uint64_t durably_accepted_requests = 0;
     std::uint64_t compacted_requests = 0;
     std::uint64_t failed_requests = 0;
+    std::uint64_t metadata_update_failures = 0;
     std::uint64_t cancelled_requests = 0;
     std::uint64_t rejected_requests = 0;
     std::uint64_t oldest_queued_request_age_us = 0;
@@ -100,6 +119,9 @@ class SaveScheduler {
     [[nodiscard]] core::Result<SaveRequestId> submit(SaveRequest request);
     [[nodiscard]] std::vector<SaveResult>
     drain_completed(std::size_t maximum_results = static_cast<std::size_t>(-1));
+    [[nodiscard]] std::vector<SaveResult>
+    wait_for_completed(std::chrono::milliseconds timeout,
+                       std::size_t maximum_results = static_cast<std::size_t>(-1));
     [[nodiscard]] core::Status cancel(SaveRequestId request_id) noexcept;
     void cancel_all() noexcept;
     void shutdown() noexcept;
@@ -120,6 +142,7 @@ class SaveScheduler {
                   std::shared_ptr<SharedState> shared_state);
 
     void refresh_stats() noexcept;
+    void account_completed(std::span<const SaveResult> results) noexcept;
 
     SaveSchedulerConfig config_;
     std::unique_ptr<jobs::IJobSystem> jobs_;

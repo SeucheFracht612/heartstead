@@ -7953,6 +7953,10 @@ void test_file_save_slot_catalog() {
     assert(clock_adjusted_metadata.value().last_saved_at_ms == 250);
     status = catalog.write_snapshot("settlement_a", snapshot, 400);
     assert(status);
+    status = catalog.mark_saved("settlement_a", 450);
+    assert(status);
+    status = catalog.mark_saved("settlement_a", 0);
+    assert(!status && status.error().code == "save_slot.invalid_timestamps");
     status = catalog.mark_played("settlement_a", 350);
     assert(status);
     status = catalog.mark_played("settlement_a", 150);
@@ -7968,7 +7972,7 @@ void test_file_save_slot_catalog() {
     assert(listed.value()[0].metadata.display_name == "Settlement A");
     assert(listed.value()[0].metadata.created_at_ms == 100);
     assert(listed.value()[0].metadata.last_played_at_ms == 350);
-    assert(listed.value()[0].metadata.last_saved_at_ms == 400);
+    assert(listed.value()[0].metadata.last_saved_at_ms == 450);
     assert(listed.value()[1].metadata.display_name == "winter-2");
     assert(listed.value()[0].database_stats.has_snapshot);
     assert(listed.value()[0].database_stats.uses_generation_manifest);
@@ -7999,7 +8003,7 @@ void test_file_save_slot_catalog() {
     assert(slot_inspection.find_field("display_name")->value == "Settlement A");
     assert(slot_inspection.find_field("created_at_ms")->value == "100");
     assert(slot_inspection.find_field("last_played_at_ms")->value == "350");
-    assert(slot_inspection.find_field("last_saved_at_ms")->value == "400");
+    assert(slot_inspection.find_field("last_saved_at_ms")->value == "450");
     assert(slot_inspection.find_field("layout")->value == "generation");
     assert(slot_inspection.find_field("chunk_delta_count")->value == "1");
     assert(!slot_inspection.has_errors());

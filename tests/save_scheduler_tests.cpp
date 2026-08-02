@@ -1,4 +1,5 @@
 #include "engine/save/save_scheduler.hpp"
+#include "engine/save/save_slot.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -145,6 +146,45 @@ void test_durable_only_result_recovers_without_compaction() {
     cleanup(root);
 }
 
+void test_slot_metadata_is_committed_on_the_worker() {
+    const auto root = make_temp_root();
+    const auto catalog_root = root / "saves";
+    heartstead::save::FileSaveSlotCatalog catalog(catalog_root);
+    assert(catalog.create_slot("worker-slot"));
+
+    auto created = heartstead::save::SaveScheduler::create();
+    assert(created);
+    auto scheduler = std::move(created).value();
+    heartstead::save::SaveRequest request;
+    request.database_root = catalog_root / "worker-slot";
+    request.snapshot = snapshot(52);
+    request.compact_after_acceptance = false;
+    request.slot_metadata_update = heartstead::save::SaveRequest::SlotMetadataUpdate{
+        catalog_root, "worker-slot", 12'345};
+    auto submitted = scheduler->submit(std::move(request));
+    assert(submitted);
+
+    auto results = scheduler->wait_for_completed(std::chrono::seconds(10));
+    assert(results.size() == 1);
+    assert(results.front().durably_accepted);
+    assert(results.front().slot_metadata_updated);
+    assert(results.front().metadata_error_code.empty());
+    auto metadata = catalog.read_metadata("worker-slot");
+    assert(metadata);
+    assert(metadata.value().created_at_ms == 12'345);
+    assert(metadata.value().last_saved_at_ms == 12'345);
+
+    heartstead::save::SaveRequest mismatched;
+    mismatched.database_root = catalog_root / "worker-slot";
+    mismatched.snapshot = snapshot(53);
+    mismatched.slot_metadata_update = heartstead::save::SaveRequest::SlotMetadataUpdate{
+        catalog_root, "different-slot", 12'346};
+    auto rejected = scheduler->submit(std::move(mismatched));
+    assert(!rejected);
+    assert(rejected.error().code == "save_scheduler.invalid_request");
+    cleanup(root);
+}
+
 void test_queued_request_cancellation_publishes_a_bounded_result() {
     const auto first_root = make_temp_root();
     const auto second_root = make_temp_root();
@@ -224,6 +264,7 @@ int main() {
     test_memory_estimate_accounts_for_owned_payloads();
     test_background_save_is_bounded_durable_and_compacted();
     test_durable_only_result_recovers_without_compaction();
+    test_slot_metadata_is_committed_on_the_worker();
     test_queued_request_cancellation_publishes_a_bounded_result();
     test_invalid_and_over_budget_requests_fail_closed();
     test_invalid_configs_and_names_fail();

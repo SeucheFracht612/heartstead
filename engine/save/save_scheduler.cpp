@@ -1,9 +1,11 @@
 #include "engine/save/save_scheduler.hpp"
 
 #include "engine/profiling/cpu_timing.hpp"
+#include "engine/save/save_slot.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <deque>
 #include <exception>
 #include <limits>
@@ -192,7 +194,17 @@ void count_snapshot_payload(ByteCounter& counter, const SaveSnapshot& snapshot) 
 }
 
 [[nodiscard]] bool request_metadata_is_valid(const SaveRequest& request) noexcept {
-    return !request.database_root.empty();
+    if (request.database_root.empty()) {
+        return false;
+    }
+    if (!request.slot_metadata_update.has_value()) {
+        return true;
+    }
+    const auto& update = *request.slot_metadata_update;
+    return !update.catalog_root.empty() &&
+           FileSaveSlotCatalog::is_valid_slot_id(update.slot_id) && update.saved_at_ms != 0 &&
+           request.database_root.lexically_normal() ==
+               (update.catalog_root / update.slot_id).lexically_normal();
 }
 
 } // namespace
@@ -214,11 +226,29 @@ struct SaveScheduler::SharedState {
         : max_completed_results(maximum_completed_results) {}
 
     void publish(SaveResult result) {
-        std::lock_guard lock(mutex);
-        // Config validation and retaining active requests until drain guarantee this bound.
-        if (mailbox.size() < max_completed_results) {
-            mailbox.push_back(std::move(result));
+        {
+            std::lock_guard lock(mutex);
+            // Config validation and retaining active requests until drain guarantee this bound.
+            if (mailbox.size() < max_completed_results) {
+                mailbox.push_back(std::move(result));
+            }
         }
+        completion_available.notify_one();
+    }
+
+    [[nodiscard]] std::vector<SaveResult> wait_drain(std::chrono::milliseconds timeout,
+                                                     std::size_t maximum_results) {
+        std::vector<SaveResult> results;
+        std::unique_lock lock(mutex);
+        static_cast<void>(completion_available.wait_for(lock, timeout,
+                                                        [this] { return !mailbox.empty(); }));
+        const auto count = std::min(maximum_results, mailbox.size());
+        results.reserve(count);
+        for (std::size_t index = 0; index < count; ++index) {
+            results.push_back(std::move(mailbox.front()));
+            mailbox.pop_front();
+        }
+        return results;
     }
 
     [[nodiscard]] std::vector<SaveResult> drain(std::size_t maximum_results) {
@@ -240,6 +270,7 @@ struct SaveScheduler::SharedState {
 
     std::size_t max_completed_results = 0;
     mutable std::mutex mutex;
+    std::condition_variable completion_available;
     std::deque<SaveResult> mailbox;
 };
 
@@ -365,6 +396,18 @@ core::Result<SaveRequestId> SaveScheduler::submit(SaveRequest request) {
                         result.durably_accepted = true;
                         result.journal_sequence = accepted.value().sequence;
                         result.encoded_bytes = accepted.value().encoded_bytes;
+                        if (request.slot_metadata_update.has_value()) {
+                            const auto& update = *request.slot_metadata_update;
+                            auto metadata_status =
+                                FileSaveSlotCatalog(update.catalog_root)
+                                    .mark_saved(update.slot_id, update.saved_at_ms);
+                            if (metadata_status) {
+                                result.slot_metadata_updated = true;
+                            } else {
+                                result.metadata_error_code = metadata_status.error().code;
+                                result.metadata_error_message = metadata_status.error().message;
+                            }
+                        }
                         if (request.compact_after_acceptance && !context.cancellation_requested() &&
                             !cancellation->load(std::memory_order_acquire)) {
                             auto compacted = [&] {
@@ -437,6 +480,22 @@ std::vector<SaveResult> SaveScheduler::drain_completed(std::size_t maximum_resul
         static_cast<void>(jobs_->drain_completed());
     }
     auto results = shared_state_->drain(maximum_results);
+    account_completed(results);
+    return results;
+}
+
+std::vector<SaveResult>
+SaveScheduler::wait_for_completed(std::chrono::milliseconds timeout,
+                                  std::size_t maximum_results) {
+    auto results = shared_state_->wait_drain(timeout, maximum_results);
+    if (jobs_ != nullptr) {
+        static_cast<void>(jobs_->drain_completed());
+    }
+    account_completed(results);
+    return results;
+}
+
+void SaveScheduler::account_completed(std::span<const SaveResult> results) noexcept {
     for (const auto& result : results) {
         const auto active = active_requests_.find(result.request_id);
         if (active != active_requests_.end()) {
@@ -455,9 +514,11 @@ std::vector<SaveResult> SaveScheduler::drain_completed(std::size_t maximum_resul
         if (result.compacted) {
             ++stats_.compacted_requests;
         }
+        if (!result.metadata_error_code.empty()) {
+            ++stats_.metadata_update_failures;
+        }
     }
     refresh_stats();
-    return results;
 }
 
 core::Status SaveScheduler::cancel(SaveRequestId request_id) noexcept {

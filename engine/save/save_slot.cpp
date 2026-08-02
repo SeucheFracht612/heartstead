@@ -132,7 +132,7 @@ constexpr std::uintmax_t max_slot_metadata_bytes = 64U * 1024U;
         }
     }
 
-    const auto error = core::replace_file(temporary, path);
+    const auto error = core::replace_file_durable(temporary, path);
     if (error) {
         std::error_code cleanup_error;
         std::filesystem::remove(temporary, cleanup_error);
@@ -445,6 +445,25 @@ core::Status FileSaveSlotCatalog::write_snapshot(std::string_view slot_id,
     if (!status) {
         return status;
     }
+    return write_metadata(metadata.value());
+}
+
+core::Status FileSaveSlotCatalog::mark_saved(std::string_view slot_id,
+                                             std::uint64_t saved_at_ms) const {
+    if (saved_at_ms == 0) {
+        return core::Status::failure("save_slot.invalid_timestamps",
+                                     "save slot commits require a nonzero timestamp");
+    }
+    auto metadata = read_metadata(slot_id);
+    if (!metadata) {
+        return core::Status::failure(metadata.error().code, metadata.error().message);
+    }
+    if (metadata.value().created_at_ms == 0) {
+        metadata.value().created_at_ms = saved_at_ms;
+    }
+    metadata.value().last_saved_at_ms =
+        std::max({saved_at_ms, metadata.value().created_at_ms,
+                  metadata.value().last_saved_at_ms});
     return write_metadata(metadata.value());
 }
 

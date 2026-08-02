@@ -49,6 +49,8 @@ class FileSaveSlotCatalog {
     [[nodiscard]] core::Status write_snapshot(std::string_view slot_id,
                                               const SaveSnapshot& snapshot,
                                               std::uint64_t saved_at_ms) const;
+    [[nodiscard]] core::Status mark_saved(std::string_view slot_id,
+                                          std::uint64_t saved_at_ms) const;
     [[nodiscard]] core::Status write_metadata(const SaveSlotMetadata& metadata) const;
     [[nodiscard]] core::Status rename_slot(std::string_view slot_id,
                                            std::string display_name) const;
