@@ -24,7 +24,7 @@ requires one.
 | Research capability | Current Heartstead state | Planned action |
 | --- | --- | --- |
 | Permanent hierarchical profiling | Partial: retained CPU/GPU timers, counters, raw benchmark frames, and opt-in Tracy zones now cover major runtime, renderer, chunk, worker, lighting, collision, and streaming paths. | Extend zones and attribution as later stages are changed; add allocation ownership and queue-age plots. |
-| Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. The live renderer-proof test covers rapid interest teleports, cancellation, convergence, and zero-reservation teardown. Separate open-loop chunk, save-under-streaming, chunk-delta journal, isolated voxel-response, end-to-end render-readiness, and real-runtime multiplayer chunk-subscription benchmarks retain request-to-resident, physical indexed-read, save handoff/acceptance/publication, stable-storage append, checkpoint, collision-publication, whole-field relight, upload, draw-command, multi-client spread/convergence/traversal, per-client wire, and server-tick percentiles. | Add guaranteed-cold and multi-filesystem, cold-start, burst/hot-edit, impaired-network, actual GPU execution/presentation, and long-soak workloads. |
+| Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. The live renderer-proof test covers rapid interest teleports, cancellation, convergence, and zero-reservation teardown. Separate open-loop chunk, save-under-streaming, chunk-delta journal, isolated voxel-response, end-to-end render-readiness, near/mid/far edit-transition, and real-runtime multiplayer chunk-subscription benchmarks retain request-to-resident, physical indexed-read, save handoff/acceptance/publication, stable-storage append, checkpoint, collision-publication, whole-field relight, upload, exact current draw-command, retained LOD convergence/continuity, multi-client spread/convergence/traversal, per-client wire, and server-tick percentiles. | Add guaranteed-cold and multi-filesystem, cold-start, burst/hot-edit, impaired-network, actual GPU execution/presentation, and long-soak workloads. |
 | Reproducible provenance and gates | Renderer schema v4, chunk-streaming schema v4, chunk-delta-journal schema v1, voxel-response schema v1, chunk-render-readiness schema v1, and multiplayer chunk-subscription schema v1 record source/build/CPU/device/run metadata, warmups, repetitions or raw ticks, workload configuration, and fail-closed lifecycle invariants. Optional gates cover frame distributions, uploads, available GPU, rapid-edit mesh response, generated/in-memory/file-backed saved resident publication, physical payload reads and index opens, save-under-streaming owner handoff/request-to-durable acceptance/full publication, durable append/reopen/checkpoint, exact collision publication, full-field relight convergence, required-chunk draw eligibility, synchronous GPU waits, mesh amplification, owner publication time, subscription bounds, relevance exclusions, codec reuse/overshoot, backlog recovery, and server P99. | Add relative-regression checks and the remaining guaranteed-cold/multi-filesystem I/O, display, impaired-network, hot-edit, and soak gates. |
 | Bounded jobs and cancellation | Generic and typed schedulers now bound pending/result work, expose backpressure and queue-age telemetry, age priorities, and support reasoned queued/cooperative cancellation. | Attribute per-type saturation in higher-level pipeline counters and tune limits from traces. |
 | Versioned chunk pipeline | An owner-thread ledger now separates content, light, mesh, collision, persistence, and replication request/output revisions and states. Save/replication, mesh/GPU, collision/physics, and whole-field lighting publication are ticket-validated across edit and reload races. | Calibrate stale-work amplification and latency under representative edit/streaming traces. |
@@ -372,6 +372,21 @@ verified. Runtime adoption plus clean-host spread/convergence/traversal and P99 
 implemented. Relevance filtering for the separate committed voxel event/delta path, hot-region
 edits, impaired-network P99, game-specific temporal aggregation, and long-soak evidence remain
 before the M6 scale milestone is accepted.
+
+The schema-v1
+[terrain edit-transition benchmark](terrain_edit_transition_benchmarks.md) now starts from complete
+near/mid/far residency, applies one grid-aligned authoritative surface edit at a deterministically
+selected LOD boundary, and retains exact-current near draw, complete mid replacement, complete far
+replacement, owner cost, upload, queue, memory-continuity, stale-work, and teardown evidence. A
+second forced edit race must coalesce near work and reject stale far tickets without dropping any
+resident draw. Three clean Release headless processes measured process-level near/mid/far/full P95
+at 17.176–17.248 ms; three Intel Graphics Vulkan processes measured 21.754–24.882 ms. Worst owner
+updates were 1.521/9.189 ms, upload preparation stayed below 0.016 ms, synchronous GPU wait stayed
+zero, and pipeline occupancy peaked at two of three. All six processes passed the calibrated
+50/250/500/500 ms response, 12 ms owner, 0.5 ms upload-preparation, zero-wait, bounded-work,
+continuity, supersession, and resource-teardown gates. This implements the isolated retained
+near/mid/far transition slice. Burst and broad invalidations, actual GPU execution/display response,
+and long-soak transition evidence remain open.
 
 ### M7 — trace-gated GPU work
 

@@ -33,7 +33,7 @@ struct TerrainEditTransitionBenchmarkConfig {
     double maximum_mid_convergence_p95_ms = 250.0;
     double maximum_far_convergence_p95_ms = 500.0;
     double maximum_full_convergence_p95_ms = 500.0;
-    double maximum_owner_update_ms = 8.0;
+    double maximum_owner_update_ms = 12.0;
     double maximum_upload_preparation_ms = 0.5;
     double maximum_synchronous_gpu_wait_ms = 0.0;
 

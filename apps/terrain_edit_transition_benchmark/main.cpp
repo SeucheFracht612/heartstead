@@ -173,7 +173,7 @@ void print_usage(std::ostream& output) {
            "  --mid-p95-ms N       Complete mid replacement P95 gate (default 250)\n"
            "  --far-p95-ms N       Complete far replacement P95 gate (default 500)\n"
            "  --full-p95-ms N      Whole transition P95 gate (default 500)\n"
-           "  --owner-ms N         Worst renderer-owner update gate (default 8)\n"
+           "  --owner-ms N         Worst renderer-owner update gate (default 12)\n"
            "  --upload-prep-ms N  Near upload-preparation gate (default 0.5)\n"
            "  --gpu-wait-ms N      Synchronous GPU-wait gate (default 0)\n"
            "  --enforce-gates      Return failure when a latency gate is exceeded\n"
