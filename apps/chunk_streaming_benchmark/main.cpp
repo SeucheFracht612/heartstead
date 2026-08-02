@@ -39,6 +39,9 @@ parse_workload(std::string_view name) noexcept {
     if (name == "teleport_recovery") {
         return benchmark::ChunkStreamingWorkload::teleport_recovery;
     }
+    if (name == "saved_delta_publication") {
+        return benchmark::ChunkStreamingWorkload::saved_delta_publication;
+    }
     return std::nullopt;
 }
 
@@ -68,7 +71,8 @@ parse_workload(std::string_view name) noexcept {
                 if (!parsed) {
                     return core::Result<Options>::failure(
                         "chunk_streaming_benchmark.invalid_workload",
-                        "--workload must be near_load, teleport_recovery, or all");
+                        "--workload must be near_load, teleport_recovery, "
+                        "saved_delta_publication, or all");
                 }
                 options.benchmark.workloads = {*parsed};
             }
@@ -96,7 +100,7 @@ parse_workload(std::string_view name) noexcept {
             }
         } else if (argument == "--radius" || argument == "--warmup" ||
                    argument == "--repetitions" || argument == "--workers" ||
-                   argument == "--publications") {
+                   argument == "--publications" || argument == "--history-edits") {
             auto value = next();
             if (!value) {
                 return core::Result<Options>::failure(value.error().code, value.error().message);
@@ -119,10 +123,13 @@ parse_workload(std::string_view name) noexcept {
                 options.benchmark.repetitions = *parsed;
             } else if (argument == "--workers") {
                 options.benchmark.scheduler.worker_count = *parsed;
+            } else if (argument == "--history-edits") {
+                options.benchmark.unrelated_history_edit_count = *parsed;
             } else {
                 options.benchmark.scheduler.max_publications_per_update = *parsed;
             }
-        } else if (argument == "--near-p95-ms" || argument == "--teleport-p95-ms") {
+        } else if (argument == "--near-p95-ms" || argument == "--teleport-p95-ms" ||
+                   argument == "--saved-delta-p95-ms") {
             auto value = next();
             if (!value) {
                 return core::Result<Options>::failure(value.error().code, value.error().message);
@@ -135,8 +142,10 @@ parse_workload(std::string_view name) noexcept {
             }
             if (argument == "--near-p95-ms") {
                 options.benchmark.maximum_near_p95_ms = *parsed;
-            } else {
+            } else if (argument == "--teleport-p95-ms") {
                 options.benchmark.maximum_teleport_p95_ms = *parsed;
+            } else {
+                options.benchmark.maximum_saved_delta_p95_ms = *parsed;
             }
         } else if (argument == "--output") {
             auto value = next();
@@ -159,9 +168,12 @@ parse_workload(std::string_view name) noexcept {
 
 void print_usage(std::ostream& output) {
     output << "usage: heartstead_chunk_streaming_benchmark [options]\n"
-              "  --workload NAME          near_load, teleport_recovery, or all\n"
+              "  --workload NAME          near_load, teleport_recovery, "
+              "saved_delta_publication, or all\n"
               "  --seed N                 Deterministic terrain seed\n"
               "  --radius N               Circular required-ring radius (default 4)\n"
+              "  --history-edits N        Unrelated retained edits for saved-delta work "
+              "(default 16384)\n"
               "  --warmup N               Unmeasured workload runs (default 2)\n"
               "  --repetitions N          Retained workload runs (default 9)\n"
               "  --update-us N            Owner publication cadence (default 1000)\n"
@@ -170,6 +182,7 @@ void print_usage(std::ostream& output) {
               "  --publications N         Maximum results per owner update (default 2)\n"
               "  --near-p95-ms N          Near-ring P95 gate (default 250)\n"
               "  --teleport-p95-ms N      Teleport-ring P95 gate (default 1000)\n"
+              "  --saved-delta-p95-ms N   Saved-delta P95 gate (default 250)\n"
               "  --owner-publication-us N Owner update gate and scheduler budget (default 500)\n"
               "  --enforce-gates          Return failure when a latency gate is exceeded\n"
               "  --output PATH            Write JSON; otherwise write JSON to stdout\n"

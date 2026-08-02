@@ -16,6 +16,7 @@ namespace heartstead::world::benchmark {
 enum class ChunkStreamingWorkload : std::uint8_t {
     near_load,
     teleport_recovery,
+    saved_delta_publication,
 };
 
 [[nodiscard]] std::string_view
@@ -25,6 +26,7 @@ struct ChunkStreamingBenchmarkConfig {
     std::vector<ChunkStreamingWorkload> workloads;
     std::uint64_t seed = 0x4853545245414DULL;
     std::uint16_t radius_chunks = 4;
+    std::size_t unrelated_history_edit_count = 16'384;
     std::uint32_t warmup_repetitions = 2;
     std::uint32_t repetitions = 9;
     std::uint64_t update_interval_us = 1'000;
@@ -33,6 +35,7 @@ struct ChunkStreamingBenchmarkConfig {
     bool enforce_gates = false;
     double maximum_near_p95_ms = 250.0;
     double maximum_teleport_p95_ms = 1'000.0;
+    double maximum_saved_delta_p95_ms = 250.0;
     std::uint64_t maximum_owner_publication_us = 500;
 
     ChunkStreamingBenchmarkConfig();
@@ -46,6 +49,8 @@ struct ChunkStreamingBenchmarkSample {
     std::uint32_t ordinal = 0;
     ChunkCoord coord;
     std::uint64_t request_id = 0;
+    ChunkStreamLoadSource source = ChunkStreamLoadSource::generated;
+    std::size_t saved_edit_count = 0;
     std::uint64_t interest_to_publication_us = 0;
     double scheduler_pipeline_ms = 0.0;
     double disk_read_ms = 0.0;
@@ -67,6 +72,7 @@ struct ChunkStreamingBenchmarkRun {
     std::uint64_t failed_requests = 0;
     std::uint64_t rejected_requests = 0;
     std::uint64_t off_interest_publications = 0;
+    std::uint64_t saved_delta_publications = 0;
     std::uint64_t admission_deferred_updates = 0;
     std::uint64_t item_budget_exhaustions = 0;
     std::uint64_t time_budget_exhaustions = 0;
@@ -74,6 +80,9 @@ struct ChunkStreamingBenchmarkRun {
     std::uint64_t maximum_publication_time_us = 0;
     std::size_t reserved_working_bytes_high_water = 0;
     std::size_t final_reserved_working_bytes = 0;
+    std::size_t initial_edit_count = 0;
+    std::size_t final_edit_count = 0;
+    std::uint64_t edit_log_cache_rebuilds_during_publication = 0;
 };
 
 struct ChunkStreamingBenchmarkViolation {
@@ -98,18 +107,23 @@ struct ChunkStreamingBenchmarkSummary {
     double maximum_interest_to_publication_ms = 0.0;
     double median_scheduler_pipeline_ms = 0.0;
     double p95_scheduler_pipeline_ms = 0.0;
+    double p95_disk_read_ms = 0.0;
+    double p95_decode_ms = 0.0;
     double p95_generation_ms = 0.0;
+    double p95_prepare_ms = 0.0;
     double p95_worker_ms = 0.0;
     double mean_chunks_per_second = 0.0;
     std::uint64_t total_cancelled_requests = 0;
+    std::uint64_t total_saved_delta_publications = 0;
     std::uint64_t total_admission_deferred_updates = 0;
+    std::uint64_t maximum_edit_log_cache_rebuilds_during_publication = 0;
     std::uint64_t maximum_publication_time_us = 0;
     std::size_t reserved_working_bytes_high_water = 0;
     ChunkStreamingBenchmarkGateEvaluation gates;
 };
 
 struct ChunkStreamingBenchmarkReport {
-    static constexpr std::uint32_t schema_version = 1;
+    static constexpr std::uint32_t schema_version = 2;
 
     ChunkStreamingBenchmarkConfig config;
     profiling::RuntimeMetadata runtime;
