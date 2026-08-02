@@ -63,6 +63,17 @@ struct FarTerrainSurfaceSample {
     bool valid = true;
 };
 
+struct FarTerrainSurfaceGrid {
+    FarTerrainPatchKey key;
+    math::Bounds3d horizontal_bounds{};
+    double cell_size = 0.0;
+    std::uint32_t resolution = 0;
+    // Includes one sample of border on every side for central-difference normals.
+    std::vector<FarTerrainSurfaceSample> samples;
+
+    [[nodiscard]] core::Status validate_for(const FarTerrainPatch& patch) const;
+};
+
 using FarTerrainSurfaceSampler =
     std::function<FarTerrainSurfaceSample(double world_x, double world_z,
                                           FarTerrainDomain domain)>;
@@ -89,9 +100,15 @@ class FarTerrainClipmap {
     create(FarTerrainClipmapConfig config);
 
     [[nodiscard]] FarTerrainPlan plan(math::Vec3d camera_world) const;
+    [[nodiscard]] core::Result<FarTerrainSurfaceGrid>
+    capture_patch_surface(const FarTerrainPatch& patch,
+                          const FarTerrainSurfaceSampler& sampler,
+                          std::vector<FarTerrainSurfaceSample> reusable = {}) const;
     [[nodiscard]] core::Result<FarTerrainPatchMesh>
     build_patch_mesh(const FarTerrainPatch& patch,
                      const FarTerrainSurfaceSampler& sampler) const;
+    [[nodiscard]] core::Result<FarTerrainPatchMesh>
+    build_patch_mesh(const FarTerrainPatch& patch, const FarTerrainSurfaceGrid& surface) const;
     [[nodiscard]] const FarTerrainClipmapConfig& config() const noexcept;
 
   private:

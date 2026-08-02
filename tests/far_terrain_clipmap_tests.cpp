@@ -28,11 +28,14 @@ int main() {
     }
 
     const auto& patch = first.patches.front();
-    const auto sampler = [](double x, double z, renderer::FarTerrainDomain) {
+    std::size_t sample_count = 0;
+    const auto sampler = [&sample_count](double x, double z, renderer::FarTerrainDomain) {
+        ++sample_count;
         return renderer::FarTerrainSurfaceSample{10.0 + x * 0.000001 + z * 0.000002, 7};
     };
     auto mesh = clipmap.build_patch_mesh(patch, sampler);
     assert(mesh);
+    assert(sample_count == 121U);
     assert(mesh.value().vertices.size() == 81U);
     assert(mesh.value().indices.size() == 384U);
     assert(mesh.value().local_bounds.is_valid());
@@ -41,6 +44,25 @@ int main() {
         assert(std::abs(math::length(vertex.normal) - 1.0) < 0.001);
         assert(vertex.material == 7U);
     }
+
+    // The immutable bordered grid is a complete worker input. Later sampler changes cannot alter
+    // its geometry, and malformed snapshots fail rather than indexing partial storage.
+    double captured_height = 20.0;
+    const renderer::FarTerrainSurfaceSampler mutable_sampler =
+        [&captured_height](double, double, renderer::FarTerrainDomain) {
+            return renderer::FarTerrainSurfaceSample{captured_height, 9};
+        };
+    auto captured = clipmap.capture_patch_surface(patch, mutable_sampler);
+    assert(captured);
+    captured_height = 80.0;
+    auto captured_mesh = clipmap.build_patch_mesh(patch, captured.value());
+    assert(captured_mesh);
+    assert(captured_mesh.value().world_origin.y == 20.0);
+    auto live_mesh = clipmap.build_patch_mesh(patch, mutable_sampler);
+    assert(live_mesh);
+    assert(live_mesh.value().world_origin.y == 80.0);
+    captured.value().samples.pop_back();
+    assert(!clipmap.build_patch_mesh(patch, captured.value()));
 
     const auto partial_sampler = [boundary = (patch.horizontal_bounds.min.x +
                                                patch.horizontal_bounds.max.x) *

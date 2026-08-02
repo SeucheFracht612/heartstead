@@ -55,6 +55,27 @@ namespace {
 
 } // namespace
 
+core::Status FarTerrainSurfaceGrid::validate_for(const FarTerrainPatch& patch) const {
+    if (key != patch.key || horizontal_bounds != patch.horizontal_bounds ||
+        cell_size != patch.cell_size || resolution != patch.resolution || resolution < 2 ||
+        resolution > 256 || !std::isfinite(cell_size) || cell_size <= 0.0 ||
+        !horizontal_bounds.is_valid()) {
+        return core::Status::failure(
+            "renderer.invalid_far_terrain_surface_grid",
+            "far-terrain surface grid metadata does not match its patch");
+    }
+    const auto row = static_cast<std::size_t>(resolution) + 3U;
+    if (samples.size() != row * row ||
+        !std::ranges::all_of(samples, [](const auto& sample) {
+            return std::isfinite(sample.height);
+        })) {
+        return core::Status::failure(
+            "renderer.invalid_far_terrain_surface_samples",
+            "far-terrain surface grid requires a finite bordered sample square");
+    }
+    return core::Status::ok();
+}
+
 core::Result<FarTerrainClipmap> FarTerrainClipmap::create(FarTerrainClipmapConfig config) {
     if (config.level_count == 0 || config.level_count > 16 || config.patches_per_axis < 5 ||
         config.patches_per_axis % 2U == 0 || config.patch_resolution < 2 ||
@@ -130,12 +151,64 @@ FarTerrainPlan FarTerrainClipmap::plan(math::Vec3d camera_world) const {
 
 core::Result<FarTerrainPatchMesh> FarTerrainClipmap::build_patch_mesh(
     const FarTerrainPatch& patch, const FarTerrainSurfaceSampler& sampler) const {
-    if (!sampler || patch.resolution < 2 || patch.cell_size <= 0.0 ||
-        !patch.horizontal_bounds.is_valid()) {
-        return core::Result<FarTerrainPatchMesh>::failure(
-            "renderer.invalid_far_terrain_patch",
-            "far-terrain patch mesh requires valid bounds, resolution, and surface sampler");
+    auto surface = capture_patch_surface(patch, sampler);
+    if (!surface) {
+        return core::Result<FarTerrainPatchMesh>::failure(surface.error().code,
+                                                          surface.error().message);
     }
+    return build_patch_mesh(patch, surface.value());
+}
+
+core::Result<FarTerrainSurfaceGrid> FarTerrainClipmap::capture_patch_surface(
+    const FarTerrainPatch& patch, const FarTerrainSurfaceSampler& sampler,
+    std::vector<FarTerrainSurfaceSample> reusable) const {
+    if (!sampler || patch.resolution < 2 || patch.resolution > 256 ||
+        !std::isfinite(patch.cell_size) || patch.cell_size <= 0.0 ||
+        !patch.horizontal_bounds.is_valid()) {
+        return core::Result<FarTerrainSurfaceGrid>::failure(
+            "renderer.invalid_far_terrain_patch",
+            "far-terrain surface capture requires valid bounds, resolution, and sampler");
+    }
+    FarTerrainSurfaceGrid result;
+    result.key = patch.key;
+    result.horizontal_bounds = patch.horizontal_bounds;
+    result.cell_size = patch.cell_size;
+    result.resolution = patch.resolution;
+    result.samples = std::move(reusable);
+    const auto row = static_cast<std::size_t>(patch.resolution) + 3U;
+    result.samples.clear();
+    result.samples.reserve(row * row);
+    for (std::int32_t z = -1; z <= static_cast<std::int32_t>(patch.resolution) + 1; ++z) {
+        for (std::int32_t x = -1; x <= static_cast<std::int32_t>(patch.resolution) + 1; ++x) {
+            result.samples.push_back(sampler(
+                patch.horizontal_bounds.min.x + static_cast<double>(x) * patch.cell_size,
+                patch.horizontal_bounds.min.z + static_cast<double>(z) * patch.cell_size,
+                patch.key.domain));
+        }
+    }
+    auto status = result.validate_for(patch);
+    if (!status) {
+        return core::Result<FarTerrainSurfaceGrid>::failure(status.error().code,
+                                                            status.error().message);
+    }
+    return core::Result<FarTerrainSurfaceGrid>::success(std::move(result));
+}
+
+core::Result<FarTerrainPatchMesh>
+FarTerrainClipmap::build_patch_mesh(const FarTerrainPatch& patch,
+                                    const FarTerrainSurfaceGrid& surface) const {
+    auto surface_status = surface.validate_for(patch);
+    if (!surface_status) {
+        return core::Result<FarTerrainPatchMesh>::failure(surface_status.error().code,
+                                                          surface_status.error().message);
+    }
+    const auto surface_row = static_cast<std::size_t>(patch.resolution) + 3U;
+    const auto sample_at = [&surface, surface_row](std::int32_t x,
+                                                   std::int32_t z) -> const auto& {
+        const auto index = static_cast<std::size_t>(z + 1) * surface_row +
+                           static_cast<std::size_t>(x + 1);
+        return surface.samples[index];
+    };
 
     FarTerrainPatchMesh result;
     result.key = patch.key;
@@ -143,10 +216,8 @@ core::Result<FarTerrainPatchMesh> FarTerrainClipmap::build_patch_mesh(
     bool found_origin_height = false;
     for (std::uint32_t z = 0; z <= patch.resolution && !found_origin_height; ++z) {
         for (std::uint32_t x = 0; x <= patch.resolution; ++x) {
-            const auto sample = sampler(
-                patch.horizontal_bounds.min.x + static_cast<double>(x) * patch.cell_size,
-                patch.horizontal_bounds.min.z + static_cast<double>(z) * patch.cell_size,
-                patch.key.domain);
+            const auto sample = sample_at(static_cast<std::int32_t>(x),
+                                          static_cast<std::int32_t>(z));
             if (sample.valid) {
                 origin_height = sample.height;
                 found_origin_height = true;
@@ -169,16 +240,16 @@ core::Result<FarTerrainPatchMesh> FarTerrainClipmap::build_patch_mesh(
                                  static_cast<double>(x) * patch.cell_size;
             const auto world_z = patch.horizontal_bounds.min.z +
                                  static_cast<double>(z) * patch.cell_size;
-            const auto sample = sampler(world_x, world_z, patch.key.domain);
-            const auto neighbor_height = [&sampler, &sample, domain = patch.key.domain](
-                                             double neighbor_x, double neighbor_z) {
-                const auto neighbor = sampler(neighbor_x, neighbor_z, domain);
+            const auto grid_x = static_cast<std::int32_t>(x);
+            const auto grid_z = static_cast<std::int32_t>(z);
+            const auto sample = sample_at(grid_x, grid_z);
+            const auto neighbor_height = [&sample](const FarTerrainSurfaceSample& neighbor) {
                 return neighbor.valid ? neighbor.height : sample.height;
             };
-            const auto left = neighbor_height(world_x - patch.cell_size, world_z);
-            const auto right = neighbor_height(world_x + patch.cell_size, world_z);
-            const auto back = neighbor_height(world_x, world_z - patch.cell_size);
-            const auto front = neighbor_height(world_x, world_z + patch.cell_size);
+            const auto left = neighbor_height(sample_at(grid_x - 1, grid_z));
+            const auto right = neighbor_height(sample_at(grid_x + 1, grid_z));
+            const auto back = neighbor_height(sample_at(grid_x, grid_z - 1));
+            const auto front = neighbor_height(sample_at(grid_x, grid_z + 1));
             const auto position = math::Vec3f{
                 static_cast<float>(world_x - result.world_origin.x),
                 static_cast<float>((sample.valid ? sample.height : origin_height) -
