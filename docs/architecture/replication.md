@@ -142,12 +142,27 @@ persistent entities. Build-piece and assembly changes mark room and spatial-netw
 rebuildable derived state can be regenerated. A partial delta that requires resynchronization is
 rejected before client world state is mutated.
 
-For voxel events, `ClientRuntime` requires an authoritative remote chunk base and rejects generation
-or revision gaps. A contiguous accepted edit advances the remembered remote revision, allowing the
-next command to use the delta-updated publication without waiting for a complete snapshot. A newer
-complete snapshot may supersede an older observed event only when the persistent cell already
-matches that event; this tolerance does not yet provide a unified ordering policy for every mixed
-snapshot/delta queue shape.
+For voxel events, `ClientRuntime` requires an authoritative remote chunk base and plans revision
+changes against a tentative per-sync cursor. An edit at exactly the next content revision mutates
+the chunk and advances that cursor. A complete snapshot at the same or a newer revision supersedes
+an older queued delta, which remains observable as a committed event but does not rewrite snapshot
+state. A delta from a newer generation than the installed base or with a forward revision gap fails
+closed rather than fabricating missing state. Multiple edits to the same cell in one synchronization
+validate against the last applicable edit rather than incorrectly requiring every intermediate
+value to remain current.
+
+Typed-delta global events must exactly match the type, subject, and payload of their queued event
+batch. The client commits tentative revision advances only after the delta apply succeeds, observed
+voxel events match, and every final applied cell is present. A delta advance also discards any
+partial snapshot assembly already covered by that identity/revision. Focused transport tests cover
+base snapshot plus next delta, a newer snapshot plus an older delta, two same-cell revisions, and a
+gap followed by successful contiguous recovery.
+
+This is the same broad list/watch discipline documented by the
+[Kubernetes API resource-version model](https://kubernetes.io/docs/reference/using-api/api-concepts/#efficient-detection-of-changes)
+and the requirement to verify revisions in the
+[etcd API guarantees](https://etcd.io/docs/v3.5/learning/api_guarantees/): establish a versioned
+base, accept ordered changes from that base, and replace state when history is unavailable.
 
 ## Relationship to other replication paths
 
@@ -177,11 +192,11 @@ path installs the complete current state.
 
 Replication is not a universal full-state synchronization system. Unsupported or unresolved
 subjects require an explicit snapshot/resync path, and chunk streaming remains separate from saved
-world-store deltas. Voxel event/delta traffic is spatially filtered and isolated material hot-edit
-throughput is calibrated. Revision-safe intake when an older voxel delta and a newer full snapshot
-are both queued, impaired-network behavior, and long-soak queue/memory stability remain open.
-Public-Internet security, NAT traversal, matchmaking, congestion control, and pacing are transport
-concerns and are not provided by this layer.
+world-store deltas. Voxel event/delta traffic is spatially filtered, isolated material hot-edit
+throughput is calibrated, and mixed full-snapshot/delta intake is revision-safe. Impaired-network
+behavior and long-soak queue/memory stability remain open. Public-Internet security, NAT traversal,
+matchmaking, congestion control, and pacing are transport concerns and are not provided by this
+layer.
 
 See [Networking architecture](networking.md), [Commands](commands.md),
 [World model](world_model.md), and [Runtime composition](runtime_composition.md).

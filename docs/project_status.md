@@ -72,8 +72,8 @@ exact event/delta apply and foreign-region exclusion. An optimized `profiling-re
 links on-demand Tracy instrumentation across the main runtime, renderer, worker, chunk, lighting,
 collision, and streaming boundaries; normal builds compile those call sites to no-ops. Guaranteed
 cold/multi-filesystem I/O, coordinated checkpoint under live streaming, large snapshot capture,
-general-controller loader adoption, actual GPU execution/presentation timing, mixed voxel
-snapshot/delta ordering, impaired multiplayer, and long-soak scale remain staged in the
+general-controller loader adoption, actual GPU execution/presentation timing, impaired multiplayer,
+and long-soak scale remain staged in the
 [voxel optimization roadmap](performance/voxel_optimization_roadmap.md).
 
 The retained UI path uses a packaged Noto Sans font rendered from a deterministic SDF atlas,
@@ -116,10 +116,12 @@ across recipients. Three clean eight-client Release runs pass spread/convergence
 cross-region exclusion, exact wire, clean-host P99, codec, and one-tick backlog-recovery gates. The
 committed voxel event/delta path now shares exact-published-chunk interest, with a focused
 near-recipient/far-exclusion/late-snapshot recovery proof and recipient telemetry. Contiguous
-delivered edits advance the recipient publication and avoid redundant full chunk snapshots. Three
-clean schema-v2 runs pass a 120-tick, eight-client hot-edit workload with median 0.461 ms hot P99,
-860 peak bytes/client/tick, exact application of 960 edits, all 6,720 cross-region exclusions, and
-zero publication gaps. Mixed older-delta/newer-snapshot client ordering, network impairment, and
+delivered edits advance the recipient publication and avoid redundant full chunk snapshots. The
+120-tick, eight-client schema-v2 hot-edit workload retains 860 peak bytes/client/tick, exact
+application of 960 edits, all 6,720 cross-region exclusions, and zero publication gaps. Client
+intake uses tentative per-chunk revision cursors so exact-next deltas apply, older deltas covered by
+a newer snapshot cannot regress state, and gaps fail without advancing the cursor. Three clean
+post-ordering runs retained every gate with median 0.409 ms hot P99. Network impairment and
 long-soak gates remain. See
 [Multiplayer chunk-subscription benchmarks](performance/multiplayer_chunk_subscription_benchmarks.md).
 

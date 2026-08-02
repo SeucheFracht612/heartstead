@@ -34,7 +34,7 @@ requires one.
 | Dynamic edit propagation | Dirty regions, dependency-selective neighbor invalidation, clipped fluid-region activation, asynchronous mesh/light/collision work, upload quotas, exact mesh/collision/relight lifecycle tracking, edit coalescing/abandonment telemetry, and calibrated visual, collision, relight, required-chunk upload-preparation, draw-eligibility, and multiplayer material-hot-edit gates exist. | Add broader burst-edit collision/relight amplification and correlate the existing GPU/presentation endpoints with edit and physical-display response. |
 | Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, indexed delta save/replication, residency budgets, and far clipmaps exist. Durable snapshot acceptance/compaction and application saves run through a bounded save worker. Failed-busy checkpoints now enter an application-owned, memory-reserved queue with capped exponential backoff, attempt/root limits, and explicit completion/exhaustion telemetry. A predictive owner-thread controller drives the bounded loader in the live renderer-proof stream, reserves demand capacity, tracks speculative outcomes, and emits capped eviction waves with deferred/overage telemetry. Saved-delta publication and narrow flushes no longer scan or copy global edit history, physical delta sources parse one base-plus-journal view per streaming epoch, and a retained writer publishes one checksummed file per update. Process-local readers/writers pin generation tables; append/publication mutations serialize across database instances; destructive maintenance fails fast for retry. The save-under-streaming harness proves pinned reads across full generation publication, an explicit reader gap, stale pruning, and future-source rotation. Warm/cache-advised reads and durable append/reopen/checkpoint gates pass at 16,384 records. | Add guaranteed-cold/multi-filesystem coverage, extend generator-backed loading beyond the renderer-proof world, and add scale-calibrated live save-capture gates. |
 | Visibility, LOD, and GPU scaling | Frustum/distance/hierarchical visibility, HZB support, far clipmaps, indirect rendering, GPU arenas, upload staging, and pass timestamps already exist. | Tune only from captures; validate total culling benefit and retain broad fallback paths. |
-| Simulation and multiplayer scale | Simulation LOD, server authority, fixed-step runtime, bounded reliable/transient replication, and player-centered hysteretic chunk subscriptions now run in `ServerRuntime`. Chunk snapshots are relevance-limited, identity/revision tracked, atomically queued, globally codec-time-bounded, and encoded once across recipients. Committed voxel events and typed deltas use the same exact-published-chunk relevance rule. Contiguous delivered voxel deltas advance the recipient publication and suppress redundant full snapshots; gaps retain the full-snapshot fallback. Clean eight-client spread/convergence/traversal and 120-tick hot-edit runs pass server P99, relevance, sharing, wire, exact apply, and backlog-recovery gates. | Add revision-safe mixed snapshot/delta client ordering, impaired-network P99, game-specific temporal aggregate models, and long-soak coverage. |
+| Simulation and multiplayer scale | Simulation LOD, server authority, fixed-step runtime, bounded reliable/transient replication, and player-centered hysteretic chunk subscriptions now run in `ServerRuntime`. Chunk snapshots are relevance-limited, identity/revision tracked, atomically queued, globally codec-time-bounded, and encoded once across recipients. Committed voxel events and typed deltas use the same exact-published-chunk relevance rule. Contiguous delivered voxel deltas advance the recipient publication and suppress redundant full snapshots; server gaps retain the full-snapshot fallback. Client intake applies exact-next revisions, ignores deltas covered by a newer complete snapshot, and rejects gaps. Clean eight-client spread/convergence/traversal and 120-tick hot-edit runs pass server P99, relevance, sharing, wire, exact apply, and backlog-recovery gates. | Add impaired-network P99, game-specific temporal aggregate models, and long-soak coverage. |
 
 ## Ordered milestones
 
@@ -390,6 +390,11 @@ P95/P99/max of 0.424/0.461/0.616 ms. Peak hot traffic was 860 bytes/client/tick.
 applied exactly, all 6,720 cross-region deliveries were excluded, 960 contiguous publications
 advanced, 960 full snapshots were avoided, and zero publication gaps occurred.
 
+After mixed snapshot/delta ordering was closed, three further clean Release processes at commit
+`5cd11bb` retained every behavioral and wire invariant with median overall P95/P99/max of
+0.390/2.482/4.752 ms and hot-edit P95/P99/max of 0.381/0.409/0.504 ms. This confirms that tentative
+client revision cursors and superseded-delta filtering did not consume the hot-path margin.
+
 Raw named-system timing identified command transaction staging, not replication or fluids, as the
 initial bottleneck: the gateway averaged 20.271 ms when every command deep-copied all resident 32³
 cell arrays. Dense cell fields now use detach-before-write sharing across staged `WorldState`
@@ -404,8 +409,10 @@ identity-matched preceding publication; a missing identity or revision remains a
 falls back to the ordinary complete snapshot path. Focused two-client coverage proves one near
 delivery, one far exclusion, absence of both payload types at the far client, delta-based near
 publication advancement, and exact late-interest recovery by a full snapshot. Client-side ordering
-for a queued older delta plus a newer full snapshot, impaired-network P99, game-specific temporal
-aggregation, and long-soak evidence remain before the M6 scale milestone is accepted.
+now accepts an exact-next delta from a snapshot base, prevents an older delta from regressing a
+newer snapshot, sequences repeated same-cell edits, and fails closed on a gap without advancing its
+cursor. Impaired-network P99, game-specific temporal aggregation, and long-soak evidence remain
+before the M6 scale milestone is accepted.
 
 The schema-v1
 [terrain edit-transition benchmark](terrain_edit_transition_benchmarks.md) now starts from complete

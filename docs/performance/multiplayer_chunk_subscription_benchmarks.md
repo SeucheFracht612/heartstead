@@ -173,6 +173,28 @@ activation clips iteration to the exact resident intersection rather than scanni
 every intersecting chunk. These reductions are asserted by the hot workload and focused engine/fluid
 tests rather than inferred only from timing.
 
+### Post-ordering clean validation
+
+After revision-safe mixed snapshot/delta intake was added, three independent clean Release
+processes at commit `5cd11bb3a1536d33821232dd425ae76f6811ef3b` reran the complete schema-v2
+workload on the same reference host. Every process retained `git_dirty=false`, all 960 exact edits,
+all 6,720 exclusions, 960 advanced/avoided publications, zero gaps, 860 peak bytes/client/tick, and
+zero gate violations.
+
+| Process | Overall P95 | Overall P99/max | Hot P95 | Hot P99/max |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.436 ms | 2.472/4.477 ms | 0.399 ms | 0.436/0.504 ms |
+| 2 | 0.388 ms | 2.482/4.752 ms | 0.374 ms | 0.409/0.497 ms |
+| 3 | 0.390 ms | 2.564/4.829 ms | 0.381 ms | 0.394/0.538 ms |
+| **Median** | **0.390 ms** | **2.482/4.752 ms** | **0.381 ms** | **0.409/0.504 ms** |
+
+The workload's contiguous hot path is a performance-regression guard, not the proof of mixed-queue
+ordering behavior. Focused client transport tests establish that proof: a base snapshot and next
+delta apply in one synchronization; an older delta cannot regress a newer complete snapshot; two
+same-cell deltas advance one revision at a time; and a forward gap fails without advancing the
+client cursor, after which a contiguous edit can recover. Typed deltas also reject a global event
+payload that differs from the paired observed event batch.
+
 ## Spatial voxel-event contract
 
 The schema-v2 macrobenchmark now exercises sustained edit delivery directly. A separate
@@ -198,6 +220,5 @@ ctest --test-dir build/default-debug-werror --output-on-failure \
 This is a deterministic, in-process chunk-interest benchmark. It does not simulate RTT, jitter,
 loss, retransmission, socket fragmentation, malicious clients, multi-hour soak, or whole-process
 memory growth. It closes the reproducible spread/convergence/traversal, isolated hot-region edit,
-spatial relevance, and clean-host P99 evidence slices. Impaired-network and soak acceptance remain
-M6 work; client ordering when an older voxel delta and a newer full chunk snapshot are both queued
-is tracked separately from this contiguous-delta workload.
+spatial relevance, clean-host P99, and revision-safe client ordering slices. Impaired-network and
+soak acceptance remain M6 work.

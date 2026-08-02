@@ -56,6 +56,7 @@ Implemented foundation:
   - script host command report records
   - script host command batch records
   - chunk-delta publication advances, avoided full snapshots, and revision gaps
+  - applied and snapshot-superseded client voxel deltas
   - voxel-fluid topology reconciliation, dirty collection, active frontier, and processed work
 
 `WorldState` inspection reports save metadata, the next stable save id, the next runtime

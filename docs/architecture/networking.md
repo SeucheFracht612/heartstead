@@ -279,10 +279,11 @@ types at the far client, then returns it and verifies exact authoritative recove
 chunk snapshot.
 
 The committed voxel relevance and isolated material-hot-edit paths are therefore closed. Three
-clean eight-client schema-v2 runs retain exact apply/exclusion evidence, 0.461 ms median hot-edit
-P99, 860 peak bytes/client/tick, 960 contiguous publication advances, 960 avoided full snapshots,
-and zero gaps. Remaining M6 work includes mixed snapshot/delta client ordering, impaired-network
-P99/SLO evidence, and long-soak coverage. See
+clean post-ordering eight-client schema-v2 runs retain exact apply/exclusion evidence, 0.409 ms
+median hot-edit P99, 860 peak bytes/client/tick, 960 contiguous publication advances, 960 avoided
+full snapshots, and zero gaps. Client intake applies exact-next deltas, ignores older deltas covered
+by a newer complete snapshot, and fails closed on revision gaps. Remaining M6 work includes
+impaired-network P99/SLO evidence and long-soak coverage. See
 [Multiplayer chunk-subscription benchmarks](../performance/multiplayer_chunk_subscription_benchmarks.md).
 
 ## Prediction and interpolation
