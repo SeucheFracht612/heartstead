@@ -323,6 +323,8 @@ heartstead_add_foundation_test(heartstead_chunk_load_scheduler_tests
 heartstead_add_foundation_test(heartstead_chunk_edit_index_tests chunk_edit_index_tests.cpp)
 heartstead_add_foundation_test(heartstead_chunk_streaming_benchmark_tests
                                chunk_streaming_benchmark_tests.cpp)
+heartstead_add_foundation_test(heartstead_chunk_delta_journal_benchmark_tests
+                               chunk_delta_journal_benchmark_tests.cpp)
 heartstead_add_foundation_test(heartstead_chunk_render_readiness_benchmark_tests
                                chunk_render_readiness_benchmark_tests.cpp)
 # This test has an internal wall-clock deadline around a complete async load/mesh/upload lifecycle.

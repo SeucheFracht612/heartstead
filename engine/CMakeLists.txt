@@ -170,6 +170,7 @@ target_sources(
     rooms/room_graph.cpp
     save/save_compatibility.cpp
     save/save_binary_codec.cpp
+    save/chunk_delta_journal_benchmark.cpp
     save/save_database.cpp
     save/save_metadata.cpp
     save/save_migration.cpp
