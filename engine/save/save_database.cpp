@@ -2881,28 +2881,48 @@ FileSaveDatabase::read_chunk_delta(world::ChunkCoord coord) const {
 }
 
 core::Result<std::vector<ChunkEditSaveRecord>> FileSaveDatabase::read_chunk_deltas() const {
-    auto reader = open_chunk_delta_reader();
-    if (!reader) {
-        return core::Result<std::vector<ChunkEditSaveRecord>>::failure(reader.error().code,
-                                                                       reader.error().message);
+    std::shared_lock table_lease(coordinator_->chunk_table_mutex, std::try_to_lock);
+    if (!table_lease.owns_lock()) {
+        return core::Result<std::vector<ChunkEditSaveRecord>>::failure(save_database_busy_code,
+                                                                       save_database_busy_message);
+    }
+    std::unique_lock mutation_lock(coordinator_->mutation_mutex, std::try_to_lock);
+    if (!mutation_lock.owns_lock()) {
+        return core::Result<std::vector<ChunkEditSaveRecord>>::failure(save_database_busy_code,
+                                                                       save_database_busy_message);
     }
 
-    std::vector<ChunkEditSaveRecord> chunk_deltas;
-    chunk_deltas.reserve(reader.value().entries_.size());
-    for (const auto& entry : reader.value().entries_) {
-        auto chunk_delta = reader.value().read_chunk_delta(entry.coord);
-        if (!chunk_delta) {
-            return core::Result<std::vector<ChunkEditSaveRecord>>::failure(
-                chunk_delta.error().code, chunk_delta.error().message);
-        }
-        if (!chunk_delta.value().has_value()) {
-            return core::Result<std::vector<ChunkEditSaveRecord>>::failure(
-                "save_database.chunk_delta_reader_invalid",
-                "chunk delta disappeared from an open immutable reader");
-        }
-        chunk_deltas.push_back(std::move(*chunk_delta.value()));
+    auto snapshot_journal = read_journal_state(root_);
+    if (!snapshot_journal) {
+        return core::Result<std::vector<ChunkEditSaveRecord>>::failure(
+            snapshot_journal.error().code, snapshot_journal.error().message);
     }
-    return core::Result<std::vector<ChunkEditSaveRecord>>::success(std::move(chunk_deltas));
+    const auto* pending_snapshot = latest_pending_snapshot_entry(snapshot_journal.value());
+    if (pending_snapshot != nullptr) {
+        auto snapshot = read_journal_snapshot(*pending_snapshot);
+        if (!snapshot) {
+            return core::Result<std::vector<ChunkEditSaveRecord>>::failure(
+                snapshot.error().code, snapshot.error().message);
+        }
+        auto validation = validate_chunk_deltas_for_storage(snapshot.value().chunk_edits);
+        if (!validation) {
+            return core::Result<std::vector<ChunkEditSaveRecord>>::failure(
+                validation.error().code, validation.error().message);
+        }
+        std::ranges::sort(snapshot.value().chunk_edits,
+                          [](const ChunkEditSaveRecord& left, const ChunkEditSaveRecord& right) {
+                              return left.coord < right.coord;
+                          });
+        return core::Result<std::vector<ChunkEditSaveRecord>>::success(
+            std::move(snapshot).value().chunk_edits);
+    }
+
+    auto save_root = active_save_root(root_);
+    if (!save_root) {
+        return core::Result<std::vector<ChunkEditSaveRecord>>::failure(save_root.error().code,
+                                                                       save_root.error().message);
+    }
+    return read_effective_chunk_deltas_from_root(save_root.value());
 }
 
 core::Result<ChunkDeltaJournalCompactionResult>

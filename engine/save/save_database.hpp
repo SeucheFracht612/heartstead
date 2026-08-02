@@ -230,6 +230,9 @@ class FileSaveDatabase {
     // Prefer a retained reader for repeated or concurrent streaming reads. This convenience API
     // opens a fresh generation-scoped reader for each call.
     [[nodiscard]] core::Result<ChunkEditSaveRecord> read_chunk_delta(world::ChunkCoord coord) const;
+    // Bulk export validates the complete base table before applying the journal overlay. It holds
+    // process-local table/mutation coordination for the read and can fail fast with busy; it is not
+    // a latency-sensitive streaming API.
     [[nodiscard]] core::Result<std::vector<ChunkEditSaveRecord>> read_chunk_deltas() const;
     [[nodiscard]] core::Result<FileChunkDeltaReader> open_chunk_delta_reader() const;
     [[nodiscard]] core::Result<FileChunkDeltaWriter> open_chunk_delta_writer() const;

@@ -150,6 +150,26 @@ void test_append_overlay_and_pinned_readers() {
     assert(stats.value().chunk_delta_journal_highest_sequence == 3);
 }
 
+void test_bulk_export_validates_base_payloads_shadowed_by_the_journal() {
+    TemporaryDirectory temporary("chunk_delta_journal_bulk_integrity");
+    heartstead::save::FileSaveDatabase database(temporary.path());
+    const heartstead::world::ChunkCoord coord{1, 0, 0};
+    assert(database.write_snapshot(make_snapshot(13, {{coord, "base"}})));
+    assert(database.write_chunk_delta({coord, "journal"}));
+
+    const auto base_payload = temporary.path() / "generations" / "generation_1" / "chunks" /
+                              "c_1_0_0.delta";
+    write_text(base_payload, "");
+
+    // A retained streaming view uses the newer durable journal authority for this coordinate.
+    auto effective = database.read_chunk_delta(coord);
+    assert(effective && effective.value().encoded_edit_delta == "journal");
+
+    // Bulk export is also an integrity read and must not hide corruption in dormant base records.
+    auto bulk = database.read_chunk_deltas();
+    assert(!bulk && bulk.error().code == "save_database.empty_chunk_delta");
+}
+
 void test_stale_writer_and_snapshot_authority_fail_closed() {
     TemporaryDirectory temporary("chunk_delta_journal_stale_writer");
     heartstead::save::FileSaveDatabase database(temporary.path());
@@ -500,6 +520,7 @@ void test_parallel_instances_serialize_append_sequences() {
 
 int main() {
     test_append_overlay_and_pinned_readers();
+    test_bulk_export_validates_base_payloads_shadowed_by_the_journal();
     test_stale_writer_and_snapshot_authority_fail_closed();
     test_pending_snapshot_supersedes_corrupt_stale_chunk_journal_during_maintenance();
     test_checkpoint_and_recovery_are_restart_safe();
