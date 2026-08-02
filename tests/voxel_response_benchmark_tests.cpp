@@ -11,6 +11,10 @@ using namespace heartstead;
 
 void test_configuration_rejects_unbounded_or_censored_runs() {
     world::benchmark::VoxelResponseBenchmarkConfig config;
+    config.physics_backend = static_cast<physics::PhysicsBackend>(255);
+    assert(!config.validate());
+
+    config = {};
     config.horizontal_radius_chunks = 5;
     assert(!config.validate());
 
@@ -76,6 +80,7 @@ void test_smoke_run_retains_exact_response_samples_and_gate_evidence() {
 
     const auto json = report.to_json();
     assert(json.find("\"benchmark\": \"voxel_response\"") != std::string::npos);
+    assert(json.find("\"physics_backend\": \"headless\"") != std::string::npos);
     assert(json.find("\"raw_samples\"") != std::string::npos);
     assert(json.find("\"p95_collision_response_ms\"") != std::string::npos);
     assert(json.find("\"p95_relight_convergence_ms\"") != std::string::npos);
@@ -92,10 +97,31 @@ void test_smoke_run_retains_exact_response_samples_and_gate_evidence() {
     assert(!incomplete.validate());
 }
 
+void test_available_jolt_backend_uses_the_same_response_contract() {
+    if (!physics::physics_backend_info(physics::PhysicsBackend::jolt).available) {
+        return;
+    }
+    world::benchmark::VoxelResponseBenchmarkConfig config;
+    config.physics_backend = physics::PhysicsBackend::jolt;
+    config.horizontal_radius_chunks = 0;
+    config.warmup_repetitions = 0;
+    config.repetitions = 1;
+    config.update_interval_us = 1;
+    config.timeout_ms = 5'000;
+    config.lighting.max_snapshot_cells_per_update = world::VoxelChunk::total_cells;
+
+    auto executed = world::benchmark::run_voxel_response_benchmark(config);
+    assert(executed);
+    assert(executed.value().validate());
+    assert(executed.value().raw_samples.size() == 1);
+    assert(executed.value().to_json().find("\"physics_backend\": \"jolt\"") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
     test_configuration_rejects_unbounded_or_censored_runs();
     test_smoke_run_retains_exact_response_samples_and_gate_evidence();
+    test_available_jolt_backend_uses_the_same_response_contract();
     return 0;
 }

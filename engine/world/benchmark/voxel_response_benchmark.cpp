@@ -142,8 +142,7 @@ make_state(const VoxelResponseBenchmarkConfig& config) {
         }
     }
 
-    auto physics_world =
-        physics::create_physics_world({.backend = physics::PhysicsBackend::headless});
+    auto physics_world = physics::create_physics_world({.backend = config.physics_backend});
     if (!physics_world) {
         return core::Result<std::unique_ptr<BenchmarkState>>::failure(
             physics_world.error().code, physics_world.error().message);
@@ -443,6 +442,13 @@ void write_runtime_metadata(std::ostream& output, const profiling::RuntimeMetada
 } // namespace
 
 core::Status VoxelResponseBenchmarkConfig::validate() const {
+    const auto backend = physics::physics_backend_info(physics_backend);
+    if (!backend.available) {
+        return core::Status::failure(
+            "voxel_response_benchmark.unavailable_physics_backend",
+            "response benchmark physics backend is unknown or unavailable: " +
+                std::string(backend.name));
+    }
     if (horizontal_radius_chunks > 4) {
         return core::Status::failure(
             "voxel_response_benchmark.invalid_radius",
@@ -592,6 +598,8 @@ std::string VoxelResponseBenchmarkReport::to_json() const {
            << "  \"schema_version\": " << schema_version << ",\n"
            << "  \"benchmark\": \"voxel_response\",\n"
            << "  \"config\": {\n"
+           << "    \"physics_backend\": \"" << physics::physics_backend_name(config.physics_backend)
+           << "\",\n"
            << "    \"horizontal_radius_chunks\": " << config.horizontal_radius_chunks << ",\n"
            << "    \"warmup_repetitions\": " << config.warmup_repetitions << ",\n"
            << "    \"repetitions\": " << config.repetitions << ",\n"

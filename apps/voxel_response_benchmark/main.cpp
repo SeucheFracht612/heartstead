@@ -15,6 +15,7 @@ namespace {
 
 namespace benchmark = heartstead::world::benchmark;
 namespace core = heartstead::core;
+namespace physics = heartstead::physics;
 
 struct Options {
     benchmark::VoxelResponseBenchmarkConfig benchmark;
@@ -47,6 +48,20 @@ template <typename Value> [[nodiscard]] std::optional<Value> parse_number(std::s
             options.help = true;
         } else if (argument == "--enforce-gates") {
             options.benchmark.enforce_gates = true;
+        } else if (argument == "--physics-backend") {
+            auto value = next();
+            if (!value) {
+                return core::Result<Options>::failure(value.error().code, value.error().message);
+            }
+            if (value.value() == "headless") {
+                options.benchmark.physics_backend = physics::PhysicsBackend::headless;
+            } else if (value.value() == "jolt") {
+                options.benchmark.physics_backend = physics::PhysicsBackend::jolt;
+            } else {
+                return core::Result<Options>::failure(
+                    "voxel_response_benchmark.invalid_physics_backend",
+                    "--physics-backend must be headless or jolt");
+            }
         } else if (argument == "--radius" || argument == "--warmup" ||
                    argument == "--repetitions") {
             auto value = next();
@@ -133,6 +148,7 @@ template <typename Value> [[nodiscard]] std::optional<Value> parse_number(std::s
 void print_usage(std::ostream& output) {
     output
         << "usage: heartstead_voxel_response_benchmark [options]\n"
+           "  --physics-backend NAME Physics body backend: headless or jolt (default headless)\n"
            "  --radius N             Square horizontal chunk radius (default 1 = 3x3)\n"
            "  --warmup N             Unmeasured isolated edits (default 2)\n"
            "  --repetitions N        Retained isolated edits (default 9)\n"

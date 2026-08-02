@@ -14,6 +14,7 @@
 namespace heartstead::world::benchmark {
 
 struct VoxelResponseBenchmarkConfig {
+    physics::PhysicsBackend physics_backend = physics::PhysicsBackend::headless;
     std::uint16_t horizontal_radius_chunks = 1;
     std::uint32_t warmup_repetitions = 2;
     std::uint32_t repetitions = 9;
