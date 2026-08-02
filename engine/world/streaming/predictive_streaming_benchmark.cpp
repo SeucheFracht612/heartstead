@@ -308,7 +308,8 @@ class TrialRunner {
         const auto settle_started = BenchmarkClock::now();
         while (scheduler_->has_in_flight() || controller_.has_pending_loads() ||
                controller_.stats().active_speculative_requests != 0 ||
-               !state_.chunks().contains(final_coord)) {
+               !state_.chunks().contains(final_coord) ||
+               state_.chunks().stats().chunk_count > policy_.critical_resident_chunk_budget) {
             const auto now = BenchmarkClock::now();
             if (elapsed_milliseconds(settle_started, now) > config_.settle_timeout_ms) {
                 return core::Result<PredictiveStreamingBenchmarkTrial>::failure(
@@ -705,6 +706,7 @@ PredictiveStreamingBenchmarkConfig::PredictiveStreamingBenchmarkConfig() {
     policy.predictive_vertical_radius_chunks = 0;
     policy.max_speculative_submissions_per_update = 4;
     policy.max_active_speculative_requests = 8;
+    policy.max_evictions_per_update = 4;
     policy.reserved_required_request_slots = 1;
     policy.speculative_ttl_ms = 500;
     policy.temporal_retention_ms = 500;
@@ -903,6 +905,8 @@ std::string PredictiveStreamingBenchmarkReport::to_json() const {
            << config.policy.max_speculative_submissions_per_update << ",\n";
     output << "    \"max_active_speculative_requests\": "
            << config.policy.max_active_speculative_requests << ",\n";
+    output << "    \"max_evictions_per_update\": " << config.policy.max_evictions_per_update
+           << ",\n";
     output << "    \"reserved_required_request_slots\": "
            << config.policy.reserved_required_request_slots << ",\n";
     output << "    \"speculative_ttl_ms\": " << config.policy.speculative_ttl_ms << ",\n";

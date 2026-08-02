@@ -29,6 +29,7 @@ using namespace heartstead;
     policy.predictive_vertical_radius_chunks = 0;
     policy.max_speculative_submissions_per_update = 4;
     policy.max_active_speculative_requests = 8;
+    policy.max_evictions_per_update = 8;
     policy.speculative_ttl_ms = 1'000;
     policy.temporal_retention_ms = 1'000;
     policy.nominal_resident_chunk_budget = 10;
@@ -235,9 +236,49 @@ void test_pressure_aware_temporal_retention_and_eviction_value() {
     assert(critical.value().target_resident_chunk_count == 1);
     assert(critical.value().predicted_chunks.empty());
     assert(critical.value().eviction_requests.size() == 3);
+    assert(critical.value().deferred_eviction_count == 0);
+    assert(critical.value().projected_resident_overage == 1);
     assert(critical.value().unresolved_resident_overage == 1);
     assert(!contains(critical.value().eviction_requests, {0, 0, 0}));
     assert(!contains(critical.value().eviction_requests, {8, 0, 0}));
+}
+
+void test_eviction_waves_are_bounded_and_report_deferred_work() {
+    world::WorldState state;
+    for (std::int64_t x = 0; x < 7; ++x) {
+        state.chunks().get_or_create({x, 0, 0}).clear_all_dirty();
+    }
+
+    auto policy = compact_policy();
+    policy.interest.retain_horizontal_radius_chunks = 0;
+    policy.temporal_retention_ms = 1;
+    policy.nominal_resident_chunk_budget = 1;
+    policy.elevated_resident_chunk_budget = 1;
+    policy.critical_resident_chunk_budget = 1;
+    policy.max_evictions_per_update = 2;
+    policy.prediction_horizon_seconds = 0.0;
+    world::PredictiveChunkStreamingPlanner planner;
+    const std::vector<world::ChunkStreamViewerMotion> viewers{moving_viewer(0, 0.0)};
+
+    auto planned =
+        planner.plan(state, viewers, {}, policy, world::ChunkStreamMemoryPressure::critical, 0);
+    assert(planned);
+    assert(planned.value().eviction_requests.size() == 2);
+    assert(planned.value().deferred_eviction_count == 4);
+    assert(planned.value().projected_resident_overage == 4);
+    assert(planned.value().unresolved_resident_overage == 0);
+    assert(std::ranges::count_if(planned.value().ranked_eviction_candidates,
+                                 [](const auto& candidate) { return candidate.selected; }) == 2);
+
+    auto evicted = world::ChunkStreamer::evict_chunks(state, planned.value().eviction_requests);
+    assert(evicted.evicted_count() == 2);
+    auto next =
+        planner.plan(state, viewers, {}, policy, world::ChunkStreamMemoryPressure::critical, 1);
+    assert(next);
+    assert(next.value().eviction_requests.size() == 2);
+    assert(next.value().deferred_eviction_count == 2);
+    assert(next.value().projected_resident_overage == 2);
+    assert(next.value().unresolved_resident_overage == 0);
 }
 
 void test_required_chunk_salvages_a_late_cancellation_publication() {
@@ -276,6 +317,12 @@ void test_policy_and_motion_validation() {
     auto status = policy.validate();
     assert(!status);
     assert(status.error().code == "chunk_stream_policy.invalid_residency_budget");
+
+    policy = compact_policy();
+    policy.max_evictions_per_update = 0;
+    status = policy.validate();
+    assert(!status);
+    assert(status.error().code == "chunk_stream_policy.invalid_speculation_budget");
 
     policy = compact_policy();
     auto invalid_motion = moving_viewer(0, 0.0);
@@ -376,6 +423,7 @@ int main() {
     test_camera_prediction_and_multi_viewer_deduplication();
     test_reversal_teleport_and_actual_cancellation_metrics();
     test_pressure_aware_temporal_retention_and_eviction_value();
+    test_eviction_waves_are_bounded_and_report_deferred_work();
     test_required_chunk_salvages_a_late_cancellation_publication();
     test_policy_and_motion_validation();
     test_controller_prioritizes_required_work_and_reconciles_cancellation();

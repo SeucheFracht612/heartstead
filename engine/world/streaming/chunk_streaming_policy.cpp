@@ -272,12 +272,13 @@ core::Status PredictiveChunkStreamingPolicy::validate() const {
                                      "predictive streaming radii exceed the bounded planner limit");
     }
     if (max_speculative_submissions_per_update == 0 || max_active_speculative_requests == 0 ||
-        reserved_required_request_slots == 0 ||
+        max_evictions_per_update == 0 || reserved_required_request_slots == 0 ||
         max_speculative_submissions_per_update > max_active_speculative_requests ||
         speculative_ttl_ms == 0) {
         return core::Status::failure("chunk_stream_policy.invalid_speculation_budget",
-                                     "speculative submission, active-request, required-reserve, "
-                                     "and lifetime budgets must be positive and ordered");
+                                     "speculative submission, active-request, eviction, "
+                                     "required-reserve, and lifetime budgets must be positive "
+                                     "and ordered");
     }
     if (nominal_resident_chunk_budget == 0 || elevated_resident_chunk_budget == 0 ||
         critical_resident_chunk_budget == 0 ||
@@ -536,28 +537,60 @@ core::Result<PredictiveChunkStreamPlan> PredictiveChunkStreamingPlanner::plan(
         return left.value != right.value ? left.value < right.value : left.coord < right.coord;
     });
 
-    std::set<ChunkCoord> selected = mandatory_evictions;
-    auto projected_resident_count =
-        loaded.size() > selected.size() ? loaded.size() - selected.size() : 0;
+    // First decide the complete policy target. Mandatory removals leave retention, while extra
+    // low-value removals satisfy the pressure budget. Applying that complete set in one owner
+    // update can itself create a large frame spike, so emission is capped below.
+    std::set<ChunkCoord> desired_evictions = mandatory_evictions;
+    auto fully_evicted_resident_count =
+        loaded.size() > desired_evictions.size() ? loaded.size() - desired_evictions.size() : 0;
     for (const auto& candidate : plan.ranked_eviction_candidates) {
-        if (projected_resident_count <= plan.target_resident_chunk_count) {
+        if (fully_evicted_resident_count <= plan.target_resident_chunk_count) {
             break;
         }
-        if (selected.insert(candidate.coord).second) {
-            --projected_resident_count;
+        if (desired_evictions.insert(candidate.coord).second) {
+            --fully_evicted_resident_count;
         }
     }
+
+    // Invalidated speculative residents are waste and leave first. Remaining mandatory removals
+    // and pressure-only removals preserve the value ordering exposed in the diagnostic ranking.
+    std::vector<ChunkCoord> ordered_evictions;
+    ordered_evictions.reserve(desired_evictions.size());
+    const auto append_ranked = [&](const auto& predicate) {
+        for (const auto& candidate : plan.ranked_eviction_candidates) {
+            if (desired_evictions.contains(candidate.coord) && predicate(candidate.coord)) {
+                ordered_evictions.push_back(candidate.coord);
+            }
+        }
+    };
+    append_ranked([&](ChunkCoord coord) { return invalidated_resident.contains(coord); });
+    append_ranked([&](ChunkCoord coord) {
+        return !invalidated_resident.contains(coord) && mandatory_evictions.contains(coord);
+    });
+    append_ranked([&](ChunkCoord coord) { return !mandatory_evictions.contains(coord); });
+
+    const auto emitted_count = std::min(ordered_evictions.size(), policy.max_evictions_per_update);
+    plan.eviction_requests.assign(ordered_evictions.begin(),
+                                  ordered_evictions.begin() +
+                                      static_cast<std::ptrdiff_t>(emitted_count));
+    plan.deferred_eviction_count = ordered_evictions.size() - emitted_count;
+    const std::set<ChunkCoord> selected(plan.eviction_requests.begin(),
+                                        plan.eviction_requests.end());
     for (auto& candidate : plan.ranked_eviction_candidates) {
         candidate.selected = selected.contains(candidate.coord);
         candidate.pressure_override =
             candidate.selected && !mandatory_evictions.contains(candidate.coord);
-        if (candidate.selected) {
-            plan.eviction_requests.push_back(candidate.coord);
-        }
     }
-    plan.unresolved_resident_overage =
+
+    const auto projected_resident_count =
+        loaded.size() > emitted_count ? loaded.size() - emitted_count : 0;
+    plan.projected_resident_overage =
         projected_resident_count > plan.target_resident_chunk_count
             ? projected_resident_count - plan.target_resident_chunk_count
+            : 0;
+    plan.unresolved_resident_overage =
+        fully_evicted_resident_count > plan.target_resident_chunk_count
+            ? fully_evicted_resident_count - plan.target_resident_chunk_count
             : 0;
 
     const auto history_window = std::max(policy.temporal_retention_ms, policy.speculative_ttl_ms);

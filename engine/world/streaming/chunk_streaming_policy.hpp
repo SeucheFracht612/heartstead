@@ -47,6 +47,8 @@ struct PredictiveChunkStreamingPolicy {
     std::uint16_t predictive_vertical_radius_chunks = 0;
     std::size_t max_speculative_submissions_per_update = 4;
     std::size_t max_active_speculative_requests = 16;
+    // Bounds owner-thread chunk destruction and the derived-system invalidation wave it creates.
+    std::size_t max_evictions_per_update = 16;
     // The exclusive controller leaves at least this many scheduler slots unused by speculation.
     std::size_t reserved_required_request_slots = 1;
     simulation::WorldTick speculative_ttl_ms = 3'000;
@@ -96,6 +98,11 @@ struct PredictiveChunkStreamPlan {
     std::vector<ChunkCoord> eviction_requests;
     ChunkStreamMemoryPressure memory_pressure = ChunkStreamMemoryPressure::nominal;
     std::size_t target_resident_chunk_count = 0;
+    // Evictions selected by policy but deferred by max_evictions_per_update.
+    std::size_t deferred_eviction_count = 0;
+    // Projected overage after this update's bounded eviction wave.
+    std::size_t projected_resident_overage = 0;
+    // Overage that would remain even after every eligible clean candidate was removed.
     std::size_t unresolved_resident_overage = 0;
     bool teleport_mode = false;
 };

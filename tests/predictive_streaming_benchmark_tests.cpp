@@ -1,6 +1,7 @@
 #include "engine/world/streaming/predictive_streaming_benchmark.hpp"
 
 #include <cassert>
+#include <iostream>
 #include <string>
 
 namespace {
@@ -28,6 +29,9 @@ void test_small_paired_benchmark_retains_policy_and_memory_evidence() {
     config.enforce_gates = false;
 
     auto report = benchmark::run_predictive_streaming_benchmark(config);
+    if (!report) {
+        std::cerr << report.error().code << ": " << report.error().message << '\n';
+    }
     assert(report);
     assert(report.value().validate());
     assert(report.value().baseline.movement_steps == config.movement_step_count());
@@ -50,6 +54,7 @@ void test_small_paired_benchmark_retains_policy_and_memory_evidence() {
     assert(json.find("\"baseline\"") != std::string::npos);
     assert(json.find("\"predictive\"") != std::string::npos);
     assert(json.find("\"prediction_accuracy\"") != std::string::npos);
+    assert(json.find("\"max_evictions_per_update\": 4") != std::string::npos);
     assert(json.find("\"soak_memory_slope_chunks_per_step\"") != std::string::npos);
 }
 
