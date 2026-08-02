@@ -1,0 +1,3 @@
+add_executable(heartstead_chunk_render_readiness_benchmark main.cpp)
+target_link_libraries(heartstead_chunk_render_readiness_benchmark PRIVATE Heartstead::Engine)
+heartstead_configure_target(heartstead_chunk_render_readiness_benchmark)
