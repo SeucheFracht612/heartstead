@@ -1,0 +1,3 @@
+add_executable(heartstead_predictive_streaming_benchmark main.cpp)
+target_link_libraries(heartstead_predictive_streaming_benchmark PRIVATE Heartstead::Engine)
+heartstead_configure_target(heartstead_predictive_streaming_benchmark)

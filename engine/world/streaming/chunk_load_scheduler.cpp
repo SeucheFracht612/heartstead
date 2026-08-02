@@ -513,9 +513,18 @@ void ChunkLoadScheduler::finish_request(const ChunkLoadResult& result) noexcept 
 }
 
 bool ChunkLoadScheduler::has_capacity() const noexcept {
-    return jobs_ != nullptr && active_requests_.size() < config_.max_concurrent_requests &&
-           config_.reservation_bytes_per_request <=
-               config_.max_reserved_working_bytes - stats_.reserved_working_bytes;
+    return available_submission_slots() != 0;
+}
+
+std::size_t ChunkLoadScheduler::available_submission_slots() const noexcept {
+    if (jobs_ == nullptr || active_requests_.size() >= config_.max_concurrent_requests ||
+        stats_.reserved_working_bytes > config_.max_reserved_working_bytes) {
+        return 0;
+    }
+    const auto request_slots = config_.max_concurrent_requests - active_requests_.size();
+    const auto available_bytes = config_.max_reserved_working_bytes - stats_.reserved_working_bytes;
+    const auto memory_slots = available_bytes / config_.reservation_bytes_per_request;
+    return std::min(request_slots, memory_slots);
 }
 
 bool ChunkLoadScheduler::has_in_flight() const noexcept {

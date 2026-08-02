@@ -322,6 +322,8 @@ heartstead_add_foundation_test(heartstead_chunk_load_scheduler_tests
                                chunk_load_scheduler_tests.cpp)
 heartstead_add_foundation_test(heartstead_chunk_streaming_policy_tests
                                chunk_streaming_policy_tests.cpp)
+heartstead_add_foundation_test(heartstead_predictive_streaming_benchmark_tests
+                               predictive_streaming_benchmark_tests.cpp)
 heartstead_add_foundation_test(heartstead_chunk_edit_index_tests chunk_edit_index_tests.cpp)
 heartstead_add_foundation_test(heartstead_chunk_streaming_benchmark_tests
                                chunk_streaming_benchmark_tests.cpp)

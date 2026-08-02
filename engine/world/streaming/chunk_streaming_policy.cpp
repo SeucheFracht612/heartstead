@@ -272,11 +272,12 @@ core::Status PredictiveChunkStreamingPolicy::validate() const {
                                      "predictive streaming radii exceed the bounded planner limit");
     }
     if (max_speculative_submissions_per_update == 0 || max_active_speculative_requests == 0 ||
+        reserved_required_request_slots == 0 ||
         max_speculative_submissions_per_update > max_active_speculative_requests ||
         speculative_ttl_ms == 0) {
         return core::Status::failure("chunk_stream_policy.invalid_speculation_budget",
-                                     "speculative submission, active-request, and lifetime budgets "
-                                     "must be positive and ordered");
+                                     "speculative submission, active-request, required-reserve, "
+                                     "and lifetime budgets must be positive and ordered");
     }
     if (nominal_resident_chunk_budget == 0 || elevated_resident_chunk_budget == 0 ||
         critical_resident_chunk_budget == 0 ||
@@ -334,6 +335,12 @@ core::Result<PredictiveChunkStreamPlan> PredictiveChunkStreamingPlanner::plan(
 
     PredictiveChunkStreamPlan plan;
     plan.immediate = std::move(immediate).value();
+    std::ranges::sort(
+        plan.immediate.load_requests, [&viewer_chunks](ChunkCoord left, ChunkCoord right) {
+            const auto left_distance = nearest_viewer_distance_squared(left, viewer_chunks);
+            const auto right_distance = nearest_viewer_distance_squared(right, viewer_chunks);
+            return left_distance != right_distance ? left_distance < right_distance : left < right;
+        });
     plan.memory_pressure = pressure;
     plan.target_resident_chunk_count = target_budget(policy, pressure);
     plan.teleport_mode = std::ranges::any_of(viewers, &ChunkStreamViewerMotion::teleport);
@@ -662,6 +669,10 @@ PredictiveChunkStreamingStats PredictiveChunkStreamingPlanner::stats() const noe
                                     : static_cast<double>(result.cumulative_timeliness_ms) /
                                           static_cast<double>(result.timely_prefetch_hits);
     return result;
+}
+
+bool PredictiveChunkStreamingPlanner::tracks_speculation(ChunkCoord coord) const noexcept {
+    return speculative_.contains(coord);
 }
 
 void PredictiveChunkStreamingPlanner::reset() noexcept {

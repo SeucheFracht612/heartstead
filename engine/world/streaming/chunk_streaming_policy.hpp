@@ -47,6 +47,8 @@ struct PredictiveChunkStreamingPolicy {
     std::uint16_t predictive_vertical_radius_chunks = 0;
     std::size_t max_speculative_submissions_per_update = 4;
     std::size_t max_active_speculative_requests = 16;
+    // The exclusive controller leaves at least this many scheduler slots unused by speculation.
+    std::size_t reserved_required_request_slots = 1;
     simulation::WorldTick speculative_ttl_ms = 3'000;
     simulation::WorldTick temporal_retention_ms = 2'000;
     std::size_t nominal_resident_chunk_budget = 512;
@@ -139,6 +141,7 @@ class PredictiveChunkStreamingPlanner {
                                                         simulation::WorldTick now_ms);
 
     [[nodiscard]] PredictiveChunkStreamingStats stats() const noexcept;
+    [[nodiscard]] bool tracks_speculation(ChunkCoord coord) const noexcept;
     void reset() noexcept;
 
   private:

@@ -154,6 +154,7 @@ class ChunkLoadScheduler {
 
     [[nodiscard]] ChunkLoadPublicationReport update(WorldState& state);
     [[nodiscard]] bool has_capacity() const noexcept;
+    [[nodiscard]] std::size_t available_submission_slots() const noexcept;
     [[nodiscard]] bool has_in_flight() const noexcept;
     [[nodiscard]] bool contains(ChunkCoord coord) const noexcept;
     [[nodiscard]] const ChunkLoadSchedulerStats& stats() const noexcept;

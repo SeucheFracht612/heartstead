@@ -291,9 +291,13 @@ does not depend on `/proc`.
 
 Focused tests cover directional and camera prediction, multi-viewer deduplication, timely demand
 conversion, reversal, teleport, cancellation races, dirty pinning, temporal retention, pressure
-overrides, unresolved caps, and invalid inputs. This establishes the policy contract; M6 streaming
-is not accepted until the policy drives the production scheduler and a traversal benchmark retains
-real hit/waste/cancellation and memory-slope evidence.
+overrides, unresolved caps, and invalid inputs. An exclusive owner-thread controller now drives the
+production scheduler, reserves demand capacity, publishes outcomes back into the policy, and applies
+the resulting clean evictions. The paired
+[predictive streaming benchmark](predictive_streaming_benchmarks.md) compares that path against a
+no-prefetch baseline while retaining real hit/waste/cancellation, visible-hole, owner-publication,
+and memory-slope evidence. Clean calibration and general runtime adoption remain before this M6
+streaming slice is accepted.
 
 ### M7 — trace-gated GPU work
 

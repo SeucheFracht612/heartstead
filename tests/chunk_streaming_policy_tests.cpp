@@ -1,10 +1,15 @@
 #include "engine/world/streaming/chunk_streaming_policy.hpp"
+#include "engine/world/streaming/predictive_chunk_streaming_controller.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <span>
+#include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -44,6 +49,20 @@ using namespace heartstead;
 [[nodiscard]] bool contains(std::span<const world::ChunkCoord> coords, world::ChunkCoord coord) {
     return std::ranges::find(coords, coord) != coords.end();
 }
+
+class AirChunkGenerator final : public world::IChunkLoadGenerator {
+  public:
+    [[nodiscard]] core::Result<world::VoxelChunk> generate(world::ChunkCoord coord) const override {
+        if (coord != (world::ChunkCoord{0, 0, 0})) {
+            while (!release_non_origin.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+        }
+        return core::Result<world::VoxelChunk>::success(world::VoxelChunk(coord));
+    }
+
+    std::atomic_bool release_non_origin = false;
+};
 
 void test_directional_prediction_and_timely_hit_metrics() {
     world::WorldState state;
@@ -284,6 +303,72 @@ void test_policy_and_motion_validation() {
     assert(reversed_time.error().code == "chunk_stream_policy.time_reversed");
 }
 
+void test_controller_prioritizes_required_work_and_reconciles_cancellation() {
+    world::ChunkLoadSchedulerContext context;
+    auto generator = std::make_shared<AirChunkGenerator>();
+    context.generator = generator;
+    world::ChunkLoadSchedulerConfig scheduler_config;
+    scheduler_config.worker_count = 1;
+    scheduler_config.max_concurrent_requests = 2;
+    scheduler_config.max_completed_results = 2;
+    scheduler_config.reservation_bytes_per_request = 1;
+    scheduler_config.max_reserved_working_bytes = 2;
+    scheduler_config.max_publications_per_update = 2;
+    scheduler_config.max_publication_time_us = 10'000;
+    auto created = world::ChunkLoadScheduler::create(std::move(context), scheduler_config);
+    assert(created);
+    auto scheduler = std::move(created).value();
+
+    auto policy = compact_policy();
+    policy.max_speculative_submissions_per_update = 2;
+    policy.max_active_speculative_requests = 2;
+    policy.reserved_required_request_slots = 1;
+    world::WorldState state;
+    world::PredictiveChunkStreamingController controller;
+    const std::vector<world::ChunkStreamViewerMotion> forward{moving_viewer(0, 64.0)};
+
+    auto first = controller.update(state, *scheduler, forward, policy,
+                                   world::ChunkStreamMemoryPressure::nominal, 0);
+    assert(first);
+    assert((first.value().submitted_required == std::vector<world::ChunkCoord>{{0, 0, 0}}));
+    assert(first.value().submitted_speculative.empty());
+    assert(scheduler->available_submission_slots() == 1);
+
+    bool published_required = false;
+    for (simulation::WorldTick now = 1; now < 1'000 && !published_required; ++now) {
+        std::this_thread::yield();
+        auto update = controller.update(state, *scheduler, forward, policy,
+                                        world::ChunkStreamMemoryPressure::nominal, now);
+        assert(update);
+        published_required = state.chunks().contains({0, 0, 0});
+    }
+    assert(published_required);
+    assert(controller.stats().speculative_submissions == 1);
+    assert(scheduler->available_submission_slots() == 1);
+
+    const std::vector<world::ChunkStreamViewerMotion> reverse{moving_viewer(0, -64.0)};
+    auto reversed = controller.update(state, *scheduler, reverse, policy,
+                                      world::ChunkStreamMemoryPressure::nominal, 1'000);
+    assert(reversed);
+    assert(reversed.value().explicit_speculative_cancellations == 1);
+    generator->release_non_origin.store(true, std::memory_order_release);
+
+    bool drained = false;
+    for (simulation::WorldTick now = 1'001; now < 2'000 && !drained; ++now) {
+        std::this_thread::yield();
+        auto update = controller.update(state, *scheduler, reverse, policy,
+                                        world::ChunkStreamMemoryPressure::critical, now);
+        assert(update);
+        drained = !scheduler->has_in_flight() && !controller.has_pending_loads();
+    }
+    assert(drained);
+    const auto stats = controller.stats();
+    assert(stats.cancellation_requests == 1);
+    assert(stats.cancelled_requests == 1);
+    assert(stats.active_speculative_requests == 0);
+    assert(scheduler->stats().reserved_working_bytes == 0);
+}
+
 } // namespace
 
 int main() {
@@ -293,5 +378,6 @@ int main() {
     test_pressure_aware_temporal_retention_and_eviction_value();
     test_required_chunk_salvages_a_late_cancellation_publication();
     test_policy_and_motion_validation();
+    test_controller_prioritizes_required_work_and_reconciles_cancellation();
     return 0;
 }

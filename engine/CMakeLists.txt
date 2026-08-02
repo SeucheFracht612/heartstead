@@ -232,6 +232,8 @@ target_sources(
     world/streaming/chunk_streaming_policy.cpp
     world/streaming/chunk_streamer.cpp
     world/streaming/chunk_load_scheduler.cpp
+    world/streaming/predictive_chunk_streaming_controller.cpp
+    world/streaming/predictive_streaming_benchmark.cpp
     world/world_commands.cpp
     world/world_snapshot.cpp
     world/world_state.cpp
@@ -478,6 +480,8 @@ target_sources(
       world/streaming/chunk_streaming_policy.hpp
       world/streaming/chunk_streamer.hpp
       world/streaming/chunk_load_scheduler.hpp
+      world/streaming/predictive_chunk_streaming_controller.hpp
+      world/streaming/predictive_streaming_benchmark.hpp
       world/world_commands.hpp
       world/world_snapshot.hpp
       world/world_state.hpp
