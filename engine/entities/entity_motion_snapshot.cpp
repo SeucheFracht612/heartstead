@@ -5,6 +5,7 @@
 #include <cmath>
 #include <sstream>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace heartstead::entities {
@@ -254,11 +255,18 @@ core::Result<EntityMotionSnapshot> EntityMotionSnapshotTextCodec::decode(std::st
 net::TransportMessage make_entity_motion_snapshot_message(const EntityMotionSnapshot& snapshot,
                                                           std::uint64_t transport_sequence,
                                                           std::int64_t timestamp_ms) {
+    return make_encoded_entity_motion_snapshot_message(
+        EntityMotionSnapshotTextCodec::encode(snapshot), transport_sequence, timestamp_ms);
+}
+
+net::TransportMessage make_encoded_entity_motion_snapshot_message(std::string payload,
+                                                                  std::uint64_t transport_sequence,
+                                                                  std::int64_t timestamp_ms) {
     return {net::TransportMessageKind::replication,
             net::TransportChannel::unreliable,
             transport_sequence,
             std::string(entity_motion_snapshot_payload_type),
-            EntityMotionSnapshotTextCodec::encode(snapshot),
+            std::move(payload),
             timestamp_ms};
 }
 

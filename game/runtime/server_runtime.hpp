@@ -7,6 +7,7 @@
 #include "engine/movement/physics_character_collision.hpp"
 #include "engine/movement/player_controller_store.hpp"
 #include "engine/net/host_session.hpp"
+#include "engine/net/replication_budget.hpp"
 #include "engine/physics/chunk_collision_system.hpp"
 #include "engine/physics/physical_resource_physics_system.hpp"
 #include "engine/physics/physics_world.hpp"
@@ -53,8 +54,7 @@ struct ServerRuntimeDesc {
     world::ChunkLightSystemConfig chunk_lighting;
     world::ChunkLoadSchedulerConfig chunk_loading;
     std::uint32_t simulation_ticks_per_second = 60;
-    std::uint32_t max_transient_snapshot_messages_per_tick = 512;
-    std::uint32_t max_transient_snapshot_payload_bytes_per_tick = 256u * 1024u;
+    net::ReplicationTickBudgetConfig transient_replication_budget;
     bool direct_local_chunk_replication = false;
     simulation::WorldTimeConfig world_time;
     const modding::PrototypeRegistry* prototypes = nullptr;
@@ -85,8 +85,9 @@ struct ServerRuntimeTickStats {
     std::uint32_t entity_motion_snapshot_count = 0;
     std::uint32_t entity_motion_tombstone_count = 0;
     std::uint32_t player_tombstone_count = 0;
-    std::uint32_t deferred_transient_snapshot_count = 0;
-    std::uint32_t transient_snapshot_payload_bytes = 0;
+    std::uint64_t deferred_transient_snapshot_count = 0;
+    std::uint64_t transient_snapshot_payload_bytes = 0;
+    net::ReplicationTickBudgetStats transient_replication;
 };
 
 class ServerRuntime final {
@@ -177,10 +178,10 @@ class ServerRuntime final {
     [[nodiscard]] core::Status replicate_changed_chunks();
     [[nodiscard]] core::Status send_initial_chunks(core::NetId client_id);
     [[nodiscard]] core::Result<std::uint64_t> reserve_custom_replication_sequence();
-    [[nodiscard]] bool admit_transient_snapshot(std::size_t payload_bytes) noexcept;
     [[nodiscard]] std::uint64_t collision_world_revision() const noexcept;
 
     ServerRuntimeDesc desc_;
+    net::ReplicationTickBudget transient_replication_budget_;
     world::WorldState world_;
     entities::EntityWorld entities_;
     std::unique_ptr<physics::IPhysicsWorld> physics_;
@@ -219,15 +220,15 @@ class ServerRuntime final {
     std::uint32_t current_entity_motion_snapshot_count_ = 0;
     std::uint32_t current_entity_motion_tombstone_count_ = 0;
     std::uint32_t current_player_tombstone_count_ = 0;
-    std::uint32_t current_deferred_transient_snapshot_count_ = 0;
-    std::uint32_t current_transient_snapshot_payload_bytes_ = 0;
-    std::uint32_t current_transient_snapshot_message_count_ = 0;
     std::int64_t current_time_ms_ = 0;
     std::uint64_t pending_world_time_numerator_ = 0;
     std::uint64_t collision_world_revision_ = 1;
     bool spawn_area_initialized_ = false;
     std::uint64_t next_custom_replication_sequence_ = 1;
-    std::uint64_t transient_replication_cursor_ = 0;
+    std::uint64_t transient_replication_recipient_cursor_ = 0;
+    std::uint64_t movement_replication_source_cursor_ = 0;
+    std::uint64_t entity_motion_replication_source_cursor_ = 0;
+    std::uint64_t transient_replication_class_cursor_ = 0;
     std::optional<std::int64_t> renderer_proof_next_generation_time_ms_;
     bool renderer_proof_streaming_enabled_ = false;
 };

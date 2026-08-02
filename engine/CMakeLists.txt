@@ -79,6 +79,7 @@ target_sources(
     net/client_session.cpp
     net/command_payload.cpp
     net/host_session.cpp
+    net/replication_budget.cpp
     net/replication.cpp
     net/server_command.cpp
     net/transport.cpp

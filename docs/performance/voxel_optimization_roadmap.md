@@ -316,6 +316,24 @@ two planning ticks without losing elapsed time. See
 Game-specific aggregate models, calibrated work estimates, runtime execution, and server P99 scale
 evidence remain before the temporal-LOD slice is accepted.
 
+Transient movement and entity-motion replication now passes through one deterministic global and
+per-client admission controller. Message and encoded-payload ceilings are strict; actual shared
+codec time has a global boundary with explicit one-operation overshoot, and every participating
+client receives a conservative attributed-time charge even if byte/message admission rejects the
+candidate. Identical source state is encoded once and reused across
+recipients, removing the previous size-probe plus message re-encode and changing codec work from
+source-by-client to source-only. Recipient, source, and snapshot-class cursors rotate independently,
+and fail-closed telemetry reproduces global totals from identity-sorted client reports. Focused
+runtime coverage proves two clients each receive one snapshot under a one-message client quota while
+only one codec operation runs. The policy is grounded in the shared-list scaling rationale of
+Epic's official
+[Replication Graph documentation](https://dev.epicgames.com/documentation/en-us/unreal-engine/replication-graph-in-unreal-engine),
+the flow-isolation motivation of [RFC 8290](https://www.rfc-editor.org/rfc/rfc8290), and the
+separate transport-control boundary in [RFC 9002](https://www.rfc-editor.org/rfc/rfc9002).
+Reliable FIFO caps/fair draining, relevance-driven chunk subscriptions, multi-client
+spread/convergence/traversal benchmarks, backlog recovery, server P99, and long-soak evidence remain
+before the replication/multiplayer slice is accepted.
+
 ### M7 — trace-gated GPU work
 
 Candidates include further GPU-driven visibility, meshlets, descriptor indexing, compute meshing,

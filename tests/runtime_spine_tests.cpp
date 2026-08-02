@@ -1153,7 +1153,54 @@ void test_transient_replication_budget_defers_latest_state() {
     assert(frame.value().server_ticks.front().movement_snapshot_count == 0);
     assert(frame.value().server_ticks.front().deferred_transient_snapshot_count == 1);
     assert(frame.value().server_ticks.front().transient_snapshot_payload_bytes == 0);
+    const auto& replication = frame.value().server_ticks.front().transient_replication;
+    assert(replication.admitted_message_count == 0);
+    assert(replication.deferrals.global_payload_bytes == 1);
+    assert(replication.shared_serialization_operation_count == 1);
+    assert(net::validate_replication_tick_budget_stats(replication));
     assert(frame.value().client.acknowledged_input_count == 0);
+    assert(runtime.shutdown());
+}
+
+void test_transient_replication_budget_isolates_clients_and_shares_encoding() {
+    const auto report = content::ContentValidation::validate(source_root());
+    assert(!report.has_errors());
+    auto runtime = make_runtime(report);
+    game::RuntimeConfiguration config;
+    config.max_transient_snapshot_messages_per_tick = 2;
+    config.max_transient_snapshot_payload_bytes_per_tick = 1024u * 1024u;
+    config.max_transient_snapshot_serialization_time_us_per_tick = 100'000;
+    config.max_transient_snapshot_messages_per_client_per_tick = 1;
+    config.max_transient_snapshot_payload_bytes_per_client_per_tick = 1024u * 1024u;
+    config.max_transient_snapshot_serialization_time_us_per_client_per_tick = 100'000;
+    config.max_outbound_bytes_per_client_per_second = 4u * 1024u * 1024u;
+    assert(runtime.start_session(config, make_session_request(report)));
+    auto* server = runtime.session()->server();
+    assert(server != nullptr);
+    const auto second_client = server->connect_client();
+    assert(second_client);
+
+    movement::PlayerInputFrame local_input;
+    local_input.tick = 1;
+    local_input.sequence = 1;
+    assert(runtime.session()->submit_player_input(local_input, 10));
+    movement::PlayerInputFrame remote_input;
+    remote_input.tick = 1;
+    remote_input.sequence = 1;
+    assert(server->submit_movement_input(second_client.value(), {{remote_input}}, 10));
+
+    auto frame = runtime.run_frame({16'667, 17});
+    assert(frame && frame.value().server_ticks.size() == 1);
+    const auto& tick = frame.value().server_ticks.front();
+    const auto& replication = tick.transient_replication;
+    assert(tick.movement_snapshot_count == 2);
+    assert(replication.admitted_message_count == 2);
+    assert(replication.clients.size() == 2);
+    assert(replication.clients[0].admitted_message_count == 1);
+    assert(replication.clients[1].admitted_message_count == 1);
+    assert(replication.shared_serialization_operation_count == 1);
+    assert(replication.deferrals.global_message_count >= 2);
+    assert(net::validate_replication_tick_budget_stats(replication));
     assert(runtime.shutdown());
 }
 
@@ -2051,6 +2098,11 @@ void test_runtime_configuration_rejects_invalid_compositions() {
     game::RuntimeConfiguration invalid_world_time;
     invalid_world_time.world_time.ticks_per_second = 0;
     assert(!invalid_world_time.validate());
+
+    game::RuntimeConfiguration invalid_client_replication_time;
+    invalid_client_replication_time
+        .max_transient_snapshot_serialization_time_us_per_client_per_tick = 0;
+    assert(!invalid_client_replication_time.validate());
 }
 
 } // namespace
@@ -2069,6 +2121,7 @@ int main() {
     test_jolt_runtime_drops_settles_and_restores_physical_resource();
     test_authoritative_player_input_moves_and_replicates();
     test_transient_replication_budget_defers_latest_state();
+    test_transient_replication_budget_isolates_clients_and_shares_encoding();
     test_prediction_under_deterministic_100ms_rtt_and_two_percent_loss();
     test_typed_voxel_commands_validate_and_replicate();
     test_runtime_relights_and_replicates_chunk_light();

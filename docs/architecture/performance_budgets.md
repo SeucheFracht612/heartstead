@@ -115,6 +115,26 @@ These gates end at collision-body and complete light-field publication over an a
 3x3 corpus. They do not claim burst-edit stability, larger-residency scaling, character contact,
 replication, remeshing, upload, draw eligibility, or display response.
 
+Transient latest-state replication has independent deterministic tick admission defaults:
+
+| Metric | Global/tick | Per client/tick |
+| --- | ---: | ---: |
+| Snapshot messages | 512 | 128 |
+| Encoded payload bytes | 256 KiB | 64 KiB |
+| Serialization time | 4,000 us actual | 2,000 us attributed |
+
+Movement and entity-motion payloads are encoded once per source and reused across recipients.
+Global time is actual steady-clock codec time; each participating recipient is conservatively
+charged the complete measured source cost for isolation, including a candidate later rejected by a
+byte/message limit. Strict byte/message limits defer replaceable snapshots. The non-preemptible
+codec call that crosses a global or client time boundary may complete, with its exact overshoot
+reported and bounded to that one operation. Rotating clients, sources, and snapshot classes prevent
+persistent low-identity preference. Reliable correctness traffic and tombstones are outside this
+controller; the host's separate 256 KiB/client encoded-wire window still applies. These defaults are
+implementation safety rails pending multi-client spread, convergence, impaired-network recovery,
+P99, and soak calibration; they are not yet an M6 acceptance gate. See
+[Networking architecture](networking.md#transient-tick-admission).
+
 High defaults include 16 visible terrain chunks horizontally with mesh/resident/load hysteresis,
 8 MiB near and 8 MiB far-terrain uploads per frame, 512 MiB generic residency, 1,024 local lights,
 32 lights per tile, two local shadow maps, 2048 directional shadow resolution, and 320 m shadow range.

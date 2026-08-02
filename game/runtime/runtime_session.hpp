@@ -43,6 +43,10 @@ struct RuntimeConfiguration {
     world::ChunkLoadSchedulerConfig chunk_loading{};
     std::uint32_t max_transient_snapshot_messages_per_tick = 512;
     std::uint32_t max_transient_snapshot_payload_bytes_per_tick = 256u * 1024u;
+    std::uint64_t max_transient_snapshot_serialization_time_us_per_tick = 4'000;
+    std::uint32_t max_transient_snapshot_messages_per_client_per_tick = 128;
+    std::uint64_t max_transient_snapshot_payload_bytes_per_client_per_tick = 64u * 1024u;
+    std::uint64_t max_transient_snapshot_serialization_time_us_per_client_per_tick = 2'000;
     std::uint32_t max_outbound_bytes_per_client_per_second = 256u * 1024u;
     std::uint32_t simulated_network_one_way_latency_ms = 0;
     std::uint32_t simulated_network_jitter_ms = 0;

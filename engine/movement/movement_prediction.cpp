@@ -7,6 +7,7 @@
 #include <cmath>
 #include <limits>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 namespace heartstead::movement {
@@ -810,11 +811,18 @@ net::TransportMessage make_movement_snapshot_message(const PlayerControllerSnaps
                                                      std::uint64_t transport_sequence) {
     const auto sequence =
         transport_sequence == 0 ? snapshot.state.simulation_tick : transport_sequence;
+    return make_encoded_movement_snapshot_message(
+        PlayerControllerSnapshotBinaryCodec::encode(snapshot), timestamp_ms, sequence);
+}
+
+net::TransportMessage make_encoded_movement_snapshot_message(std::string payload,
+                                                             std::int64_t timestamp_ms,
+                                                             std::uint64_t transport_sequence) {
     return {net::TransportMessageKind::replication,
             net::TransportChannel::unreliable,
-            sequence,
+            transport_sequence,
             std::string(movement_snapshot_payload_type),
-            PlayerControllerSnapshotBinaryCodec::encode(snapshot),
+            std::move(payload),
             timestamp_ms};
 }
 

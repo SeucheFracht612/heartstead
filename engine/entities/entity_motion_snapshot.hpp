@@ -42,6 +42,9 @@ class EntityMotionSnapshotTextCodec {
 [[nodiscard]] net::TransportMessage
 make_entity_motion_snapshot_message(const EntityMotionSnapshot& snapshot,
                                     std::uint64_t transport_sequence, std::int64_t timestamp_ms);
+[[nodiscard]] net::TransportMessage
+make_encoded_entity_motion_snapshot_message(std::string payload, std::uint64_t transport_sequence,
+                                            std::int64_t timestamp_ms);
 [[nodiscard]] core::Result<EntityMotionSnapshot>
 entity_motion_snapshot_from_transport(const net::TransportEnvelope& envelope);
 [[nodiscard]] net::TransportMessage

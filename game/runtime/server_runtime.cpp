@@ -17,6 +17,7 @@
 #include "game/scenarios/scenario_setup.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -28,6 +29,102 @@ namespace {
 
 inline constexpr std::size_t renderer_proof_chunk_submissions_per_update = 4;
 inline constexpr std::int64_t renderer_proof_generation_interval_ms = 32;
+
+using ReplicationClock = std::chrono::steady_clock;
+
+[[nodiscard]] std::uint64_t
+elapsed_replication_microseconds(ReplicationClock::time_point started) noexcept {
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(ReplicationClock::now() - started)
+            .count();
+    if (elapsed <= 0) {
+        return 1;
+    }
+    const auto nanoseconds = static_cast<std::uint64_t>(elapsed);
+    return 1 + (nanoseconds - 1) / 1'000;
+}
+
+template <typename Snapshot, typename Encoder, typename Sender>
+[[nodiscard]] core::Status replicate_transient_snapshot_candidates(
+    net::ReplicationTickBudget& budget, const std::vector<std::uint64_t>& recipients,
+    const std::vector<Snapshot>& snapshots, Encoder&& encode, Sender&& send) {
+    if (recipients.empty() || snapshots.empty()) {
+        return core::Status::ok();
+    }
+    std::vector<net::ReplicationBudgetLimit> preparation_limits(recipients.size());
+    for (const auto& snapshot : snapshots) {
+        bool has_serialization_recipient = false;
+        for (std::size_t index = 0; index < recipients.size(); ++index) {
+            auto limit = budget.preparation_limit(core::NetId::from_value(recipients[index]));
+            if (!limit) {
+                return core::Status::failure(limit.error().code, limit.error().message);
+            }
+            has_serialization_recipient |= limit.value() == net::ReplicationBudgetLimit::none;
+            preparation_limits[index] = limit.value();
+        }
+        if (!has_serialization_recipient) {
+            for (std::size_t index = 0; index < recipients.size(); ++index) {
+                auto status = budget.record_deferred(core::NetId::from_value(recipients[index]),
+                                                     preparation_limits[index]);
+                if (!status) {
+                    return status;
+                }
+            }
+            continue;
+        }
+
+        auto began_serialization = budget.begin_shared_serialization();
+        if (!began_serialization) {
+            return core::Status::failure(began_serialization.error().code,
+                                         began_serialization.error().message);
+        }
+        if (!began_serialization.value()) {
+            for (std::size_t index = 0; index < recipients.size(); ++index) {
+                const auto limit = preparation_limits[index] == net::ReplicationBudgetLimit::none
+                                       ? net::ReplicationBudgetLimit::global_serialization_time
+                                       : preparation_limits[index];
+                auto status =
+                    budget.record_deferred(core::NetId::from_value(recipients[index]), limit);
+                if (!status) {
+                    return status;
+                }
+            }
+            continue;
+        }
+
+        const auto started = ReplicationClock::now();
+        const auto payload = encode(snapshot);
+        const auto serialization_time_us = elapsed_replication_microseconds(started);
+        auto serialization_status = budget.finish_shared_serialization(serialization_time_us);
+        if (!serialization_status) {
+            return serialization_status;
+        }
+
+        for (std::size_t index = 0; index < recipients.size(); ++index) {
+            const auto recipient = core::NetId::from_value(recipients[index]);
+            if (preparation_limits[index] != net::ReplicationBudgetLimit::none) {
+                auto status = budget.record_deferred(recipient, preparation_limits[index]);
+                if (!status) {
+                    return status;
+                }
+                continue;
+            }
+            auto admission = budget.admit_prepared(
+                recipient, static_cast<std::uint64_t>(payload.size()), serialization_time_us);
+            if (!admission) {
+                return core::Status::failure(admission.error().code, admission.error().message);
+            }
+            if (!admission.value()) {
+                continue;
+            }
+            auto status = send(recipient, payload);
+            if (!status) {
+                return status;
+            }
+        }
+    }
+    return core::Status::ok();
+}
 
 struct RendererProofChunkCandidate {
     world::ChunkCoord coord;
@@ -228,7 +325,8 @@ collect_fire_light_sources(const world::WorldState& state,
 } // namespace
 
 ServerRuntime::ServerRuntime(ServerRuntimeDesc desc)
-    : desc_(std::move(desc)), world_(desc_.world), host_(desc_.host) {}
+    : desc_(std::move(desc)), transient_replication_budget_(desc_.transient_replication_budget),
+      world_(desc_.world), host_(desc_.host) {}
 
 core::Result<std::unique_ptr<ServerRuntime>> ServerRuntime::create(ServerRuntimeDesc desc) {
     if (desc.prototypes == nullptr || desc.voxel_palette == nullptr) {
@@ -246,11 +344,10 @@ core::Result<std::unique_ptr<ServerRuntime>> ServerRuntime::create(ServerRuntime
             "server_runtime.invalid_simulation_rate",
             "authoritative simulation rate must be between 1 and 1000 Hz");
     }
-    if (desc.max_transient_snapshot_messages_per_tick == 0 ||
-        desc.max_transient_snapshot_payload_bytes_per_tick == 0) {
+    auto replication_budget_status = desc.transient_replication_budget.validate();
+    if (!replication_budget_status) {
         return core::Result<std::unique_ptr<ServerRuntime>>::failure(
-            "server_runtime.invalid_replication_budget",
-            "transient replication message and byte budgets must be non-zero");
+            replication_budget_status.error().code, replication_budget_status.error().message);
     }
     auto world_time_status = desc.world_time.validate();
     if (!world_time_status) {
@@ -648,8 +745,13 @@ core::Status ServerRuntime::initialize() {
             if (!chunk_status) {
                 return chunk_status;
             }
-            auto player_status = replicate_players();
-            return player_status ? replicate_entity_motion(context.tick) : player_status;
+            const auto players_first = (transient_replication_class_cursor_++ & 1U) == 0;
+            if (players_first) {
+                auto player_status = replicate_players();
+                return player_status ? replicate_entity_motion(context.tick) : player_status;
+            }
+            auto entity_status = replicate_entity_motion(context.tick);
+            return entity_status ? replicate_players() : entity_status;
         },
     });
     if (!status) {
@@ -726,9 +828,11 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     current_entity_motion_snapshot_count_ = 0;
     current_entity_motion_tombstone_count_ = 0;
     current_player_tombstone_count_ = 0;
-    current_deferred_transient_snapshot_count_ = 0;
-    current_transient_snapshot_payload_bytes_ = 0;
-    current_transient_snapshot_message_count_ = 0;
+    auto budget_status = transient_replication_budget_.begin_tick(tick);
+    if (!budget_status) {
+        return core::Result<ServerRuntimeTickStats>::failure(budget_status.error().code,
+                                                             budget_status.error().message);
+    }
     auto simulation =
         scheduler_.run_tick({tick, fixed_delta_seconds, &world_, physics_.get(), &events_});
     if (!simulation) {
@@ -756,8 +860,15 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     stats.entity_motion_snapshot_count = current_entity_motion_snapshot_count_;
     stats.entity_motion_tombstone_count = current_entity_motion_tombstone_count_;
     stats.player_tombstone_count = current_player_tombstone_count_;
-    stats.deferred_transient_snapshot_count = current_deferred_transient_snapshot_count_;
-    stats.transient_snapshot_payload_bytes = current_transient_snapshot_payload_bytes_;
+    stats.transient_replication = transient_replication_budget_.snapshot();
+    auto replication_stats_status =
+        net::validate_replication_tick_budget_stats(stats.transient_replication);
+    if (!replication_stats_status) {
+        return core::Result<ServerRuntimeTickStats>::failure(
+            replication_stats_status.error().code, replication_stats_status.error().message);
+    }
+    stats.deferred_transient_snapshot_count = stats.transient_replication.deferred_message_count;
+    stats.transient_snapshot_payload_bytes = stats.transient_replication.admitted_payload_bytes;
     return core::Result<ServerRuntimeTickStats>::success(std::move(stats));
 }
 
@@ -1594,22 +1705,21 @@ core::Status ServerRuntime::stream_renderer_proof_world() {
 }
 
 core::Status ServerRuntime::replicate_players() {
-    std::vector<std::uint64_t> client_ids;
-    client_ids.reserve(player_connections_.size());
+    std::vector<std::uint64_t> recipients;
+    recipients.reserve(player_connections_.size());
     for (const auto& [client_id, _] : player_connections_) {
-        client_ids.push_back(client_id);
+        recipients.push_back(client_id);
     }
-    std::ranges::sort(client_ids);
-    if (!client_ids.empty()) {
+    std::ranges::sort(recipients);
+    if (!recipients.empty()) {
         const auto offset =
-            static_cast<std::size_t>(transient_replication_cursor_ % client_ids.size());
+            static_cast<std::size_t>(transient_replication_recipient_cursor_ % recipients.size());
         const auto iterator_offset =
             static_cast<std::vector<std::uint64_t>::difference_type>(offset);
-        std::rotate(client_ids.begin(), client_ids.begin() + iterator_offset, client_ids.end());
-        ++transient_replication_cursor_;
+        std::rotate(recipients.begin(), recipients.begin() + iterator_offset, recipients.end());
+        ++transient_replication_recipient_cursor_;
     }
-    const auto collision_revision = collision_world_revision();
-    for (const auto recipient : client_ids) {
+    for (const auto recipient : recipients) {
         for (const auto removed_player : pending_player_removals_) {
             auto sequence = reserve_custom_replication_sequence();
             if (!sequence) {
@@ -1624,36 +1734,57 @@ core::Status ServerRuntime::replicate_players() {
             }
             ++current_player_tombstone_count_;
         }
-        for (const auto source : client_ids) {
-            const auto& connection = player_connections_.at(source);
-            const auto* player = players_.find(connection.runtime_handle);
-            if (player == nullptr || player->state.simulation_tick == 0) {
-                continue;
-            }
-            movement::PlayerControllerSnapshot snapshot;
-            snapshot.player_net_id = player->net_id;
-            snapshot.player_save_id = player->save_id;
-            snapshot.state = player->state;
-            snapshot.last_processed_input_sequence = player->state.last_input_sequence;
-            snapshot.collision_world_revision = collision_revision;
-            const auto payload_bytes =
-                movement::PlayerControllerSnapshotBinaryCodec::encode(snapshot).size();
-            if (!admit_transient_snapshot(payload_bytes)) {
-                continue;
-            }
+    }
+
+    std::vector<movement::PlayerControllerSnapshot> snapshots;
+    snapshots.reserve(player_connections_.size());
+    const auto collision_revision = collision_world_revision();
+    for (const auto& [_, connection] : player_connections_) {
+        const auto* player = players_.find(connection.runtime_handle);
+        if (player == nullptr || player->state.simulation_tick == 0) {
+            continue;
+        }
+        movement::PlayerControllerSnapshot snapshot;
+        snapshot.player_net_id = player->net_id;
+        snapshot.player_save_id = player->save_id;
+        snapshot.state = player->state;
+        snapshot.last_processed_input_sequence = player->state.last_input_sequence;
+        snapshot.collision_world_revision = collision_revision;
+        snapshots.push_back(std::move(snapshot));
+    }
+    std::ranges::sort(snapshots, {}, [](const movement::PlayerControllerSnapshot& snapshot) {
+        return snapshot.player_net_id.value();
+    });
+    if (!snapshots.empty()) {
+        const auto offset =
+            static_cast<std::size_t>(movement_replication_source_cursor_ % snapshots.size());
+        const auto iterator_offset =
+            static_cast<std::vector<movement::PlayerControllerSnapshot>::difference_type>(offset);
+        std::rotate(snapshots.begin(), snapshots.begin() + iterator_offset, snapshots.end());
+        ++movement_replication_source_cursor_;
+    }
+
+    auto replication_status = replicate_transient_snapshot_candidates(
+        transient_replication_budget_, recipients, snapshots,
+        [](const movement::PlayerControllerSnapshot& snapshot) {
+            return movement::PlayerControllerSnapshotBinaryCodec::encode(snapshot);
+        },
+        [this](core::NetId recipient, const std::string& payload) {
             auto sequence = reserve_custom_replication_sequence();
             if (!sequence) {
                 return core::Status::failure(sequence.error().code, sequence.error().message);
             }
-            auto status =
-                host_.send_replication_message(core::NetId::from_value(recipient),
-                                               movement::make_movement_snapshot_message(
-                                                   snapshot, current_time_ms_, sequence.value()));
+            auto status = host_.send_replication_message(
+                recipient, movement::make_encoded_movement_snapshot_message(
+                               payload, current_time_ms_, sequence.value()));
             if (!status) {
                 return status;
             }
             ++current_movement_snapshot_count_;
-        }
+            return core::Status::ok();
+        });
+    if (!replication_status) {
+        return replication_status;
     }
     pending_player_removals_.clear();
     return core::Status::ok();
@@ -1698,6 +1829,14 @@ core::Status ServerRuntime::replicate_entity_motion(std::uint64_t simulation_tic
     std::ranges::sort(snapshots, {}, [](const entities::EntityMotionSnapshot& snapshot) {
         return snapshot.entity_net_id.value();
     });
+    if (!snapshots.empty()) {
+        const auto offset =
+            static_cast<std::size_t>(entity_motion_replication_source_cursor_ % snapshots.size());
+        const auto iterator_offset =
+            static_cast<std::vector<entities::EntityMotionSnapshot>::difference_type>(offset);
+        std::rotate(snapshots.begin(), snapshots.begin() + iterator_offset, snapshots.end());
+        ++entity_motion_replication_source_cursor_;
+    }
     std::vector<std::uint64_t> recipients;
     recipients.reserve(player_connections_.size());
     for (const auto& [client_id, _] : player_connections_) {
@@ -1706,11 +1845,11 @@ core::Status ServerRuntime::replicate_entity_motion(std::uint64_t simulation_tic
     std::ranges::sort(recipients);
     if (!recipients.empty()) {
         const auto offset =
-            static_cast<std::size_t>(transient_replication_cursor_ % recipients.size());
+            static_cast<std::size_t>(transient_replication_recipient_cursor_ % recipients.size());
         const auto iterator_offset =
             static_cast<std::vector<std::uint64_t>::difference_type>(offset);
         std::rotate(recipients.begin(), recipients.begin() + iterator_offset, recipients.end());
-        ++transient_replication_cursor_;
+        ++transient_replication_recipient_cursor_;
     }
     for (const auto recipient : recipients) {
         for (const auto removed : pending_entity_motion_removals_) {
@@ -1727,25 +1866,28 @@ core::Status ServerRuntime::replicate_entity_motion(std::uint64_t simulation_tic
             }
             ++current_entity_motion_tombstone_count_;
         }
-        for (const auto& snapshot : snapshots) {
-            const auto payload_bytes =
-                entities::EntityMotionSnapshotTextCodec::encode(snapshot).size();
-            if (!admit_transient_snapshot(payload_bytes)) {
-                continue;
-            }
+    }
+    auto replication_status = replicate_transient_snapshot_candidates(
+        transient_replication_budget_, recipients, snapshots,
+        [](const entities::EntityMotionSnapshot& snapshot) {
+            return entities::EntityMotionSnapshotTextCodec::encode(snapshot);
+        },
+        [this](core::NetId recipient, const std::string& payload) {
             auto sequence = reserve_custom_replication_sequence();
             if (!sequence) {
                 return core::Status::failure(sequence.error().code, sequence.error().message);
             }
-            auto status =
-                host_.send_replication_message(core::NetId::from_value(recipient),
-                                               entities::make_entity_motion_snapshot_message(
-                                                   snapshot, sequence.value(), current_time_ms_));
+            auto status = host_.send_replication_message(
+                recipient, entities::make_encoded_entity_motion_snapshot_message(
+                               payload, sequence.value(), current_time_ms_));
             if (!status) {
                 return status;
             }
             ++current_entity_motion_snapshot_count_;
-        }
+            return core::Status::ok();
+        });
+    if (!replication_status) {
+        return replication_status;
     }
     pending_entity_motion_removals_.clear();
     return core::Status::ok();
@@ -1929,21 +2071,6 @@ core::Result<std::uint64_t> ServerRuntime::reserve_custom_replication_sequence()
     next_custom_replication_sequence_ =
         sequence == std::numeric_limits<std::uint64_t>::max() ? 0 : sequence + 1;
     return core::Result<std::uint64_t>::success(sequence);
-}
-
-bool ServerRuntime::admit_transient_snapshot(std::size_t payload_bytes) noexcept {
-    const auto remaining_bytes = desc_.max_transient_snapshot_payload_bytes_per_tick -
-                                 std::min(desc_.max_transient_snapshot_payload_bytes_per_tick,
-                                          current_transient_snapshot_payload_bytes_);
-    if (current_transient_snapshot_message_count_ >=
-            desc_.max_transient_snapshot_messages_per_tick ||
-        payload_bytes > remaining_bytes) {
-        ++current_deferred_transient_snapshot_count_;
-        return false;
-    }
-    ++current_transient_snapshot_message_count_;
-    current_transient_snapshot_payload_bytes_ += static_cast<std::uint32_t>(payload_bytes);
-    return true;
 }
 
 std::uint64_t ServerRuntime::collision_world_revision() const noexcept {

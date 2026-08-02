@@ -16,8 +16,7 @@ namespace heartstead::movement {
 
 inline constexpr std::uint16_t player_controller_snapshot_version = 3;
 inline constexpr std::string_view movement_input_payload_type = "movement.input.v1";
-inline constexpr std::string_view legacy_movement_snapshot_payload_type =
-    "movement.snapshot.v3";
+inline constexpr std::string_view legacy_movement_snapshot_payload_type = "movement.snapshot.v3";
 inline constexpr std::string_view movement_snapshot_payload_type = "movement.snapshot.bin.v1";
 inline constexpr std::string_view legacy_movement_input_bundle_payload_type =
     "movement.input_bundle.v1";
@@ -129,6 +128,9 @@ movement_input_bundle_from_transport(const net::TransportEnvelope& envelope);
 [[nodiscard]] net::TransportMessage
 make_movement_snapshot_message(const PlayerControllerSnapshot& snapshot, std::int64_t timestamp_ms,
                                std::uint64_t transport_sequence = 0);
+[[nodiscard]] net::TransportMessage
+make_encoded_movement_snapshot_message(std::string payload, std::int64_t timestamp_ms,
+                                       std::uint64_t transport_sequence);
 [[nodiscard]] core::Result<PlayerControllerSnapshot>
 movement_snapshot_from_transport(const net::TransportEnvelope& envelope,
                                  const PlayerMovementConfig& config = {});

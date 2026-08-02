@@ -89,11 +89,14 @@ The server owns commands and world truth. Local sessions use the in-memory trans
 clients and the dedicated server use project-owned POSIX UDP with numeric IPv4 endpoints,
 challenge-cookie admission, session tokens, bounded fragmentation/reassembly, ACK/retry/drop,
 keepalives, timeouts, rate limits, reliable world events, unreliable latest-wins movement, client
-prediction/reconciliation, and remote interpolation.
+prediction/reconciliation, and remote interpolation. Transient movement/entity snapshots have
+strict global and per-client tick quotas for messages and encoded payload, plus measured shared-codec
+and attributed per-client time limits. Source payloads are encoded once across recipients, and
+rotating client/source/class order makes quota degradation deterministic and inspectable.
 
 The remote transport is intended for controlled LAN and testing. It does not provide encryption,
 account authentication, forward secrecy, NAT traversal, matchmaking, or a complete congestion
-controller.
+controller. Reliable application FIFO caps and calibrated multiplayer scale/soak gates remain.
 
 ### Persistence
 

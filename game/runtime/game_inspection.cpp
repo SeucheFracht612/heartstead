@@ -190,8 +190,25 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     std::uint32_t failed_command_count = 0;
     std::uint32_t event_count = 0;
     std::uint32_t replication_message_count = 0;
-    std::uint32_t transient_snapshot_payload_bytes = 0;
-    std::uint32_t deferred_transient_snapshot_count = 0;
+    std::uint64_t transient_snapshot_message_count = 0;
+    std::uint64_t transient_snapshot_payload_bytes = 0;
+    std::uint64_t deferred_transient_snapshot_count = 0;
+    std::uint64_t transient_shared_serialization_operation_count = 0;
+    std::uint64_t transient_shared_serialization_time_us = 0;
+    std::uint64_t transient_attributed_serialization_time_us = 0;
+    std::uint64_t transient_maximum_shared_serialization_time_us = 0;
+    std::uint64_t transient_serialization_time_overshoot_us = 0;
+    std::uint64_t transient_global_message_deferral_count = 0;
+    std::uint64_t transient_global_byte_deferral_count = 0;
+    std::uint64_t transient_global_time_deferral_count = 0;
+    std::uint64_t transient_client_message_deferral_count = 0;
+    std::uint64_t transient_client_byte_deferral_count = 0;
+    std::uint64_t transient_client_time_deferral_count = 0;
+    std::uint64_t transient_maximum_client_payload_bytes = 0;
+    std::uint64_t transient_maximum_client_attributed_time_us = 0;
+    std::uint64_t transient_maximum_client_serialization_time_overshoot_us = 0;
+    std::size_t transient_maximum_client_count = 0;
+    bool transient_replication_stats_invalid = false;
     std::uint32_t physics_body_count = 0;
     std::size_t collision_body_count = 0;
     std::uint64_t collision_box_count = 0;
@@ -219,6 +236,36 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
         replication_message_count += tick.replication.sent_message_count;
         transient_snapshot_payload_bytes += tick.transient_snapshot_payload_bytes;
         deferred_transient_snapshot_count += tick.deferred_transient_snapshot_count;
+        const auto& transient = tick.transient_replication;
+        transient_snapshot_message_count += transient.admitted_message_count;
+        transient_shared_serialization_operation_count +=
+            transient.shared_serialization_operation_count;
+        transient_shared_serialization_time_us += transient.shared_serialization_time_us;
+        transient_attributed_serialization_time_us += transient.attributed_serialization_time_us;
+        transient_maximum_shared_serialization_time_us =
+            std::max(transient_maximum_shared_serialization_time_us,
+                     transient.maximum_shared_serialization_time_us);
+        transient_serialization_time_overshoot_us += transient.serialization_time_overshoot_us;
+        transient_global_message_deferral_count += transient.deferrals.global_message_count;
+        transient_global_byte_deferral_count += transient.deferrals.global_payload_bytes;
+        transient_global_time_deferral_count += transient.deferrals.global_serialization_time;
+        transient_client_message_deferral_count += transient.deferrals.client_message_count;
+        transient_client_byte_deferral_count += transient.deferrals.client_payload_bytes;
+        transient_client_time_deferral_count += transient.deferrals.client_serialization_time;
+        transient_maximum_client_count =
+            std::max(transient_maximum_client_count, transient.clients.size());
+        for (const auto& client : transient.clients) {
+            transient_maximum_client_payload_bytes =
+                std::max(transient_maximum_client_payload_bytes, client.admitted_payload_bytes);
+            transient_maximum_client_attributed_time_us =
+                std::max(transient_maximum_client_attributed_time_us,
+                         client.attributed_serialization_time_us);
+            transient_maximum_client_serialization_time_overshoot_us =
+                std::max(transient_maximum_client_serialization_time_overshoot_us,
+                         client.serialization_time_overshoot_us);
+        }
+        transient_replication_stats_invalid |=
+            !net::validate_replication_tick_budget_stats(transient);
         physics_body_count = tick.physics.body_count;
         collision_body_count = tick.chunk_collision.resident_body_count;
         collision_box_count = tick.chunk_collision.current_collision_boxes;
@@ -245,10 +292,42 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     add_field(data, "failed_command_count", std::to_string(failed_command_count));
     add_field(data, "event_count", std::to_string(event_count));
     add_field(data, "replication_message_count", std::to_string(replication_message_count));
+    add_field(data, "transient_snapshot_message_count",
+              std::to_string(transient_snapshot_message_count));
     add_field(data, "transient_snapshot_payload_bytes",
               std::to_string(transient_snapshot_payload_bytes));
     add_field(data, "deferred_transient_snapshot_count",
               std::to_string(deferred_transient_snapshot_count));
+    add_field(data, "transient_shared_serialization_operation_count",
+              std::to_string(transient_shared_serialization_operation_count));
+    add_field(data, "transient_shared_serialization_time_us",
+              std::to_string(transient_shared_serialization_time_us));
+    add_field(data, "transient_attributed_serialization_time_us",
+              std::to_string(transient_attributed_serialization_time_us));
+    add_field(data, "transient_maximum_shared_serialization_time_us",
+              std::to_string(transient_maximum_shared_serialization_time_us));
+    add_field(data, "transient_serialization_time_overshoot_us",
+              std::to_string(transient_serialization_time_overshoot_us));
+    add_field(data, "transient_global_message_deferral_count",
+              std::to_string(transient_global_message_deferral_count));
+    add_field(data, "transient_global_byte_deferral_count",
+              std::to_string(transient_global_byte_deferral_count));
+    add_field(data, "transient_global_time_deferral_count",
+              std::to_string(transient_global_time_deferral_count));
+    add_field(data, "transient_client_message_deferral_count",
+              std::to_string(transient_client_message_deferral_count));
+    add_field(data, "transient_client_byte_deferral_count",
+              std::to_string(transient_client_byte_deferral_count));
+    add_field(data, "transient_client_time_deferral_count",
+              std::to_string(transient_client_time_deferral_count));
+    add_field(data, "transient_maximum_client_count",
+              std::to_string(transient_maximum_client_count));
+    add_field(data, "transient_maximum_client_payload_bytes",
+              std::to_string(transient_maximum_client_payload_bytes));
+    add_field(data, "transient_maximum_client_attributed_time_us",
+              std::to_string(transient_maximum_client_attributed_time_us));
+    add_field(data, "transient_maximum_client_serialization_time_overshoot_us",
+              std::to_string(transient_maximum_client_serialization_time_overshoot_us));
     add_field(data, "physics_body_count", std::to_string(physics_body_count));
     add_field(data, "chunk_collision_body_count", std::to_string(collision_body_count));
     add_field(data, "chunk_collision_box_count", std::to_string(collision_box_count));
@@ -273,6 +352,17 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     if (stats.fixed_step.dropped_time_us != 0) {
         add_issue(data, debug::InspectionSeverity::warning, "runtime_frame.dropped_time",
                   "fixed-step frame discarded accumulated simulation time");
+    }
+    if (transient_replication_stats_invalid) {
+        add_issue(data, debug::InspectionSeverity::error,
+                  "runtime_frame.invalid_transient_replication_stats",
+                  "transient replication admission telemetry violated its quota invariants");
+    }
+    if (transient_serialization_time_overshoot_us != 0 ||
+        transient_maximum_client_serialization_time_overshoot_us != 0) {
+        add_issue(data, debug::InspectionSeverity::warning,
+                  "runtime_frame.transient_serialization_overshoot",
+                  "a non-preemptible replication codec call crossed the configured tick budget");
     }
     return data;
 }

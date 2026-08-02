@@ -126,12 +126,23 @@ core::Status RuntimeConfiguration::validate() const {
     if (!status) {
         return status;
     }
-    if (max_transient_snapshot_messages_per_tick == 0 ||
-        max_transient_snapshot_payload_bytes_per_tick == 0 ||
-        max_outbound_bytes_per_client_per_second == 0) {
+    net::ReplicationTickBudgetConfig transient_replication_budget;
+    transient_replication_budget.max_messages_per_tick = max_transient_snapshot_messages_per_tick;
+    transient_replication_budget.max_payload_bytes_per_tick =
+        max_transient_snapshot_payload_bytes_per_tick;
+    transient_replication_budget.max_serialization_time_us_per_tick =
+        max_transient_snapshot_serialization_time_us_per_tick;
+    transient_replication_budget.max_messages_per_client_per_tick =
+        max_transient_snapshot_messages_per_client_per_tick;
+    transient_replication_budget.max_payload_bytes_per_client_per_tick =
+        max_transient_snapshot_payload_bytes_per_client_per_tick;
+    transient_replication_budget.max_serialization_time_us_per_client_per_tick =
+        max_transient_snapshot_serialization_time_us_per_client_per_tick;
+    if (!transient_replication_budget.validate() || max_outbound_bytes_per_client_per_second == 0) {
         return core::Status::failure(
             "runtime_configuration.invalid_replication_budget",
-            "transient replication and per-client outbound budgets must be non-zero");
+            "transient global/per-client message, payload-byte, serialization-time, and outbound "
+            "budgets must be non-zero");
     }
     if (simulated_network_one_way_latency_ms > 60'000 || simulated_network_jitter_ms > 60'000 ||
         simulated_network_unreliable_loss_basis_points > 10'000) {
@@ -374,10 +385,18 @@ core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& pr
         server_desc.chunk_lighting = config_.chunk_lighting;
         server_desc.chunk_loading = config_.chunk_loading;
         server_desc.simulation_ticks_per_second = config_.fixed_step.ticks_per_second;
-        server_desc.max_transient_snapshot_messages_per_tick =
+        server_desc.transient_replication_budget.max_messages_per_tick =
             config_.max_transient_snapshot_messages_per_tick;
-        server_desc.max_transient_snapshot_payload_bytes_per_tick =
+        server_desc.transient_replication_budget.max_payload_bytes_per_tick =
             config_.max_transient_snapshot_payload_bytes_per_tick;
+        server_desc.transient_replication_budget.max_serialization_time_us_per_tick =
+            config_.max_transient_snapshot_serialization_time_us_per_tick;
+        server_desc.transient_replication_budget.max_messages_per_client_per_tick =
+            config_.max_transient_snapshot_messages_per_client_per_tick;
+        server_desc.transient_replication_budget.max_payload_bytes_per_client_per_tick =
+            config_.max_transient_snapshot_payload_bytes_per_client_per_tick;
+        server_desc.transient_replication_budget.max_serialization_time_us_per_client_per_tick =
+            config_.max_transient_snapshot_serialization_time_us_per_client_per_tick;
         server_desc.world_time = config_.world_time;
         server_desc.prototypes = prototypes_;
         server_desc.voxel_palette = voxel_palette_;

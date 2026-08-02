@@ -311,6 +311,7 @@ endfunction()
 heartstead_add_foundation_test(heartstead_coordinate_v02_tests coordinate_v02_tests.cpp)
 heartstead_add_foundation_test(heartstead_world_integrity_v02_tests world_integrity_v02_tests.cpp)
 heartstead_add_foundation_test(heartstead_replication_v02_tests replication_v02_tests.cpp)
+heartstead_add_foundation_test(heartstead_replication_budget_tests replication_budget_tests.cpp)
 heartstead_add_foundation_test(heartstead_server_foundations_v02_tests
                                server_foundations_v02_tests.cpp)
 heartstead_add_foundation_test(heartstead_rich_blocks_v02_tests rich_blocks_v02_tests.cpp)
