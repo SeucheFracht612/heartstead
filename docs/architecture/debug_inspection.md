@@ -179,5 +179,12 @@ typed error as a terminal session fault and exposes it as both fields and an err
 failed feature replication or presentation callback cannot disappear behind a later
 successful-looking frame.
 
+Process-resource diagnostics distinguish sampling cost and meaning. The default sampler used by
+F3 reads Linux `/proc/self/statm` for cheap approximate RSS on a live frame and labels that source;
+it also reports thread and open-file counts. Sparse acceptance workloads can explicitly request
+`/proc/self/smaps_rollup`, which adds precise RSS, PSS, and private resident memory. F3 displays PSS
+and private values only when that precise sample is present. Private resident memory is
+`Private_Clean + Private_Dirty`, not virtual/committed memory or allocator ownership.
+
 Inspection output is not the final tool UI. It is the common data shape future debug
 overlays, inspectors, replay reports, and save tools can render.

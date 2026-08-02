@@ -132,7 +132,9 @@ attached to load/connect/host requests fail before application mutation.
 world and save identity, ownership generation, authoritative and fixed ticks, interpolation and
 dropped time, application plus session jobs, loading operations, connections, registered cleanup
 callbacks, entity/physics/presentation/render/audio/asset counts, process RSS/thread/open-file
-counts on Linux, and renderer memory. Vulkan device usage/budget is shown only when
+counts on Linux, and renderer memory. Live RSS is the cheap approximate `/proc/self/statm` sample
+and is labeled as such; precise `/proc/self/smaps_rollup` PSS/private-resident values appear only
+when an explicit precise sample is available. Vulkan device usage/budget is shown only when
 `VK_EXT_memory_budget` telemetry is valid; otherwise the UI says it is unavailable.
 
 ## Extension rules

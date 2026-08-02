@@ -58,7 +58,7 @@ benchmark composes the broader environment stack into a stable integration workl
 
 The deterministic benchmark family retains raw samples and percentile summaries. Renderer schema
 v4, chunk-streaming schema v4, chunk-delta-journal schema v1, voxel-response schema v1,
-chunk-render-readiness schema v1, multiplayer chunk-subscription schema v2, and multiplayer
+chunk-render-readiness schema v1, multiplayer chunk-subscription schema v3, and multiplayer
 network-impairment schema v1 record
 source/build/machine/device provenance and enforce workload-specific absolute gates. Clean
 reference runs cover renderer/edit workloads, generated
@@ -69,12 +69,14 @@ generated chunks through current mesh residency, upload, visibility filtering, a
 draw-command construction on headless and Vulkan devices. Eight-client clean-host runs also cover
 clustered/disjoint chunk relevance, rapid traversal, exact per-client wire bytes, shared codec work,
 server tick P99, bounded reliable-backlog recovery, and sustained disjoint material hot edits with
-exact event/delta apply and foreign-region exclusion. An optimized `profiling-release` preset
+exact event/delta apply and foreign-region exclusion. A conditioned 64-cycle continuation retains
+compact tick timing, exact endpoint ownership/queues, and precise Linux private resident-memory
+slope/growth. An optimized `profiling-release` preset
 links on-demand Tracy instrumentation across the main runtime, renderer, worker, chunk, lighting,
 collision, and streaming boundaries; normal builds compile those call sites to no-ops. Guaranteed
 cold/multi-filesystem I/O, coordinated checkpoint under live streaming, large snapshot capture,
 general-controller loader adoption, actual GPU execution/presentation timing, multi-client
-impairment, and long-soak scale remain staged in the
+impairment, and game-specific temporal aggregation remain staged in the
 [voxel optimization roadmap](performance/voxel_optimization_roadmap.md).
 
 The retained UI path uses a packaged Noto Sans font rendered from a deterministic SDF atlas,
@@ -125,13 +127,23 @@ a newer snapshot cannot regress state, and gaps fail without advancing the curso
 post-ordering runs retained every gate with median 0.409 ms hot P99. See
 [Multiplayer chunk-subscription benchmarks](performance/multiplayer_chunk_subscription_benchmarks.md).
 
+Schema v3 conditions bounded command histories with 256 edit ticks and allocator reuse with eight
+unmeasured cycles, then measures 64 traversal/edit cycles. Three clean Release processes each
+completed 1,408 soak ticks, exactly applied 1,024 client edits, excluded 7,168 foreign-region
+pairs, recovered all 64 reliable bursts within two ticks, and retained identical baseline/peak/
+final ownership at 76 server chunks, zero server edit records, eight client chunks, and 2,144 total
+client record units. Median soak P50/P95/P99/max was 0.062/2.686/4.734/4.841 ms; precise private
+resident-memory endpoint growth and OLS slope were zero in every process. This accepts the
+deterministic queue/private-memory soak slice, not multi-hour or impaired-network stability.
+
 The deterministic impairment runner now retains 600 raw production-runtime ticks at 100 ms nominal
 RTT, uniform plus-or-minus 10 ms configured delay variation, and 2% unreliable loss. Three clean
 Release processes passed server P99, input acceptance, correction, encoded bandwidth, in-flight
 impairment, reliable-backlog, and transport-integrity gates with median 0.019 ms server P99. Every
 run accepted 99.667% of inputs inside the measured interval, ended at acknowledged sequence 600,
 made zero hard corrections, stayed below 0.075 m soft correction, and averaged 22,253.6 encoded
-server-to-client bytes/s. Multi-client impairment and long-soak gates remain. See
+server-to-client bytes/s. Multi-client impairment and game-specific temporal aggregation remain.
+See
 [Multiplayer network-impairment benchmarks](performance/multiplayer_network_impairment_benchmarks.md).
 
 ### Persistence

@@ -139,6 +139,7 @@ Behavioral and traffic evidence was identical across the three processes:
 This is a deterministic, single-client, in-process runtime workload. It does not measure RFC IPDV,
 kernel scheduling, real sockets, fragmentation, retransmission, correlated or burst loss,
 congestion control, hostile traffic, multiple simultaneous impaired clients, or whole-process
-long-soak memory slope. It closes the maintained 100 ms RTT / 2% unreliable-loss prediction,
-bandwidth, backlog, and server-P99 evidence slice. Multi-client impairment, long-soak, and
-game-specific temporal aggregation remain M6 work.
+memory slope under impairment. It closes the maintained 100 ms RTT / 2% unreliable-loss prediction,
+bandwidth, backlog, and server-P99 evidence slice. The separate chunk-subscription benchmark closes
+a deterministic no-impairment queue/private-memory soak. Multi-client impairment and game-specific
+temporal aggregation remain M6 work.

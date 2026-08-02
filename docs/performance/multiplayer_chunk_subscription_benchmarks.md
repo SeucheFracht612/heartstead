@@ -9,7 +9,8 @@ delta path, and client snapshot/removal/delta intake; and records wall-clock tim
 lighting/collision settlement, message delivery, and client synchronization are outside the
 server-tick timer.
 
-The default deterministic workload uses eight clients and five phases:
+The default deterministic workload uses eight clients and five foreground phases followed by a
+conditioned soak:
 
 1. All clients move to one distant cluster containing two loaded marker chunks. The server must
    encode each chunk once and reuse it across all eight recipients.
@@ -25,6 +26,12 @@ The default deterministic workload uses eight clients and five phases:
    no fluid activation, and no reliable backlog.
 5. The final positions run for 24 steady ticks to retain idle server samples and prove that queues
    remain drained.
+6. Before memory sampling, 256 alternating edit ticks drive bounded client command histories
+   through their cap while restoring the original voxel state, then eight unmeasured traversal/edit
+   cycles condition allocator reuse. The 64 measured cycles each move all clients from the hot-edit
+   regions to their disjoint spread regions and back, then apply two exact edits that restore the
+   same persistent voxel state. The default produces 1,408 measured soak ticks and 65 comparable
+   cycle-endpoint samples including the baseline.
 
 The reliable delivery limit is deliberately 48 messages/client/tick. Two complete 32-slice
 snapshots therefore form a bounded burst that cannot drain in its admission tick. This makes the
@@ -47,8 +54,8 @@ for the local authoritative player snapshot.
 
 ## Evidence and fail-closed behavior
 
-Schema-v2 JSON retains every measured server tick, transition, and per-client traffic row. Tick
-rows include:
+Schema-v3 JSON retains every foreground server tick, transition, and per-client traffic row in
+`raw_ticks`. Tick rows include:
 
 - P50/P95/P99/max source samples and phase provenance;
 - current subscriptions, convergence, bounded additions/removals, and deferred work;
@@ -61,6 +68,14 @@ rows include:
 - raw scheduler total plus named per-system time, including `runtime.command_gateway`;
 - fluid topology/dirty-collection time and active/processed cells;
 - spatial delivered/filtered pairs and delta-advanced/avoided/gap publication counts.
+
+The soak path retains every server-tick duration in the compact `soak_tick_times_us` array and
+retains one `soak_samples` resource row at the baseline and after every measured cycle. It processes
+the larger nested tick state online instead of retaining a second copy of every per-client row.
+Both arrays are allocated and touched before the resource baseline, so report construction does not
+manufacture the working-set trend being measured. Cycle rows retain logical server and client
+ownership, settled queue depth/bytes, thread/open-file counts, and precise process RSS, proportional
+set size (PSS), and private resident memory when the host provides them.
 
 The run returns an error rather than producing an apparently valid report if a client disconnects,
 a transition misses its timeout, a snapshot becomes partial, final backlog remains, final clients
@@ -78,14 +93,43 @@ identity/revision/cell convergence is lost. The default evaluated gates are:
 | Hot-edit server tick P95 | at most 12.5 ms |
 | Hot-edit server tick P99 | at most 16.667 ms |
 | Maximum hot-edit server tick | at most 50 ms |
+| Soak server tick P95 | at most 12.5 ms |
+| Soak server tick P99 | at most 16.667 ms |
+| Maximum soak server tick | at most 50 ms |
 | Any cluster/spread/traversal/hot-edit convergence | at most 16 ticks |
+| Any measured soak transition convergence | at most 16 ticks |
 | Bounded reliable burst recovery | at most 2 ticks |
+| Measured soak reliable burst recovery | at most 2 ticks, with at least one observed burst |
 | Clustered snapshot encode reuse | at least 2.0 recipients/operation |
 | Disjoint snapshot encode reuse | at most 1.05 recipients/operation |
 | Snapshot codec one-operation overshoot | at most 1,000 us |
 | Exact wire bytes/client/tick | at most 320 KiB |
 | Exact hot-edit wire bytes/client/tick | at most 2 KiB |
+| Soak client edit application and foreign-region exclusions | exactly the expected totals |
+| Soak partial snapshots/stale publications/disconnects | zero |
+| Peak and final logical server/client ownership | no growth from the comparable baseline |
+| Settled soak queue depth and bytes | zero at every sampled cycle endpoint |
+| Thread and open-file growth | no positive growth |
+| Private resident-memory ordinary-least-squares slope | at most 65,536 bytes/cycle |
+| Private resident-memory final-minus-baseline growth | at most 8,388,608 bytes |
 | Subscription/addition/removal/partial/disconnect/final-backlog limits | no violation |
+
+The memory gates run only when every cycle has precise accounting. Maintained calibration commands
+add `--require-precise-memory`, which fails closed if it is unavailable. On Linux, the ordinary F3
+sampler deliberately keeps the cheap `/proc/self/statm` RSS path, while this sparse benchmark path
+reads `/proc/self/smaps_rollup`. The Linux kernel documents that `statm` RSS is asynchronously
+maintained and imprecise, recommends `smaps` when accuracy matters, and defines `smaps_rollup` as
+the pre-summed mapping data ([`/proc` documentation](https://www.kernel.org/doc/html/v6.15/filesystems/proc.html),
+[`smaps_rollup` ABI](https://www.kernel.org/doc/html/v7.0/admin-guide/abi-testing.html)). Here,
+private resident memory means `Private_Clean + Private_Dirty`; it is not committed virtual memory or
+allocator ownership.
+
+The slope is the ordinary least-squares line through cycle index and private resident bytes, using
+the standard linear least-squares model described by NIST
+([model](https://www.itl.nist.gov/div898/handbook/pmd/section1/pmd141.htm),
+[estimation](https://www.itl.nist.gov/div898/handbook/pmd/section4/pmd431.htm)). It is a descriptive
+bounded trend, not a statistical-significance claim. The separate endpoint-growth gate catches a
+late step that a fitted slope could dilute.
 
 ## Commands
 
@@ -99,6 +143,7 @@ cmake --build build/default-release \
 build/default-release/apps/multiplayer_chunk_subscription_benchmark/\
 heartstead_multiplayer_chunk_subscription_benchmark \
   --enforce-gates \
+  --require-precise-memory \
   --output build/default-release/benchmarks/multiplayer-chunk-subscriptions.json
 ```
 
@@ -195,9 +240,44 @@ same-cell deltas advance one revision at a time; and a forward gap fails without
 client cursor, after which a contiguous edit can recover. Typed deltas also reject a global event
 payload that differs from the paired observed event batch.
 
+## Schema-v3 clean conditioned-soak calibration
+
+On 2026-08-02, three sequential independent Release processes from clean commit
+`1b1db1b673682d9f3f85b13b8df0f57b1c7a846c` passed every gate with
+`--require-precise-memory` on the same Intel Core Ultra 7 258V, GCC 13.3.0, and Linux
+6.17.0-1030-oem reference host. Each process retained `git_dirty=false`, 228 foreground ticks,
+1,408 measured soak ticks, 64 measured cycles, and the default conditioning and gate profile.
+Times below are milliseconds. The RSS and private-resident columns show one byte value because
+baseline, final, and peak were identical within each process.
+
+| Process | Foreground P50/P95/P99/max | Hot-edit P50/P95/P99/max | Soak P50/P95/P99/max | Peak reliable messages/bytes | Precise RSS/private resident bytes |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.356/0.431/2.535/4.697 | 0.362/0.407/0.438/0.531 | 0.061/2.627/4.734/4.839 | 128/24,832 | 84,373,504/80,470,016 |
+| 2 | 0.366/0.429/2.705/4.656 | 0.378/0.414/0.429/0.566 | 0.063/2.691/4.751/4.846 | 112/21,728 | 84,488,192/80,564,224 |
+| 3 | 0.359/0.444/2.703/4.729 | 0.367/0.417/0.452/0.687 | 0.062/2.686/4.709/4.841 | 128/24,832 | 84,443,136/80,539,648 |
+| **Median** | **0.359/0.431/2.703/4.697** | **0.367/0.414/0.438/0.566** | **0.062/2.686/4.734/4.841** | **128/24,832** | **84,443,136/80,539,648** |
+
+Behavioral evidence was exact in all three processes. Each measured soak applied both edits in all
+eight clients for 1,024 of 1,024 verified states, excluded all seven foreign regions for 7,168 of
+7,168 pairs, converged every transition within 10 ticks, observed 64 reliable backlog bursts, and
+recovered every burst within two ticks. Partial snapshots, stale publications, and disconnects
+remained zero.
+
+The baseline, maximum across all 64 measured endpoints, and final logical ownership were identical:
+76 authoritative chunks, zero retained authoritative voxel-edit records, eight total client chunks,
+and 2,144 total client-owned record units. The latter is an allocation-free sum of each client's
+chunk, remote revision, partial snapshot, command-history, movement, interpolation, entity,
+equipment, prediction input, tombstone, and accepted-edit record counts; it is a logical ownership
+guard, not a byte-size estimate. Settled queue depth/bytes and thread/open-file growth were zero.
+Precise private resident memory had zero endpoint growth and a zero OLS slope in every process.
+
+This accepts the deterministic multi-client queue/private-memory soak slice. The three clean runs
+are process repetitions of a compact fixed-endpoint workload, not evidence of multi-hour
+stability or a significance test.
+
 ## Spatial voxel-event contract
 
-The schema-v2 macrobenchmark now exercises sustained edit delivery directly. A separate
+The schema-v3 macrobenchmark exercises sustained edit delivery directly. A separate
 deterministic two-client runtime test retains the late-interest fallback contract. Both clients begin
 with the edited chunk published; one is moved 100 chunks away until its subscription removal has
 reached the client. A real authoritative remove-voxel command must then produce one spatial event,
@@ -218,9 +298,15 @@ ctest --test-dir build/default-debug-werror --output-on-failure \
 ## Scope limit
 
 This is a deterministic, in-process chunk-interest benchmark. It does not simulate RTT, jitter,
-loss, retransmission, socket fragmentation, malicious clients, multi-hour soak, or whole-process
-memory growth. It closes the reproducible spread/convergence/traversal, isolated hot-region edit,
-spatial relevance, clean-host P99, and revision-safe client ordering slices. The separate
+loss, retransmission, real sockets, socket fragmentation, malicious clients, multi-hour execution,
+native GPU/presentation behavior, or physical-display response. Precise private RSS does not
+attribute allocator/heap owners, shared memory, device memory, or total virtual commitments. The
+64-cycle result establishes a bounded regression workload rather than a statistical assertion
+about an unbounded process lifetime.
+
+The benchmark closes the reproducible spread/convergence/traversal, isolated hot-region edit,
+spatial relevance, clean-host P99, revision-safe client ordering, and deterministic queue/private-
+memory soak slices. The separate
 [multiplayer network-impairment benchmark](multiplayer_network_impairment_benchmarks.md) closes the
 maintained deterministic single-client 100 ms RTT / 2% unreliable-loss profile. Multi-client
-impairment and long-soak acceptance remain M6 work.
+impairment and game-specific temporal aggregation remain M6 work.

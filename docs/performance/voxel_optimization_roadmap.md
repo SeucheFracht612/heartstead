@@ -24,8 +24,8 @@ requires one.
 | Research capability | Current Heartstead state | Planned action |
 | --- | --- | --- |
 | Permanent hierarchical profiling | Partial: retained CPU/GPU timers, counters, raw benchmark frames, and opt-in Tracy zones now cover major runtime, renderer, chunk, worker, lighting, collision, and streaming paths. | Extend zones and attribution as later stages are changed; add allocation ownership and queue-age plots. |
-| Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. The live renderer-proof test covers authoritative predictive interest, rapid teleports, cancellation, bounded eviction and deferred drain, required-set convergence, exact client replacement, and zero-reservation teardown. Separate open-loop chunk, save-under-streaming, chunk-delta journal, isolated voxel-response, end-to-end render-readiness, near/mid/far edit-transition, real-runtime multiplayer chunk-subscription, and deterministic network-impairment benchmarks retain request-to-resident, physical indexed-read, save handoff/acceptance/publication, stable-storage append, checkpoint, collision-publication, whole-field relight, upload, exact current draw-command, retained LOD convergence/continuity, multi-client spread/convergence/traversal, sustained disjoint hot edits, spatial exclusions, per-client wire, prediction/correction, eligible-unreliable loss, impairment depth, and server/system percentiles. The Vulkan runner also has a feature-gated, serialized presentation-completion workload with raw present IDs and waits. | Add guaranteed-cold and multi-filesystem, cold-start, broader burst edits, multi-client impairment, correlated edit-to-GPU/presentation, physical-display, and long-soak workloads. |
-| Reproducible provenance and gates | Renderer schema v4, chunk-streaming schema v4, chunk-delta-journal schema v1, voxel-response schema v1, chunk-render-readiness schema v1, multiplayer chunk-subscription schema v2, and multiplayer network-impairment schema v1 record source/build/CPU/device/run metadata, warmups, repetitions or raw ticks, workload configuration, and fail-closed lifecycle invariants. Renderer schema v4 also records presentation-timing request/support, raw validity/ID/wait, and valid-sample distributions. Optional gates cover frame distributions, uploads, available GPU, rapid-edit mesh response, generated/in-memory/file-backed saved resident publication, physical payload reads and index opens, save-under-streaming owner handoff/request-to-durable acceptance/full publication, durable append/reopen/checkpoint, exact collision publication, full-field relight convergence, required-chunk draw eligibility, synchronous GPU waits, mesh amplification, owner publication time, subscription bounds, relevance exclusions, codec reuse/overshoot, backlog recovery, hot-edit P95/P99/max and wire volume, impaired input/correction/bandwidth/depth, and general server P99. | Add relative-regression checks and the remaining guaranteed-cold/multi-filesystem I/O, correlated display, multi-client impairment, and soak gates. |
+| Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. The live renderer-proof test covers authoritative predictive interest, rapid teleports, cancellation, bounded eviction and deferred drain, required-set convergence, exact client replacement, and zero-reservation teardown. Separate open-loop chunk, save-under-streaming, chunk-delta journal, isolated voxel-response, end-to-end render-readiness, near/mid/far edit-transition, real-runtime multiplayer chunk-subscription, and deterministic network-impairment benchmarks retain request-to-resident, physical indexed-read, save handoff/acceptance/publication, stable-storage append, checkpoint, collision-publication, whole-field relight, upload, exact current draw-command, retained LOD convergence/continuity, multi-client spread/convergence/traversal, sustained disjoint hot edits, spatial exclusions, conditioned queue/private-memory soak, per-client wire, prediction/correction, eligible-unreliable loss, impairment depth, and server/system percentiles. The Vulkan runner also has a feature-gated, serialized presentation-completion workload with raw present IDs and waits. | Add guaranteed-cold and multi-filesystem, cold-start, broader burst edits, multi-client impairment, correlated edit-to-GPU/presentation, physical-display, and workload-specific multi-hour endurance runs. |
+| Reproducible provenance and gates | Renderer schema v4, chunk-streaming schema v4, chunk-delta-journal schema v1, voxel-response schema v1, chunk-render-readiness schema v1, multiplayer chunk-subscription schema v3, and multiplayer network-impairment schema v1 record source/build/CPU/device/run metadata, warmups, repetitions or raw ticks, workload configuration, and fail-closed lifecycle invariants. Renderer schema v4 also records presentation-timing request/support, raw validity/ID/wait, and valid-sample distributions. Optional gates cover frame distributions, uploads, available GPU, rapid-edit mesh response, generated/in-memory/file-backed saved resident publication, physical payload reads and index opens, save-under-streaming owner handoff/request-to-durable acceptance/full publication, durable append/reopen/checkpoint, exact collision publication, full-field relight convergence, required-chunk draw eligibility, synchronous GPU waits, mesh amplification, owner publication time, subscription bounds, relevance exclusions, codec reuse/overshoot, backlog recovery, hot-edit and soak P95/P99/max, wire volume, exact soak ownership/queues, precise private-memory slope/growth, impaired input/correction/bandwidth/depth, and general server P99. | Add relative-regression checks and the remaining guaranteed-cold/multi-filesystem I/O, correlated display, and multi-client impairment gates. |
 | Bounded jobs and cancellation | Generic and typed schedulers now bound pending/result work, expose backpressure and queue-age telemetry, age priorities, and support reasoned queued/cooperative cancellation. | Attribute per-type saturation in higher-level pipeline counters and tune limits from traces. |
 | Versioned chunk pipeline | An owner-thread ledger now separates content, light, mesh, collision, persistence, and replication request/output revisions and states. Save/replication, mesh/GPU, collision/physics, and whole-field lighting publication are ticket-validated across edit and reload races. Palette-aware edits invalidate mesh, collision, lighting, and fluid consumers only when their dependency behavior changes. Strong-rollback command staging shallow-shares immutable dense cell fields and detaches the written chunks. | Calibrate stale-work amplification and latency under broader edit/streaming traces. |
 | Compact voxel sections | Chunks remain fixed 32³ with contiguous dense `VoxelCell` production storage. Reproducible 16/32 experiments now cover dense, split, palette-packed, uniform-light, sparse-metadata, and adaptive split-dense fallback candidates. | Retain dense production storage while mask/macro work proceeds; add a medium-diversity crossover sweep before any storage selection. |
@@ -34,7 +34,7 @@ requires one.
 | Dynamic edit propagation | Dirty regions, dependency-selective neighbor invalidation, clipped fluid-region activation, asynchronous mesh/light/collision work, upload quotas, exact mesh/collision/relight lifecycle tracking, edit coalescing/abandonment telemetry, and calibrated visual, collision, relight, required-chunk upload-preparation, draw-eligibility, and multiplayer material-hot-edit gates exist. | Add broader burst-edit collision/relight amplification and correlate the existing GPU/presentation endpoints with edit and physical-display response. |
 | Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, indexed delta save/replication, residency budgets, and far clipmaps exist. Durable snapshot acceptance/compaction and application saves run through a bounded save worker. Failed-busy checkpoints now enter an application-owned, memory-reserved queue with capped exponential backoff, attempt/root limits, and explicit completion/exhaustion telemetry. A predictive owner-thread controller drives the bounded loader in the live renderer-proof stream, reserves demand capacity, tracks speculative outcomes, and emits capped eviction waves with deferred/overage telemetry. Saved-delta publication and narrow flushes no longer scan or copy global edit history, physical delta sources parse one base-plus-journal view per streaming epoch, and a retained writer publishes one checksummed file per update. Process-local readers/writers pin generation tables; append/publication mutations serialize across database instances; destructive maintenance fails fast for retry. The save-under-streaming harness proves pinned reads across full generation publication, an explicit reader gap, stale pruning, and future-source rotation. Warm/cache-advised reads and durable append/reopen/checkpoint gates pass at 16,384 records. | Add guaranteed-cold/multi-filesystem coverage, extend generator-backed loading beyond the renderer-proof world, and add scale-calibrated live save-capture gates. |
 | Visibility, LOD, and GPU scaling | Frustum/distance/hierarchical visibility, HZB support, far clipmaps, indirect rendering, GPU arenas, upload staging, and pass timestamps already exist. | Tune only from captures; validate total culling benefit and retain broad fallback paths. |
-| Simulation and multiplayer scale | Simulation LOD, server authority, fixed-step runtime, bounded reliable/transient replication, and player-centered hysteretic chunk subscriptions now run in `ServerRuntime`. Chunk snapshots are relevance-limited, identity/revision tracked, atomically queued, globally codec-time-bounded, and encoded once across recipients. Committed voxel events and typed deltas use the same exact-published-chunk relevance rule. Contiguous delivered voxel deltas advance the recipient publication and suppress redundant full snapshots; server gaps retain the full-snapshot fallback. Client intake applies exact-next revisions, ignores deltas covered by a newer complete snapshot, and rejects gaps. Clean eight-client spread/convergence/traversal and 120-tick hot-edit runs pass server P99, relevance, sharing, wire, exact apply, and backlog-recovery gates. A deterministic 600-tick 100 ms RTT / 2% unreliable-loss profile passes server P99, input, correction, bandwidth, impairment-depth, and transport-integrity gates. | Add multi-client impairment, game-specific temporal aggregate models, and long-soak coverage. |
+| Simulation and multiplayer scale | Simulation LOD, server authority, fixed-step runtime, bounded reliable/transient replication, and player-centered hysteretic chunk subscriptions now run in `ServerRuntime`. Chunk snapshots are relevance-limited, identity/revision tracked, atomically queued, globally codec-time-bounded, and encoded once across recipients. Committed voxel events and typed deltas use the same exact-published-chunk relevance rule. Contiguous delivered voxel deltas advance the recipient publication and suppress redundant full snapshots; server gaps retain the full-snapshot fallback. Client intake applies exact-next revisions, ignores deltas covered by a newer complete snapshot, and rejects gaps. Clean eight-client spread/convergence/traversal, 120-tick hot-edit, and conditioned 64-cycle queue/private-memory soak runs pass server P99, relevance, sharing, wire, exact apply, backlog-recovery, logical-ownership, and precise-memory gates. A deterministic 600-tick 100 ms RTT / 2% unreliable-loss profile passes server P99, input, correction, bandwidth, impairment-depth, and transport-integrity gates. | Add multi-client impairment and game-specific temporal aggregate models. |
 
 ## Ordered milestones
 
@@ -320,7 +320,7 @@ overage. Its integration test forces a teleport under a three-eviction wave cap,
 backlog, returns, and proves all 441 required chunks recover, residency stays at or below target,
 server/client counts and exact remote identities converge, and pending/deferred/reserved work
 reaches zero. This accepts the live predictive-streaming slice; generator hookup for other world
-types and the broader M6 long-soak/memory evidence remain open.
+types remains open.
 
 Temporal simulation admission is now a separate deterministic layer over raw LOD classification.
 Every subject carries a positive estimated work cost; each tick has hard subject-count, work-unit,
@@ -379,12 +379,13 @@ codec-time deferral/recovery without partial publication, and collision-first bo
 64-message cap. Ordinary ticks defer new cache misses at a 4,000 us global codec boundary while
 retaining exact one-operation overshoot; direct in-memory bootstrap remains synchronous.
 
-The schema-v2
-[multiplayer chunk-subscription benchmark](multiplayer_chunk_subscription_benchmarks.md) now drives
-eight real clients through a shared cluster, disjoint spread, six rapid traversal transitions, and
-steady state, plus 120 ticks where every client commits one material-only voxel edit in its own
-non-overlapping region. The older schema-v1 clean reference retains 2.505/4.747 ms median overall
-P95/P99 for the snapshot-only workload. Three clean schema-v2 Release processes at commit
+The schema-v3
+[multiplayer chunk-subscription benchmark](multiplayer_chunk_subscription_benchmarks.md) retains the
+schema-v2 foreground workload: eight real clients traverse a shared cluster, disjoint spread, six
+rapid transitions, and steady state, plus 120 ticks where every client commits one material-only
+voxel edit in its own non-overlapping region. The older schema-v1 clean reference retains
+2.505/4.747 ms median overall P95/P99 for the snapshot-only workload. Three clean schema-v2 Release
+processes at commit
 `b2d4bde` passed every gate with median overall P95/P99 of 0.441/2.569 ms and median hot-edit
 P95/P99/max of 0.424/0.461/0.616 ms. Peak hot traffic was 860 bytes/client/tick. All 960 edits
 applied exactly, all 6,720 cross-region deliveries were excluded, 960 contiguous publications
@@ -413,6 +414,21 @@ now accepts an exact-next delta from a snapshot base, prevents an older delta fr
 newer snapshot, sequences repeated same-cell edits, and fails closed on a gap without advancing its
 cursor.
 
+Schema v3 then conditions bounded command histories with 256 alternating edit ticks and allocator
+reuse with eight unmeasured cycles before a 64-cycle measured continuation. Each cycle traverses
+all clients from their hot regions to disjoint spread regions and back, then applies two edits that
+restore the persistent voxel state. The report preallocates compact tick timing and cycle-endpoint
+resource samples before its baseline, and gates latency, exact apply/exclusion totals, convergence,
+backlog recovery, logical ownership, settled queues, thread/open-file growth, and precise private
+resident-memory slope/growth. Three clean Release processes at commit `1b1db1b` each retained 1,408
+soak ticks, 1,024/1,024 exact client states, 7,168/7,168 exclusions, and 64 backlog bursts recovered
+within two ticks. Median soak P50/P95/P99/max was 0.062/2.686/4.734/4.841 ms. All runs held
+baseline/peak/final ownership at 76 server chunks, zero server edit records, eight total client
+chunks, and 2,144 client-owned record units; precise private resident-memory endpoint growth and
+descriptive OLS slope were zero. This accepts the deterministic multi-client queue/private-memory
+soak slice, while explicitly not claiming multi-hour, impaired-network, allocator-attributed, or
+statistically significant lifetime stability.
+
 The schema-v1
 [multiplayer network-impairment benchmark](multiplayer_network_impairment_benchmarks.md) now drives
 the production prediction/runtime path for 600 measured 60 Hz ticks at 100 ms nominal RTT, uniform
@@ -423,8 +439,8 @@ commit `be4c60d` passed every gate with median server P95/P99/max of 0.018/0.019
 processes accepted 598 of 600 inputs inside the measured interval, ended at acknowledged sequence
 600, made zero hard corrections, stayed below 0.075 m soft correction, averaged 22,253.6 encoded
 server-to-client bytes/s, and peaked at 34,103 bytes in a rolling second. The deterministic
-single-client impairment slice is accepted. Multi-client impairment, game-specific temporal
-aggregation, and long-soak evidence remain before the M6 scale milestone is accepted.
+single-client impairment slice is accepted. Multi-client impairment and game-specific temporal
+aggregation remain before the M6 scale milestone is accepted.
 
 The schema-v1
 [terrain edit-transition benchmark](terrain_edit_transition_benchmarks.md) now starts from complete
@@ -439,7 +455,8 @@ zero, and pipeline occupancy peaked at two of three. All six processes passed th
 50/250/500/500 ms response, 12 ms owner, 0.5 ms upload-preparation, zero-wait, bounded-work,
 continuity, supersession, and resource-teardown gates. This implements the isolated retained
 near/mid/far transition slice. Burst and broad invalidations, correlated GPU
-execution/presentation/display response, and long-soak transition evidence remain open.
+execution/presentation/display response, and multi-cycle near/mid/far transition-soak evidence
+remain open.
 
 ### M7 — trace-gated GPU work
 

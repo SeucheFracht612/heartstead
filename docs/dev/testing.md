@@ -220,6 +220,13 @@ Validate connection, command results, movement prediction/reconciliation, world 
 disconnect, timeout, and clean shutdown. The dedicated executable is memory-only, so persistence
 must be tested through a local authoritative runtime until dedicated save ownership is implemented.
 
+For repeatable eight-client chunk-interest, hot-edit, and conditioned queue/private-memory soak
+acceptance, run the optimized
+[`heartstead_multiplayer_chunk_subscription_benchmark`](../performance/multiplayer_chunk_subscription_benchmarks.md)
+with `--enforce-gates --require-precise-memory`. The second option deliberately fails calibration
+when the host cannot provide precise process-memory accounting; omit it only for a functional run
+whose memory gates are not acceptance evidence.
+
 For repeatable impaired-runtime acceptance, run the optimized
 [`heartstead_multiplayer_network_impairment_benchmark`](../performance/multiplayer_network_impairment_benchmarks.md)
 with `--enforce-gates`. For the real socket path, use `tools/netem_multiplayer.sh` on Linux to apply

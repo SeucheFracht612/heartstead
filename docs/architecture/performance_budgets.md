@@ -133,9 +133,9 @@ codec call that crosses a global or client time boundary may complete, with its 
 reported and bounded to that one operation. Rotating clients, sources, and snapshot classes prevent
 persistent low-identity preference. Reliable correctness traffic and tombstones are outside this
 controller; the host's separate 256 KiB/client encoded-wire window still applies. These defaults are
-implementation safety rails. Clean eight-client spread/P99 and the maintained single-client
-impaired prediction profile are calibrated; multi-client impairment and long-soak calibration
-remain before M6 acceptance. See
+implementation safety rails. Clean eight-client spread/P99, conditioned queue/private-memory soak,
+and the maintained single-client impaired prediction profile are calibrated; multi-client
+impairment and game-specific temporal aggregation remain before M6 acceptance. See
 [Networking architecture](networking.md#transient-tick-admission).
 
 Reliable correctness traffic uses a separate encoded-wire backlog and drain envelope:
@@ -173,8 +173,19 @@ P95/P99/max gates and a 2 KiB exact wire gate. Three clean post-ordering Release
 median hot P95/P99/max of 0.381/0.409/0.504 ms, 860 peak bytes/client/tick, exact apply for all 960
 edits, all 6,720 foreign-region exclusions, 960 delta publication advances/avoided full snapshots,
 and zero gaps. Focused tests separately prove revision-safe mixed snapshot/delta intake. These are
-clean in-process chunk-interest and isolated material-edit gates, not multi-client impairment or
-soak SLOs.
+clean in-process chunk-interest and isolated material-edit gates, not multi-client impairment.
+
+Schema v3 adds 256 conditioning edits, eight allocator-conditioning cycles, and 64 measured
+traversal/edit cycles with 1,408 compact server-tick samples and 65 comparable resource endpoints.
+It applies the same 12.5/16.667/50 ms P95/P99/max gates to soak ticks, requires convergence within
+16 ticks and backlog recovery within two ticks, and admits no partial/stale/disconnected state,
+logical ownership growth, settled endpoint queue, or positive thread/open-file growth. When precise
+Linux process accounting is required, private resident-memory OLS slope is capped at 64 KiB/cycle
+and endpoint growth at 8 MiB. Three clean Release processes measured median soak P50/P95/P99/max of
+0.062/2.686/4.734/4.841 ms, zero private-memory slope/growth, and identical baseline/peak/final
+ownership of 76 server chunks and 2,144 total client record units. This is a deterministic
+fixed-endpoint queue/private-memory soak SLO, not a multi-hour, allocator-attributed, or impaired-
+network result.
 
 The maintained single-client impairment profile adds 600 raw ticks at 100 ms nominal RTT, uniform
 plus-or-minus 10 ms configured delay variation, and 2% unreliable loss. Its independent

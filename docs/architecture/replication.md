@@ -194,10 +194,12 @@ Replication is not a universal full-state synchronization system. Unsupported or
 subjects require an explicit snapshot/resync path, and chunk streaming remains separate from saved
 world-store deltas. Voxel event/delta traffic is spatially filtered, isolated material hot-edit
 throughput is calibrated, and mixed full-snapshot/delta intake is revision-safe. The deterministic
-single-client 100 ms RTT / 2% unreliable-loss runtime profile is calibrated separately; multi-client
-impairment and long-soak queue/memory stability remain open. Public-Internet security, NAT
-traversal, matchmaking, congestion control, and pacing are transport concerns and are not provided
-by this layer. See
+single-client 100 ms RTT / 2% unreliable-loss runtime profile is calibrated separately. A
+conditioned 64-cycle, eight-client traversal/edit workload also closes the deterministic
+queue/private-resident-memory stability slice with exact logical ownership and drained-endpoint
+gates. It is not a multi-hour or impaired-network soak; multi-client impairment and game-specific
+temporal aggregation remain open. Public-Internet security, NAT traversal, matchmaking, congestion
+control, and pacing are transport concerns and are not provided by this layer. See
 [Multiplayer network-impairment benchmarks](../performance/multiplayer_network_impairment_benchmarks.md).
 
 See [Networking architecture](networking.md), [Commands](commands.md),

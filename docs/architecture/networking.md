@@ -288,6 +288,16 @@ full snapshots, and zero gaps. Client intake applies exact-next deltas, ignores 
 by a newer complete snapshot, and fails closed on revision gaps. See
 [Multiplayer chunk-subscription benchmarks](../performance/multiplayer_chunk_subscription_benchmarks.md).
 
+Schema v3 extends the same eight-client production path with a conditioned 64-cycle traversal/edit
+soak. It retains 1,408 compact server-tick timings plus comparable resource endpoints, requires
+exact edit application and foreign-region exclusion, and fails on logical ownership growth,
+settled endpoint queues, partial/stale state, disconnects, or positive thread/open-file growth.
+Precise Linux private resident memory is sampled outside the per-tick path and gated at no more than
+64 KiB/cycle OLS slope and 8 MiB endpoint growth. Three clean Release processes measured a
+4.734 ms median soak P99, two-tick worst backlog recovery, and zero private-memory slope/growth.
+This closes the deterministic queue/private-memory soak slice, not multi-hour or impaired-network
+stability.
+
 ## Deterministic impairment profile
 
 The maintained in-memory impairment profile drives the production prediction/runtime path for 600
@@ -302,7 +312,7 @@ acknowledged sequence 600, made zero hard corrections, stayed below 0.075 m soft
 averaged 22,253.6 encoded server-to-client bytes/s, peaked at 34,103 bytes in a rolling second, and
 kept in-flight impairment at or below 70 against a 128-message cap. The reliable application FIFO
 ended empty and no transport error or disconnect occurred. This closes the deterministic impaired
-prediction/P99 profile; multi-client impairment, long-soak, and temporal aggregation remain M6
+prediction/P99 profile; multi-client impairment and game-specific temporal aggregation remain M6
 work. See
 [Multiplayer network-impairment benchmarks](../performance/multiplayer_network_impairment_benchmarks.md).
 
