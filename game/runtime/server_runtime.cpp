@@ -745,13 +745,30 @@ core::Status ServerRuntime::initialize() {
             if (!chunk_status) {
                 return chunk_status;
             }
-            const auto players_first = (transient_replication_class_cursor_++ & 1U) == 0;
-            if (players_first) {
-                auto player_status = replicate_players();
-                return player_status ? replicate_entity_motion(context.tick) : player_status;
+            auto reliable_status = host_.flush_outbound(current_commands_);
+            if (!reliable_status) {
+                return reliable_status;
             }
-            auto entity_status = replicate_entity_motion(context.tick);
-            return entity_status ? replicate_players() : entity_status;
+            const auto players_first = (transient_replication_class_cursor_++ & 1U) == 0;
+            auto transient_status = core::Status::ok();
+            if (players_first) {
+                transient_status = replicate_players();
+                if (transient_status) {
+                    transient_status = replicate_entity_motion(context.tick);
+                }
+            } else {
+                transient_status = replicate_entity_motion(context.tick);
+                if (transient_status) {
+                    transient_status = replicate_players();
+                }
+            }
+            if (!transient_status) {
+                return transient_status;
+            }
+            // Reliable deltas, chunk slices, bootstrap state, and tombstones can be produced after
+            // the command gateway. Drain them with the same tick counters so they neither bypass
+            // quotas nor incur an accidental extra-tick latency when capacity remains.
+            return host_.flush_outbound(current_commands_);
         },
     });
     if (!status) {
@@ -839,6 +856,12 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
         return core::Result<ServerRuntimeTickStats>::failure(simulation.error().code,
                                                              simulation.error().message);
     }
+    auto reliable_delivery_status =
+        net::validate_host_session_outbound_delivery_report(current_commands_.outbound_delivery);
+    if (!reliable_delivery_status) {
+        return core::Result<ServerRuntimeTickStats>::failure(
+            reliable_delivery_status.error().code, reliable_delivery_status.error().message);
+    }
     ServerRuntimeTickStats stats;
     stats.simulation = simulation.value();
     stats.commands = current_commands_;
@@ -883,6 +906,17 @@ core::Result<core::NetId> ServerRuntime::connect_client() {
         return core::Result<core::NetId>::failure(status.error().code, status.error().message);
     }
     status = send_initial_chunks(connected.value());
+    if (!status) {
+        (void)disconnect_client(connected.value());
+        return core::Result<core::NetId>::failure(status.error().code, status.error().message);
+    }
+    net::HostSessionOutboundDeliveryReport bootstrap_delivery;
+    status = host_.flush_local_client_bootstrap(connected.value(), bootstrap_delivery);
+    if (!status) {
+        (void)disconnect_client(connected.value());
+        return core::Result<core::NetId>::failure(status.error().code, status.error().message);
+    }
+    status = net::validate_host_session_outbound_delivery_report(bootstrap_delivery);
     if (!status) {
         (void)disconnect_client(connected.value());
         return core::Result<core::NetId>::failure(status.error().code, status.error().message);
@@ -1735,6 +1769,12 @@ core::Status ServerRuntime::replicate_players() {
             ++current_player_tombstone_count_;
         }
     }
+    if (!pending_player_removals_.empty()) {
+        auto status = host_.flush_outbound(current_commands_);
+        if (!status) {
+            return status;
+        }
+    }
 
     std::vector<movement::PlayerControllerSnapshot> snapshots;
     snapshots.reserve(player_connections_.size());
@@ -1865,6 +1905,12 @@ core::Status ServerRuntime::replicate_entity_motion(std::uint64_t simulation_tic
                 return status;
             }
             ++current_entity_motion_tombstone_count_;
+        }
+    }
+    if (!pending_entity_motion_removals_.empty()) {
+        auto status = host_.flush_outbound(current_commands_);
+        if (!status) {
+            return status;
         }
     }
     auto replication_status = replicate_transient_snapshot_candidates(

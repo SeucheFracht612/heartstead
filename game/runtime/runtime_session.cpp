@@ -138,11 +138,24 @@ core::Status RuntimeConfiguration::validate() const {
         max_transient_snapshot_payload_bytes_per_client_per_tick;
     transient_replication_budget.max_serialization_time_us_per_client_per_tick =
         max_transient_snapshot_serialization_time_us_per_client_per_tick;
-    if (!transient_replication_budget.validate() || max_outbound_bytes_per_client_per_second == 0) {
+    net::HostSessionConfig host_budget;
+    host_budget.max_outbound_bytes_per_client_per_second = max_outbound_bytes_per_client_per_second;
+    host_budget.max_pending_reliable_messages = max_pending_reliable_messages;
+    host_budget.max_pending_reliable_bytes = max_pending_reliable_bytes;
+    host_budget.max_pending_reliable_messages_per_client = max_pending_reliable_messages_per_client;
+    host_budget.max_pending_reliable_bytes_per_client = max_pending_reliable_bytes_per_client;
+    host_budget.max_reliable_delivery_messages_per_tick = max_reliable_delivery_messages_per_tick;
+    host_budget.max_reliable_delivery_bytes_per_tick = max_reliable_delivery_bytes_per_tick;
+    host_budget.max_reliable_delivery_messages_per_client_per_tick =
+        max_reliable_delivery_messages_per_client_per_tick;
+    host_budget.max_reliable_delivery_bytes_per_client_per_tick =
+        max_reliable_delivery_bytes_per_client_per_tick;
+    if (!transient_replication_budget.validate() || !host_budget.validate()) {
         return core::Status::failure(
             "runtime_configuration.invalid_replication_budget",
             "transient global/per-client message, payload-byte, serialization-time, and outbound "
-            "budgets must be non-zero");
+            "reliable backlog/delivery budgets must be non-zero with per-client limits no larger "
+            "than global limits");
     }
     if (simulated_network_one_way_latency_ms > 60'000 || simulated_network_jitter_ms > 60'000 ||
         simulated_network_unreliable_loss_basis_points > 10'000) {
@@ -367,6 +380,20 @@ core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& pr
         server_desc.host.transport.in_memory.impairment_seed = config_.simulated_network_seed;
         server_desc.host.max_outbound_bytes_per_client_per_second =
             config_.max_outbound_bytes_per_client_per_second;
+        server_desc.host.max_pending_reliable_messages = config_.max_pending_reliable_messages;
+        server_desc.host.max_pending_reliable_bytes = config_.max_pending_reliable_bytes;
+        server_desc.host.max_pending_reliable_messages_per_client =
+            config_.max_pending_reliable_messages_per_client;
+        server_desc.host.max_pending_reliable_bytes_per_client =
+            config_.max_pending_reliable_bytes_per_client;
+        server_desc.host.max_reliable_delivery_messages_per_tick =
+            config_.max_reliable_delivery_messages_per_tick;
+        server_desc.host.max_reliable_delivery_bytes_per_tick =
+            config_.max_reliable_delivery_bytes_per_tick;
+        server_desc.host.max_reliable_delivery_messages_per_client_per_tick =
+            config_.max_reliable_delivery_messages_per_client_per_tick;
+        server_desc.host.max_reliable_delivery_bytes_per_client_per_tick =
+            config_.max_reliable_delivery_bytes_per_client_per_tick;
         if (config_.use_in_memory_transport && scenario.value().setup_hook == "renderer_proof") {
             local_renderer_proof_chunk_fast_path_ = true;
             server_desc.direct_local_chunk_replication = true;

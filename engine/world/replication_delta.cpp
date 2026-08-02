@@ -1238,6 +1238,13 @@ core::Result<WorldReplicationDeltaDeliveryReport> send_replication_delta_snapsho
                     if (!decision.relevant) {
                         continue;
                     }
+                    if (std::ranges::find(tick.disconnected_clients, decision.client_id) !=
+                        tick.disconnected_clients.end()) {
+                        command_report.skipped_recipients.push_back(decision.client_id);
+                        command_report.recipient_diagnostics.push_back(
+                            "recipient_disconnected_before_delta_delivery");
+                        continue;
+                    }
 
                     auto filtered = filter_replication_delta_snapshot(
                         command.snapshot, host.replication_relevance_policy(), decision.client_id);

@@ -10214,6 +10214,7 @@ void test_world_replication_delta_planning() {
            delivered_client.value().to_string());
     assert(!delivery_inspection.has_errors());
 
+    assert(delta_delivery_host.flush_outbound(delivery_tick));
     auto delivered_messages = delta_delivery_host.drain_client_messages(delivered_client.value());
     assert(delivered_messages);
     assert(delivered_messages.value().size() == 1);

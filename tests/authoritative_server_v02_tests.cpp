@@ -17,6 +17,12 @@ namespace {
             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
 }
 
+void flush_outbound(heartstead::server::AuthoritativeServer& server) {
+    heartstead::net::HostSessionTickResult tick;
+    assert(server.host_session().flush_outbound(tick));
+    assert(heartstead::net::validate_host_session_outbound_delivery_report(tick.outbound_delivery));
+}
+
 void test_join_profile_discovery_chat_and_leave_lifecycle() {
     const auto root = temporary_root();
     const auto uuid =
@@ -42,6 +48,7 @@ void test_join_profile_discovery_chat_and_leave_lifecycle() {
     auto joined = server.join(request, 101);
     assert(joined);
     assert(server.connected_player_count() == 1);
+    flush_outbound(server);
     auto initial_messages = server.host_session().drain_client_messages(joined.value());
     assert(initial_messages);
     const auto has_initial_type = [&initial_messages](std::string_view type) {
@@ -56,6 +63,7 @@ void test_join_profile_discovery_chat_and_leave_lifecycle() {
     assert(discovered && discovered.value());
     auto duplicate = server.discover(joined.value(), "caves", {-65, 130}, 103);
     assert(duplicate && !duplicate.value());
+    flush_outbound(server);
     auto map_delta = server.host_session().drain_client_messages(joined.value());
     assert(map_delta);
     assert(std::ranges::any_of(map_delta.value(), [](const auto& envelope) {
@@ -63,6 +71,7 @@ void test_join_profile_discovery_chat_and_leave_lifecycle() {
     }));
 
     assert(server.chat(joined.value(), "local", "hello settlement", 104));
+    flush_outbound(server);
     auto chat_message = server.host_session().drain_client_messages(joined.value());
     assert(chat_message);
     assert(std::ranges::any_of(chat_message.value(), [](const auto& envelope) {
@@ -81,6 +90,7 @@ void test_join_profile_discovery_chat_and_leave_lifecycle() {
 
     auto rejoined = server.join(request, 106);
     assert(rejoined);
+    flush_outbound(server);
     auto restored_messages = server.host_session().drain_client_messages(rejoined.value());
     assert(restored_messages);
     const auto restored_map_message =

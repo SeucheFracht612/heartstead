@@ -337,13 +337,15 @@ void test_client_command_result_history_is_bounded() {
     const auto report = content::ContentValidation::validate(source_root());
     assert(!report.has_errors());
     auto runtime = make_runtime(report);
-    game::RuntimeConfiguration config;
-    config.fixed_step = {60, 4, 250'000};
-    assert(runtime.start_session(config, make_session_request(report)));
-
     constexpr auto overflow_count = 32U;
     const auto command_count =
         static_cast<std::uint32_t>(game::client_command_result_history_capacity) + overflow_count;
+    game::RuntimeConfiguration config;
+    config.fixed_step = {60, 4, 250'000};
+    config.max_reliable_delivery_messages_per_tick = 1'024;
+    config.max_reliable_delivery_messages_per_client_per_tick = 1'024;
+    assert(runtime.start_session(config, make_session_request(report)));
+
     for (std::uint32_t index = 0; index < command_count; ++index) {
         assert(runtime.submit_command("missing.foundation_command", "", 10));
     }
@@ -1938,6 +1940,8 @@ void test_gameplay_modules_extend_runtime_through_registration_contract() {
     const auto frame_diagnostics = game::GameInspector::inspect(frame.value());
     assert(frame_diagnostics.find_field("simulation_ms") != nullptr);
     assert(frame_diagnostics.find_field("replication_message_count") != nullptr);
+    assert(frame_diagnostics.find_field("reliable_delivered_bytes") != nullptr);
+    assert(frame_diagnostics.find_field("reliable_maximum_pending_bytes") != nullptr);
     const auto client_diagnostics = game::GameInspector::inspect(frame.value().client);
     assert(client_diagnostics.find_field("feature_replication_callback_count")->value == "1");
     const auto presentation_diagnostics = game::GameInspector::inspect(frame.value().presentation);

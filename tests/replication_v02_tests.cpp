@@ -200,6 +200,7 @@ void test_mixed_visibility_filters_events_ids_and_typed_state() {
         world::send_replication_delta_snapshots_for_tick(host, tick_deltas, tick.value(), 10);
     assert(delivery);
     assert(delivery.value().sent_message_count == 2);
+    assert(host.flush_outbound(tick.value()));
     auto first_delta_messages = host.drain_client_messages(first_id.value());
     auto second_delta_messages = host.drain_client_messages(second_id.value());
     assert(first_delta_messages);
@@ -297,6 +298,8 @@ void test_voxel_event_applies_before_observation_without_separate_delta() {
                             world::VoxelChangeTextCodec::encode(change)});
     assert(host.send_replication_message(client_id.value(),
                                          net::make_replication_transport_message(batch, 10)));
+    net::HostSessionTickResult delivery_tick;
+    assert(host.flush_outbound(delivery_tick));
     auto messages = host.drain_client_messages(client_id.value());
     assert(messages && messages.value().size() == 1);
     assert(client.receive_server_message(messages.value().front()));
@@ -335,6 +338,8 @@ void test_replication_message_drain_preserves_a_bounded_backlog() {
         message.payload = std::to_string(sequence);
         assert(host.send_replication_message(client_id.value(), std::move(message)));
     }
+    net::HostSessionTickResult delivery_tick;
+    assert(host.flush_outbound(delivery_tick));
     auto delivered = host.drain_client_messages(client_id.value());
     assert(delivered && delivered.value().size() == 5);
     for (const auto& envelope : delivered.value()) {

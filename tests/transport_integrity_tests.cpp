@@ -6,6 +6,7 @@
 #include "engine/net/transport_packet.hpp"
 #include "engine/net/transport_reliability.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <memory>
@@ -546,7 +547,7 @@ void test_host_send_failure_blocks_only_the_affected_client() {
 
     std::uint32_t dispatch_count = 0;
     auto dispatcher = make_mutating_dispatcher(dispatch_count);
-    transport->fail_server_send(observer.value(), net::TransportMessageKind::replication, 1);
+    transport->fail_server_send(observer.value(), net::TransportMessageKind::replication, 1, 2);
     assert(session.send_client_command(
         origin.value(), net::CommandEnvelope{1, origin.value(), "test.mutate", "isolated", 0}));
 
@@ -561,17 +562,30 @@ void test_host_send_failure_blocks_only_the_affected_client() {
     assert(origin_delivery && origin_delivery.value().size() == 2);
     assert(observer_delivery && observer_delivery.value().empty());
 
-    auto retry_tick = session.tick(dispatcher, net::CommandExecutionContext{});
-    assert(retry_tick && dispatch_count == 1);
-    assert(retry_tick.value().outbound_delivery.delivered_message_count == 1);
-    assert(retry_tick.value().outbound_delivery.retry_attempt_count == 1);
-    assert(retry_tick.value().outbound_delivery.pending_message_count == 0);
+    assert(session.send_client_command(
+        origin.value(), net::CommandEnvelope{2, origin.value(), "test.mutate", "healthy", 0}));
+    auto blocked_tick = session.tick(dispatcher, net::CommandExecutionContext{});
+    assert(blocked_tick && dispatch_count == 2);
+    assert(blocked_tick.value().transport_message_count == 1);
+    assert(blocked_tick.value().command_reports.size() == 1);
+    assert(blocked_tick.value().outbound_delivery.delivered_message_count == 2);
+    assert(blocked_tick.value().outbound_delivery.failed_attempt_count == 1);
+    assert(blocked_tick.value().outbound_delivery.pending_message_count == 2);
     origin_delivery = session.drain_client_messages(origin.value());
     observer_delivery = session.drain_client_messages(observer.value());
-    assert(origin_delivery && origin_delivery.value().empty());
-    assert(observer_delivery && observer_delivery.value().size() == 1);
-    assert(observer_delivery.value().front().message.kind ==
-           net::TransportMessageKind::replication);
+    assert(origin_delivery && origin_delivery.value().size() == 2);
+    assert(observer_delivery && observer_delivery.value().empty());
+
+    auto recovered_tick = session.tick(dispatcher, net::CommandExecutionContext{});
+    assert(recovered_tick && dispatch_count == 2);
+    assert(recovered_tick.value().outbound_delivery.delivered_message_count == 2);
+    assert(recovered_tick.value().outbound_delivery.retry_attempt_count == 1);
+    assert(recovered_tick.value().outbound_delivery.pending_message_count == 0);
+    observer_delivery = session.drain_client_messages(observer.value());
+    assert(observer_delivery && observer_delivery.value().size() == 2);
+    assert(observer_delivery.value()[0].message.kind == net::TransportMessageKind::replication);
+    assert(observer_delivery.value()[0].message.sequence == 1);
+    assert(observer_delivery.value()[1].message.sequence == 2);
 }
 
 void test_host_backpressures_commands_while_committed_delivery_is_blocked() {
@@ -595,16 +609,16 @@ void test_host_backpressures_commands_while_committed_delivery_is_blocked() {
     assert(session.send_client_command(
         client.value(), net::CommandEnvelope{2, client.value(), "test.mutate", "second", 0}));
     auto blocked_tick = session.tick(dispatcher, net::CommandExecutionContext{});
-    assert(blocked_tick && dispatch_count == 1);
-    assert(blocked_tick.value().transport_message_count == 0);
-    assert(blocked_tick.value().command_reports.empty());
+    assert(blocked_tick && dispatch_count == 2);
+    assert(blocked_tick.value().transport_message_count == 1);
+    assert(blocked_tick.value().command_reports.size() == 1);
     assert(blocked_tick.value().outbound_delivery.failed_attempt_count == 1);
-    assert(blocked_tick.value().outbound_delivery.pending_message_count == 2);
+    assert(blocked_tick.value().outbound_delivery.pending_message_count == 4);
 
     auto recovered_tick = session.tick(dispatcher, net::CommandExecutionContext{});
     assert(recovered_tick && dispatch_count == 2);
-    assert(recovered_tick.value().transport_message_count == 1);
-    assert(recovered_tick.value().command_reports.size() == 1);
+    assert(recovered_tick.value().transport_message_count == 0);
+    assert(recovered_tick.value().command_reports.empty());
     assert(recovered_tick.value().outbound_delivery.pending_message_count == 0);
 
     auto delivered = session.drain_client_messages(client.value());
@@ -638,6 +652,10 @@ void test_host_defers_reliable_application_replication_without_overtaking() {
     assert(before_retry && before_retry.value().empty());
 
     net::ServerCommandDispatcher dispatcher;
+    auto failed_delivery = session.tick(dispatcher, net::CommandExecutionContext{});
+    assert(failed_delivery);
+    assert(failed_delivery.value().outbound_delivery.failed_attempt_count == 1);
+    assert(failed_delivery.value().outbound_delivery.pending_message_count == 2);
     auto retry = session.tick(dispatcher, net::CommandExecutionContext{});
     assert(retry);
     assert(retry.value().outbound_delivery.delivered_message_count == 2);
@@ -664,6 +682,206 @@ void test_host_disconnects_when_the_final_notice_cannot_be_delivered() {
     assert(session.disconnect_client(client.value()));
     assert(session.connected_client_count() == 0);
     assert(!transport->is_client_connected(client.value()));
+}
+
+void test_reliable_backlog_drains_fairly_and_recovers_within_two_ticks() {
+    net::HostSessionConfig config;
+    config.max_outbound_bytes_per_client_per_second = 1024u * 1024u;
+    config.max_pending_reliable_messages = 8;
+    config.max_pending_reliable_bytes = 1024u * 1024u;
+    config.max_pending_reliable_messages_per_client = 4;
+    config.max_pending_reliable_bytes_per_client = 512u * 1024u;
+    config.max_reliable_delivery_messages_per_tick = 2;
+    config.max_reliable_delivery_bytes_per_tick = 1024u * 1024u;
+    config.max_reliable_delivery_messages_per_client_per_tick = 1;
+    config.max_reliable_delivery_bytes_per_client_per_tick = 512u * 1024u;
+    net::HostSession session(config);
+    assert(session.start());
+    auto first = session.connect_client();
+    auto second = session.connect_client();
+    assert(first && second);
+    assert(session.drain_client_messages(first.value()));
+    assert(session.drain_client_messages(second.value()));
+
+    for (std::uint64_t sequence = 1; sequence <= 2; ++sequence) {
+        assert(session.send_replication_message(
+            first.value(), reliable_message(net::TransportMessageKind::replication, sequence,
+                                            "first-" + std::to_string(sequence))));
+        assert(session.send_replication_message(
+            second.value(), reliable_message(net::TransportMessageKind::replication, sequence,
+                                             "second-" + std::to_string(sequence))));
+    }
+    assert(session.pending_outbound_message_count() == 4);
+    assert(session.pending_outbound_message_count(first.value()) == 2);
+    assert(session.pending_outbound_message_count(second.value()) == 2);
+    assert(session.pending_outbound_bytes() == session.pending_outbound_bytes(first.value()) +
+                                                   session.pending_outbound_bytes(second.value()));
+
+    net::ServerCommandDispatcher dispatcher;
+    net::CommandExecutionContext context;
+    context.server_time_ms = 10;
+    auto first_tick = session.tick(dispatcher, context);
+    assert(first_tick);
+    const auto& first_delivery = first_tick.value().outbound_delivery;
+    assert(first_delivery.initial_pending_message_count == 4);
+    assert(first_delivery.attempted_message_count == 2);
+    assert(first_delivery.delivered_message_count == 2);
+    assert(first_delivery.attempted_bytes == first_delivery.delivered_bytes);
+    assert(first_delivery.pending_message_count == 2);
+    assert(first_delivery.pending_bytes == session.pending_outbound_bytes());
+    assert(first_delivery.blocked_client_count == 2);
+    assert(first_delivery.tick_budget_deferred_message_count == 2);
+    assert(net::validate_host_session_outbound_delivery_report(first_delivery));
+    assert(!debug::Inspector::inspect(first_tick.value()).has_errors());
+
+    auto first_messages = session.drain_client_messages(first.value());
+    auto second_messages = session.drain_client_messages(second.value());
+    assert(first_messages && first_messages.value().size() == 1);
+    assert(second_messages && second_messages.value().size() == 1);
+    assert(first_messages.value().front().message.sequence == 1);
+    assert(second_messages.value().front().message.sequence == 1);
+
+    context.server_time_ms = 27;
+    auto recovered_tick = session.tick(dispatcher, context);
+    assert(recovered_tick);
+    const auto& recovered_delivery = recovered_tick.value().outbound_delivery;
+    assert(recovered_delivery.initial_pending_message_count == 2);
+    assert(recovered_delivery.delivered_message_count == 2);
+    assert(recovered_delivery.pending_message_count == 0);
+    assert(recovered_delivery.pending_bytes == 0);
+    assert(recovered_delivery.blocked_client_count == 0);
+    assert(recovered_delivery.tick_budget_deferred_message_count == 0);
+    assert(net::validate_host_session_outbound_delivery_report(recovered_delivery));
+    assert(session.pending_outbound_message_count() == 0);
+    assert(session.pending_outbound_bytes() == 0);
+    assert(!debug::Inspector::inspect(recovered_tick.value()).has_errors());
+
+    first_messages = session.drain_client_messages(first.value());
+    second_messages = session.drain_client_messages(second.value());
+    assert(first_messages && first_messages.value().size() == 1);
+    assert(second_messages && second_messages.value().size() == 1);
+    assert(first_messages.value().front().message.sequence == 2);
+    assert(second_messages.value().front().message.sequence == 2);
+}
+
+void test_local_bootstrap_flush_hydrates_before_publication() {
+    net::HostSessionConfig config;
+    config.max_outbound_bytes_per_client_per_second = 1'024;
+    config.max_reliable_delivery_messages_per_tick = 1;
+    config.max_reliable_delivery_bytes_per_tick = 1'024;
+    config.max_reliable_delivery_messages_per_client_per_tick = 1;
+    config.max_reliable_delivery_bytes_per_client_per_tick = 1'024;
+    net::HostSession session(config);
+    assert(session.start());
+    auto client = session.connect_client();
+    assert(client);
+    assert(session.drain_client_messages(client.value()));
+
+    for (std::uint64_t sequence = 1; sequence <= 3; ++sequence) {
+        assert(session.send_replication_message(
+            client.value(), reliable_message(net::TransportMessageKind::replication, sequence,
+                                             "bootstrap-" + std::to_string(sequence))));
+    }
+    net::HostSessionOutboundDeliveryReport delivery;
+    assert(session.flush_local_client_bootstrap(client.value(), delivery));
+    assert(delivery.initial_pending_message_count == 3);
+    assert(delivery.attempted_message_count == 3);
+    assert(delivery.delivered_message_count == 3);
+    assert(delivery.attempted_bytes == delivery.delivered_bytes);
+    assert(delivery.pending_message_count == 0);
+    assert(delivery.pending_bytes == 0);
+    assert(net::validate_host_session_outbound_delivery_report(delivery));
+    assert(session.pending_outbound_message_count() == 0);
+
+    auto messages = session.drain_client_messages(client.value());
+    assert(messages && messages.value().size() == 3);
+    for (std::size_t index = 0; index < messages.value().size(); ++index) {
+        assert(messages.value()[index].message.sequence == index + 1);
+    }
+    net::HostSessionOutboundDeliveryReport duplicate_delivery;
+    auto duplicate = session.flush_local_client_bootstrap(client.value(), duplicate_delivery);
+    assert(!duplicate);
+    assert(duplicate.error().code == "host_session.bootstrap_flush_not_pending");
+}
+
+void test_reliable_backlog_fails_closed_at_admission_and_after_commit() {
+    net::HostSessionConfig undeliverable_config;
+    undeliverable_config.max_outbound_bytes_per_client_per_second = 1;
+    undeliverable_config.max_reliable_delivery_bytes_per_tick = 1;
+    undeliverable_config.max_reliable_delivery_bytes_per_client_per_tick = 1;
+    net::HostSession undeliverable_session(undeliverable_config);
+    assert(undeliverable_session.start());
+    auto undeliverable_client = undeliverable_session.connect_client();
+    assert(undeliverable_client);
+    assert(undeliverable_session.drain_client_messages(undeliverable_client.value()));
+    auto oversized = undeliverable_session.send_replication_message(
+        undeliverable_client.value(),
+        reliable_message(net::TransportMessageKind::replication, 1, "cannot-fit"));
+    assert(!oversized);
+    assert(oversized.error().code == "host_session.reliable_message_exceeds_delivery_budget");
+    assert(undeliverable_session.pending_outbound_message_count() == 0);
+
+    net::HostSessionConfig admission_config;
+    admission_config.max_pending_reliable_messages = 2;
+    admission_config.max_pending_reliable_messages_per_client = 2;
+    auto invalid_config = admission_config;
+    invalid_config.max_reliable_delivery_bytes_per_client_per_tick = 0;
+    assert(!invalid_config.validate());
+    net::HostSession invalid_session(invalid_config);
+    assert(!invalid_session.start());
+    net::HostSession admission_session(admission_config);
+    assert(admission_session.start());
+    auto admitted_client = admission_session.connect_client();
+    assert(admitted_client);
+    assert(admission_session.drain_client_messages(admitted_client.value()));
+    assert(admission_session.send_replication_message(
+        admitted_client.value(),
+        reliable_message(net::TransportMessageKind::replication, 1, "first")));
+    assert(admission_session.send_replication_message(
+        admitted_client.value(),
+        reliable_message(net::TransportMessageKind::replication, 2, "second")));
+    auto rejected = admission_session.send_replication_message(
+        admitted_client.value(),
+        reliable_message(net::TransportMessageKind::replication, 3, "rejected"));
+    assert(!rejected);
+    assert(rejected.error().code == "host_session.reliable_backlog_client_message_limit");
+    assert(admission_session.pending_outbound_message_count() == 2);
+    assert(admission_session.connected_client_count() == 1);
+
+    net::HostSessionConfig commit_config;
+    commit_config.max_pending_reliable_messages = 2;
+    commit_config.max_pending_reliable_messages_per_client = 1;
+    net::HostSession commit_session(commit_config);
+    assert(commit_session.start());
+    auto committed_client = commit_session.connect_client();
+    assert(committed_client);
+    assert(commit_session.drain_client_messages(committed_client.value()));
+    std::uint32_t dispatch_count = 0;
+    auto dispatcher = make_mutating_dispatcher(dispatch_count);
+    assert(commit_session.send_client_command(
+        committed_client.value(),
+        net::CommandEnvelope{1, committed_client.value(), "test.mutate", "overload", 0}));
+    auto tick = commit_session.tick(dispatcher, net::CommandExecutionContext{});
+    assert(tick && dispatch_count == 1);
+    assert(tick.value().command_reports.size() == 1);
+    assert(tick.value().command_reports.front().committed_world_mutation);
+    assert(tick.value().outbound_delivery.overload_disconnected_client_count == 1);
+    assert(tick.value().outbound_delivery.overload_disconnected_clients ==
+           std::vector{committed_client.value()});
+    assert(std::ranges::find(tick.value().disconnected_clients, committed_client.value()) !=
+           tick.value().disconnected_clients.end());
+    assert(commit_session.connected_client_count() == 0);
+    assert(commit_session.pending_outbound_message_count() == 0);
+    assert(net::validate_host_session_outbound_delivery_report(tick.value().outbound_delivery));
+    auto invalid_delivery = tick.value().outbound_delivery;
+    invalid_delivery.delivered_bytes = invalid_delivery.attempted_bytes + 1;
+    auto invalid_delivery_status =
+        net::validate_host_session_outbound_delivery_report(invalid_delivery);
+    assert(!invalid_delivery_status);
+    assert(invalid_delivery_status.error().code == "host_session.invalid_delivery_byte_totals");
+    const auto inspection = debug::Inspector::inspect(tick.value());
+    assert(inspection.state == "reliable_overload");
+    assert(!inspection.has_errors());
 }
 
 void test_host_hard_caps_unreliable_outbound_bandwidth() {
@@ -708,6 +926,9 @@ int main() {
     test_host_backpressures_commands_while_committed_delivery_is_blocked();
     test_host_defers_reliable_application_replication_without_overtaking();
     test_host_disconnects_when_the_final_notice_cannot_be_delivered();
+    test_reliable_backlog_drains_fairly_and_recovers_within_two_ticks();
+    test_local_bootstrap_flush_hydrates_before_publication();
+    test_reliable_backlog_fails_closed_at_admission_and_after_commit();
     test_host_hard_caps_unreliable_outbound_bandwidth();
     return 0;
 }

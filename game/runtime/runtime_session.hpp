@@ -48,6 +48,14 @@ struct RuntimeConfiguration {
     std::uint64_t max_transient_snapshot_payload_bytes_per_client_per_tick = 64u * 1024u;
     std::uint64_t max_transient_snapshot_serialization_time_us_per_client_per_tick = 2'000;
     std::uint32_t max_outbound_bytes_per_client_per_second = 256u * 1024u;
+    std::uint32_t max_pending_reliable_messages = 8'192;
+    std::uint64_t max_pending_reliable_bytes = 64u * 1024u * 1024u;
+    std::uint32_t max_pending_reliable_messages_per_client = 1'024;
+    std::uint64_t max_pending_reliable_bytes_per_client = 8u * 1024u * 1024u;
+    std::uint32_t max_reliable_delivery_messages_per_tick = 512;
+    std::uint64_t max_reliable_delivery_bytes_per_tick = 1u * 1024u * 1024u;
+    std::uint32_t max_reliable_delivery_messages_per_client_per_tick = 128;
+    std::uint64_t max_reliable_delivery_bytes_per_client_per_tick = 256u * 1024u;
     std::uint32_t simulated_network_one_way_latency_ms = 0;
     std::uint32_t simulated_network_jitter_ms = 0;
     std::uint32_t simulated_network_unreliable_loss_basis_points = 0;

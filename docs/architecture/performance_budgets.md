@@ -135,6 +135,23 @@ implementation safety rails pending multi-client spread, convergence, impaired-n
 P99, and soak calibration; they are not yet an M6 acceptance gate. See
 [Networking architecture](networking.md#transient-tick-admission).
 
+Reliable correctness traffic uses a separate encoded-wire backlog and drain envelope:
+
+| Metric | Global hard cap | Per-client hard cap | Global/tick drain | Per-client/tick drain |
+| --- | ---: | ---: | ---: | ---: |
+| Messages | 8,192 | 1,024 | 512 | 128 |
+| Encoded wire bytes | 64 MiB | 8 MiB | 1 MiB | 256 KiB |
+
+All reliable application messages enter the FIFO before transport send. Drain service is rotating
+round robin, and the 256 KiB/client one-second wire limit remains additive. A producer that has not
+committed receives a hard admission failure at a full queue; host command-gateway overflow after
+commit disconnects the affected client rather than losing its result or immediate event stream.
+Other producers retain an explicit error for their owning resync/disconnect policy. Initial/final
+backlog and exact byte movement are retained in tick telemetry. The deterministic four-message
+stress test clears under a two-message/tick, one-message/client/tick profile in exactly two ticks.
+These are bounded defaults, not yet calibrated multiplayer throughput or P99 gates. See
+[Reliable application backlog](networking.md#reliable-application-backlog).
+
 High defaults include 16 visible terrain chunks horizontally with mesh/resident/load hysteresis,
 8 MiB near and 8 MiB far-terrain uploads per frame, 512 MiB generic residency, 1,024 local lights,
 32 lights per tile, two local shadow maps, 2048 directional shadow resolution, and 320 m shadow range.

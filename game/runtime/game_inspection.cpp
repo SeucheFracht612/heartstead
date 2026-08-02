@@ -190,6 +190,16 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     std::uint32_t failed_command_count = 0;
     std::uint32_t event_count = 0;
     std::uint32_t replication_message_count = 0;
+    std::uint64_t reliable_attempted_message_count = 0;
+    std::uint64_t reliable_attempted_bytes = 0;
+    std::uint64_t reliable_delivered_message_count = 0;
+    std::uint64_t reliable_delivered_bytes = 0;
+    std::size_t reliable_maximum_pending_message_count = 0;
+    std::uint64_t reliable_maximum_pending_bytes = 0;
+    std::uint32_t reliable_maximum_blocked_client_count = 0;
+    std::uint64_t reliable_wire_budget_deferral_count = 0;
+    std::uint64_t reliable_tick_budget_deferral_count = 0;
+    std::uint64_t reliable_overload_disconnect_count = 0;
     std::uint64_t transient_snapshot_message_count = 0;
     std::uint64_t transient_snapshot_payload_bytes = 0;
     std::uint64_t deferred_transient_snapshot_count = 0;
@@ -234,6 +244,22 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
             tick.commands.command_reports, [](const auto& report) { return !report.success; }));
         event_count += tick.simulation.event_count;
         replication_message_count += tick.replication.sent_message_count;
+        const auto& reliable = tick.commands.outbound_delivery;
+        reliable_attempted_message_count += reliable.attempted_message_count;
+        reliable_attempted_bytes += reliable.attempted_bytes;
+        reliable_delivered_message_count += reliable.delivered_message_count;
+        reliable_delivered_bytes += reliable.delivered_bytes;
+        reliable_maximum_pending_message_count =
+            std::max({reliable_maximum_pending_message_count,
+                      reliable.initial_pending_message_count, reliable.pending_message_count});
+        reliable_maximum_pending_bytes =
+            std::max({reliable_maximum_pending_bytes, reliable.initial_pending_bytes,
+                      reliable.pending_bytes});
+        reliable_maximum_blocked_client_count =
+            std::max(reliable_maximum_blocked_client_count, reliable.blocked_client_count);
+        reliable_wire_budget_deferral_count += reliable.budget_deferred_message_count;
+        reliable_tick_budget_deferral_count += reliable.tick_budget_deferred_message_count;
+        reliable_overload_disconnect_count += reliable.overload_disconnected_client_count;
         transient_snapshot_payload_bytes += tick.transient_snapshot_payload_bytes;
         deferred_transient_snapshot_count += tick.deferred_transient_snapshot_count;
         const auto& transient = tick.transient_replication;
@@ -292,6 +318,24 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     add_field(data, "failed_command_count", std::to_string(failed_command_count));
     add_field(data, "event_count", std::to_string(event_count));
     add_field(data, "replication_message_count", std::to_string(replication_message_count));
+    add_field(data, "reliable_attempted_message_count",
+              std::to_string(reliable_attempted_message_count));
+    add_field(data, "reliable_attempted_bytes", std::to_string(reliable_attempted_bytes));
+    add_field(data, "reliable_delivered_message_count",
+              std::to_string(reliable_delivered_message_count));
+    add_field(data, "reliable_delivered_bytes", std::to_string(reliable_delivered_bytes));
+    add_field(data, "reliable_maximum_pending_message_count",
+              std::to_string(reliable_maximum_pending_message_count));
+    add_field(data, "reliable_maximum_pending_bytes",
+              std::to_string(reliable_maximum_pending_bytes));
+    add_field(data, "reliable_maximum_blocked_client_count",
+              std::to_string(reliable_maximum_blocked_client_count));
+    add_field(data, "reliable_wire_budget_deferral_count",
+              std::to_string(reliable_wire_budget_deferral_count));
+    add_field(data, "reliable_tick_budget_deferral_count",
+              std::to_string(reliable_tick_budget_deferral_count));
+    add_field(data, "reliable_overload_disconnect_count",
+              std::to_string(reliable_overload_disconnect_count));
     add_field(data, "transient_snapshot_message_count",
               std::to_string(transient_snapshot_message_count));
     add_field(data, "transient_snapshot_payload_bytes",
@@ -364,6 +408,16 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
                   "runtime_frame.transient_serialization_overshoot",
                   "a non-preemptible replication codec call crossed the configured tick budget");
     }
+    if (reliable_maximum_pending_message_count != 0) {
+        add_issue(data, debug::InspectionSeverity::warning,
+                  "runtime_frame.reliable_backlog_pending",
+                  "reliable application output remains pending after the server tick");
+    }
+    if (reliable_overload_disconnect_count != 0) {
+        add_issue(data, debug::InspectionSeverity::warning,
+                  "runtime_frame.reliable_backlog_overload_disconnect",
+                  "reliable backlog limits disconnected one or more clients");
+    }
     return data;
 }
 
@@ -400,6 +454,18 @@ debug::InspectionData GameInspector::inspect(const RuntimeSession& session) {
         add_field(data, "authoritative_world_tick", std::to_string(server->world().world_time()));
         add_field(data, "connected_client_count",
                   std::to_string(server->host().connected_client_count()));
+        add_field(data, "reliable_pending_message_count",
+                  std::to_string(server->host().pending_outbound_message_count()));
+        add_field(data, "reliable_pending_bytes",
+                  std::to_string(server->host().pending_outbound_bytes()));
+        add_field(data, "configured_max_pending_reliable_messages",
+                  std::to_string(config.max_pending_reliable_messages));
+        add_field(data, "configured_max_pending_reliable_bytes",
+                  std::to_string(config.max_pending_reliable_bytes));
+        add_field(data, "configured_max_reliable_delivery_messages_per_tick",
+                  std::to_string(config.max_reliable_delivery_messages_per_tick));
+        add_field(data, "configured_max_reliable_delivery_bytes_per_tick",
+                  std::to_string(config.max_reliable_delivery_bytes_per_tick));
         add_field(data, "loaded_chunk_count", std::to_string(world_stats.chunk_count));
         add_field(data, "chunk_edit_count", std::to_string(chunk_stats.edit_count));
         add_field(data, "edited_chunk_count", std::to_string(chunk_stats.edited_chunk_count));

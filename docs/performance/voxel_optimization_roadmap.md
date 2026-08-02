@@ -330,8 +330,23 @@ Epic's official
 [Replication Graph documentation](https://dev.epicgames.com/documentation/en-us/unreal-engine/replication-graph-in-unreal-engine),
 the flow-isolation motivation of [RFC 8290](https://www.rfc-editor.org/rfc/rfc8290), and the
 separate transport-control boundary in [RFC 9002](https://www.rfc-editor.org/rfc/rfc9002).
-Reliable FIFO caps/fair draining, relevance-driven chunk subscriptions, multi-client
-spread/convergence/traversal benchmarks, backlog recovery, server P99, and long-soak evidence remain
+
+Reliable correctness traffic now enters one exact-wire-size FIFO layer with hard global and
+per-client message/byte caps. Rotating round-robin delivery enforces global and per-client tick
+message/byte limits across the command and post-command replication phases; a failed send blocks
+only its client for that delivery cycle. Direct queue exhaustion is explicit, while command results
+and immediate event replication that cannot be queued after authoritative commit disconnect the
+affected client rather than silently losing output. Later producers retain an explicit error for
+their owning resync/disconnect policy. Initial/final backlog, attempted/delivered bytes, tick/window
+deferrals, failures, and overload identities are inspectable. Deterministic coverage proves healthy
+command progress beside a failing peer, strict FIFO ordering, equal service for two constrained
+clients, and zero backlog on the second recovery tick. This follows the bounded-buffer rationale of
+[RFC 9000](https://www.rfc-editor.org/rfc/rfc9000#section-4) and the stalled-association isolation
+warning in [RFC 6458](https://www.rfc-editor.org/rfc/rfc6458#section-3.1.2), without claiming a
+complete congestion controller.
+
+Relevance-driven chunk subscriptions, real multi-client spread/convergence/traversal benchmarks,
+calibrated backlog recovery under network impairment, server P99, and long-soak evidence remain
 before the replication/multiplayer slice is accepted.
 
 ### M7 — trace-gated GPU work

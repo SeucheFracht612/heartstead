@@ -4,7 +4,9 @@
 #include "engine/net/command_payload.hpp"
 #include "engine/net/transport_control.hpp"
 #include "engine/net/transport_packet.hpp"
+#include "engine/profiling/profiler.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <limits>
 #include <sstream>
@@ -99,6 +101,28 @@ template <typename T> [[nodiscard]] core::Result<T> fail_from(const core::Error&
 
 } // namespace
 
+core::Status HostSessionConfig::validate() const noexcept {
+    const auto invalid_reliable_budget =
+        max_pending_reliable_messages == 0 || max_pending_reliable_bytes == 0 ||
+        max_pending_reliable_messages_per_client == 0 ||
+        max_pending_reliable_bytes_per_client == 0 ||
+        max_reliable_delivery_messages_per_tick == 0 || max_reliable_delivery_bytes_per_tick == 0 ||
+        max_reliable_delivery_messages_per_client_per_tick == 0 ||
+        max_reliable_delivery_bytes_per_client_per_tick == 0 ||
+        max_pending_reliable_messages_per_client > max_pending_reliable_messages ||
+        max_pending_reliable_bytes_per_client > max_pending_reliable_bytes ||
+        max_reliable_delivery_messages_per_client_per_tick >
+            max_reliable_delivery_messages_per_tick ||
+        max_reliable_delivery_bytes_per_client_per_tick > max_reliable_delivery_bytes_per_tick;
+    if (max_outbound_bytes_per_client_per_second == 0 || invalid_reliable_budget) {
+        return core::Status::failure(
+            "host_session.invalid_outbound_budget",
+            "outbound wire, reliable backlog, and reliable tick budgets must be non-zero with "
+            "per-client limits no larger than global limits");
+    }
+    return core::Status::ok();
+}
+
 HostSession::HostSession(HostSessionConfig config)
     : HostSession(std::move(config),
                   [](TransportHostDesc desc) { return create_transport_host(std::move(desc)); }) {}
@@ -130,11 +154,21 @@ std::size_t HostSession::connected_client_count() const noexcept {
 }
 
 std::size_t HostSession::pending_outbound_message_count() const noexcept {
-    std::size_t count = 0;
-    for (const auto& [_, messages] : pending_outbound_) {
-        count += messages.size();
-    }
-    return count;
+    return pending_outbound_message_count_;
+}
+
+std::size_t HostSession::pending_outbound_message_count(core::NetId client_id) const noexcept {
+    const auto found = pending_outbound_.find(client_id);
+    return found == pending_outbound_.end() ? 0 : found->second.messages.size();
+}
+
+std::uint64_t HostSession::pending_outbound_bytes() const noexcept {
+    return pending_outbound_bytes_;
+}
+
+std::uint64_t HostSession::pending_outbound_bytes(core::NetId client_id) const noexcept {
+    const auto found = pending_outbound_.find(client_id);
+    return found == pending_outbound_.end() ? 0 : found->second.wire_bytes;
 }
 
 const ReplicationRelevancePolicy& HostSession::replication_relevance_policy() const noexcept {
@@ -151,9 +185,9 @@ core::Status HostSession::start() {
         return core::Status::failure("host_session.missing_transport_factory",
                                      "host session transport factory is not configured");
     }
-    if (config_.max_outbound_bytes_per_client_per_second == 0) {
-        return core::Status::failure("host_session.invalid_outbound_budget",
-                                     "per-client outbound byte budget must be non-zero");
+    auto config_status = config_.validate();
+    if (!config_status) {
+        return config_status;
     }
     auto transport = transport_factory_(config_.transport);
     if (!transport) {
@@ -166,7 +200,17 @@ core::Status HostSession::start() {
 
     transport_ = std::move(transport).value();
     pending_outbound_.clear();
+    pending_outbound_message_count_ = 0;
+    pending_outbound_bytes_ = 0;
     outbound_budget_windows_.clear();
+    reliable_delivery_attempts_by_client_.clear();
+    reliable_delivery_bytes_by_client_.clear();
+    reliable_delivery_blocked_clients_.clear();
+    reliable_delivery_tick_limited_clients_.clear();
+    pending_overload_disconnects_.clear();
+    pending_local_bootstrap_clients_.clear();
+    reliable_delivery_client_cursor_ = 0;
+    current_reliable_delivery_rotation_ = 0;
     next_replication_sequence_ = 1;
     current_server_time_ms_ = 0;
     pending_budget_dropped_unreliable_message_count_ = 0;
@@ -182,7 +226,15 @@ core::Status HostSession::stop() {
     state_ = HostSessionState::stopped;
     transport_.reset();
     pending_outbound_.clear();
+    pending_outbound_message_count_ = 0;
+    pending_outbound_bytes_ = 0;
     outbound_budget_windows_.clear();
+    reliable_delivery_attempts_by_client_.clear();
+    reliable_delivery_bytes_by_client_.clear();
+    reliable_delivery_blocked_clients_.clear();
+    reliable_delivery_tick_limited_clients_.clear();
+    pending_overload_disconnects_.clear();
+    pending_local_bootstrap_clients_.clear();
     return core::Status::ok();
 }
 
@@ -205,6 +257,9 @@ core::Result<core::NetId> HostSession::connect_client() {
         (void)transport_->disconnect_client(client.value());
         return core::Result<core::NetId>::failure(status.error().code, status.error().message);
     }
+    if (transport_->backend() == TransportBackend::in_memory) {
+        pending_local_bootstrap_clients_.push_back(client.value());
+    }
 
     return client;
 }
@@ -222,7 +277,9 @@ core::Status HostSession::disconnect_client(core::NetId client_id) {
         client_id, make_server_disconnect_transport_message(disconnect, 0));
     auto disconnected = transport_->disconnect_client(client_id);
     if (disconnected) {
-        pending_outbound_.erase(client_id);
+        clear_pending_outbound(client_id);
+        outbound_budget_windows_.erase(client_id);
+        std::erase(pending_local_bootstrap_clients_, client_id);
         // A disconnect notice is best effort. Once the transport has removed the peer, report the
         // requested state transition as successful even if its final notification could not be
         // delivered.
@@ -283,34 +340,23 @@ core::Status HostSession::send_replication_message(core::NetId client_id,
                                      "replication recipient is not connected");
     }
 
-    auto pending = pending_outbound_.find(client_id);
-    if (pending != pending_outbound_.end() && !pending->second.empty()) {
-        if (message.channel == TransportChannel::reliable) {
-            pending->second.push_back(PendingOutboundMessage{std::move(message), 0});
-        } else {
-            ++pending_budget_dropped_unreliable_message_count_;
-        }
-        return core::Status::ok();
-    }
-    if (!admit_outbound(client_id, message)) {
-        if (message.channel == TransportChannel::reliable) {
-            pending_outbound_[client_id].push_back(PendingOutboundMessage{std::move(message), 0});
-        } else {
-            ++pending_budget_dropped_unreliable_message_count_;
-        }
-        return core::Status::ok();
+    if (message.channel == TransportChannel::reliable) {
+        // Application reliability is host-owned. Always enter the bounded FIFO first so direct
+        // snapshot producers cannot bypass the per-tick fair-drain controller.
+        return queue_reliable_message(client_id, std::move(message));
     }
 
-    status = transport_->send_server_to_client(client_id, message);
-    if (status || message.channel != TransportChannel::reliable) {
-        return status;
+    const auto pending = pending_outbound_.find(client_id);
+    if (pending != pending_outbound_.end() && !pending->second.messages.empty()) {
+        ++pending_budget_dropped_unreliable_message_count_;
+        return core::Status::ok();
     }
-
-    // Reliable application replication describes authoritative state that may already have been
-    // committed. Retain it behind the same per-client FIFO as command results so a transient
-    // transport failure cannot turn a successful world mutation into an apparent API failure.
-    pending_outbound_[client_id].push_back(PendingOutboundMessage{std::move(message), 1});
-    return core::Status::ok();
+    const auto wire_bytes = static_cast<std::uint64_t>(outbound_wire_bytes(client_id, message));
+    if (!admit_outbound(client_id, wire_bytes)) {
+        ++pending_budget_dropped_unreliable_message_count_;
+        return core::Status::ok();
+    }
+    return transport_->send_server_to_client(client_id, std::move(message));
 }
 
 core::Result<std::vector<TransportEnvelope>>
@@ -325,6 +371,7 @@ HostSession::drain_client_messages(core::NetId client_id) {
 
 core::Result<HostSessionTickResult> HostSession::tick(const ServerCommandDispatcher& dispatcher,
                                                       CommandExecutionContext context) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("network.host_tick");
     auto running = require_running();
     if (!running) {
         return core::Result<HostSessionTickResult>::failure(running.error().code,
@@ -333,8 +380,18 @@ core::Result<HostSessionTickResult> HostSession::tick(const ServerCommandDispatc
 
     context.executor_role = CommandExecutorRole::authoritative_server;
     current_server_time_ms_ = context.server_time_ms;
+    // Once the authoritative tick can observe a client, its startup boundary has been published
+    // and may no longer use the synchronous in-memory bootstrap exception.
+    pending_local_bootstrap_clients_.clear();
 
     HostSessionTickResult tick_result;
+    tick_result.outbound_delivery.initial_pending_message_count = pending_outbound_message_count();
+    tick_result.outbound_delivery.initial_pending_bytes = pending_outbound_bytes_;
+    reliable_delivery_attempts_by_client_.clear();
+    reliable_delivery_bytes_by_client_.clear();
+    reliable_delivery_blocked_clients_.clear();
+    reliable_delivery_tick_limited_clients_.clear();
+    current_reliable_delivery_rotation_ = reliable_delivery_client_cursor_++;
     tick_result.outbound_budget_dropped_unreliable_message_count =
         pending_budget_dropped_unreliable_message_count_;
     pending_budget_dropped_unreliable_message_count_ = 0;
@@ -371,23 +428,22 @@ core::Result<HostSessionTickResult> HostSession::tick(const ServerCommandDispatc
     }
     tick_result.disconnected_clients = maintenance.value().disconnected_clients;
     for (const auto client_id : tick_result.disconnected_clients) {
-        pending_outbound_.erase(client_id);
+        clear_pending_outbound(client_id);
         outbound_budget_windows_.erase(client_id);
     }
 
-    // A committed command must never be dispatched again, and a later command must not make an
-    // already-behind recipient fall farther out of sync. Give deferred reliable output the first
-    // opportunity to drain. If any recipient is still blocked, leave inbound commands in the
-    // transport until the next tick instead of growing the host queue without bound.
+    // Give prior reliable output the first opportunity to drain. A blocked client remains isolated
+    // by its own bounded FIFO; it must not prevent healthy clients from reaching the command loop.
     flush_pending_outbound(tick_result.outbound_delivery);
-    if (tick_result.outbound_delivery.pending_message_count > 0) {
-        return core::Result<HostSessionTickResult>::success(std::move(tick_result));
-    }
 
     auto messages = transport_->drain_server_messages();
     tick_result.transport_message_count = static_cast<std::uint32_t>(messages.size());
 
     for (const auto& message : messages) {
+        if (!transport_->is_client_connected(message.sender)) {
+            ++tick_result.discarded_disconnected_message_count;
+            continue;
+        }
         if (message.message.kind == TransportMessageKind::control &&
             message.message.channel == TransportChannel::unreliable) {
             ++tick_result.control_message_count;
@@ -421,22 +477,139 @@ core::Result<HostSessionTickResult> HostSession::tick(const ServerCommandDispatc
                                                                 sequence.error().message);
         }
 
-        queue_command_response(report);
+        auto response_status = queue_command_response(report);
+        if (!response_status) {
+            return core::Result<HostSessionTickResult>::failure(response_status.error().code,
+                                                                response_status.error().message);
+        }
         ++tick_result.response_message_count;
 
         std::uint32_t queued_replication_count = 0;
         auto relevance_report =
             queue_replication(report, context.server_time_ms, queued_replication_count);
+        if (!relevance_report) {
+            return core::Result<HostSessionTickResult>::failure(relevance_report.error().code,
+                                                                relevance_report.error().message);
+        }
         tick_result.replication_message_count += queued_replication_count;
-        if (relevance_report.event_count > 0) {
-            tick_result.replication_relevance_reports.push_back(std::move(relevance_report));
+        if (relevance_report.value().event_count > 0) {
+            tick_result.replication_relevance_reports.push_back(
+                std::move(relevance_report).value());
         }
         tick_result.command_reports.push_back(std::move(report));
     }
 
     flush_pending_outbound(tick_result.outbound_delivery);
+    publish_overload_disconnects(tick_result);
 
     return core::Result<HostSessionTickResult>::success(std::move(tick_result));
+}
+
+core::Status HostSession::flush_outbound(HostSessionTickResult& tick_result) {
+    auto running = require_running();
+    if (!running) {
+        return running;
+    }
+    const auto standalone_cycle =
+        tick_result.outbound_delivery.initial_pending_message_count == 0 &&
+        tick_result.outbound_delivery.initial_pending_bytes == 0 &&
+        tick_result.outbound_delivery.attempted_message_count == 0 &&
+        tick_result.outbound_delivery.delivered_message_count == 0 &&
+        tick_result.outbound_delivery.failed_attempt_count == 0 &&
+        tick_result.outbound_delivery.pending_message_count == 0;
+    if (standalone_cycle) {
+        reliable_delivery_attempts_by_client_.clear();
+        reliable_delivery_bytes_by_client_.clear();
+        reliable_delivery_blocked_clients_.clear();
+        reliable_delivery_tick_limited_clients_.clear();
+        current_reliable_delivery_rotation_ = reliable_delivery_client_cursor_++;
+        tick_result.outbound_delivery.initial_pending_message_count =
+            pending_outbound_message_count_;
+        tick_result.outbound_delivery.initial_pending_bytes = pending_outbound_bytes_;
+    }
+    flush_pending_outbound(tick_result.outbound_delivery);
+    publish_overload_disconnects(tick_result);
+    return core::Status::ok();
+}
+
+core::Status
+HostSession::flush_local_client_bootstrap(core::NetId client_id,
+                                          HostSessionOutboundDeliveryReport& delivery_report) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("network.local_client_bootstrap_flush");
+    delivery_report = {};
+    auto running = require_running();
+    if (!running) {
+        return running;
+    }
+    if (transport_->backend() != TransportBackend::in_memory) {
+        return core::Status::failure(
+            "host_session.bootstrap_flush_requires_in_memory",
+            "synchronous client bootstrap is restricted to the in-memory transport");
+    }
+    if (std::ranges::find(pending_local_bootstrap_clients_, client_id) ==
+        pending_local_bootstrap_clients_.end()) {
+        return core::Status::failure(
+            "host_session.bootstrap_flush_not_pending",
+            "synchronous client bootstrap is allowed only once before the client is published");
+    }
+    if (!transport_->is_client_connected(client_id)) {
+        return core::Status::failure("transport.unknown_client",
+                                     "bootstrap recipient is not connected");
+    }
+
+    delivery_report.initial_pending_message_count = pending_outbound_message_count_;
+    delivery_report.initial_pending_bytes = pending_outbound_bytes_;
+    const auto finalize_report = [this, &delivery_report]() {
+        for (auto pending = pending_outbound_.begin(); pending != pending_outbound_.end();) {
+            if (pending->second.messages.empty()) {
+                pending = pending_outbound_.erase(pending);
+            } else {
+                ++pending;
+            }
+        }
+        delivery_report.pending_message_count = pending_outbound_message_count_;
+        delivery_report.pending_bytes = pending_outbound_bytes_;
+        delivery_report.blocked_client_count = static_cast<std::uint32_t>(pending_outbound_.size());
+        HEARTSTEAD_PROFILE_PLOT("network.reliable.pending_messages",
+                                pending_outbound_message_count_);
+        HEARTSTEAD_PROFILE_PLOT("network.reliable.pending_bytes", pending_outbound_bytes_);
+    };
+
+    auto found = pending_outbound_.find(client_id);
+    while (found != pending_outbound_.end() && !found->second.messages.empty()) {
+        auto& outbound = found->second.messages.front();
+        ++delivery_report.attempted_message_count;
+        delivery_report.attempted_bytes += outbound.wire_bytes;
+        if (outbound.attempt_count > 0) {
+            ++delivery_report.retry_attempt_count;
+        }
+        ++outbound.attempt_count;
+
+        auto delivered = transport_->send_server_to_client(client_id, outbound.message);
+        if (!delivered) {
+            ++delivery_report.failed_attempt_count;
+            delivery_report.failures.push_back(HostSessionOutboundDeliveryFailure{
+                client_id,
+                outbound.message.kind,
+                outbound.message.sequence,
+                outbound.attempt_count,
+                delivered.error().code,
+                delivered.error().message,
+            });
+            finalize_report();
+            return delivered;
+        }
+
+        ++delivery_report.delivered_message_count;
+        delivery_report.delivered_bytes += outbound.wire_bytes;
+        --pending_outbound_message_count_;
+        pending_outbound_bytes_ -= outbound.wire_bytes;
+        found->second.wire_bytes -= outbound.wire_bytes;
+        found->second.messages.pop_front();
+    }
+    finalize_report();
+    std::erase(pending_local_bootstrap_clients_, client_id);
+    return core::Status::ok();
 }
 
 core::Status HostSession::require_running() const {
@@ -479,21 +652,29 @@ core::Status HostSession::assign_replication_sequence(HostSessionCommandReport& 
     return core::Status::ok();
 }
 
-void HostSession::queue_command_response(const HostSessionCommandReport& report) {
+core::Status HostSession::queue_command_response(const HostSessionCommandReport& report) {
     const auto response_type = report.command_type.empty() ? std::string("command.result")
                                                            : report.command_type + ".result";
-    pending_outbound_[report.client_id].push_back(PendingOutboundMessage{
+    auto queued = queue_reliable_message(
+        report.client_id,
         TransportMessage{TransportMessageKind::command_result, TransportChannel::reliable,
-                         report.sequence, response_type, host_session_result_payload(report), 0},
-        0});
+                         report.sequence, response_type, host_session_result_payload(report), 0});
+    if (queued) {
+        return queued;
+    }
+
+    // Dispatch may already have committed. Once its result cannot enter the bounded FIFO, the only
+    // safe recovery is to remove that client; keeping it connected would silently lose an
+    // authoritative result or permit later output to overtake it.
+    return disconnect_for_reliable_overload(report.client_id);
 }
 
-ReplicationRelevanceReport HostSession::queue_replication(const HostSessionCommandReport& report,
-                                                          std::int64_t server_time_ms,
-                                                          std::uint32_t& queued_message_count) {
+core::Result<ReplicationRelevanceReport>
+HostSession::queue_replication(const HostSessionCommandReport& report, std::int64_t server_time_ms,
+                               std::uint32_t& queued_message_count) {
     ReplicationRelevanceReport relevance_report;
     if (!report.success || !report.committed_world_mutation || report.events.empty()) {
-        return relevance_report;
+        return core::Result<ReplicationRelevanceReport>::success(std::move(relevance_report));
     }
 
     ReplicationBatch batch{
@@ -511,62 +692,261 @@ ReplicationRelevanceReport HostSession::queue_replication(const HostSessionComma
         if (filtered.events.empty()) {
             continue;
         }
-        pending_outbound_[decision.client_id].push_back(PendingOutboundMessage{
-            make_replication_transport_message(filtered, server_time_ms), 0});
         ++queued_message_count;
+        auto queued = queue_reliable_message(
+            decision.client_id, make_replication_transport_message(filtered, server_time_ms));
+        if (!queued) {
+            auto disconnected = disconnect_for_reliable_overload(decision.client_id);
+            if (!disconnected) {
+                return core::Result<ReplicationRelevanceReport>::failure(
+                    disconnected.error().code, disconnected.error().message);
+            }
+        }
     }
-    return relevance_report;
+    return core::Result<ReplicationRelevanceReport>::success(std::move(relevance_report));
 }
 
 void HostSession::flush_pending_outbound(HostSessionOutboundDeliveryReport& report) {
-    for (auto pending = pending_outbound_.begin(); pending != pending_outbound_.end();) {
-        auto& messages = pending->second;
-        bool blocked = false;
-        while (!messages.empty()) {
-            auto& outbound = messages.front();
-            if (!admit_outbound(pending->first, outbound.message)) {
-                ++report.budget_deferred_message_count;
-                blocked = true;
-                break;
+    HEARTSTEAD_PROFILE_ZONE_NAMED("network.reliable_flush");
+    const auto contains_client = [](const std::vector<core::NetId>& clients,
+                                    core::NetId client_id) {
+        return std::ranges::find(clients, client_id) != clients.end();
+    };
+    const auto mark_client = [&contains_client](std::vector<core::NetId>& clients,
+                                                core::NetId client_id) {
+        if (!contains_client(clients, client_id)) {
+            clients.push_back(client_id);
+        }
+    };
+
+    std::vector<core::NetId> clients;
+    clients.reserve(pending_outbound_.size());
+    for (const auto& [client_id, queue] : pending_outbound_) {
+        if (!queue.messages.empty()) {
+            clients.push_back(client_id);
+        }
+    }
+    if (!clients.empty()) {
+        const auto offset =
+            static_cast<std::size_t>(current_reliable_delivery_rotation_ % clients.size());
+        const auto iterator_offset = static_cast<std::vector<core::NetId>::difference_type>(offset);
+        std::rotate(clients.begin(), clients.begin() + iterator_offset, clients.end());
+    }
+
+    bool made_progress = true;
+    while (made_progress) {
+        made_progress = false;
+        if (report.attempted_message_count >= config_.max_reliable_delivery_messages_per_tick) {
+            for (const auto client_id : clients) {
+                const auto found = pending_outbound_.find(client_id);
+                if (found != pending_outbound_.end() && !found->second.messages.empty()) {
+                    mark_client(reliable_delivery_tick_limited_clients_, client_id);
+                }
             }
+            break;
+        }
+
+        for (const auto client_id : clients) {
+            if (report.attempted_message_count >= config_.max_reliable_delivery_messages_per_tick) {
+                mark_client(reliable_delivery_tick_limited_clients_, client_id);
+                continue;
+            }
+            auto found = pending_outbound_.find(client_id);
+            if (found == pending_outbound_.end() || found->second.messages.empty() ||
+                contains_client(reliable_delivery_blocked_clients_, client_id) ||
+                contains_client(reliable_delivery_tick_limited_clients_, client_id)) {
+                continue;
+            }
+
+            auto& client_attempts = reliable_delivery_attempts_by_client_[client_id];
+            auto& client_bytes = reliable_delivery_bytes_by_client_[client_id];
+            if (client_attempts >= config_.max_reliable_delivery_messages_per_client_per_tick) {
+                mark_client(reliable_delivery_tick_limited_clients_, client_id);
+                continue;
+            }
+
+            auto& outbound = found->second.messages.front();
+            const auto wire_bytes = outbound.wire_bytes;
+            const auto exceeds_global_bytes =
+                wire_bytes > config_.max_reliable_delivery_bytes_per_tick ||
+                report.attempted_bytes > config_.max_reliable_delivery_bytes_per_tick - wire_bytes;
+            const auto exceeds_client_bytes =
+                wire_bytes > config_.max_reliable_delivery_bytes_per_client_per_tick ||
+                client_bytes > config_.max_reliable_delivery_bytes_per_client_per_tick - wire_bytes;
+            if (exceeds_global_bytes || exceeds_client_bytes) {
+                mark_client(reliable_delivery_tick_limited_clients_, client_id);
+                continue;
+            }
+            if (!admit_outbound(client_id, wire_bytes)) {
+                ++report.budget_deferred_message_count;
+                mark_client(reliable_delivery_blocked_clients_, client_id);
+                continue;
+            }
+
             ++report.attempted_message_count;
+            report.attempted_bytes += wire_bytes;
+            ++client_attempts;
+            client_bytes += wire_bytes;
             if (outbound.attempt_count > 0) {
                 ++report.retry_attempt_count;
             }
             ++outbound.attempt_count;
 
-            auto delivered = transport_->send_server_to_client(pending->first, outbound.message);
+            auto delivered = transport_->send_server_to_client(client_id, outbound.message);
             if (!delivered) {
                 ++report.failed_attempt_count;
                 report.failures.push_back(HostSessionOutboundDeliveryFailure{
-                    pending->first,
+                    client_id,
                     outbound.message.kind,
                     outbound.message.sequence,
                     outbound.attempt_count,
                     delivered.error().code,
                     delivered.error().message,
                 });
-                blocked = true;
-                break;
+                mark_client(reliable_delivery_blocked_clients_, client_id);
+                continue;
             }
 
             ++report.delivered_message_count;
-            messages.pop_front();
+            report.delivered_bytes += wire_bytes;
+            --pending_outbound_message_count_;
+            pending_outbound_bytes_ -= wire_bytes;
+            found->second.wire_bytes -= wire_bytes;
+            found->second.messages.pop_front();
+            made_progress = true;
         }
+    }
 
-        if (blocked) {
-            ++report.blocked_client_count;
-        }
-        if (messages.empty()) {
+    for (auto pending = pending_outbound_.begin(); pending != pending_outbound_.end();) {
+        if (pending->second.messages.empty()) {
             pending = pending_outbound_.erase(pending);
         } else {
             ++pending;
         }
     }
-    report.pending_message_count = pending_outbound_message_count();
+
+    std::uint64_t tick_deferred_messages = 0;
+    for (const auto client_id : reliable_delivery_tick_limited_clients_) {
+        tick_deferred_messages += pending_outbound_message_count(client_id);
+    }
+    report.tick_budget_deferred_message_count = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(tick_deferred_messages, std::numeric_limits<std::uint32_t>::max()));
+    report.pending_message_count = pending_outbound_message_count_;
+    report.pending_bytes = pending_outbound_bytes_;
+    report.blocked_client_count = static_cast<std::uint32_t>(pending_outbound_.size());
+    HEARTSTEAD_PROFILE_PLOT("network.reliable.pending_messages", pending_outbound_message_count_);
+    HEARTSTEAD_PROFILE_PLOT("network.reliable.pending_bytes", pending_outbound_bytes_);
 }
 
-bool HostSession::admit_outbound(core::NetId client_id, const TransportMessage& message) {
+core::Status HostSession::queue_reliable_message(core::NetId client_id, TransportMessage message,
+                                                 std::uint64_t attempt_count) {
+    if (message.channel != TransportChannel::reliable) {
+        return core::Status::failure("host_session.not_reliable_message",
+                                     "reliable backlog accepts only reliable messages");
+    }
+    auto status = validate_transport_message(message, transport_->capabilities().max_payload_bytes);
+    if (!status) {
+        return status;
+    }
+    if (!transport_->is_client_connected(client_id)) {
+        return core::Status::failure("transport.unknown_client",
+                                     "reliable recipient is not connected");
+    }
+
+    const auto wire_bytes = static_cast<std::uint64_t>(outbound_wire_bytes(client_id, message));
+    if (wire_bytes > config_.max_outbound_bytes_per_client_per_second ||
+        wire_bytes > config_.max_reliable_delivery_bytes_per_tick ||
+        wire_bytes > config_.max_reliable_delivery_bytes_per_client_per_tick) {
+        return core::Status::failure(
+            "host_session.reliable_message_exceeds_delivery_budget",
+            "encoded reliable message cannot fit the configured per-second and per-tick delivery "
+            "budgets");
+    }
+    auto found = pending_outbound_.find(client_id);
+    const auto client_messages =
+        found == pending_outbound_.end() ? 0U : found->second.messages.size();
+    const auto client_bytes = found == pending_outbound_.end() ? 0U : found->second.wire_bytes;
+    if (client_messages >= config_.max_pending_reliable_messages_per_client) {
+        return core::Status::failure("host_session.reliable_backlog_client_message_limit",
+                                     "per-client reliable backlog message limit is exhausted");
+    }
+    if (wire_bytes > config_.max_pending_reliable_bytes_per_client ||
+        client_bytes > config_.max_pending_reliable_bytes_per_client - wire_bytes) {
+        return core::Status::failure("host_session.reliable_backlog_client_byte_limit",
+                                     "per-client reliable backlog byte limit is exhausted");
+    }
+    if (pending_outbound_message_count_ >= config_.max_pending_reliable_messages) {
+        return core::Status::failure("host_session.reliable_backlog_global_message_limit",
+                                     "global reliable backlog message limit is exhausted");
+    }
+    if (wire_bytes > config_.max_pending_reliable_bytes ||
+        pending_outbound_bytes_ > config_.max_pending_reliable_bytes - wire_bytes) {
+        return core::Status::failure("host_session.reliable_backlog_global_byte_limit",
+                                     "global reliable backlog byte limit is exhausted");
+    }
+
+    auto& queue = pending_outbound_[client_id];
+    queue.wire_bytes += wire_bytes;
+    queue.messages.push_back(PendingOutboundMessage{std::move(message), wire_bytes, attempt_count});
+    ++pending_outbound_message_count_;
+    pending_outbound_bytes_ += wire_bytes;
+    return core::Status::ok();
+}
+
+core::Status HostSession::disconnect_for_reliable_overload(core::NetId client_id) {
+    if (!transport_->is_client_connected(client_id)) {
+        return core::Status::ok();
+    }
+    auto disconnected = transport_->disconnect_client(client_id);
+    if (!disconnected) {
+        return disconnected;
+    }
+    clear_pending_outbound(client_id);
+    outbound_budget_windows_.erase(client_id);
+    std::erase(pending_local_bootstrap_clients_, client_id);
+    if (std::ranges::find(pending_overload_disconnects_, client_id) ==
+        pending_overload_disconnects_.end()) {
+        pending_overload_disconnects_.push_back(client_id);
+    }
+    return core::Status::ok();
+}
+
+void HostSession::clear_pending_outbound(core::NetId client_id) noexcept {
+    const auto found = pending_outbound_.find(client_id);
+    if (found == pending_outbound_.end()) {
+        return;
+    }
+    pending_outbound_message_count_ -= found->second.messages.size();
+    pending_outbound_bytes_ -= found->second.wire_bytes;
+    pending_outbound_.erase(found);
+}
+
+void HostSession::publish_overload_disconnects(HostSessionTickResult& result) {
+    if (pending_overload_disconnects_.empty()) {
+        return;
+    }
+    for (const auto client_id : pending_overload_disconnects_) {
+        if (std::ranges::find(result.disconnected_clients, client_id) ==
+            result.disconnected_clients.end()) {
+            result.disconnected_clients.push_back(client_id);
+        }
+        if (std::ranges::find(result.outbound_delivery.overload_disconnected_clients, client_id) ==
+            result.outbound_delivery.overload_disconnected_clients.end()) {
+            result.outbound_delivery.overload_disconnected_clients.push_back(client_id);
+        }
+    }
+    std::ranges::sort(result.disconnected_clients, [](core::NetId left, core::NetId right) {
+        return left.value() < right.value();
+    });
+    std::ranges::sort(
+        result.outbound_delivery.overload_disconnected_clients,
+        [](core::NetId left, core::NetId right) { return left.value() < right.value(); });
+    result.outbound_delivery.overload_disconnected_client_count =
+        static_cast<std::uint32_t>(result.outbound_delivery.overload_disconnected_clients.size());
+    pending_overload_disconnects_.clear();
+}
+
+bool HostSession::admit_outbound(core::NetId client_id, std::uint64_t wire_bytes) {
     auto& window = outbound_budget_windows_[client_id];
     if (!window.initialized || current_server_time_ms_ < window.started_ms ||
         current_server_time_ms_ - window.started_ms >= 1'000) {
@@ -574,12 +954,11 @@ bool HostSession::admit_outbound(core::NetId client_id, const TransportMessage& 
         window.used_bytes = 0;
         window.initialized = true;
     }
-    const auto bytes = static_cast<std::uint64_t>(outbound_wire_bytes(client_id, message));
     const auto limit = static_cast<std::uint64_t>(config_.max_outbound_bytes_per_client_per_second);
-    if (bytes > limit || window.used_bytes > limit - bytes) {
+    if (wire_bytes > limit || window.used_bytes > limit - wire_bytes) {
         return false;
     }
-    window.used_bytes += bytes;
+    window.used_bytes += wire_bytes;
     return true;
 }
 
@@ -596,6 +975,62 @@ std::string_view host_session_state_name(HostSessionState state) noexcept {
         return "running";
     }
     return "unknown";
+}
+
+core::Status validate_host_session_outbound_delivery_report(
+    const HostSessionOutboundDeliveryReport& report) noexcept {
+    const auto attempted = static_cast<std::uint64_t>(report.attempted_message_count);
+    const auto resolved = static_cast<std::uint64_t>(report.delivered_message_count) +
+                          static_cast<std::uint64_t>(report.failed_attempt_count);
+    if (attempted != resolved || report.retry_attempt_count > report.attempted_message_count) {
+        return core::Status::failure(
+            "host_session.invalid_delivery_attempt_totals",
+            "reliable delivery attempts must equal delivered plus failed attempts, with retries "
+            "no larger than all attempts");
+    }
+    if (report.failed_attempt_count != report.failures.size()) {
+        return core::Status::failure(
+            "host_session.invalid_delivery_failure_totals",
+            "reliable delivery failure count must match failure diagnostics");
+    }
+    if (report.delivered_bytes > report.attempted_bytes) {
+        return core::Status::failure("host_session.invalid_delivery_byte_totals",
+                                     "reliable delivered bytes cannot exceed attempted bytes");
+    }
+    if ((report.initial_pending_message_count == 0) != (report.initial_pending_bytes == 0) ||
+        (report.pending_message_count == 0) != (report.pending_bytes == 0)) {
+        return core::Status::failure("host_session.invalid_delivery_backlog_totals",
+                                     "reliable backlog message and byte emptiness must agree");
+    }
+    if (report.blocked_client_count > report.pending_message_count ||
+        report.tick_budget_deferred_message_count > report.pending_message_count) {
+        return core::Status::failure(
+            "host_session.invalid_delivery_deferred_totals",
+            "reliable blocked-client and tick-deferred totals cannot exceed final backlog");
+    }
+    if (report.overload_disconnected_client_count != report.overload_disconnected_clients.size()) {
+        return core::Status::failure(
+            "host_session.invalid_overload_disconnect_totals",
+            "reliable overload disconnect count must match its client list");
+    }
+    std::uint64_t previous_client = 0;
+    for (const auto client_id : report.overload_disconnected_clients) {
+        if (!client_id.is_valid() || client_id.value() <= previous_client) {
+            return core::Status::failure(
+                "host_session.invalid_overload_disconnect_order",
+                "reliable overload disconnect clients must be valid, unique, and sorted");
+        }
+        previous_client = client_id.value();
+    }
+    for (const auto& failure : report.failures) {
+        if (!failure.client_id.is_valid() || failure.attempt_count == 0 ||
+            failure.error_code.empty()) {
+            return core::Status::failure(
+                "host_session.invalid_delivery_failure",
+                "reliable delivery failures require a client, attempt, and error code");
+        }
+    }
+    return core::Status::ok();
 }
 
 std::string HostSessionCommandResultTextCodec::encode(const HostSessionCommandResult& result) {

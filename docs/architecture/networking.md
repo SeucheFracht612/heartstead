@@ -142,7 +142,7 @@ boundary may finish and distribute its already-produced payload. Actual/attribut
 maximum single-call time, per-limit deferrals, and per-client totals remain inspectable. Snapshot
 tombstones stay outside this replaceable-state budget because dropping a removal indefinitely is a
 correctness failure. Reliable command results, world deltas, and chunk snapshots also remain outside
-it and require their own bounded-backlog policy.
+it and enter the separate reliable application backlog below.
 
 The shared-payload structure follows the CPU-scaling rationale of Unreal's persistent replication
 lists and per-connection prioritization in the official
@@ -152,6 +152,51 @@ Per-client isolation is consistent with the flow-isolation motivation of
 application scheduler implements FQ-CoDel. The tick controller complements rather than replaces
 transport congestion control, pacing, and bytes-in-flight accounting described by
 [RFC 9002](https://www.rfc-editor.org/rfc/rfc9002).
+
+### Reliable application backlog
+
+Every reliable command result, world delta, chunk slice, bootstrap record, and tombstone enters a
+host-owned per-client FIFO before the transport sees it. Exact encoded-wire size is computed once at
+admission and retained with the entry, so retries and budget checks do not repeat the sizing encode.
+The default hard backlog envelope is 8,192 messages/64 MiB globally and 1,024 messages/8 MiB per
+client. Direct producers receive an explicit admission error when either boundary is full. If the
+host command gateway has already committed and its mandatory result or immediate event replication
+cannot be admitted, the host disconnects only the affected client and reports that overload; it
+never keeps the client active after silently losing that output. Later replication producers still
+receive an explicit failure and must choose disconnect, resync, or retry at their ownership boundary.
+A single encoded message that cannot fit the configured one-second and per-tick byte budgets is also
+rejected at admission, preventing a permanently undrainable queue head.
+
+Reliable sends drain in rotating round-robin order under strict tick ceilings:
+
+| Metric | Global/tick | Per client/tick |
+| --- | ---: | ---: |
+| Messages | 512 | 128 |
+| Encoded wire bytes | 1 MiB | 256 KiB |
+
+The existing 256 KiB/client one-second wire window is an additional constraint. A failed transport
+send blocks only that client's FIFO for the rest of the delivery cycle; healthy clients and the
+command gateway continue. A server tick drains old backlog before commands, newly committed output
+after commands, and post-command reliable replication before transient snapshots when capacity
+remains. This preserves FIFO order without adding an unconditional tick of latency. Tick reports
+retain initial/final messages and bytes, attempted/delivered bytes, retry/failure counts, wire-window
+and tick-limit deferrals, blocked clients, and overload disconnect identities. Focused tests prove a
+two-client four-message burst gives each client one message per tick and reaches zero backlog on the
+second tick.
+
+This is bounded application scheduling, not receiver flow control or congestion control. The memory
+limits follow the resource-bounding rationale in
+[RFC 9000 section 4](https://www.rfc-editor.org/rfc/rfc9000#section-4); rotating per-client service
+also avoids the single-stalled-association failure described for shared socket buffers in
+[RFC 6458 section 3.1.2](https://www.rfc-editor.org/rfc/rfc6458#section-3.1.2). Transport pacing,
+loss recovery, and bytes in flight remain separate responsibilities.
+
+Local single-player startup is the one explicit exception to steady-state drain pacing. Before an
+in-memory client is published to the runtime, its already-capped bootstrap FIFO is drained
+synchronously so session creation returns a fully hydrated client, matching the local lifecycle
+contract. This path is rejected for socket-backed clients, does not admit data beyond the normal
+global/per-client backlog caps, and has its own profiling zone. Remote bootstrap remains incremental
+and subject to the ordinary tick and one-second limits.
 
 ## Prediction and interpolation
 
@@ -172,13 +217,14 @@ profile. The transient controller separately bounds application payload and code
 neither substitutes for a complete congestion controller. Replaceable unreliable state can be
 dropped. Per-client inbound message/byte limits, global handshake limits, fragment/reassembly
 bounds, timeout/retry bounds, and pre-validation amplification limits protect the authoritative
-loop. Reliable outbound queues are retained for correctness but do not yet have their final
-application backlog caps.
+loop. Reliable application queues have strict global/per-client message and byte caps plus fair
+per-tick drain limits; their defaults remain safety rails pending scale calibration.
 
-Statistics expose encoded bytes/messages, backlog, drops, retransmits, malformed/rate-limited
-traffic, reassembly ownership, command/replication counts, prediction corrections, and related
-maintenance activity. Exact measurements from a single acceptance run belong in test artifacts or
-benchmark records, not this architecture contract.
+Statistics expose encoded bytes/messages, initial/final reliable backlog bytes and messages,
+tick/window deferrals, blocked and overload-disconnected clients, drops, retransmits,
+malformed/rate-limited traffic, reassembly ownership, command/replication counts, prediction
+corrections, and related maintenance activity. Exact measurements from a single acceptance run
+belong in test artifacts or benchmark records, not this architecture contract.
 
 ## Security and deployment boundary
 

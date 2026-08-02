@@ -2388,6 +2388,8 @@ InspectionData Inspector::inspect(const net::HostSessionTickResult& result) {
 
     if (result.transport_dropped_reliable_message_count > 0) {
         data.state = "dropped_reliable";
+    } else if (result.outbound_delivery.overload_disconnected_client_count > 0) {
+        data.state = "reliable_overload";
     } else if (result.outbound_delivery.pending_message_count > 0) {
         data.state = "delivery_deferred";
     } else if (result.replication_message_count > 0) {
@@ -2426,25 +2428,41 @@ InspectionData Inspector::inspect(const net::HostSessionTickResult& result) {
               std::to_string(result.transport_pending_impaired_message_count));
     add_field(data, "outbound_budget_dropped_unreliable_message_count",
               std::to_string(result.outbound_budget_dropped_unreliable_message_count));
+    add_field(data, "discarded_disconnected_message_count",
+              std::to_string(result.discarded_disconnected_message_count));
     add_field(data, "transport_message_count", std::to_string(result.transport_message_count));
     add_field(data, "command_message_count", std::to_string(result.command_message_count));
     add_field(data, "control_message_count", std::to_string(result.control_message_count));
     add_field(data, "response_message_count", std::to_string(result.response_message_count));
     add_field(data, "replication_message_count", std::to_string(result.replication_message_count));
+    add_field(data, "outbound_delivery_initial_pending_message_count",
+              std::to_string(result.outbound_delivery.initial_pending_message_count));
+    add_field(data, "outbound_delivery_initial_pending_bytes",
+              std::to_string(result.outbound_delivery.initial_pending_bytes));
     add_field(data, "outbound_delivery_attempted_message_count",
               std::to_string(result.outbound_delivery.attempted_message_count));
+    add_field(data, "outbound_delivery_attempted_bytes",
+              std::to_string(result.outbound_delivery.attempted_bytes));
     add_field(data, "outbound_delivery_delivered_message_count",
               std::to_string(result.outbound_delivery.delivered_message_count));
+    add_field(data, "outbound_delivery_delivered_bytes",
+              std::to_string(result.outbound_delivery.delivered_bytes));
     add_field(data, "outbound_delivery_retry_attempt_count",
               std::to_string(result.outbound_delivery.retry_attempt_count));
     add_field(data, "outbound_delivery_failed_attempt_count",
               std::to_string(result.outbound_delivery.failed_attempt_count));
     add_field(data, "outbound_delivery_pending_message_count",
               std::to_string(result.outbound_delivery.pending_message_count));
+    add_field(data, "outbound_delivery_pending_bytes",
+              std::to_string(result.outbound_delivery.pending_bytes));
     add_field(data, "outbound_delivery_blocked_client_count",
               std::to_string(result.outbound_delivery.blocked_client_count));
     add_field(data, "outbound_delivery_budget_deferred_message_count",
               std::to_string(result.outbound_delivery.budget_deferred_message_count));
+    add_field(data, "outbound_delivery_tick_budget_deferred_message_count",
+              std::to_string(result.outbound_delivery.tick_budget_deferred_message_count));
+    add_field(data, "outbound_delivery_overload_disconnected_client_count",
+              std::to_string(result.outbound_delivery.overload_disconnected_client_count));
     add_field(data, "command_report_count", std::to_string(result.command_reports.size()));
     add_field(data, "replication_relevance_report_count",
               std::to_string(result.replication_relevance_reports.size()));
@@ -2490,34 +2508,30 @@ InspectionData Inspector::inspect(const net::HostSessionTickResult& result) {
         add_issue(data, InspectionSeverity::error, "host_tick.response_count_mismatch",
                   "host session tick response count must match command report count");
     }
-    if (result.transport_message_count !=
-        result.command_reports.size() + result.control_messages.size()) {
+    if (result.transport_message_count != result.command_reports.size() +
+                                              result.control_messages.size() +
+                                              result.discarded_disconnected_message_count) {
         add_issue(data, InspectionSeverity::error, "host_tick.transport_count_mismatch",
-                  "host session tick transport message count must match command and control "
-                  "message counts");
+                  "host session tick transport message count must match command, control, and "
+                  "discarded-disconnected message counts");
     }
     if (result.replication_message_count != relevant_client_count) {
         add_issue(data, InspectionSeverity::error, "host_tick.replication_count_mismatch",
                   "host session tick replication message count must match relevance recipients");
     }
-    if (result.outbound_delivery.attempted_message_count !=
-        result.outbound_delivery.delivered_message_count +
-            result.outbound_delivery.failed_attempt_count) {
-        add_issue(data, InspectionSeverity::error, "host_tick.delivery_attempt_count_mismatch",
-                  "outbound delivery attempts must equal delivered and failed attempts");
+    const auto delivery_status =
+        net::validate_host_session_outbound_delivery_report(result.outbound_delivery);
+    if (!delivery_status) {
+        add_issue(data, InspectionSeverity::error, delivery_status.error().code,
+                  delivery_status.error().message);
     }
-    if (result.outbound_delivery.retry_attempt_count >
-        result.outbound_delivery.attempted_message_count) {
-        add_issue(data, InspectionSeverity::error, "host_tick.delivery_retry_count_invalid",
-                  "outbound retry attempts cannot exceed all delivery attempts");
-    }
-    if (result.outbound_delivery.failed_attempt_count != result.outbound_delivery.failures.size()) {
-        add_issue(data, InspectionSeverity::error, "host_tick.delivery_failure_count_mismatch",
-                  "outbound failed-attempt count must match failure diagnostics");
-    }
-    if (result.outbound_delivery.blocked_client_count != result.outbound_delivery.failures.size()) {
-        add_issue(data, InspectionSeverity::error, "host_tick.blocked_client_count_mismatch",
-                  "each blocked outbound client must have one failure diagnostic");
+    for (const auto client_id : result.outbound_delivery.overload_disconnected_clients) {
+        if (std::ranges::find(result.disconnected_clients, client_id) ==
+            result.disconnected_clients.end()) {
+            add_issue(data, InspectionSeverity::error, "host_tick.overload_disconnect_missing",
+                      "reliable overload client must also appear in disconnected clients");
+            break;
+        }
     }
     if (result.outbound_delivery.pending_message_count > 0) {
         add_issue(data, InspectionSeverity::warning, "host_tick.outbound_delivery_deferred",
@@ -2526,6 +2540,11 @@ InspectionData Inspector::inspect(const net::HostSessionTickResult& result) {
     if (result.transport_dropped_reliable_message_count > 0) {
         add_issue(data, InspectionSeverity::warning, "host_tick.reliable_messages_dropped",
                   "host session tick dropped reliable transport messages");
+    }
+    if (result.outbound_delivery.overload_disconnected_client_count > 0) {
+        add_issue(data, InspectionSeverity::warning,
+                  "host_tick.reliable_backlog_overload_disconnect",
+                  "one or more clients were disconnected to preserve reliable backlog bounds");
     }
     if (data.has_errors()) {
         data.state = "invalid";

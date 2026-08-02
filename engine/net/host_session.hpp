@@ -25,6 +25,16 @@ struct HostSessionConfig {
     TransportHostDesc transport;
     ReplicationRelevancePolicy replication_relevance;
     std::uint32_t max_outbound_bytes_per_client_per_second = 256u * 1024u;
+    std::uint32_t max_pending_reliable_messages = 8'192;
+    std::uint64_t max_pending_reliable_bytes = 64u * 1024u * 1024u;
+    std::uint32_t max_pending_reliable_messages_per_client = 1'024;
+    std::uint64_t max_pending_reliable_bytes_per_client = 8u * 1024u * 1024u;
+    std::uint32_t max_reliable_delivery_messages_per_tick = 512;
+    std::uint64_t max_reliable_delivery_bytes_per_tick = 1u * 1024u * 1024u;
+    std::uint32_t max_reliable_delivery_messages_per_client_per_tick = 128;
+    std::uint64_t max_reliable_delivery_bytes_per_client_per_tick = 256u * 1024u;
+
+    [[nodiscard]] core::Status validate() const noexcept;
 };
 
 struct HostSessionCommandReport {
@@ -62,13 +72,21 @@ struct HostSessionOutboundDeliveryFailure {
 };
 
 struct HostSessionOutboundDeliveryReport {
+    std::size_t initial_pending_message_count = 0;
+    std::uint64_t initial_pending_bytes = 0;
     std::uint32_t attempted_message_count = 0;
+    std::uint64_t attempted_bytes = 0;
     std::uint32_t delivered_message_count = 0;
+    std::uint64_t delivered_bytes = 0;
     std::uint32_t retry_attempt_count = 0;
     std::uint32_t failed_attempt_count = 0;
     std::size_t pending_message_count = 0;
+    std::uint64_t pending_bytes = 0;
     std::uint32_t blocked_client_count = 0;
     std::uint32_t budget_deferred_message_count = 0;
+    std::uint32_t tick_budget_deferred_message_count = 0;
+    std::uint32_t overload_disconnected_client_count = 0;
+    std::vector<core::NetId> overload_disconnected_clients;
     std::vector<HostSessionOutboundDeliveryFailure> failures;
 };
 
@@ -85,6 +103,7 @@ struct HostSessionTickResult {
     std::uint32_t transport_simulated_dropped_unreliable_message_count = 0;
     std::uint32_t transport_pending_impaired_message_count = 0;
     std::uint32_t outbound_budget_dropped_unreliable_message_count = 0;
+    std::uint32_t discarded_disconnected_message_count = 0;
     std::uint32_t transport_message_count = 0;
     std::uint32_t command_message_count = 0;
     std::uint32_t control_message_count = 0;
@@ -112,6 +131,9 @@ class HostSession {
     [[nodiscard]] std::optional<TransportEndpoint> local_endpoint() const;
     [[nodiscard]] std::size_t connected_client_count() const noexcept;
     [[nodiscard]] std::size_t pending_outbound_message_count() const noexcept;
+    [[nodiscard]] std::size_t pending_outbound_message_count(core::NetId client_id) const noexcept;
+    [[nodiscard]] std::uint64_t pending_outbound_bytes() const noexcept;
+    [[nodiscard]] std::uint64_t pending_outbound_bytes(core::NetId client_id) const noexcept;
     [[nodiscard]] const ReplicationRelevancePolicy& replication_relevance_policy() const noexcept;
 
     [[nodiscard]] core::Status start();
@@ -129,11 +151,21 @@ class HostSession {
 
     [[nodiscard]] core::Result<HostSessionTickResult>
     tick(const ServerCommandDispatcher& dispatcher, CommandExecutionContext context);
+    [[nodiscard]] core::Status flush_outbound(HostSessionTickResult& tick_result);
+    [[nodiscard]] core::Status
+    flush_local_client_bootstrap(core::NetId client_id,
+                                 HostSessionOutboundDeliveryReport& delivery_report);
 
   private:
     struct PendingOutboundMessage {
         TransportMessage message;
+        std::uint64_t wire_bytes = 0;
         std::uint64_t attempt_count = 0;
+    };
+
+    struct PendingOutboundQueue {
+        std::deque<PendingOutboundMessage> messages;
+        std::uint64_t wire_bytes = 0;
     };
 
     struct OutboundBudgetWindow {
@@ -145,12 +177,18 @@ class HostSession {
     [[nodiscard]] core::Status require_running() const;
     [[nodiscard]] core::Status send_welcome(core::NetId client_id, std::int64_t server_time_ms);
     [[nodiscard]] core::Status assign_replication_sequence(HostSessionCommandReport& report);
-    void queue_command_response(const HostSessionCommandReport& report);
-    [[nodiscard]] ReplicationRelevanceReport
+    [[nodiscard]] core::Status queue_command_response(const HostSessionCommandReport& report);
+    [[nodiscard]] core::Result<ReplicationRelevanceReport>
     queue_replication(const HostSessionCommandReport& report, std::int64_t server_time_ms,
                       std::uint32_t& queued_message_count);
     void flush_pending_outbound(HostSessionOutboundDeliveryReport& report);
-    [[nodiscard]] bool admit_outbound(core::NetId client_id, const TransportMessage& message);
+    [[nodiscard]] core::Status queue_reliable_message(core::NetId client_id,
+                                                      TransportMessage message,
+                                                      std::uint64_t attempt_count = 0);
+    [[nodiscard]] core::Status disconnect_for_reliable_overload(core::NetId client_id);
+    void clear_pending_outbound(core::NetId client_id) noexcept;
+    void publish_overload_disconnects(HostSessionTickResult& result);
+    [[nodiscard]] bool admit_outbound(core::NetId client_id, std::uint64_t wire_bytes);
     [[nodiscard]] std::size_t outbound_wire_bytes(core::NetId client_id,
                                                   const TransportMessage& message) const;
 
@@ -158,8 +196,18 @@ class HostSession {
     HostSessionTransportFactory transport_factory_;
     HostSessionState state_ = HostSessionState::stopped;
     std::unique_ptr<ITransportHost> transport_;
-    std::map<core::NetId, std::deque<PendingOutboundMessage>> pending_outbound_;
+    std::map<core::NetId, PendingOutboundQueue> pending_outbound_;
+    std::size_t pending_outbound_message_count_ = 0;
+    std::uint64_t pending_outbound_bytes_ = 0;
     std::map<core::NetId, OutboundBudgetWindow> outbound_budget_windows_;
+    std::map<core::NetId, std::uint32_t> reliable_delivery_attempts_by_client_;
+    std::map<core::NetId, std::uint64_t> reliable_delivery_bytes_by_client_;
+    std::vector<core::NetId> reliable_delivery_blocked_clients_;
+    std::vector<core::NetId> reliable_delivery_tick_limited_clients_;
+    std::vector<core::NetId> pending_overload_disconnects_;
+    std::vector<core::NetId> pending_local_bootstrap_clients_;
+    std::uint64_t reliable_delivery_client_cursor_ = 0;
+    std::uint64_t current_reliable_delivery_rotation_ = 0;
     std::uint64_t next_replication_sequence_ = 1;
     std::int64_t current_server_time_ms_ = 0;
     std::uint32_t pending_budget_dropped_unreliable_message_count_ = 0;
@@ -179,6 +227,8 @@ class HostSessionCommandResultBinaryCodec {
 };
 
 [[nodiscard]] std::string_view host_session_state_name(HostSessionState state) noexcept;
+[[nodiscard]] core::Status validate_host_session_outbound_delivery_report(
+    const HostSessionOutboundDeliveryReport& report) noexcept;
 [[nodiscard]] core::Status
 validate_host_session_command_result(const HostSessionCommandResult& result) noexcept;
 [[nodiscard]] HostSessionCommandResult

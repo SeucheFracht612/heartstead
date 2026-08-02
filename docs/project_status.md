@@ -93,10 +93,16 @@ prediction/reconciliation, and remote interpolation. Transient movement/entity s
 strict global and per-client tick quotas for messages and encoded payload, plus measured shared-codec
 and attributed per-client time limits. Source payloads are encoded once across recipients, and
 rotating client/source/class order makes quota degradation deterministic and inspectable.
+Reliable application output also enters hard global/per-client message and encoded-wire byte caps,
+then drains through rotating global/per-client tick quotas. A blocked peer no longer stalls healthy
+command intake; command-gateway queue exhaustion after commit disconnects only that peer rather than
+losing its mandatory result or immediate event replication. Other producers receive an explicit
+admission failure for their owning retry, resync, or disconnect policy.
 
 The remote transport is intended for controlled LAN and testing. It does not provide encryption,
 account authentication, forward secrecy, NAT traversal, matchmaking, or a complete congestion
-controller. Reliable application FIFO caps and calibrated multiplayer scale/soak gates remain.
+controller. Relevance-driven chunk subscriptions and calibrated multiplayer scale/soak gates
+remain.
 
 ### Persistence
 
