@@ -121,12 +121,16 @@ Implemented foundation:
   - records queue age, stage/worker/pipeline timing, publication time, high-water memory, failures,
     cancellations, stale work, and backpressure in runtime inspection, F3 diagnostics, and Tracy
     zones/plots
+  - returns one bounded lifecycle timing sample per processed result; request-to-publication
+    latency ends after owner publication or rejection rather than at worker completion
   - is used by the live renderer-proof server stream, where successful bounded publications alone
     advance collision-world revision and enter chunk replication
 
 `ChunkStreamer::maintain_loaded_interest` remains a synchronous convenience for deterministic
 tests and tooling. Latency-sensitive runtime controllers should plan interest and feed load requests
 through `ChunkLoadScheduler` instead of calling that convenience loop on a tick thread.
+The reproducible open-loop workload and its resident-publication boundary are documented in
+[Chunk streaming benchmarks](../performance/chunk_streaming_benchmarks.md).
 
 - `ChunkMesher`
   - provides a reference surface extractor and a production greedy extractor

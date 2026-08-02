@@ -22,6 +22,18 @@ abandoned final work. They measure chunk mesh publication, not display scan-out,
 lighting convergence. These are renderer-workload gates, not yet complete end-to-end client, server,
 memory, I/O, or network acceptance gates.
 
+The chunk-streaming benchmark separately gates the authoritative generated-data path:
+
+| Workload/metric | Default limit |
+| --- | ---: |
+| Near-ring interest to resident publication P95 | 250 ms |
+| Teleport target-ring interest to resident publication P95 | 1,000 ms |
+| Owner-thread chunk publication update | 500 us |
+
+These limits use wall-clock raw samples whose interest timestamp precedes bounded scheduler
+admission. They stop at authoritative block-data publication and do not claim lighting, collision,
+client replication, meshing, GPU upload, draw eligibility, or display latency.
+
 High defaults include 16 visible terrain chunks horizontally with mesh/resident/load hysteresis,
 8 MiB near and 8 MiB far-terrain uploads per frame, 512 MiB generic residency, 1,024 local lights,
 32 lights per tile, two local shadow maps, 2048 directional shadow resolution, and 320 m shadow range.
@@ -31,6 +43,8 @@ GPU time. Exhaustion degrades deterministically through LOD, selection, or defer
 or unbounded allocation.
 
 See [Renderer benchmarks](../performance/renderer_benchmarks.md) for workloads, timing semantics,
-comparison rules, command usage, and dated measurements. See the
+comparison rules, command usage, and dated measurements. See
+[Chunk streaming benchmarks](../performance/chunk_streaming_benchmarks.md) for the open-loop
+admission and resident-publication contract. See the
 [voxel optimization roadmap](../performance/voxel_optimization_roadmap.md) for the broader staged
 budget system and calibration policy.
