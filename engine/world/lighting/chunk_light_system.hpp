@@ -19,7 +19,8 @@ namespace heartstead::world {
 
 struct ChunkLightSystemConfig {
     ChunkLightSchedulerConfig scheduler;
-    std::size_t max_snapshot_cells_per_update = 65'536;
+    // Calibrated to copy one and a half 32^3 chunks per 60 Hz owner update.
+    std::size_t max_snapshot_cells_per_update = 49'152;
     double apply_time_budget_ms = 2.0;
 
     [[nodiscard]] core::Status validate() const;

@@ -138,7 +138,7 @@ void print_usage(std::ostream& output) {
            "  --repetitions N        Retained isolated edits (default 9)\n"
            "  --update-us N          Owner update cadence (default 16667, approximately 60 Hz)\n"
            "  --timeout-ms N         Per-phase fail-closed timeout (default 5000)\n"
-           "  --snapshot-cells N     Lighting snapshot copy budget per update (default 65536)\n"
+           "  --snapshot-cells N     Lighting snapshot copy budget per update (default 49152)\n"
            "  --collision-p95-ms N   Collision publication P95 gate (default 100)\n"
            "  --relight-p95-ms N     Full-field relight convergence P95 gate (default 250)\n"
            "  --enforce-gates        Return failure when a P95 response gate is exceeded\n"
