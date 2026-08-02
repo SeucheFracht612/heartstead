@@ -146,14 +146,27 @@ FarTerrainLodUpdateGraph::synchronize(const FarTerrainPlan& plan, std::uint64_t 
     return core::Status::ok();
 }
 
-std::vector<FarTerrainLodUpdateRequest> FarTerrainLodUpdateGraph::schedule_updates() {
+std::vector<FarTerrainLodUpdateRequest>
+FarTerrainLodUpdateGraph::schedule_updates(std::size_t maximum_requests) {
     std::vector<Node*> missing;
     std::vector<Node*> dirty_mid;
     std::vector<Node*> dirty_far;
+    std::uint32_t in_flight_mid_replacements = 0;
+    std::uint32_t in_flight_far_replacements = 0;
     for (auto& [key, node] : nodes_) {
         static_cast<void>(key);
-        if (node.in_flight_request_revision.has_value() ||
-            node.resident_request_revision == node.request_revision) {
+        if (node.in_flight_request_revision.has_value()) {
+            if (node.resident_request_revision.has_value() &&
+                node.resident_request_revision != node.request_revision) {
+                if (node.band == FarTerrainLodBand::mid) {
+                    ++in_flight_mid_replacements;
+                } else {
+                    ++in_flight_far_replacements;
+                }
+            }
+            continue;
+        }
+        if (node.resident_request_revision == node.request_revision) {
             continue;
         }
         if (!node.resident_request_revision.has_value()) {
@@ -185,10 +198,12 @@ std::vector<FarTerrainLodUpdateRequest> FarTerrainLodUpdateGraph::schedule_updat
     std::ranges::sort(dirty_far, older_first);
     std::ranges::sort(missing, missing_first);
 
+    const auto effective_maximum = std::min<std::size_t>(maximum_updates_per_frame_,
+                                                         maximum_requests);
     std::vector<FarTerrainLodUpdateRequest> result;
-    result.reserve(maximum_updates_per_frame_);
-    const auto admit = [&result, this](Node& node) {
-        if (result.size() >= maximum_updates_per_frame_) {
+    result.reserve(effective_maximum);
+    const auto admit = [&result, effective_maximum](Node& node) {
+        if (result.size() >= effective_maximum) {
             return false;
         }
         node.in_flight_request_revision = node.request_revision;
@@ -209,8 +224,16 @@ std::vector<FarTerrainLodUpdateRequest> FarTerrainLodUpdateGraph::schedule_updat
 
     // Reserve edit propagation before filling holes. This keeps coarse derived state converging
     // during continuous traversal while the total cap still bounds render-owner work.
-    admit_up_to(dirty_mid, config_.maximum_mid_rebuilds_per_frame);
-    admit_up_to(dirty_far, config_.maximum_far_rebuilds_per_frame);
+    const auto available_mid_replacements =
+        config_.maximum_mid_rebuilds_per_frame > in_flight_mid_replacements
+            ? config_.maximum_mid_rebuilds_per_frame - in_flight_mid_replacements
+            : 0U;
+    const auto available_far_replacements =
+        config_.maximum_far_rebuilds_per_frame > in_flight_far_replacements
+            ? config_.maximum_far_rebuilds_per_frame - in_flight_far_replacements
+            : 0U;
+    admit_up_to(dirty_mid, available_mid_replacements);
+    admit_up_to(dirty_far, available_far_replacements);
     for (auto* node : missing) {
         if (!admit(*node)) {
             break;

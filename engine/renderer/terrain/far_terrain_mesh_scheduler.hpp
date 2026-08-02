@@ -59,6 +59,11 @@ struct FarTerrainMeshSchedulerStats {
     std::uint64_t failed_jobs = 0;
 };
 
+struct FarTerrainMeshTicket {
+    FarTerrainPatchKey key;
+    std::uint64_t request_revision = 0;
+};
+
 // Bounded worker-side topology construction. Requests contain a complete immutable surface grid;
 // only the render owner captures grids, submits tickets, drains results, and publishes residency.
 class FarTerrainMeshScheduler {
@@ -85,6 +90,7 @@ class FarTerrainMeshScheduler {
     [[nodiscard]] bool has_in_flight(const FarTerrainPatchKey& key) const noexcept;
     [[nodiscard]] std::optional<std::uint64_t>
     in_flight_request_revision(const FarTerrainPatchKey& key) const noexcept;
+    [[nodiscard]] std::vector<FarTerrainMeshTicket> in_flight_tickets() const;
     [[nodiscard]] bool has_capacity() const noexcept;
     [[nodiscard]] const FarTerrainMeshSchedulerStats& stats() noexcept;
 

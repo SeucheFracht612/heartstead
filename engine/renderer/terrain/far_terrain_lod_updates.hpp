@@ -70,7 +70,8 @@ class FarTerrainLodUpdateGraph {
 
     // Reserves deterministic update tickets. Dirty resident replacements consume their explicit
     // mid/far quotas first; unused total capacity then admits missing patches.
-    [[nodiscard]] std::vector<FarTerrainLodUpdateRequest> schedule_updates();
+    [[nodiscard]] std::vector<FarTerrainLodUpdateRequest>
+    schedule_updates(std::size_t maximum_requests = static_cast<std::size_t>(-1));
 
     [[nodiscard]] bool accepts_result(const FarTerrainPatchKey& key,
                                       std::uint64_t request_revision) const noexcept;

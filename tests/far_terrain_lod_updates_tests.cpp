@@ -69,13 +69,31 @@ int main() {
     assert(graph.stats().current_patches == 4);
     assert(graph.stats().missing_patches == 0);
 
+    // Asynchronous workers may expose only one free slot at a time. Existing in-flight work
+    // consumes its band reservation, so repeated refills make progress in both bands.
+    assert(graph.synchronize(initial_plan, 12));
+    auto bounded_mid = graph.schedule_updates(1);
+    assert(bounded_mid.size() == 1);
+    assert(bounded_mid.front().band == renderer::FarTerrainLodBand::mid);
+    auto bounded_second_mid = graph.schedule_updates(1);
+    assert(bounded_second_mid.size() == 1);
+    assert(bounded_second_mid.front().band == renderer::FarTerrainLodBand::mid);
+    auto bounded_far = graph.schedule_updates(1);
+    assert(bounded_far.size() == 1);
+    assert(bounded_far.front().band == renderer::FarTerrainLodBand::far);
+    publish_all(graph, bounded_mid);
+    publish_all(graph, bounded_second_mid);
+    publish_all(graph, bounded_far);
+    publish_all(graph, graph.schedule_updates());
+    assert(graph.stats().current_patches == 4);
+
     // One authoritative edit fans out to both mid levels and both far levels. The graph retains
     // every old resident patch, reserves both mid rebuilds plus one far rebuild, and leaves the
     // remaining far patch pending instead of creating a hole.
     const std::array edit_regions{
         math::Bounds3d{{8.0, 0.0, 8.0}, {9.0, 1.0, 9.0}},
     };
-    assert(graph.synchronize(initial_plan, 12, edit_regions));
+    assert(graph.synchronize(initial_plan, 13, edit_regions));
     assert(graph.stats().stale_resident_patches == 4);
     assert(graph.stats().pending_mid_updates == 2);
     assert(graph.stats().pending_far_updates == 2);
@@ -86,7 +104,7 @@ int main() {
     assert(first_edit_wave[2].band == renderer::FarTerrainLodBand::far);
     for (const auto& request : first_edit_wave) {
         assert(request.replaces_resident_patch);
-        assert(request.source_revision == 12);
+        assert(request.source_revision == 13);
     }
     publish_all(graph, first_edit_wave);
     assert(graph.stats().current_patches == 3);
@@ -104,29 +122,29 @@ int main() {
     shifted_plan.patches[0].finer_coverage = math::Bounds3d{{-16.0, 0.0, -16.0}, {16.0, 0.0, 16.0}};
     const auto before_geometry_request = graph.requested_revision(shifted_plan.patches[0].key);
     assert(before_geometry_request.has_value());
-    assert(graph.synchronize(shifted_plan, 12));
+    assert(graph.synchronize(shifted_plan, 13));
     assert(!graph.is_current(shifted_plan.patches[0].key));
     auto geometry_update = graph.schedule_updates();
     assert(geometry_update.size() == 1);
-    assert(geometry_update.front().source_revision == 12);
+    assert(geometry_update.front().source_revision == 13);
     assert(geometry_update.front().request_revision > *before_geometry_request);
     publish_all(graph, geometry_update);
     shifted_plan.patches[0].streaming_priority = 0.01F;
-    assert(graph.synchronize(shifted_plan, 12));
+    assert(graph.synchronize(shifted_plan, 13));
     assert(graph.is_current(shifted_plan.patches[0].key));
     assert(graph.schedule_updates().empty());
 
     // Restore the original transition geometry before exercising content supersession.
-    assert(graph.synchronize(initial_plan, 12));
+    assert(graph.synchronize(initial_plan, 13));
     publish_all(graph, graph.schedule_updates());
 
     // A newer edit can supersede work already handed to a worker. Only the exact current ticket is
     // publishable; rejecting the stale result reopens the patch at the newest source revision.
-    assert(graph.synchronize(initial_plan, 13, edit_regions));
+    assert(graph.synchronize(initial_plan, 14, edit_regions));
     auto superseded = graph.schedule_updates();
     assert(superseded.size() == 3);
     const auto stale_ticket = superseded.front();
-    assert(graph.synchronize(initial_plan, 14, edit_regions));
+    assert(graph.synchronize(initial_plan, 15, edit_regions));
     assert(!graph.accepts_result(stale_ticket.patch.key, stale_ticket.request_revision));
     assert(graph.reject_stale(stale_ticket.patch.key, stale_ticket.request_revision));
     assert(graph.stats().total_coalesced_invalidations >= 3);
@@ -137,7 +155,7 @@ int main() {
     for (std::size_t frame = 0; frame < 2; ++frame) {
         const auto latest = graph.schedule_updates();
         for (const auto& request : latest) {
-            assert(request.source_revision == 14);
+            assert(request.source_revision == 15);
             assert(latest_keys.insert(request.patch.key).second);
         }
         publish_all(graph, latest);

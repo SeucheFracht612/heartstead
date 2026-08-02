@@ -91,6 +91,7 @@ int main() {
     assert(scheduler->submit(std::move(expensive)));
     assert(scheduler->submit(std::move(cancelled)));
     assert(!scheduler->has_capacity());
+    assert(scheduler->in_flight_tickets().size() == 2U);
     scheduler->cancel(cancelled_key);
 
     auto duplicate =

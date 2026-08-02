@@ -345,6 +345,15 @@ FarTerrainMeshScheduler::in_flight_request_revision(const FarTerrainPatchKey& ke
                : std::optional<std::uint64_t>{active->second.request_revision};
 }
 
+std::vector<FarTerrainMeshTicket> FarTerrainMeshScheduler::in_flight_tickets() const {
+    std::vector<FarTerrainMeshTicket> result;
+    result.reserve(active_jobs_.size());
+    for (const auto& [key, active] : active_jobs_) {
+        result.push_back({key, active.request_revision});
+    }
+    return result;
+}
+
 bool FarTerrainMeshScheduler::has_capacity() const noexcept {
     return active_jobs_.size() < config_.maximum_concurrent_jobs;
 }
