@@ -1,0 +1,3 @@
+add_executable(heartstead_terrain_edit_transition_benchmark main.cpp)
+target_link_libraries(heartstead_terrain_edit_transition_benchmark PRIVATE Heartstead::Engine)
+heartstead_configure_target(heartstead_terrain_edit_transition_benchmark)

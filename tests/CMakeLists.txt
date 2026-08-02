@@ -366,6 +366,9 @@ heartstead_add_foundation_test(heartstead_chunk_render_readiness_benchmark_tests
 # This test has an internal wall-clock deadline around a complete async load/mesh/upload lifecycle.
 # Keep suite-wide CPU contention from masquerading as a production pipeline timeout.
 set_tests_properties(heartstead_chunk_render_readiness_benchmark_tests PROPERTIES RUN_SERIAL TRUE)
+heartstead_add_foundation_test(heartstead_terrain_edit_transition_benchmark_tests
+                               terrain_edit_transition_benchmark_tests.cpp)
+set_tests_properties(heartstead_terrain_edit_transition_benchmark_tests PROPERTIES RUN_SERIAL TRUE)
 heartstead_add_foundation_test(heartstead_voxel_response_benchmark_tests
                                voxel_response_benchmark_tests.cpp)
 heartstead_add_foundation_test(heartstead_authoritative_server_v02_tests

@@ -108,6 +108,7 @@ target_sources(
     renderer/benchmark/benchmark_coverage.cpp
     renderer/benchmark/benchmark_statistics.cpp
     renderer/benchmark/chunk_render_readiness_benchmark.cpp
+    renderer/benchmark/terrain_edit_transition_benchmark.cpp
     renderer/assets/sampler_cache.cpp
     renderer/assets/mesh_manager.cpp
     renderer/assets/shader_manager.cpp
@@ -365,6 +366,7 @@ target_sources(
       renderer/benchmark/benchmark_coverage.hpp
       renderer/benchmark/benchmark_statistics.hpp
       renderer/benchmark/chunk_render_readiness_benchmark.hpp
+      renderer/benchmark/terrain_edit_transition_benchmark.hpp
       renderer/assets/render_asset_handles.hpp
       renderer/assets/mesh_manager.hpp
       renderer/assets/sampler_cache.hpp
