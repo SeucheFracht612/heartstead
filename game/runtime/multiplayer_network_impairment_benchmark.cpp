@@ -33,6 +33,26 @@ constexpr std::int64_t benchmark_frame_time_ms = 17;
 constexpr std::uint32_t stable_warmup_ticks = 4;
 constexpr std::uint32_t stable_warmup_pending_impaired_limit_per_client = 32;
 
+[[nodiscard]] std::uint32_t maximum_impairment_delivery_ticks(
+    const MultiplayerNetworkImpairmentBenchmarkConfig& config) noexcept {
+    const auto maximum_one_way_delay_ms =
+        static_cast<std::uint64_t>(config.simulated_one_way_latency_ms) +
+        config.simulated_delay_variation_ms;
+    return static_cast<std::uint32_t>(
+        (maximum_one_way_delay_ms + static_cast<std::uint64_t>(benchmark_frame_time_ms) - 1U) /
+        static_cast<std::uint64_t>(benchmark_frame_time_ms));
+}
+
+[[nodiscard]] std::uint32_t
+required_stable_warmup_ticks(const MultiplayerNetworkImpairmentBenchmarkConfig& config) noexcept {
+    return stable_warmup_ticks + 2U * maximum_impairment_delivery_ticks(config);
+}
+
+[[nodiscard]] std::uint32_t
+minimum_warmup_ticks(const MultiplayerNetworkImpairmentBenchmarkConfig& config) noexcept {
+    return stable_warmup_ticks + 6U * maximum_impairment_delivery_ticks(config);
+}
+
 struct BenchmarkClient {
     core::NetId id;
     ClientRuntime* runtime = nullptr;
@@ -940,20 +960,42 @@ class MultiplayerNetworkImpairmentBenchmarkRunner final {
                        client.runtime->local_player_snapshot() != nullptr &&
                        client.runtime->resource_counts().partial_chunk_snapshots == 0;
             });
+            const auto& subscriptions = tick.value().chunk_subscriptions;
+            const auto subscriptions_settled =
+                subscriptions.converged_client_count == config_.client_count &&
+                subscriptions.partial_snapshot_count == 0 &&
+                subscriptions.stale_publication_count == 0 &&
+                subscriptions.deferred_addition_count == 0 &&
+                subscriptions.deferred_removal_count == 0 &&
+                subscriptions.deferred_snapshot_count == 0 &&
+                subscriptions.serialization_budget_deferred_snapshot_count == 0 &&
+                subscriptions.reliable_admission_deferral_count == 0;
+            const auto& chunk_loading = tick.value().chunk_loading;
+            const auto chunk_loading_settled = chunk_loading.in_flight_requests == 0 &&
+                                               chunk_loading.completed_mailbox_count == 0 &&
+                                               chunk_loading.ready_for_publication_count == 0;
+            const auto& chunk_streaming = tick.value().chunk_streaming;
+            const auto chunk_streaming_settled =
+                chunk_streaming.pending_load_count == 0 &&
+                chunk_streaming.deferred_required_load_count == 0 &&
+                chunk_streaming.projected_resident_overage == 0 &&
+                chunk_streaming.unresolved_resident_overage == 0;
             const auto ready =
                 all_clients_ready &&
                 server_->host().connected_client_count() == config_.client_count &&
-                server_->host().pending_outbound_message_count() == 0 &&
-                tick.value().chunk_subscriptions.partial_snapshot_count == 0 &&
+                server_->host().pending_outbound_message_count() == 0 && subscriptions_settled &&
+                chunk_loading_settled && chunk_streaming_settled &&
                 tick.value().commands.transport_pending_impaired_message_count <=
                     config_.client_count * stable_warmup_pending_impaired_limit_per_client &&
                 per_client_pending_bounded;
             stable_ticks = ready ? stable_ticks + 1 : 0;
-            if (stable_ticks >= stable_warmup_ticks) {
+            if (warmup_ticks_ >= minimum_warmup_ticks(config_) &&
+                stable_ticks >= required_stable_warmup_ticks(config_)) {
                 break;
             }
         }
-        if (stable_ticks < stable_warmup_ticks) {
+        if (warmup_ticks_ < minimum_warmup_ticks(config_) ||
+            stable_ticks < required_stable_warmup_ticks(config_)) {
             return core::Status::failure(
                 "multiplayer_network_impairment_benchmark.warmup_timeout",
                 "all clients, subscriptions, reliable queues, and impaired paths must reach a "
@@ -1306,6 +1348,12 @@ core::Status MultiplayerNetworkImpairmentBenchmarkConfig::validate() const {
             "multiplayer_network_impairment_benchmark.invalid_impairment",
             "benchmark requires positive bounded latency and partial unreliable loss, with delay "
             "variation no greater than one-way latency");
+    }
+    if (warmup_timeout_ticks < minimum_warmup_ticks(*this)) {
+        return core::Status::failure(
+            "multiplayer_network_impairment_benchmark.invalid_workload",
+            "warmup timeout must cover connection, assignment, subscription, and stable "
+            "maximum-delay delivery windows");
     }
     if (!finite_positive(maximum_server_tick_p95_ms) ||
         !finite_positive(maximum_server_tick_p99_ms) || !finite_positive(maximum_server_tick_ms) ||

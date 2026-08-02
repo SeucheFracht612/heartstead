@@ -108,6 +108,18 @@ void test_impairment_workload_rejects_ambiguous_or_total_loss() {
     status = config.validate();
     assert(!status);
     assert(status.error().code == "multiplayer_network_impairment_benchmark.invalid_impairment");
+
+    config = {};
+    config.warmup_timeout_ticks = 10;
+    status = config.validate();
+    assert(!status);
+    assert(status.error().code == "multiplayer_network_impairment_benchmark.invalid_workload");
+
+    config = {};
+    config.client_count = 1;
+    status = config.validate();
+    assert(!status);
+    assert(status.error().code == "multiplayer_network_impairment_benchmark.invalid_workload");
 }
 
 } // namespace

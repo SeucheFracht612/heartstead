@@ -44,8 +44,8 @@ struct MultiplayerNetworkImpairmentBenchmarkConfig {
     std::uint32_t minimum_simulated_unreliable_drop_count = 8;
     std::uint32_t minimum_impairment_eligible_unreliable_message_count_per_client = 1;
     std::uint32_t minimum_simulated_unreliable_drop_count_per_client = 1;
-    std::uint32_t maximum_pending_impaired_message_count = 256;
-    std::uint32_t maximum_pending_impaired_message_count_per_client = 48;
+    std::uint32_t maximum_pending_impaired_message_count = 1'024;
+    std::uint32_t maximum_pending_impaired_message_count_per_client = 128;
     double minimum_authoritative_displacement_m = 5.0;
 
     [[nodiscard]] core::Status validate() const;
