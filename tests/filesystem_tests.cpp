@@ -68,6 +68,27 @@ void test_replace_file_installs_staged_content_and_preserves_on_failure() {
     assert(!cleanup_error);
 }
 
+void test_durable_replace_flushes_file_and_directory() {
+    const auto root = make_temp_root();
+    const auto destination = root / "durable.txt";
+    const auto staged = root / "durable.txt.tmp";
+
+    write_text(staged, "durable");
+    assert(!heartstead::core::flush_file_to_disk(staged));
+    assert(!heartstead::core::flush_directory_to_disk(root));
+    assert(!heartstead::core::replace_file_durable(staged, destination));
+    assert(!std::filesystem::exists(staged));
+    assert(read_text(destination) == "durable");
+
+    const auto missing = root / "missing.tmp";
+    assert(heartstead::core::replace_file_durable(missing, destination));
+    assert(read_text(destination) == "durable");
+
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(root, cleanup_error);
+    assert(!cleanup_error);
+}
+
 void test_bounded_recursive_listing_and_root_confinement() {
     const auto root = make_temp_root();
     std::filesystem::create_directories(root / "nested/deeper");
@@ -141,6 +162,7 @@ void test_bounded_recursive_listing_and_root_confinement() {
 
 int main() {
     test_replace_file_installs_staged_content_and_preserves_on_failure();
+    test_durable_replace_flushes_file_and_directory();
     test_bounded_recursive_listing_and_root_confinement();
     return 0;
 }

@@ -14,6 +14,22 @@ namespace heartstead::core {
 [[nodiscard]] std::error_code replace_file(const std::filesystem::path& staged,
                                            const std::filesystem::path& destination) noexcept;
 
+// Requests stable-storage completion for an existing regular file. This operation is blocking
+// and belongs on an I/O worker when it is used by runtime persistence.
+[[nodiscard]] std::error_code
+flush_file_to_disk(const std::filesystem::path& path) noexcept;
+
+// Requests persistence of directory-entry changes where the platform exposes that operation.
+// Windows durable replacement uses MOVEFILE_WRITE_THROUGH and this function is a no-op there.
+[[nodiscard]] std::error_code
+flush_directory_to_disk(const std::filesystem::path& path) noexcept;
+
+// Flushes the completed staged file, atomically installs it, and persists the destination
+// directory entry. The staged file must be on the same filesystem as the destination.
+[[nodiscard]] std::error_code
+replace_file_durable(const std::filesystem::path& staged,
+                     const std::filesystem::path& destination) noexcept;
+
 struct RecursiveFileListOptions {
     std::size_t maximum_entries = 65'536;
     std::size_t maximum_depth = 32;

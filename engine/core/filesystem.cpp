@@ -1,6 +1,7 @@
 #include "engine/core/filesystem.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -9,6 +10,9 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 namespace heartstead::core {
@@ -54,6 +58,76 @@ std::error_code replace_file(const std::filesystem::path& staged,
     std::filesystem::rename(staged, destination, error);
     return error;
 #endif
+}
+
+std::error_code flush_file_to_disk(const std::filesystem::path& path) noexcept {
+#ifdef _WIN32
+    const auto handle = ::CreateFileW(path.c_str(), GENERIC_READ,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                      nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        return {static_cast<int>(::GetLastError()), std::system_category()};
+    }
+    if (::FlushFileBuffers(handle) == 0) {
+        const auto error = std::error_code(static_cast<int>(::GetLastError()),
+                                           std::system_category());
+        static_cast<void>(::CloseHandle(handle));
+        return error;
+    }
+    if (::CloseHandle(handle) == 0) {
+        return {static_cast<int>(::GetLastError()), std::system_category()};
+    }
+    return {};
+#else
+    const auto descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (descriptor < 0) {
+        return {errno, std::generic_category()};
+    }
+    if (::fsync(descriptor) != 0) {
+        const auto error = std::error_code(errno, std::generic_category());
+        static_cast<void>(::close(descriptor));
+        return error;
+    }
+    if (::close(descriptor) != 0) {
+        return {errno, std::generic_category()};
+    }
+    return {};
+#endif
+}
+
+std::error_code flush_directory_to_disk(const std::filesystem::path& path) noexcept {
+#ifdef _WIN32
+    // MoveFileExW with MOVEFILE_WRITE_THROUGH is the supported durable-replacement primitive used
+    // by replace_file(). Windows does not provide a portable equivalent of POSIX directory fsync.
+    static_cast<void>(path);
+    return {};
+#else
+    const auto directory = path.empty() ? std::filesystem::path(".") : path;
+    const auto descriptor = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (descriptor < 0) {
+        return {errno, std::generic_category()};
+    }
+    if (::fsync(descriptor) != 0) {
+        const auto error = std::error_code(errno, std::generic_category());
+        static_cast<void>(::close(descriptor));
+        return error;
+    }
+    if (::close(descriptor) != 0) {
+        return {errno, std::generic_category()};
+    }
+    return {};
+#endif
+}
+
+std::error_code replace_file_durable(const std::filesystem::path& staged,
+                                     const std::filesystem::path& destination) noexcept {
+    if (auto error = flush_file_to_disk(staged)) {
+        return error;
+    }
+    if (auto error = replace_file(staged, destination)) {
+        return error;
+    }
+    return flush_directory_to_disk(destination.parent_path());
 }
 
 Result<std::filesystem::path> relative_path_below(const std::filesystem::path& root,
