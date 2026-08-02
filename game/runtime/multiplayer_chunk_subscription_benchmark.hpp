@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -25,6 +26,8 @@ enum class MultiplayerChunkSubscriptionPhase : std::uint8_t {
     hot_edit_transition,
     hot_edit,
     steady_state,
+    soak_transition,
+    soak_edit,
 };
 
 [[nodiscard]] std::string_view
@@ -36,6 +39,9 @@ struct MultiplayerChunkSubscriptionBenchmarkConfig {
     std::uint32_t traversal_steps = 6;
     std::uint32_t hot_edit_ticks = 120;
     std::uint32_t steady_ticks = 24;
+    std::uint32_t soak_conditioning_edit_ticks = 256;
+    std::uint32_t soak_conditioning_cycles = 8;
+    std::uint32_t soak_cycles = 64;
     std::uint32_t warmup_timeout_ticks = 4'096;
     std::uint32_t transition_timeout_ticks = 32;
     std::int64_t spread_distance_chunks = 128;
@@ -58,6 +64,9 @@ struct MultiplayerChunkSubscriptionBenchmarkConfig {
     std::uint64_t maximum_snapshot_serialization_time_overshoot_us = 1'000;
     std::uint64_t maximum_wire_bytes_per_client_per_tick = 320u * 1024u;
     std::uint64_t maximum_hot_edit_wire_bytes_per_client_per_tick = 2u * 1024u;
+    double maximum_soak_private_memory_slope_bytes_per_cycle = 64.0 * 1024.0;
+    std::uint64_t maximum_soak_private_memory_growth_bytes = 8u * 1024u * 1024u;
+    bool require_precise_process_memory = false;
 
     [[nodiscard]] core::Status validate() const;
 };
@@ -142,6 +151,28 @@ struct MultiplayerChunkSubscriptionTransitionSample {
     bool converged = false;
 };
 
+struct MultiplayerChunkSubscriptionSoakSample {
+    std::uint32_t cycle = 0;
+    std::uint64_t tick = 0;
+    std::size_t server_world_chunk_count = 0;
+    std::size_t server_voxel_edit_count = 0;
+    std::size_t server_entity_count = 0;
+    std::size_t server_collision_body_count = 0;
+    std::size_t subscription_count = 0;
+    std::size_t total_client_chunk_count = 0;
+    std::size_t total_client_owned_record_count = 0;
+    std::size_t total_client_partial_snapshot_count = 0;
+    std::size_t total_client_retained_command_result_count = 0;
+    std::size_t settled_queue_depth = 0;
+    std::uint64_t settled_queue_bytes = 0;
+    std::optional<std::uint64_t> resident_memory_bytes;
+    std::optional<std::uint64_t> proportional_set_size_bytes;
+    std::optional<std::uint64_t> private_resident_memory_bytes;
+    std::optional<std::size_t> thread_count;
+    std::optional<std::size_t> open_file_count;
+    bool precise_memory_accounting = false;
+};
+
 struct MultiplayerChunkClientTrafficSummary {
     core::NetId client_id;
     std::uint64_t reliable_messages = 0;
@@ -219,6 +250,49 @@ struct MultiplayerChunkSubscriptionBenchmarkSummary {
     std::uint64_t final_pending_reliable_bytes = 0;
     std::uint32_t final_converged_client_count = 0;
     std::uint32_t disconnected_client_count = 0;
+    std::uint64_t soak_tick_count = 0;
+    double soak_server_tick_p50_ms = 0.0;
+    double soak_server_tick_p95_ms = 0.0;
+    double soak_server_tick_p99_ms = 0.0;
+    double maximum_soak_server_tick_ms = 0.0;
+    std::uint64_t soak_edit_tick_count = 0;
+    std::uint64_t soak_verified_client_states = 0;
+    std::uint64_t soak_expected_client_states = 0;
+    std::uint64_t soak_verified_cross_region_exclusions = 0;
+    std::uint64_t soak_expected_cross_region_exclusions = 0;
+    std::uint32_t maximum_soak_transition_convergence_ticks = 0;
+    std::uint32_t soak_observed_backlog_burst_count = 0;
+    std::uint32_t maximum_soak_backlog_recovery_ticks = 0;
+    std::size_t peak_soak_pending_reliable_messages = 0;
+    std::uint64_t peak_soak_pending_reliable_bytes = 0;
+    std::size_t maximum_soak_partial_snapshot_count = 0;
+    std::size_t maximum_soak_stale_publication_count = 0;
+    std::uint32_t soak_disconnected_client_count = 0;
+    bool soak_process_memory_available = false;
+    std::uint64_t soak_baseline_resident_memory_bytes = 0;
+    std::uint64_t soak_final_resident_memory_bytes = 0;
+    std::uint64_t soak_peak_resident_memory_bytes = 0;
+    std::uint64_t soak_baseline_private_memory_bytes = 0;
+    std::uint64_t soak_final_private_memory_bytes = 0;
+    std::uint64_t soak_peak_private_memory_bytes = 0;
+    std::int64_t soak_private_memory_growth_bytes = 0;
+    double soak_private_memory_slope_bytes_per_cycle = 0.0;
+    std::size_t soak_baseline_server_world_chunk_count = 0;
+    std::size_t soak_final_server_world_chunk_count = 0;
+    std::size_t soak_peak_server_world_chunk_count = 0;
+    std::size_t soak_baseline_server_voxel_edit_count = 0;
+    std::size_t soak_final_server_voxel_edit_count = 0;
+    std::size_t soak_peak_server_voxel_edit_count = 0;
+    std::size_t soak_baseline_total_client_chunk_count = 0;
+    std::size_t soak_final_total_client_chunk_count = 0;
+    std::size_t soak_peak_total_client_chunk_count = 0;
+    std::size_t soak_baseline_total_client_owned_record_count = 0;
+    std::size_t soak_final_total_client_owned_record_count = 0;
+    std::size_t soak_peak_total_client_owned_record_count = 0;
+    std::size_t maximum_soak_settled_queue_depth = 0;
+    std::uint64_t maximum_soak_settled_queue_bytes = 0;
+    std::int64_t soak_thread_count_growth = 0;
+    std::int64_t soak_open_file_count_growth = 0;
     std::vector<MultiplayerChunkClientTrafficSummary> clients;
 };
 
@@ -235,13 +309,15 @@ struct MultiplayerChunkSubscriptionBenchmarkGateEvaluation {
 };
 
 struct MultiplayerChunkSubscriptionBenchmarkReport {
-    static constexpr std::uint32_t schema_version = 2;
+    static constexpr std::uint32_t schema_version = 3;
 
     MultiplayerChunkSubscriptionBenchmarkConfig config;
     profiling::RuntimeMetadata runtime;
     MultiplayerChunkSubscriptionBenchmarkSummary summary;
     std::vector<MultiplayerChunkSubscriptionTransitionSample> transitions;
     std::vector<MultiplayerChunkSubscriptionTickSample> raw_ticks;
+    std::vector<std::uint64_t> soak_tick_times_us;
+    std::vector<MultiplayerChunkSubscriptionSoakSample> soak_samples;
     MultiplayerChunkSubscriptionBenchmarkGateEvaluation gates;
 
     [[nodiscard]] core::Status validate() const;

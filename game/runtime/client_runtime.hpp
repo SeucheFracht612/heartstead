@@ -50,6 +50,24 @@ struct ClientRuntimeStats {
     ClientReplicationDispatchStats feature_replication;
 };
 
+// Allocation-free ownership telemetry for soak/lifecycle checks. Counts describe retained
+// containers after synchronization; they are not byte estimates.
+struct ClientRuntimeResourceCounts {
+    std::size_t world_chunks = 0;
+    std::size_t remote_chunk_revisions = 0;
+    std::size_t partial_chunk_snapshots = 0;
+    std::size_t retained_command_results = 0;
+    std::size_t movement_snapshots = 0;
+    std::size_t remote_player_interpolators = 0;
+    std::size_t entity_motion_snapshots = 0;
+    std::size_t equipment_loadouts = 0;
+    std::size_t unacknowledged_prediction_inputs = 0;
+    std::size_t player_tombstones = 0;
+    std::size_t accepted_voxel_edits = 0;
+
+    [[nodiscard]] std::size_t total_owned_records() const noexcept;
+};
+
 class ClientRuntime final {
   public:
     ClientRuntime(core::NetId expected_client_id, world::WorldStateDesc world_desc,
@@ -76,6 +94,7 @@ class ClientRuntime final {
     bool remove_local_chunk_snapshot(world::ChunkCoord coordinate) noexcept;
     [[nodiscard]] net::ClientSession& session() noexcept;
     [[nodiscard]] const net::ClientSession& session() const noexcept;
+    [[nodiscard]] ClientRuntimeResourceCounts resource_counts() const noexcept;
     [[nodiscard]] std::span<const net::HostSessionCommandResult> command_results() const noexcept;
     [[nodiscard]] const movement::PlayerControllerSnapshot*
     player_snapshot(core::NetId player_net_id) const noexcept;

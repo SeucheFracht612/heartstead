@@ -49,8 +49,12 @@ template <typename Value> [[nodiscard]] std::optional<Value> parse_number(std::s
             options.help = true;
         } else if (argument == "--enforce-gates") {
             options.benchmark.enforce_gates = true;
+        } else if (argument == "--require-precise-memory") {
+            options.benchmark.require_precise_process_memory = true;
         } else if (argument == "--clients" || argument == "--traversal-steps" ||
                    argument == "--hot-edit-ticks" || argument == "--steady-ticks" ||
+                   argument == "--soak-conditioning-edits" ||
+                   argument == "--soak-conditioning-cycles" || argument == "--soak-cycles" ||
                    argument == "--warmup-timeout-ticks" ||
                    argument == "--transition-timeout-ticks" || argument == "--delivery-messages" ||
                    argument == "--convergence-ticks" || argument == "--backlog-recovery-ticks") {
@@ -72,6 +76,12 @@ template <typename Value> [[nodiscard]] std::optional<Value> parse_number(std::s
                 options.benchmark.hot_edit_ticks = *parsed;
             } else if (argument == "--steady-ticks") {
                 options.benchmark.steady_ticks = *parsed;
+            } else if (argument == "--soak-conditioning-edits") {
+                options.benchmark.soak_conditioning_edit_ticks = *parsed;
+            } else if (argument == "--soak-conditioning-cycles") {
+                options.benchmark.soak_conditioning_cycles = *parsed;
+            } else if (argument == "--soak-cycles") {
+                options.benchmark.soak_cycles = *parsed;
             } else if (argument == "--warmup-timeout-ticks") {
                 options.benchmark.warmup_timeout_ticks = *parsed;
             } else if (argument == "--transition-timeout-ticks") {
@@ -85,7 +95,8 @@ template <typename Value> [[nodiscard]] std::optional<Value> parse_number(std::s
             }
         } else if (argument == "--seed" || argument == "--serialization-us" ||
                    argument == "--serialization-overshoot-us" || argument == "--wire-bytes" ||
-                   argument == "--hot-edit-wire-bytes") {
+                   argument == "--hot-edit-wire-bytes" ||
+                   argument == "--soak-memory-growth-bytes") {
             auto value = next();
             if (!value) {
                 return core::Result<Options>::failure(value.error().code, value.error().message);
@@ -104,6 +115,8 @@ template <typename Value> [[nodiscard]] std::optional<Value> parse_number(std::s
                 options.benchmark.maximum_snapshot_serialization_time_overshoot_us = *parsed;
             } else if (argument == "--hot-edit-wire-bytes") {
                 options.benchmark.maximum_hot_edit_wire_bytes_per_client_per_tick = *parsed;
+            } else if (argument == "--soak-memory-growth-bytes") {
+                options.benchmark.maximum_soak_private_memory_growth_bytes = *parsed;
             } else {
                 options.benchmark.maximum_wire_bytes_per_client_per_tick = *parsed;
             }
@@ -126,7 +139,8 @@ template <typename Value> [[nodiscard]] std::optional<Value> parse_number(std::s
         } else if (argument == "--tick-p95-ms" || argument == "--tick-p99-ms" ||
                    argument == "--tick-max-ms" || argument == "--hot-edit-tick-p95-ms" ||
                    argument == "--hot-edit-tick-p99-ms" || argument == "--hot-edit-tick-max-ms" ||
-                   argument == "--shared-reuse" || argument == "--disjoint-reuse") {
+                   argument == "--shared-reuse" || argument == "--disjoint-reuse" ||
+                   argument == "--soak-memory-slope-bytes") {
             auto value = next();
             if (!value) {
                 return core::Result<Options>::failure(value.error().code, value.error().message);
@@ -151,6 +165,8 @@ template <typename Value> [[nodiscard]] std::optional<Value> parse_number(std::s
                 options.benchmark.maximum_hot_edit_server_tick_ms = *parsed;
             } else if (argument == "--shared-reuse") {
                 options.benchmark.minimum_shared_snapshot_reuse_ratio = *parsed;
+            } else if (argument == "--soak-memory-slope-bytes") {
+                options.benchmark.maximum_soak_private_memory_slope_bytes_per_cycle = *parsed;
             } else {
                 options.benchmark.maximum_disjoint_snapshot_reuse_ratio = *parsed;
             }
@@ -185,6 +201,10 @@ void print_usage(std::ostream& output) {
            "  --traversal-steps N            Disjoint traversal transitions (default 6)\n"
            "  --hot-edit-ticks N             Disjoint edit samples, minimum 100 (default 120)\n"
            "  --steady-ticks N               Final steady-state samples (default 24)\n"
+           "  --soak-conditioning-edits N   Edit ticks used to cap bounded histories (default "
+           "256)\n"
+           "  --soak-conditioning-cycles N  Traversal/edit allocator conditioning (default 8)\n"
+           "  --soak-cycles N                Measured fixed-state soak cycles (default 64)\n"
            "  --spread-chunks N              Distance between client regions (default 128)\n"
            "  --traversal-stride N           Chunk stride per traversal step (default 4)\n"
            "  --delivery-messages N          Reliable messages/client/tick (default 48)\n"
@@ -204,6 +224,10 @@ void print_usage(std::ostream& output) {
            "  --serialization-overshoot-us N Maximum one-operation overshoot (default 1000)\n"
            "  --wire-bytes N                 Wire bytes/client/tick gate (default 327680)\n"
            "  --hot-edit-wire-bytes N        Hot-edit wire bytes/client/tick gate (default 2048)\n"
+           "  --soak-memory-slope-bytes N    Private-memory slope/cycle gate (default 65536)\n"
+           "  --soak-memory-growth-bytes N   Private-memory endpoint growth gate (default "
+           "8388608)\n"
+           "  --require-precise-memory       Fail when Linux smaps-style memory is unavailable\n"
            "  --seed N                       Deterministic path/world seed\n"
            "  --content-root PATH            Source content root\n"
            "  --enforce-gates                Return failure when any gate is missed\n"
@@ -241,12 +265,15 @@ void print_usage(std::ostream& output) {
             return 1;
         }
         const auto& summary = report.value().summary;
-        std::cout << "wrote " << summary.measured_tick_count << " server ticks for "
+        std::cout << "wrote " << summary.measured_tick_count << " foreground + "
+                  << summary.soak_tick_count << " soak server ticks for "
                   << options.benchmark.client_count << " clients to " << options.output
                   << "; P95=" << summary.server_tick_p95_ms
                   << " ms P99=" << summary.server_tick_p99_ms
                   << " ms hot_edit_P99=" << summary.hot_edit_server_tick_p99_ms
-                  << " ms convergence=" << summary.maximum_transition_convergence_ticks
+                  << " ms soak_P99=" << summary.soak_server_tick_p99_ms
+                  << " ms soak_private_slope=" << summary.soak_private_memory_slope_bytes_per_cycle
+                  << " B/cycle" << " convergence=" << summary.maximum_transition_convergence_ticks
                   << " ticks backlog_recovery=" << summary.maximum_backlog_recovery_ticks
                   << " ticks shared_reuse=" << summary.shared_snapshot_reuse_ratio << 'x' << '\n';
     }

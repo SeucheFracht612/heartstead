@@ -376,9 +376,19 @@ void test_runtime_diagnostics_are_explicit() {
                      "2/1/4/3/1/0") != std::string::npos);
     assert(text.find("budget telemetry unavailable") == std::string::npos);
 
-    const auto process = game::sample_process_resources();
+    const auto lightweight_process = game::sample_process_resources();
+    const auto process = game::sample_process_resources(game::ProcessMemoryDetail::precise);
 #if defined(__linux__)
+    assert(lightweight_process.resident_memory_bytes.has_value());
+    assert(!lightweight_process.precise_memory_accounting);
+    assert(!lightweight_process.private_resident_memory_bytes.has_value());
+    assert(!lightweight_process.proportional_set_size_bytes.has_value());
     assert(process.resident_memory_bytes.has_value());
+    assert(process.proportional_set_size_bytes.has_value());
+    assert(process.private_resident_memory_bytes.has_value());
+    assert(process.precise_memory_accounting);
+    assert(*process.private_resident_memory_bytes <= *process.resident_memory_bytes);
+    assert(*process.proportional_set_size_bytes <= *process.resident_memory_bytes);
     assert(process.thread_count.has_value() && *process.thread_count > 0);
     assert(process.open_file_count.has_value() && *process.open_file_count > 0);
 #endif

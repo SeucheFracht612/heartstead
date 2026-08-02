@@ -8,6 +8,7 @@
 #include "engine/world/chunks/chunk_replication.hpp"
 #include "engine/world/replication_delta.hpp"
 #include "engine/world/voxel_change.hpp"
+#include "game/application/runtime_diagnostics.hpp"
 #include "game/foundation/foundation_world.hpp"
 #include "game/runtime/client_runtime.hpp"
 #include "game/runtime/game_runtime.hpp"
@@ -66,6 +67,48 @@ struct BenchmarkClient {
     const auto rank = (values_us.size() * percentile + 99U) / 100U;
     const auto index = std::max<std::size_t>(1, rank) - 1;
     return static_cast<double>(values_us[index]) / 1'000.0;
+}
+
+[[nodiscard]] std::int64_t signed_difference(std::uint64_t final, std::uint64_t baseline) noexcept {
+    constexpr auto signed_max =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if (final >= baseline) {
+        return static_cast<std::int64_t>(std::min(final - baseline, signed_max));
+    }
+    return -static_cast<std::int64_t>(std::min(baseline - final, signed_max));
+}
+
+[[nodiscard]] double private_memory_slope_bytes_per_cycle(
+    const std::vector<MultiplayerChunkSubscriptionSoakSample>& samples) noexcept {
+    // This is an ordinary least-squares descriptive trend over comparable post-conditioning
+    // endpoints. It is a bounded acceptance metric, not a claim of statistical significance.
+    if (samples.size() < 2 || std::ranges::any_of(samples, [](const auto& sample) {
+            return !sample.precise_memory_accounting ||
+                   !sample.private_resident_memory_bytes.has_value();
+        })) {
+        return 0.0;
+    }
+    const auto count = static_cast<double>(samples.size());
+    const auto mean_x = std::accumulate(samples.begin(), samples.end(), 0.0,
+                                        [](double sum, const auto& sample) {
+                                            return sum + static_cast<double>(sample.cycle);
+                                        }) /
+                        count;
+    const auto mean_y =
+        std::accumulate(samples.begin(), samples.end(), 0.0,
+                        [](double sum, const auto& sample) {
+                            return sum + static_cast<double>(*sample.private_resident_memory_bytes);
+                        }) /
+        count;
+    double covariance = 0.0;
+    double variance = 0.0;
+    for (const auto& sample : samples) {
+        const auto centered_x = static_cast<double>(sample.cycle) - mean_x;
+        covariance +=
+            centered_x * (static_cast<double>(*sample.private_resident_memory_bytes) - mean_y);
+        variance += centered_x * centered_x;
+    }
+    return variance == 0.0 ? 0.0 : covariance / variance;
 }
 
 [[nodiscard]] bool is_snapshot_message(const net::TransportEnvelope& envelope) noexcept {
@@ -219,6 +262,11 @@ class BenchmarkRunner final {
             if (!result) {
                 return failure(result.error().code, result.error().message);
             }
+        }
+
+        status = run_soak_workload();
+        if (!status) {
+            return failure(status);
         }
 
         summarize();
@@ -603,62 +651,9 @@ class BenchmarkRunner final {
                 "multiplayer_chunk_subscription_benchmark.missing_hot_edit_targets",
                 "hot-edit workload requires one final published traversal chunk per client");
         }
-        const auto& targets = hot_edit_centers_;
         for (std::uint32_t ordinal = 0; ordinal < config_.hot_edit_ticks; ++ordinal) {
-            std::vector<world::VoxelCell> previous_cells;
-            previous_cells.reserve(clients_.size());
-            for (std::size_t index = 0; index < clients_.size(); ++index) {
-                const auto* authoritative = server_->world().chunks().find(targets[index]);
-                const auto* replica =
-                    clients_[index].runtime->world().chunks().find(targets[index]);
-                if (authoritative == nullptr || replica == nullptr) {
-                    return core::Status::failure(
-                        "multiplayer_chunk_subscription_benchmark.hot_edit_base_mismatch",
-                        "hot-edit target chunk is missing from the authoritative server or its "
-                        "interested client before command submission");
-                }
-                if (!clients_[index].runtime->local_chunk_snapshot_is_current(*authoritative)) {
-                    return core::Status::failure(
-                        "multiplayer_chunk_subscription_benchmark.hot_edit_base_mismatch",
-                        "hot-edit target base mismatch for client " +
-                            std::to_string(clients_[index].id.value()) + ": authoritative " +
-                            std::to_string(authoritative->identity().load_generation) + '/' +
-                            std::to_string(authoritative->content_revision()));
-                }
-                auto previous = authoritative->get(hot_edit_voxel);
-                auto replica_previous = replica->get(hot_edit_voxel);
-                if (!previous || !replica_previous ||
-                    previous.value() != replica_previous.value()) {
-                    return core::Status::failure(
-                        "multiplayer_chunk_subscription_benchmark.hot_edit_cell_mismatch",
-                        "hot-edit target cell must match on the authoritative server and client");
-                }
-                previous_cells.push_back(previous.value());
-
-                const auto prototype = previous.value() == hot_edit_clay_cell_
-                                           ? hot_edit_stone_prototype
-                                           : hot_edit_clay_prototype;
-                auto payload = make_hot_edit_payload(targets[index], prototype);
-                if (!payload) {
-                    return core::Status::failure(payload.error().code, payload.error().message);
-                }
-                auto command = clients_[index].runtime->create_command(
-                    "world.set_voxel", std::move(payload).value(), now_ms_ + 17);
-                if (!command) {
-                    return core::Status::failure(command.error().code, command.error().message);
-                }
-                auto status =
-                    server_->submit_command(clients_[index].id, std::move(command).value());
-                if (!status) {
-                    return status;
-                }
-            }
-
-            auto tick_result = run_tick(MultiplayerChunkSubscriptionPhase::hot_edit, ordinal, true);
-            if (!tick_result) {
-                return core::Status::failure(tick_result.error().code, tick_result.error().message);
-            }
-            auto status = verify_hot_edit_tick(tick_result.value(), targets, previous_cells);
+            auto status = run_hot_edit_tick(MultiplayerChunkSubscriptionPhase::hot_edit, ordinal,
+                                            true, nullptr);
             if (!status) {
                 return status;
             }
@@ -667,16 +662,81 @@ class BenchmarkRunner final {
     }
 
     [[nodiscard]] core::Status
+    run_hot_edit_tick(MultiplayerChunkSubscriptionPhase phase, std::uint32_t ordinal, bool record,
+                      MultiplayerChunkSubscriptionTickSample* observed_sample) {
+        const auto& targets = hot_edit_centers_;
+        std::vector<world::VoxelCell> previous_cells;
+        previous_cells.reserve(clients_.size());
+        for (std::size_t index = 0; index < clients_.size(); ++index) {
+            const auto* authoritative = server_->world().chunks().find(targets[index]);
+            const auto* replica = clients_[index].runtime->world().chunks().find(targets[index]);
+            if (authoritative == nullptr || replica == nullptr) {
+                return core::Status::failure(
+                    "multiplayer_chunk_subscription_benchmark.hot_edit_base_mismatch",
+                    "hot-edit target chunk is missing from the authoritative server or its "
+                    "interested client before command submission");
+            }
+            if (!clients_[index].runtime->local_chunk_snapshot_is_current(*authoritative)) {
+                return core::Status::failure(
+                    "multiplayer_chunk_subscription_benchmark.hot_edit_base_mismatch",
+                    "hot-edit target base mismatch for client " +
+                        std::to_string(clients_[index].id.value()) + ": authoritative " +
+                        std::to_string(authoritative->identity().load_generation) + '/' +
+                        std::to_string(authoritative->content_revision()));
+            }
+            auto previous = authoritative->get(hot_edit_voxel);
+            auto replica_previous = replica->get(hot_edit_voxel);
+            if (!previous || !replica_previous || previous.value() != replica_previous.value()) {
+                return core::Status::failure(
+                    "multiplayer_chunk_subscription_benchmark.hot_edit_cell_mismatch",
+                    "hot-edit target cell must match on the authoritative server and client");
+            }
+            previous_cells.push_back(previous.value());
+
+            const auto prototype = previous.value() == hot_edit_clay_cell_
+                                       ? hot_edit_stone_prototype
+                                       : hot_edit_clay_prototype;
+            auto payload = make_hot_edit_payload(targets[index], prototype);
+            if (!payload) {
+                return core::Status::failure(payload.error().code, payload.error().message);
+            }
+            auto command = clients_[index].runtime->create_command(
+                "world.set_voxel", std::move(payload).value(), now_ms_ + 17);
+            if (!command) {
+                return core::Status::failure(command.error().code, command.error().message);
+            }
+            auto status = server_->submit_command(clients_[index].id, std::move(command).value());
+            if (!status) {
+                return status;
+            }
+        }
+
+        MultiplayerChunkSubscriptionTickSample local_sample;
+        auto tick_result = run_tick(phase, ordinal, record, record ? nullptr : &local_sample);
+        if (!tick_result) {
+            return core::Status::failure(tick_result.error().code, tick_result.error().message);
+        }
+        auto& sample = record ? report_.raw_ticks.back() : local_sample;
+        auto status = verify_hot_edit_tick(tick_result.value(), sample, targets, previous_cells);
+        if (!status) {
+            return status;
+        }
+        if (observed_sample != nullptr) {
+            *observed_sample = record ? sample : std::move(local_sample);
+        }
+        return core::Status::ok();
+    }
+
+    [[nodiscard]] core::Status
     verify_hot_edit_tick(const ServerRuntimeTickStats& stats,
+                         MultiplayerChunkSubscriptionTickSample& sample,
                          const std::vector<world::ChunkCoord>& targets,
                          const std::vector<world::VoxelCell>& previous_cells) {
-        if (report_.raw_ticks.empty() || targets.size() != clients_.size() ||
-            previous_cells.size() != clients_.size()) {
+        if (targets.size() != clients_.size() || previous_cells.size() != clients_.size()) {
             return core::Status::failure(
                 "multiplayer_chunk_subscription_benchmark.incomplete_hot_edit_tick",
-                "hot-edit verification is missing raw tick, target, or prior-cell evidence");
+                "hot-edit verification is missing target or prior-cell evidence");
         }
-        auto& sample = report_.raw_ticks.back();
         const auto client_count = static_cast<std::uint64_t>(clients_.size());
         const auto expected_filtered = client_count * (client_count - 1U);
         if (stats.commands.command_reports.size() != clients_.size() ||
@@ -767,7 +827,8 @@ class BenchmarkRunner final {
     }
 
     [[nodiscard]] core::Result<ServerRuntimeTickStats>
-    run_tick(MultiplayerChunkSubscriptionPhase phase, std::uint32_t phase_ordinal, bool record) {
+    run_tick(MultiplayerChunkSubscriptionPhase phase, std::uint32_t phase_ordinal, bool record,
+             MultiplayerChunkSubscriptionTickSample* observed_sample = nullptr) {
         now_ms_ += 17;
         const auto started = BenchmarkClock::now();
         auto result = server_->run_tick(next_tick_, fixed_delta_seconds, now_ms_);
@@ -846,10 +907,271 @@ class BenchmarkRunner final {
             }
             sample.clients.push_back(traffic);
         }
-        if (record) {
+        if (record && observed_sample != nullptr) {
+            report_.raw_ticks.push_back(sample);
+            *observed_sample = std::move(sample);
+        } else if (record) {
             report_.raw_ticks.push_back(std::move(sample));
+        } else if (observed_sample != nullptr) {
+            *observed_sample = std::move(sample);
         }
         return result;
+    }
+
+    [[nodiscard]] core::Status
+    record_soak_tick(const MultiplayerChunkSubscriptionTickSample& sample) {
+        auto& summary = report_.summary;
+        if (soak_tick_write_index_ >= report_.soak_tick_times_us.size()) {
+            return core::Status::failure(
+                "multiplayer_chunk_subscription_benchmark.soak_evidence_overflow",
+                "soak workload exceeded its preallocated tick-evidence bound");
+        }
+        report_.soak_tick_times_us[soak_tick_write_index_++] = sample.server_tick_time_us;
+        ++summary.soak_tick_count;
+        summary.peak_soak_pending_reliable_messages = std::max(
+            summary.peak_soak_pending_reliable_messages, sample.pending_reliable_message_count);
+        summary.peak_soak_pending_reliable_bytes =
+            std::max(summary.peak_soak_pending_reliable_bytes, sample.pending_reliable_bytes);
+        summary.maximum_soak_partial_snapshot_count =
+            std::max(summary.maximum_soak_partial_snapshot_count, sample.partial_snapshot_count);
+        summary.maximum_soak_stale_publication_count =
+            std::max(summary.maximum_soak_stale_publication_count, sample.stale_publication_count);
+        summary.soak_disconnected_client_count += sample.disconnected_client_count;
+
+        summary.maximum_client_subscription_count = std::max(
+            summary.maximum_client_subscription_count, sample.maximum_client_subscription_count);
+        summary.maximum_added_subscriptions_per_tick =
+            std::max(summary.maximum_added_subscriptions_per_tick, sample.added_subscription_count);
+        summary.maximum_removed_subscriptions_per_tick = std::max(
+            summary.maximum_removed_subscriptions_per_tick, sample.removed_subscription_count);
+        summary.maximum_partial_snapshot_count =
+            std::max(summary.maximum_partial_snapshot_count, sample.partial_snapshot_count);
+        summary.maximum_stale_publication_count =
+            std::max(summary.maximum_stale_publication_count, sample.stale_publication_count);
+        summary.maximum_snapshot_serialization_time_overshoot_us =
+            std::max(summary.maximum_snapshot_serialization_time_overshoot_us,
+                     sample.snapshot_serialization_time_overshoot_us);
+        for (const auto& traffic : sample.clients) {
+            summary.maximum_wire_bytes_per_client_per_tick =
+                std::max(summary.maximum_wire_bytes_per_client_per_tick,
+                         traffic.reliable_wire_bytes + traffic.unreliable_wire_bytes);
+        }
+
+        if (!soak_backlog_active_ && sample.pending_reliable_message_count != 0) {
+            soak_backlog_active_ = true;
+            soak_backlog_recovery_ticks_ = 0;
+            ++summary.soak_observed_backlog_burst_count;
+        } else if (soak_backlog_active_) {
+            ++soak_backlog_recovery_ticks_;
+            if (sample.pending_reliable_message_count == 0) {
+                summary.maximum_soak_backlog_recovery_ticks = std::max(
+                    summary.maximum_soak_backlog_recovery_ticks, soak_backlog_recovery_ticks_);
+                soak_backlog_active_ = false;
+            }
+        }
+
+        if (sample.phase == MultiplayerChunkSubscriptionPhase::soak_edit) {
+            ++summary.soak_edit_tick_count;
+            summary.soak_verified_client_states += sample.verified_hot_edit_client_state_count;
+            summary.soak_verified_cross_region_exclusions +=
+                sample.verified_hot_edit_cross_region_exclusion_count;
+        }
+        return core::Status::ok();
+    }
+
+    [[nodiscard]] core::Result<std::uint32_t>
+    run_soak_transition(std::uint32_t ordinal, const std::vector<world::ChunkCoord>& centers,
+                        const std::vector<std::vector<world::ChunkCoord>>& expected_markers,
+                        bool measured) {
+        for (std::size_t index = 0; index < clients_.size(); ++index) {
+            auto status = set_client_center(clients_[index], centers[index]);
+            if (!status) {
+                return core::Result<std::uint32_t>::failure(status.error().code,
+                                                            status.error().message);
+            }
+        }
+        for (std::uint32_t elapsed_ticks = 1; elapsed_ticks <= config_.transition_timeout_ticks;
+             ++elapsed_ticks) {
+            MultiplayerChunkSubscriptionTickSample sample;
+            auto tick_result = run_tick(MultiplayerChunkSubscriptionPhase::soak_transition, ordinal,
+                                        false, &sample);
+            if (!tick_result) {
+                return core::Result<std::uint32_t>::failure(tick_result.error().code,
+                                                            tick_result.error().message);
+            }
+            if (measured) {
+                auto status = record_soak_tick(sample);
+                if (!status) {
+                    return core::Result<std::uint32_t>::failure(status.error().code,
+                                                                status.error().message);
+                }
+            }
+            if (transition_is_complete(centers, expected_markers)) {
+                return core::Result<std::uint32_t>::success(elapsed_ticks);
+            }
+        }
+        return core::Result<std::uint32_t>::failure(
+            "multiplayer_chunk_subscription_benchmark.soak_transition_timeout",
+            "a soak traversal did not converge before the configured tick bound");
+    }
+
+    [[nodiscard]] core::Result<MultiplayerChunkSubscriptionTickSample>
+    run_soak_cycle(std::uint32_t cycle, bool measured) {
+        const auto first_ordinal = (cycle - 1U) * 2U;
+        auto away = run_soak_transition(first_ordinal, spread_centers_, spread_markers_, measured);
+        if (!away) {
+            return core::Result<MultiplayerChunkSubscriptionTickSample>::failure(
+                away.error().code, away.error().message);
+        }
+        auto returned =
+            run_soak_transition(first_ordinal + 1U, hot_edit_centers_, hot_edit_markers_, measured);
+        if (!returned) {
+            return core::Result<MultiplayerChunkSubscriptionTickSample>::failure(
+                returned.error().code, returned.error().message);
+        }
+        if (measured) {
+            report_.summary.maximum_soak_transition_convergence_ticks =
+                std::max({report_.summary.maximum_soak_transition_convergence_ticks, away.value(),
+                          returned.value()});
+        }
+
+        MultiplayerChunkSubscriptionTickSample final_sample;
+        for (std::uint32_t edit = 0; edit < 2; ++edit) {
+            MultiplayerChunkSubscriptionTickSample sample;
+            auto status = run_hot_edit_tick(MultiplayerChunkSubscriptionPhase::soak_edit,
+                                            first_ordinal + edit, false, &sample);
+            if (!status) {
+                return core::Result<MultiplayerChunkSubscriptionTickSample>::failure(
+                    status.error().code, status.error().message);
+            }
+            if (measured) {
+                status = record_soak_tick(sample);
+                if (!status) {
+                    return core::Result<MultiplayerChunkSubscriptionTickSample>::failure(
+                        status.error().code, status.error().message);
+                }
+            }
+            final_sample = std::move(sample);
+        }
+        return core::Result<MultiplayerChunkSubscriptionTickSample>::success(
+            std::move(final_sample));
+    }
+
+    [[nodiscard]] MultiplayerChunkSubscriptionSoakSample
+    capture_soak_sample(std::uint32_t cycle,
+                        const MultiplayerChunkSubscriptionTickSample& final_tick_sample) const {
+        MultiplayerChunkSubscriptionSoakSample sample;
+        sample.cycle = cycle;
+        sample.tick = final_tick_sample.tick;
+        const auto chunk_stats = server_->world().chunks().stats();
+        sample.server_world_chunk_count = chunk_stats.chunk_count;
+        sample.server_voxel_edit_count = chunk_stats.edit_count;
+        sample.server_entity_count = server_->entities().stats().live_entities;
+        const auto& collision = server_->chunk_collision().stats();
+        sample.server_collision_body_count = collision.resident_body_count;
+        sample.subscription_count = final_tick_sample.subscription_count;
+        sample.settled_queue_depth = server_->host().pending_outbound_message_count() +
+                                     collision.pending_chunk_count + collision.in_flight_job_count +
+                                     collision.completed_mailbox_count +
+                                     collision.pending_collision_response_count;
+        sample.settled_queue_bytes = server_->host().pending_outbound_bytes();
+
+        const auto& lighting = server_->chunk_lighting().stats();
+        sample.settled_queue_depth += lighting.snapshot_pending_cell_count +
+                                      lighting.completed_mailbox_count +
+                                      lighting.pending_relight_response_count +
+                                      static_cast<std::size_t>(lighting.snapshot_in_progress) +
+                                      static_cast<std::size_t>(lighting.solve_in_flight);
+        const auto& fluids = server_->chunk_fluids().stats();
+        sample.settled_queue_depth += fluids.active_cell_count;
+        if (const auto* loading = server_->chunk_loading_stats(); loading != nullptr) {
+            sample.settled_queue_depth += loading->in_flight_requests +
+                                          loading->completed_mailbox_count +
+                                          loading->ready_for_publication_count;
+            sample.settled_queue_bytes += loading->reserved_working_bytes;
+        }
+
+        for (const auto& client : clients_) {
+            const auto resources = client.runtime->resource_counts();
+            sample.total_client_chunk_count += resources.world_chunks;
+            sample.total_client_owned_record_count += resources.total_owned_records();
+            sample.total_client_partial_snapshot_count += resources.partial_chunk_snapshots;
+            sample.total_client_retained_command_result_count += resources.retained_command_results;
+            const auto queues = client.runtime->session().stats();
+            sample.settled_queue_depth +=
+                queues.pending_command_count + queues.queued_result_count +
+                queues.queued_replication_batch_count + queues.queued_replication_event_count +
+                queues.queued_replication_message_count;
+        }
+
+        const auto process = sample_process_resources(ProcessMemoryDetail::precise);
+        sample.resident_memory_bytes = process.resident_memory_bytes;
+        sample.proportional_set_size_bytes = process.proportional_set_size_bytes;
+        sample.private_resident_memory_bytes = process.private_resident_memory_bytes;
+        sample.thread_count = process.thread_count;
+        sample.open_file_count = process.open_file_count;
+        sample.precise_memory_accounting = process.precise_memory_accounting;
+        return sample;
+    }
+
+    [[nodiscard]] core::Status run_soak_workload() {
+        const auto maximum_ticks_per_cycle =
+            static_cast<std::size_t>(config_.transition_timeout_ticks) * 2U + 2U;
+        const auto maximum_soak_ticks =
+            static_cast<std::size_t>(config_.soak_cycles) * maximum_ticks_per_cycle;
+        // Allocate and touch all retained soak evidence before the memory baseline. Otherwise the
+        // benchmark report itself would manufacture the upward working-set trend it is measuring.
+        report_.soak_tick_times_us.assign(maximum_soak_ticks, 0);
+        report_.soak_samples.assign(static_cast<std::size_t>(config_.soak_cycles) + 1U, {});
+        std::ranges::fill(report_.soak_tick_times_us, 0);
+        std::ranges::fill(report_.soak_samples, MultiplayerChunkSubscriptionSoakSample{});
+
+        // Drive bounded histories through their caps and exercise the edit allocation path before
+        // sampling. The configured even count restores the original voxel state.
+        for (std::uint32_t edit = 0; edit < config_.soak_conditioning_edit_ticks; ++edit) {
+            auto status = run_hot_edit_tick(MultiplayerChunkSubscriptionPhase::soak_edit, edit,
+                                            false, nullptr);
+            if (!status) {
+                return status;
+            }
+        }
+        for (std::uint32_t cycle = 1; cycle <= config_.soak_conditioning_cycles; ++cycle) {
+            auto conditioned = run_soak_cycle(cycle, false);
+            if (!conditioned) {
+                return core::Status::failure(conditioned.error().code, conditioned.error().message);
+            }
+        }
+
+        for (std::uint32_t sample = 0; sample < 3; ++sample) {
+            (void)sample_process_resources(ProcessMemoryDetail::precise);
+        }
+        MultiplayerChunkSubscriptionTickSample baseline_tick;
+        auto baseline_status = run_hot_edit_tick(MultiplayerChunkSubscriptionPhase::soak_edit, 0,
+                                                 false, &baseline_tick);
+        if (!baseline_status) {
+            return baseline_status;
+        }
+        auto restored_status = run_hot_edit_tick(MultiplayerChunkSubscriptionPhase::soak_edit, 1,
+                                                 false, &baseline_tick);
+        if (!restored_status) {
+            return restored_status;
+        }
+        report_.soak_samples.front() = capture_soak_sample(0, baseline_tick);
+
+        for (std::uint32_t cycle = 1; cycle <= config_.soak_cycles; ++cycle) {
+            auto result = run_soak_cycle(cycle, true);
+            if (!result) {
+                return core::Status::failure(result.error().code, result.error().message);
+            }
+            report_.soak_samples[cycle] = capture_soak_sample(cycle, result.value());
+        }
+        report_.soak_tick_times_us.resize(soak_tick_write_index_);
+        if (soak_backlog_active_) {
+            return core::Status::failure(
+                "multiplayer_chunk_subscription_benchmark.soak_backlog_not_recovered",
+                "the measured soak ended with an unresolved reliable backlog burst");
+        }
+        return core::Status::ok();
     }
 
     [[nodiscard]] core::Status drain_and_synchronize(BenchmarkClient& client,
@@ -1093,6 +1415,83 @@ class BenchmarkRunner final {
         for (auto& [_, total] : client_totals) {
             summary.clients.push_back(std::move(total));
         }
+        summary.soak_server_tick_p50_ms = percentile_ms(report_.soak_tick_times_us, 50);
+        summary.soak_server_tick_p95_ms = percentile_ms(report_.soak_tick_times_us, 95);
+        summary.soak_server_tick_p99_ms = percentile_ms(report_.soak_tick_times_us, 99);
+        summary.maximum_soak_server_tick_ms =
+            report_.soak_tick_times_us.empty()
+                ? 0.0
+                : static_cast<double>(*std::ranges::max_element(report_.soak_tick_times_us)) /
+                      1'000.0;
+        summary.soak_expected_client_states = summary.soak_edit_tick_count * config_.client_count;
+        summary.soak_expected_cross_region_exclusions =
+            summary.soak_expected_client_states * (config_.client_count - 1U);
+
+        if (!report_.soak_samples.empty()) {
+            const auto& baseline = report_.soak_samples.front();
+            const auto& final = report_.soak_samples.back();
+            summary.soak_baseline_server_world_chunk_count = baseline.server_world_chunk_count;
+            summary.soak_final_server_world_chunk_count = final.server_world_chunk_count;
+            summary.soak_baseline_server_voxel_edit_count = baseline.server_voxel_edit_count;
+            summary.soak_final_server_voxel_edit_count = final.server_voxel_edit_count;
+            summary.soak_baseline_total_client_chunk_count = baseline.total_client_chunk_count;
+            summary.soak_final_total_client_chunk_count = final.total_client_chunk_count;
+            summary.soak_baseline_total_client_owned_record_count =
+                baseline.total_client_owned_record_count;
+            summary.soak_final_total_client_owned_record_count =
+                final.total_client_owned_record_count;
+            for (const auto& sample : report_.soak_samples) {
+                summary.soak_peak_server_world_chunk_count = std::max(
+                    summary.soak_peak_server_world_chunk_count, sample.server_world_chunk_count);
+                summary.soak_peak_server_voxel_edit_count = std::max(
+                    summary.soak_peak_server_voxel_edit_count, sample.server_voxel_edit_count);
+                summary.soak_peak_total_client_chunk_count = std::max(
+                    summary.soak_peak_total_client_chunk_count, sample.total_client_chunk_count);
+                summary.soak_peak_total_client_owned_record_count =
+                    std::max(summary.soak_peak_total_client_owned_record_count,
+                             sample.total_client_owned_record_count);
+                summary.maximum_soak_settled_queue_depth =
+                    std::max(summary.maximum_soak_settled_queue_depth, sample.settled_queue_depth);
+                summary.maximum_soak_settled_queue_bytes =
+                    std::max(summary.maximum_soak_settled_queue_bytes, sample.settled_queue_bytes);
+            }
+            summary.soak_process_memory_available =
+                std::ranges::all_of(report_.soak_samples, [](const auto& sample) {
+                    return sample.precise_memory_accounting &&
+                           sample.resident_memory_bytes.has_value() &&
+                           sample.proportional_set_size_bytes.has_value() &&
+                           sample.private_resident_memory_bytes.has_value();
+                });
+            if (summary.soak_process_memory_available) {
+                summary.soak_baseline_resident_memory_bytes = *baseline.resident_memory_bytes;
+                summary.soak_final_resident_memory_bytes = *final.resident_memory_bytes;
+                summary.soak_baseline_private_memory_bytes =
+                    *baseline.private_resident_memory_bytes;
+                summary.soak_final_private_memory_bytes = *final.private_resident_memory_bytes;
+                for (const auto& sample : report_.soak_samples) {
+                    summary.soak_peak_resident_memory_bytes = std::max(
+                        summary.soak_peak_resident_memory_bytes, *sample.resident_memory_bytes);
+                    summary.soak_peak_private_memory_bytes =
+                        std::max(summary.soak_peak_private_memory_bytes,
+                                 *sample.private_resident_memory_bytes);
+                }
+                summary.soak_private_memory_growth_bytes =
+                    signed_difference(summary.soak_final_private_memory_bytes,
+                                      summary.soak_baseline_private_memory_bytes);
+                summary.soak_private_memory_slope_bytes_per_cycle =
+                    private_memory_slope_bytes_per_cycle(report_.soak_samples);
+            }
+            if (baseline.thread_count.has_value() && final.thread_count.has_value()) {
+                summary.soak_thread_count_growth =
+                    signed_difference(static_cast<std::uint64_t>(*final.thread_count),
+                                      static_cast<std::uint64_t>(*baseline.thread_count));
+            }
+            if (baseline.open_file_count.has_value() && final.open_file_count.has_value()) {
+                summary.soak_open_file_count_growth =
+                    signed_difference(static_cast<std::uint64_t>(*final.open_file_count),
+                                      static_cast<std::uint64_t>(*baseline.open_file_count));
+            }
+        }
         summary.final_pending_reliable_messages = server_->host().pending_outbound_message_count();
         summary.final_pending_reliable_bytes = server_->host().pending_outbound_bytes();
         const auto final_clients = server_->chunk_subscription_clients();
@@ -1130,6 +1529,12 @@ class BenchmarkRunner final {
                 config_.maximum_hot_edit_server_tick_p99_ms);
         maximum("maximum_hot_edit_server_tick_ms", summary.maximum_hot_edit_server_tick_ms,
                 config_.maximum_hot_edit_server_tick_ms);
+        maximum("soak_server_tick_p95_ms", summary.soak_server_tick_p95_ms,
+                config_.maximum_server_tick_p95_ms);
+        maximum("soak_server_tick_p99_ms", summary.soak_server_tick_p99_ms,
+                config_.maximum_server_tick_p99_ms);
+        maximum("maximum_soak_server_tick_ms", summary.maximum_soak_server_tick_ms,
+                config_.maximum_server_tick_ms);
         maximum("maximum_transition_convergence_ticks",
                 summary.maximum_transition_convergence_ticks,
                 config_.maximum_transition_convergence_ticks);
@@ -1178,6 +1583,80 @@ class BenchmarkRunner final {
                 static_cast<double>(summary.expected_hot_edit_cross_region_exclusions));
         minimum("final_converged_client_count", summary.final_converged_client_count,
                 config_.client_count);
+        maximum("maximum_soak_transition_convergence_ticks",
+                summary.maximum_soak_transition_convergence_ticks,
+                config_.maximum_transition_convergence_ticks);
+        maximum("maximum_soak_backlog_recovery_ticks", summary.maximum_soak_backlog_recovery_ticks,
+                config_.maximum_backlog_recovery_ticks);
+        minimum("soak_observed_backlog_burst_count", summary.soak_observed_backlog_burst_count,
+                1.0);
+        maximum("maximum_soak_partial_snapshot_count",
+                static_cast<double>(summary.maximum_soak_partial_snapshot_count), 0.0);
+        maximum("maximum_soak_stale_publication_count",
+                static_cast<double>(summary.maximum_soak_stale_publication_count), 0.0);
+        maximum("soak_disconnected_client_count", summary.soak_disconnected_client_count, 0.0);
+        minimum("soak_verified_client_states",
+                static_cast<double>(summary.soak_verified_client_states),
+                static_cast<double>(summary.soak_expected_client_states));
+        minimum("soak_verified_cross_region_exclusions",
+                static_cast<double>(summary.soak_verified_cross_region_exclusions),
+                static_cast<double>(summary.soak_expected_cross_region_exclusions));
+        maximum("soak_peak_server_world_chunk_count",
+                static_cast<double>(summary.soak_peak_server_world_chunk_count),
+                static_cast<double>(summary.soak_baseline_server_world_chunk_count));
+        maximum("soak_peak_server_voxel_edit_count",
+                static_cast<double>(summary.soak_peak_server_voxel_edit_count),
+                static_cast<double>(summary.soak_baseline_server_voxel_edit_count));
+        maximum("soak_peak_total_client_chunk_count",
+                static_cast<double>(summary.soak_peak_total_client_chunk_count),
+                static_cast<double>(summary.soak_baseline_total_client_chunk_count));
+        maximum("soak_peak_total_client_owned_record_count",
+                static_cast<double>(summary.soak_peak_total_client_owned_record_count),
+                static_cast<double>(summary.soak_baseline_total_client_owned_record_count));
+        maximum("soak_final_server_world_chunk_count",
+                static_cast<double>(summary.soak_final_server_world_chunk_count),
+                static_cast<double>(summary.soak_baseline_server_world_chunk_count));
+        minimum("soak_final_server_world_chunk_count",
+                static_cast<double>(summary.soak_final_server_world_chunk_count),
+                static_cast<double>(summary.soak_baseline_server_world_chunk_count));
+        maximum("soak_final_server_voxel_edit_count",
+                static_cast<double>(summary.soak_final_server_voxel_edit_count),
+                static_cast<double>(summary.soak_baseline_server_voxel_edit_count));
+        minimum("soak_final_server_voxel_edit_count",
+                static_cast<double>(summary.soak_final_server_voxel_edit_count),
+                static_cast<double>(summary.soak_baseline_server_voxel_edit_count));
+        maximum("soak_final_total_client_chunk_count",
+                static_cast<double>(summary.soak_final_total_client_chunk_count),
+                static_cast<double>(summary.soak_baseline_total_client_chunk_count));
+        minimum("soak_final_total_client_chunk_count",
+                static_cast<double>(summary.soak_final_total_client_chunk_count),
+                static_cast<double>(summary.soak_baseline_total_client_chunk_count));
+        maximum("soak_final_total_client_owned_record_count",
+                static_cast<double>(summary.soak_final_total_client_owned_record_count),
+                static_cast<double>(summary.soak_baseline_total_client_owned_record_count));
+        minimum("soak_final_total_client_owned_record_count",
+                static_cast<double>(summary.soak_final_total_client_owned_record_count),
+                static_cast<double>(summary.soak_baseline_total_client_owned_record_count));
+        maximum("maximum_soak_settled_queue_depth",
+                static_cast<double>(summary.maximum_soak_settled_queue_depth), 0.0);
+        maximum("maximum_soak_settled_queue_bytes",
+                static_cast<double>(summary.maximum_soak_settled_queue_bytes), 0.0);
+        maximum("soak_thread_count_growth", static_cast<double>(summary.soak_thread_count_growth),
+                0.0);
+        maximum("soak_open_file_count_growth",
+                static_cast<double>(summary.soak_open_file_count_growth), 0.0);
+        if (config_.require_precise_process_memory) {
+            minimum("soak_process_memory_available",
+                    summary.soak_process_memory_available ? 1.0 : 0.0, 1.0);
+        }
+        if (summary.soak_process_memory_available) {
+            maximum("soak_private_memory_slope_bytes_per_cycle",
+                    summary.soak_private_memory_slope_bytes_per_cycle,
+                    config_.maximum_soak_private_memory_slope_bytes_per_cycle);
+            maximum("soak_private_memory_growth_bytes",
+                    static_cast<double>(summary.soak_private_memory_growth_bytes),
+                    static_cast<double>(config_.maximum_soak_private_memory_growth_bytes));
+        }
         gates.passed = gates.violations.empty();
     }
 
@@ -1197,6 +1676,9 @@ class BenchmarkRunner final {
     std::vector<std::vector<world::ChunkCoord>> hot_edit_markers_;
     world::VoxelCell hot_edit_clay_cell_;
     world::VoxelCell hot_edit_stone_cell_;
+    std::size_t soak_tick_write_index_ = 0;
+    std::uint32_t soak_backlog_recovery_ticks_ = 0;
+    bool soak_backlog_active_ = false;
     std::uint64_t next_tick_ = 1;
     std::int64_t now_ms_ = 0;
 };
@@ -1244,6 +1726,15 @@ void write_client_traffic(std::ostream& output, const MultiplayerChunkClientTick
            << ", \"applied_voxel_edits\": " << traffic.applied_voxel_edits << '}';
 }
 
+template <typename Value>
+void write_json_optional_number(std::ostream& output, const std::optional<Value>& value) {
+    if (value.has_value()) {
+        output << *value;
+    } else {
+        output << "null";
+    }
+}
+
 } // namespace
 
 std::string_view
@@ -1261,6 +1752,10 @@ multiplayer_chunk_subscription_phase_name(MultiplayerChunkSubscriptionPhase phas
         return "hot_edit";
     case MultiplayerChunkSubscriptionPhase::steady_state:
         return "steady_state";
+    case MultiplayerChunkSubscriptionPhase::soak_transition:
+        return "soak_transition";
+    case MultiplayerChunkSubscriptionPhase::soak_edit:
+        return "soak_edit";
     }
     return "unknown";
 }
@@ -1273,11 +1768,17 @@ core::Status MultiplayerChunkSubscriptionBenchmarkConfig::validate() const {
     if (client_count < 2 || client_count > 32 || traversal_steps == 0 ||
         hot_edit_ticks < minimum_hot_edit_ticks_for_p99 ||
         hot_edit_ticks > static_cast<std::uint32_t>(maximum_path_component) || steady_ticks == 0 ||
+        soak_conditioning_edit_ticks < client_command_result_history_capacity ||
+        soak_conditioning_edit_ticks % 2U != 0 || soak_conditioning_cycles == 0 ||
+        soak_cycles < 4 ||
+        soak_conditioning_cycles > static_cast<std::uint32_t>(maximum_path_component) ||
+        soak_cycles > static_cast<std::uint32_t>(maximum_path_component / 2) ||
         warmup_timeout_ticks == 0 || transition_timeout_ticks == 0) {
         return core::Status::failure(
             "multiplayer_chunk_subscription_benchmark.invalid_workload",
-            "benchmark requires 2-32 clients, at least 100 hot-edit samples for P99, and nonzero "
-            "traversal, steady, warmup, and transition bounds");
+            "benchmark requires 2-32 clients, at least 100 hot-edit samples for P99, an even "
+            "conditioning edit count that reaches the bounded client history, at least four soak "
+            "cycles, and nonzero traversal, steady, warmup, and transition bounds");
     }
     const auto minimum_spread =
         static_cast<std::int64_t>(subscriptions.retain_horizontal_radius_chunks) * 2 + 1;
@@ -1311,10 +1812,14 @@ core::Status MultiplayerChunkSubscriptionBenchmarkConfig::validate() const {
         !finite_positive(maximum_disjoint_snapshot_reuse_ratio) ||
         maximum_snapshot_serialization_time_us_per_tick == 0 ||
         maximum_wire_bytes_per_client_per_tick == 0 ||
-        maximum_hot_edit_wire_bytes_per_client_per_tick == 0) {
+        maximum_hot_edit_wire_bytes_per_client_per_tick == 0 ||
+        !std::isfinite(maximum_soak_private_memory_slope_bytes_per_cycle) ||
+        maximum_soak_private_memory_slope_bytes_per_cycle < 0.0 ||
+        maximum_soak_private_memory_growth_bytes == 0) {
         return core::Status::failure(
             "multiplayer_chunk_subscription_benchmark.invalid_gates",
-            "latency, convergence, reuse, serialization, and wire-byte gates must be positive");
+            "latency, convergence, reuse, serialization, wire-byte, and soak-memory gates must be "
+            "finite and nonnegative, with nonzero absolute growth allowance");
     }
     return core::Status::ok();
 }
@@ -1327,10 +1832,12 @@ core::Status MultiplayerChunkSubscriptionBenchmarkReport::validate() const {
     const auto expected_transitions = static_cast<std::size_t>(config.traversal_steps) + 3U;
     if (raw_ticks.empty() || raw_ticks.size() != summary.measured_tick_count ||
         transitions.size() != expected_transitions ||
-        summary.clients.size() != config.client_count) {
+        summary.clients.size() != config.client_count ||
+        soak_tick_times_us.size() != summary.soak_tick_count ||
+        soak_samples.size() != static_cast<std::size_t>(config.soak_cycles) + 1U) {
         return core::Status::failure(
             "multiplayer_chunk_subscription_benchmark.incomplete_report",
-            "benchmark report is missing tick, transition, or per-client evidence");
+            "benchmark report is missing tick, transition, per-client, or soak evidence");
     }
     std::uint64_t previous_tick = 0;
     for (const auto& sample : raw_ticks) {
@@ -1408,6 +1915,50 @@ core::Status MultiplayerChunkSubscriptionBenchmarkReport::validate() const {
             "multiplayer_chunk_subscription_benchmark.incomplete_transition",
             "every cluster, spread, traversal, and hot-edit transition must converge");
     }
+    std::uint64_t previous_soak_tick = 0;
+    for (std::size_t index = 0; index < soak_samples.size(); ++index) {
+        const auto& sample = soak_samples[index];
+        if (static_cast<std::size_t>(sample.cycle) != index || sample.tick <= previous_soak_tick ||
+            sample.server_world_chunk_count == 0 || sample.server_entity_count == 0 ||
+            sample.subscription_count == 0 || sample.total_client_chunk_count == 0 ||
+            sample.total_client_owned_record_count < sample.total_client_chunk_count ||
+            sample.total_client_partial_snapshot_count > sample.total_client_chunk_count ||
+            (sample.precise_memory_accounting &&
+             (!sample.resident_memory_bytes.has_value() ||
+              !sample.proportional_set_size_bytes.has_value() ||
+              !sample.private_resident_memory_bytes.has_value()))) {
+            return core::Status::failure(
+                "multiplayer_chunk_subscription_benchmark.invalid_soak_sample",
+                "soak samples must be ordered, nonempty, and internally consistent");
+        }
+        previous_soak_tick = sample.tick;
+    }
+    const auto expected_soak_edit_ticks = static_cast<std::uint64_t>(config.soak_cycles) * 2U;
+    const auto expected_soak_client_states = expected_soak_edit_ticks * config.client_count;
+    const auto expected_soak_exclusions = expected_soak_client_states * (config.client_count - 1U);
+    const auto memory_available = std::ranges::all_of(soak_samples, [](const auto& sample) {
+        return sample.precise_memory_accounting && sample.resident_memory_bytes.has_value() &&
+               sample.proportional_set_size_bytes.has_value() &&
+               sample.private_resident_memory_bytes.has_value();
+    });
+    if (summary.soak_edit_tick_count != expected_soak_edit_ticks ||
+        summary.soak_expected_client_states != expected_soak_client_states ||
+        summary.soak_verified_client_states != expected_soak_client_states ||
+        summary.soak_expected_cross_region_exclusions != expected_soak_exclusions ||
+        summary.soak_verified_cross_region_exclusions != expected_soak_exclusions ||
+        summary.soak_process_memory_available != memory_available ||
+        summary.soak_baseline_server_world_chunk_count !=
+            soak_samples.front().server_world_chunk_count ||
+        summary.soak_final_server_world_chunk_count !=
+            soak_samples.back().server_world_chunk_count ||
+        summary.soak_baseline_total_client_chunk_count !=
+            soak_samples.front().total_client_chunk_count ||
+        summary.soak_final_total_client_chunk_count !=
+            soak_samples.back().total_client_chunk_count) {
+        return core::Status::failure(
+            "multiplayer_chunk_subscription_benchmark.invalid_soak_summary",
+            "soak summary does not match retained cycle, edit, exclusion, or memory evidence");
+    }
     const auto expected_hot_edit_commands =
         static_cast<std::uint64_t>(config.hot_edit_ticks) * config.client_count;
     const auto expected_hot_edit_exclusions =
@@ -1451,6 +2002,11 @@ core::Status MultiplayerChunkSubscriptionBenchmarkReport::validate() const {
         !std::isfinite(summary.hot_edit_server_tick_p95_ms) ||
         !std::isfinite(summary.hot_edit_server_tick_p99_ms) ||
         !std::isfinite(summary.maximum_hot_edit_server_tick_ms) ||
+        !std::isfinite(summary.soak_server_tick_p50_ms) ||
+        !std::isfinite(summary.soak_server_tick_p95_ms) ||
+        !std::isfinite(summary.soak_server_tick_p99_ms) ||
+        !std::isfinite(summary.maximum_soak_server_tick_ms) ||
+        !std::isfinite(summary.soak_private_memory_slope_bytes_per_cycle) ||
         !std::isfinite(summary.shared_snapshot_reuse_ratio) ||
         !std::isfinite(summary.disjoint_snapshot_reuse_ratio)) {
         return core::Status::failure(
@@ -1481,6 +2037,10 @@ std::string MultiplayerChunkSubscriptionBenchmarkReport::to_json() const {
            << "    \"traversal_steps\": " << config.traversal_steps << ",\n"
            << "    \"hot_edit_ticks\": " << config.hot_edit_ticks << ",\n"
            << "    \"steady_ticks\": " << config.steady_ticks << ",\n"
+           << "    \"soak_conditioning_edit_ticks\": " << config.soak_conditioning_edit_ticks
+           << ",\n"
+           << "    \"soak_conditioning_cycles\": " << config.soak_conditioning_cycles << ",\n"
+           << "    \"soak_cycles\": " << config.soak_cycles << ",\n"
            << "    \"warmup_timeout_ticks\": " << config.warmup_timeout_ticks << ",\n"
            << "    \"transition_timeout_ticks\": " << config.transition_timeout_ticks << ",\n"
            << "    \"spread_distance_chunks\": " << config.spread_distance_chunks << ",\n"
@@ -1525,7 +2085,13 @@ std::string MultiplayerChunkSubscriptionBenchmarkReport::to_json() const {
            << ",\n    \"maximum_wire_bytes_per_client_per_tick\": "
            << config.maximum_wire_bytes_per_client_per_tick
            << ",\n    \"maximum_hot_edit_wire_bytes_per_client_per_tick\": "
-           << config.maximum_hot_edit_wire_bytes_per_client_per_tick << "\n  },\n";
+           << config.maximum_hot_edit_wire_bytes_per_client_per_tick
+           << ",\n    \"maximum_soak_private_memory_slope_bytes_per_cycle\": "
+           << config.maximum_soak_private_memory_slope_bytes_per_cycle
+           << ",\n    \"maximum_soak_private_memory_growth_bytes\": "
+           << config.maximum_soak_private_memory_growth_bytes
+           << ",\n    \"require_precise_process_memory\": "
+           << (config.require_precise_process_memory ? "true" : "false") << "\n  },\n";
 
     const auto& value = summary;
     output
@@ -1612,6 +2178,73 @@ std::string MultiplayerChunkSubscriptionBenchmarkReport::to_json() const {
         << ",\n    \"final_pending_reliable_bytes\": " << value.final_pending_reliable_bytes
         << ",\n    \"final_converged_client_count\": " << value.final_converged_client_count
         << ",\n    \"disconnected_client_count\": " << value.disconnected_client_count
+        << ",\n    \"soak_tick_count\": " << value.soak_tick_count
+        << ",\n    \"soak_server_tick_p50_ms\": " << value.soak_server_tick_p50_ms
+        << ",\n    \"soak_server_tick_p95_ms\": " << value.soak_server_tick_p95_ms
+        << ",\n    \"soak_server_tick_p99_ms\": " << value.soak_server_tick_p99_ms
+        << ",\n    \"maximum_soak_server_tick_ms\": " << value.maximum_soak_server_tick_ms
+        << ",\n    \"soak_edit_tick_count\": " << value.soak_edit_tick_count
+        << ",\n    \"soak_verified_client_states\": " << value.soak_verified_client_states
+        << ",\n    \"soak_expected_client_states\": " << value.soak_expected_client_states
+        << ",\n    \"soak_verified_cross_region_exclusions\": "
+        << value.soak_verified_cross_region_exclusions
+        << ",\n    \"soak_expected_cross_region_exclusions\": "
+        << value.soak_expected_cross_region_exclusions
+        << ",\n    \"maximum_soak_transition_convergence_ticks\": "
+        << value.maximum_soak_transition_convergence_ticks
+        << ",\n    \"soak_observed_backlog_burst_count\": "
+        << value.soak_observed_backlog_burst_count
+        << ",\n    \"maximum_soak_backlog_recovery_ticks\": "
+        << value.maximum_soak_backlog_recovery_ticks
+        << ",\n    \"peak_soak_pending_reliable_messages\": "
+        << value.peak_soak_pending_reliable_messages
+        << ",\n    \"peak_soak_pending_reliable_bytes\": " << value.peak_soak_pending_reliable_bytes
+        << ",\n    \"maximum_soak_partial_snapshot_count\": "
+        << value.maximum_soak_partial_snapshot_count
+        << ",\n    \"maximum_soak_stale_publication_count\": "
+        << value.maximum_soak_stale_publication_count
+        << ",\n    \"soak_disconnected_client_count\": " << value.soak_disconnected_client_count
+        << ",\n    \"soak_process_memory_available\": "
+        << (value.soak_process_memory_available ? "true" : "false")
+        << ",\n    \"soak_baseline_resident_memory_bytes\": "
+        << value.soak_baseline_resident_memory_bytes
+        << ",\n    \"soak_final_resident_memory_bytes\": " << value.soak_final_resident_memory_bytes
+        << ",\n    \"soak_peak_resident_memory_bytes\": " << value.soak_peak_resident_memory_bytes
+        << ",\n    \"soak_baseline_private_memory_bytes\": "
+        << value.soak_baseline_private_memory_bytes
+        << ",\n    \"soak_final_private_memory_bytes\": " << value.soak_final_private_memory_bytes
+        << ",\n    \"soak_peak_private_memory_bytes\": " << value.soak_peak_private_memory_bytes
+        << ",\n    \"soak_private_memory_growth_bytes\": " << value.soak_private_memory_growth_bytes
+        << ",\n    \"soak_private_memory_slope_bytes_per_cycle\": "
+        << value.soak_private_memory_slope_bytes_per_cycle
+        << ",\n    \"soak_baseline_server_world_chunk_count\": "
+        << value.soak_baseline_server_world_chunk_count
+        << ",\n    \"soak_final_server_world_chunk_count\": "
+        << value.soak_final_server_world_chunk_count
+        << ",\n    \"soak_peak_server_world_chunk_count\": "
+        << value.soak_peak_server_world_chunk_count
+        << ",\n    \"soak_baseline_server_voxel_edit_count\": "
+        << value.soak_baseline_server_voxel_edit_count
+        << ",\n    \"soak_final_server_voxel_edit_count\": "
+        << value.soak_final_server_voxel_edit_count
+        << ",\n    \"soak_peak_server_voxel_edit_count\": "
+        << value.soak_peak_server_voxel_edit_count
+        << ",\n    \"soak_baseline_total_client_chunk_count\": "
+        << value.soak_baseline_total_client_chunk_count
+        << ",\n    \"soak_final_total_client_chunk_count\": "
+        << value.soak_final_total_client_chunk_count
+        << ",\n    \"soak_peak_total_client_chunk_count\": "
+        << value.soak_peak_total_client_chunk_count
+        << ",\n    \"soak_baseline_total_client_owned_record_count\": "
+        << value.soak_baseline_total_client_owned_record_count
+        << ",\n    \"soak_final_total_client_owned_record_count\": "
+        << value.soak_final_total_client_owned_record_count
+        << ",\n    \"soak_peak_total_client_owned_record_count\": "
+        << value.soak_peak_total_client_owned_record_count
+        << ",\n    \"maximum_soak_settled_queue_depth\": " << value.maximum_soak_settled_queue_depth
+        << ",\n    \"maximum_soak_settled_queue_bytes\": " << value.maximum_soak_settled_queue_bytes
+        << ",\n    \"soak_thread_count_growth\": " << value.soak_thread_count_growth
+        << ",\n    \"soak_open_file_count_growth\": " << value.soak_open_file_count_growth
         << ",\n    \"clients\": [\n";
     for (std::size_t index = 0; index < value.clients.size(); ++index) {
         const auto& client = value.clients[index];
@@ -1719,6 +2352,42 @@ std::string MultiplayerChunkSubscriptionBenchmarkReport::to_json() const {
             write_client_traffic(output, sample.clients[client]);
         }
         output << "]}" << (index + 1 == raw_ticks.size() ? "\n" : ",\n");
+    }
+    output << "  ],\n  \"soak_tick_times_us\": [";
+    for (std::size_t index = 0; index < soak_tick_times_us.size(); ++index) {
+        output << (index == 0 ? "" : ", ") << soak_tick_times_us[index];
+    }
+    output << "],\n  \"soak_samples\": [\n";
+    for (std::size_t index = 0; index < soak_samples.size(); ++index) {
+        const auto& sample = soak_samples[index];
+        output << "    {\"cycle\": " << sample.cycle << ", \"tick\": " << sample.tick
+               << ", \"server_world_chunk_count\": " << sample.server_world_chunk_count
+               << ", \"server_voxel_edit_count\": " << sample.server_voxel_edit_count
+               << ", \"server_entity_count\": " << sample.server_entity_count
+               << ", \"server_collision_body_count\": " << sample.server_collision_body_count
+               << ", \"subscription_count\": " << sample.subscription_count
+               << ", \"total_client_chunk_count\": " << sample.total_client_chunk_count
+               << ", \"total_client_owned_record_count\": "
+               << sample.total_client_owned_record_count
+               << ", \"total_client_partial_snapshot_count\": "
+               << sample.total_client_partial_snapshot_count
+               << ", \"total_client_retained_command_result_count\": "
+               << sample.total_client_retained_command_result_count
+               << ", \"settled_queue_depth\": " << sample.settled_queue_depth
+               << ", \"settled_queue_bytes\": " << sample.settled_queue_bytes
+               << ", \"resident_memory_bytes\": ";
+        write_json_optional_number(output, sample.resident_memory_bytes);
+        output << ", \"proportional_set_size_bytes\": ";
+        write_json_optional_number(output, sample.proportional_set_size_bytes);
+        output << ", \"private_resident_memory_bytes\": ";
+        write_json_optional_number(output, sample.private_resident_memory_bytes);
+        output << ", \"thread_count\": ";
+        write_json_optional_number(output, sample.thread_count);
+        output << ", \"open_file_count\": ";
+        write_json_optional_number(output, sample.open_file_count);
+        output << ", \"precise_memory_accounting\": "
+               << (sample.precise_memory_accounting ? "true" : "false") << '}'
+               << (index + 1 == soak_samples.size() ? "\n" : ",\n");
     }
     output << "  ],\n  \"gates\": {\n    \"evaluated\": " << (gates.evaluated ? "true" : "false")
            << ",\n    \"passed\": " << (gates.passed ? "true" : "false")

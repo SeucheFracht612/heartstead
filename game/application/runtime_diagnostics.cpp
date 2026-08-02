@@ -3,7 +3,11 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
+#include <optional>
 #include <sstream>
+#include <string>
+#include <string_view>
 
 #if defined(__linux__)
 #include <unistd.h>
@@ -34,6 +38,55 @@ namespace {
     return output.str();
 }
 
+#if defined(__linux__)
+[[nodiscard]] std::optional<std::uint64_t> kib_field_value(std::string_view line,
+                                                           std::string_view expected_name) {
+    if (!line.starts_with(expected_name)) {
+        return std::nullopt;
+    }
+    std::istringstream fields{std::string(line.substr(expected_name.size()))};
+    std::uint64_t kibibytes = 0;
+    std::string unit;
+    if (!(fields >> kibibytes >> unit) || unit != "kB" ||
+        kibibytes > std::numeric_limits<std::uint64_t>::max() / 1024U) {
+        return std::nullopt;
+    }
+    return kibibytes * 1024U;
+}
+
+void sample_precise_linux_memory(ProcessResourceSample& sample) noexcept {
+    std::ifstream rollup("/proc/self/smaps_rollup");
+    if (!rollup) {
+        return;
+    }
+    std::optional<std::uint64_t> precise_rss;
+    std::optional<std::uint64_t> proportional_set_size;
+    std::optional<std::uint64_t> private_clean;
+    std::optional<std::uint64_t> private_dirty;
+    std::string line;
+    while (std::getline(rollup, line)) {
+        if (auto rss = kib_field_value(line, "Rss:")) {
+            precise_rss = *rss;
+        } else if (auto pss = kib_field_value(line, "Pss:")) {
+            proportional_set_size = *pss;
+        } else if (auto clean = kib_field_value(line, "Private_Clean:")) {
+            private_clean = *clean;
+        } else if (auto dirty = kib_field_value(line, "Private_Dirty:")) {
+            private_dirty = *dirty;
+        }
+    }
+    if (!precise_rss.has_value() || !proportional_set_size.has_value() ||
+        !private_clean.has_value() || !private_dirty.has_value() ||
+        *private_clean > std::numeric_limits<std::uint64_t>::max() - *private_dirty) {
+        return;
+    }
+    sample.resident_memory_bytes = *precise_rss;
+    sample.proportional_set_size_bytes = *proportional_set_size;
+    sample.private_resident_memory_bytes = *private_clean + *private_dirty;
+    sample.precise_memory_accounting = true;
+}
+#endif
+
 } // namespace
 
 void FrameRateCounter::record_frame(std::uint64_t delta_microseconds) noexcept {
@@ -63,7 +116,7 @@ FrameRateSample FrameRateCounter::sample() const noexcept {
     return sample_;
 }
 
-ProcessResourceSample sample_process_resources() noexcept {
+ProcessResourceSample sample_process_resources(ProcessMemoryDetail memory_detail) noexcept {
     ProcessResourceSample sample;
 #if defined(__linux__)
     std::ifstream statm("/proc/self/statm");
@@ -77,8 +130,13 @@ ProcessResourceSample sample_process_resources() noexcept {
                 resident_pages * static_cast<std::uint64_t>(page_size);
         }
     }
+    if (memory_detail == ProcessMemoryDetail::precise) {
+        sample_precise_linux_memory(sample);
+    }
     sample.thread_count = directory_entry_count("/proc/self/task");
     sample.open_file_count = directory_entry_count("/proc/self/fd");
+#else
+    (void)memory_detail;
 #endif
     return sample;
 }
@@ -150,9 +208,23 @@ std::string format_runtime_diagnostics(const RuntimeDiagnosticsSnapshot& snapsho
     }
     output << "\nprocess RSS ";
     if (snapshot.process.resident_memory_bytes.has_value())
-        output << bytes_text(*snapshot.process.resident_memory_bytes);
+        output << bytes_text(*snapshot.process.resident_memory_bytes)
+               << (snapshot.process.precise_memory_accounting ? " (smaps)" : " (statm)");
     else
         output << "unavailable";
+    if (snapshot.process.private_resident_memory_bytes.has_value() ||
+        snapshot.process.proportional_set_size_bytes.has_value()) {
+        output << " | private ";
+        if (snapshot.process.private_resident_memory_bytes.has_value())
+            output << bytes_text(*snapshot.process.private_resident_memory_bytes);
+        else
+            output << "unavailable";
+        output << " | PSS ";
+        if (snapshot.process.proportional_set_size_bytes.has_value())
+            output << bytes_text(*snapshot.process.proportional_set_size_bytes);
+        else
+            output << "unavailable";
+    }
     output << " | threads ";
     if (snapshot.process.thread_count.has_value())
         output << *snapshot.process.thread_count;

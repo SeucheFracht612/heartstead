@@ -145,6 +145,13 @@ validate_observed_voxel_edits(std::span<const world::OperationEvent> observed_ev
 
 } // namespace
 
+std::size_t ClientRuntimeResourceCounts::total_owned_records() const noexcept {
+    return world_chunks + remote_chunk_revisions + partial_chunk_snapshots +
+           retained_command_results + movement_snapshots + remote_player_interpolators +
+           entity_motion_snapshots + equipment_loadouts + unacknowledged_prediction_inputs +
+           player_tombstones + accepted_voxel_edits;
+}
+
 ClientRuntime::ClientRuntime(core::NetId expected_client_id, world::WorldStateDesc world_desc,
                              const ReplicationRegistry* replication_registry,
                              const world::VoxelPalette* movement_palette)
@@ -571,6 +578,22 @@ net::ClientSession& ClientRuntime::session() noexcept {
 
 const net::ClientSession& ClientRuntime::session() const noexcept {
     return session_;
+}
+
+ClientRuntimeResourceCounts ClientRuntime::resource_counts() const noexcept {
+    return {
+        .world_chunks = world_.chunks().chunk_count(),
+        .remote_chunk_revisions = remote_chunks_.size(),
+        .partial_chunk_snapshots = chunk_snapshot_assemblies_.size(),
+        .retained_command_results = command_results_.size(),
+        .movement_snapshots = movement_snapshots_.size(),
+        .remote_player_interpolators = remote_player_interpolators_.size(),
+        .entity_motion_snapshots = entity_motion_snapshots_.size(),
+        .equipment_loadouts = equipment_loadouts_.size(),
+        .unacknowledged_prediction_inputs = prediction_buffer_.size(),
+        .player_tombstones = player_tombstones_.size(),
+        .accepted_voxel_edits = accepted_voxel_edits_.size(),
+    };
 }
 
 std::span<const net::HostSessionCommandResult> ClientRuntime::command_results() const noexcept {

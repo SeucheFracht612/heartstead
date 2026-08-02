@@ -10,10 +10,22 @@
 
 namespace heartstead::game {
 
+enum class ProcessMemoryDetail {
+    // Suitable for live diagnostics. Linux uses the inexpensive, asynchronously maintained statm
+    // RSS value and does not walk the process page tables.
+    approximate,
+    // Suitable for sparse benchmark samples. Linux replaces RSS and adds PSS/private bytes from
+    // smaps_rollup, whose page-table walk is deliberately kept off the per-frame F3 path.
+    precise,
+};
+
 struct ProcessResourceSample {
     std::optional<std::uint64_t> resident_memory_bytes;
+    std::optional<std::uint64_t> proportional_set_size_bytes;
+    std::optional<std::uint64_t> private_resident_memory_bytes;
     std::optional<std::size_t> thread_count;
     std::optional<std::size_t> open_file_count;
+    bool precise_memory_accounting = false;
 };
 
 struct RuntimeDiagnosticsSnapshot {
@@ -87,7 +99,8 @@ class FrameRateCounter {
     FrameRateSample sample_{};
 };
 
-[[nodiscard]] ProcessResourceSample sample_process_resources() noexcept;
+[[nodiscard]] ProcessResourceSample sample_process_resources(
+    ProcessMemoryDetail memory_detail = ProcessMemoryDetail::approximate) noexcept;
 [[nodiscard]] std::string format_runtime_diagnostics(const RuntimeDiagnosticsSnapshot& snapshot);
 [[nodiscard]] std::string format_frame_rate(FrameRateSample sample);
 
