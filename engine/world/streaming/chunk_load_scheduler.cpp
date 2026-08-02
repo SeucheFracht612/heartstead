@@ -407,8 +407,6 @@ ChunkLoadPublicationReport ChunkLoadScheduler::update(WorldState& state) {
         ready_for_publication_.pop_front();
         const auto active = active_requests_.find(result.request_id);
         if (active != active_requests_.end()) {
-            result.pipeline_latency_ms =
-                elapsed_milliseconds(active->second.submitted_at, SchedulerClock::now());
             if (active->second.cancellation->load(std::memory_order_acquire)) {
                 result.state = ChunkLoadResultState::cancelled;
                 result.prepared.reset();
@@ -428,6 +426,7 @@ ChunkLoadPublicationReport ChunkLoadScheduler::update(WorldState& state) {
             report.failures.push_back(
                 {result.request_id, result.coord, {std::move(code), std::move(message)}});
         } else if (state.chunks().contains(result.coord)) {
+            result.state = ChunkLoadResultState::stale;
             report.stale.push_back(result.coord);
             ++stats_.stale_requests;
         } else {
@@ -450,6 +449,11 @@ ChunkLoadPublicationReport ChunkLoadScheduler::update(WorldState& state) {
             }
         }
 
+        if (active != active_requests_.end()) {
+            result.pipeline_latency_ms =
+                elapsed_milliseconds(active->second.submitted_at, SchedulerClock::now());
+        }
+
         stats_.last_disk_read_ms = result.disk_read_ms;
         stats_.last_decode_ms = result.decode_ms;
         stats_.last_generation_ms = result.generation_ms;
@@ -458,6 +462,10 @@ ChunkLoadPublicationReport ChunkLoadScheduler::update(WorldState& state) {
         stats_.last_pipeline_latency_ms = result.pipeline_latency_ms;
         stats_.maximum_pipeline_latency_ms =
             std::max(stats_.maximum_pipeline_latency_ms, result.pipeline_latency_ms);
+        report.timings.push_back({result.request_id, result.coord, result.state, result.source,
+                                  result.saved_edit_count, result.disk_read_ms, result.decode_ms,
+                                  result.generation_ms, result.prepare_ms, result.worker_ms,
+                                  result.pipeline_latency_ms});
         finish_request(result);
     }
 
@@ -546,6 +554,8 @@ const char* chunk_load_result_state_name(ChunkLoadResultState state) noexcept {
         return "failed";
     case ChunkLoadResultState::cancelled:
         return "cancelled";
+    case ChunkLoadResultState::stale:
+        return "stale";
     }
     return "unknown";
 }

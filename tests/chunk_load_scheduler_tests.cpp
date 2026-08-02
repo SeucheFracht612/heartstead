@@ -136,6 +136,9 @@ void test_bounded_background_load_and_publication() {
     world::WorldState state;
     auto first_publication = scheduler->update(state);
     assert(first_publication.processed_count() == 1);
+    assert(first_publication.timings.size() == 1);
+    assert(first_publication.timings.front().state == world::ChunkLoadResultState::succeeded);
+    assert(first_publication.timings.front().pipeline_latency_ms > 0.0);
     assert(first_publication.item_budget_exhausted);
     assert(scheduler->stats().ready_for_publication_count == 1);
     auto second_publication = scheduler->update(state);
@@ -200,6 +203,8 @@ void test_cancellation_failure_stale_and_memory_backpressure() {
     auto stale_report = scheduler->update(state);
     const std::vector<world::ChunkCoord> expected_stale{{4, 0, 0}};
     assert(stale_report.stale == expected_stale);
+    assert(stale_report.timings.size() == 1);
+    assert(stale_report.timings.front().state == world::ChunkLoadResultState::stale);
     assert(scheduler->stats().stale_requests == 1);
 
     auto malformed_source = std::make_shared<TestDeltaSource>();

@@ -27,6 +27,7 @@ enum class ChunkLoadResultState : std::uint8_t {
     succeeded,
     failed,
     cancelled,
+    stale,
 };
 
 struct ChunkLoadSchedulerConfig {
@@ -72,12 +73,30 @@ struct ChunkLoadFailure {
     core::Error error;
 };
 
+// One bounded, owner-thread observation for every result processed by update(). Pipeline latency
+// ends after publication/rejection so benchmark consumers measure the complete request lifecycle,
+// not merely worker completion.
+struct ChunkLoadTimingSample {
+    ChunkLoadRequestId request_id;
+    ChunkCoord coord;
+    ChunkLoadResultState state = ChunkLoadResultState::failed;
+    ChunkStreamLoadSource source = ChunkStreamLoadSource::generated;
+    std::size_t saved_edit_count = 0;
+    double disk_read_ms = 0.0;
+    double decode_ms = 0.0;
+    double generation_ms = 0.0;
+    double prepare_ms = 0.0;
+    double worker_ms = 0.0;
+    double pipeline_latency_ms = 0.0;
+};
+
 struct ChunkLoadPublicationReport {
     std::size_t collected_worker_results = 0;
     std::vector<ChunkStreamLoadReport> published;
     std::vector<ChunkCoord> cancelled;
     std::vector<ChunkCoord> stale;
     std::vector<ChunkLoadFailure> failures;
+    std::vector<ChunkLoadTimingSample> timings;
     std::uint64_t publication_time_us = 0;
     bool item_budget_exhausted = false;
     bool time_budget_exhausted = false;
