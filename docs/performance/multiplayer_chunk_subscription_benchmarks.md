@@ -220,5 +220,7 @@ ctest --test-dir build/default-debug-werror --output-on-failure \
 This is a deterministic, in-process chunk-interest benchmark. It does not simulate RTT, jitter,
 loss, retransmission, socket fragmentation, malicious clients, multi-hour soak, or whole-process
 memory growth. It closes the reproducible spread/convergence/traversal, isolated hot-region edit,
-spatial relevance, clean-host P99, and revision-safe client ordering slices. Impaired-network and
-soak acceptance remain M6 work.
+spatial relevance, clean-host P99, and revision-safe client ordering slices. The separate
+[multiplayer network-impairment benchmark](multiplayer_network_impairment_benchmarks.md) closes the
+maintained deterministic single-client 100 ms RTT / 2% unreliable-loss profile. Multi-client
+impairment and long-soak acceptance remain M6 work.

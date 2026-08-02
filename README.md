@@ -132,6 +132,8 @@ Start at the [documentation index](docs/README.md).
   generated interest through exact mesh upload and production draw-command eligibility.
 - [Predictive streaming benchmarks](docs/performance/predictive_streaming_benchmarks.md) — paired
   baseline/predictive traversal, cancellation, visible-hole, and bounded-residency evidence.
+- [Multiplayer network-impairment benchmarks](docs/performance/multiplayer_network_impairment_benchmarks.md)
+  — deterministic RTT/loss prediction, correction, bandwidth, backlog, and server-P99 evidence.
 - [Asset pipeline](docs/asset_pipeline.md) — contributor formats, importing, cooking, and limits.
 - [Asset Lab](docs/asset_lab.md) — production asset and presentation inspection.
 - [Environment rendering](docs/architecture/environment_rendering.md) — atmosphere, water,

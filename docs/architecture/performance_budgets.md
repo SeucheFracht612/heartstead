@@ -133,8 +133,9 @@ codec call that crosses a global or client time boundary may complete, with its 
 reported and bounded to that one operation. Rotating clients, sources, and snapshot classes prevent
 persistent low-identity preference. Reliable correctness traffic and tombstones are outside this
 controller; the host's separate 256 KiB/client encoded-wire window still applies. These defaults are
-implementation safety rails pending multi-client spread, convergence, impaired-network recovery,
-P99, and soak calibration; they are not yet an M6 acceptance gate. See
+implementation safety rails. Clean eight-client spread/P99 and the maintained single-client
+impaired prediction profile are calibrated; multi-client impairment and long-soak calibration
+remain before M6 acceptance. See
 [Networking architecture](networking.md#transient-tick-admission).
 
 Reliable correctness traffic uses a separate encoded-wire backlog and drain envelope:
@@ -172,7 +173,18 @@ P95/P99/max gates and a 2 KiB exact wire gate. Three clean post-ordering Release
 median hot P95/P99/max of 0.381/0.409/0.504 ms, 860 peak bytes/client/tick, exact apply for all 960
 edits, all 6,720 foreign-region exclusions, 960 delta publication advances/avoided full snapshots,
 and zero gaps. Focused tests separately prove revision-safe mixed snapshot/delta intake. These are
-clean in-process chunk-interest and isolated material-edit gates, not impaired-network or soak SLOs.
+clean in-process chunk-interest and isolated material-edit gates, not multi-client impairment or
+soak SLOs.
+
+The maintained single-client impairment profile adds 600 raw ticks at 100 ms nominal RTT, uniform
+plus-or-minus 10 ms configured delay variation, and 2% unreliable loss. Its independent
+12.5/16.667/50 ms server P95/P99/max, greater-than-90% input acceptance, one-correction/1 m,
+64 KiB/s average, 256 KiB rolling-second, 128-message in-flight impairment, zero reliable-backlog,
+and zero transport-error gates all pass. Three clean Release processes measured median server
+P95/P99/max of 0.018/0.019/0.682 ms, 99.667% measured-interval input acceptance, zero hard
+corrections, 0.075 m maximum soft correction, 22,253.6 encoded server-to-client bytes/s, and a
+34,103-byte rolling-second peak. See
+[Multiplayer network-impairment benchmarks](../performance/multiplayer_network_impairment_benchmarks.md).
 
 High defaults include 16 visible terrain chunks horizontally with mesh/resident/load hysteresis,
 8 MiB near and 8 MiB far-terrain uploads per frame, 512 MiB generic residency, 1,024 local lights,

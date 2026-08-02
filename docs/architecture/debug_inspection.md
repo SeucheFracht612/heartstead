@@ -25,8 +25,9 @@ Implemented foundation:
   - compiled shader records and shader compile results
   - platform display records
   - script backend, script module, script host API, and script host event records
-  - transport backend records, transport capabilities, server welcome handshake records, and client
-    session records
+  - transport backend records, transport capabilities, server welcome handshake records, client
+    session records, and host-tick maintenance counters including loss-eligible unreliable messages,
+    simulated drops, and in-flight impairment depth
   - command operation traces, dispatch results, host-session command reports/results, and replay
     log/step/report summaries
   - client protocol session records

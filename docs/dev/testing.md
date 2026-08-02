@@ -220,10 +220,12 @@ Validate connection, command results, movement prediction/reconciliation, world 
 disconnect, timeout, and clean shutdown. The dedicated executable is memory-only, so persistence
 must be tested through a local authoritative runtime until dedicated save ownership is implemented.
 
-For impaired-network testing, use `tools/netem_multiplayer.sh` on Linux to apply a documented
-latency/jitter/loss profile. Do not turn one observed packet count or correction distance into a
-permanent architecture claim; keep durable acceptance thresholds in tests and record individual
-runs as artifacts.
+For repeatable impaired-runtime acceptance, run the optimized
+[`heartstead_multiplayer_network_impairment_benchmark`](../performance/multiplayer_network_impairment_benchmarks.md)
+with `--enforce-gates`. For the real socket path, use `tools/netem_multiplayer.sh` on Linux to apply
+a documented latency/delay-variation/loss profile. Do not turn one observed packet count or
+correction distance into a permanent architecture claim; keep durable acceptance thresholds in
+tests and record individual runs as artifacts.
 
 ## Game-shell lifecycle checks
 

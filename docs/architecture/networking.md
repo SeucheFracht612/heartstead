@@ -42,7 +42,10 @@ retained where useful for fixtures, tools, and compatibility inspection.
 
 The in-memory host is used by local server/client compositions and deterministic tests. It assigns
 session IDs, validates payload/client limits, preserves reliable command order, and can apply seeded
-latency, jitter, and unreliable loss without depending on wall-clock scheduling.
+latency, uniform delay variation, and unreliable loss without depending on wall-clock scheduling.
+Maintenance telemetry retains both the unreliable messages eligible for impairment and the subset
+simulated as lost, so an observed sample ratio never uses mixed reliable/unreliable traffic as its
+denominator.
 
 ### POSIX UDP
 
@@ -282,9 +285,26 @@ The committed voxel relevance and isolated material-hot-edit paths are therefore
 clean post-ordering eight-client schema-v2 runs retain exact apply/exclusion evidence, 0.409 ms
 median hot-edit P99, 860 peak bytes/client/tick, 960 contiguous publication advances, 960 avoided
 full snapshots, and zero gaps. Client intake applies exact-next deltas, ignores older deltas covered
-by a newer complete snapshot, and fails closed on revision gaps. Remaining M6 work includes
-impaired-network P99/SLO evidence and long-soak coverage. See
+by a newer complete snapshot, and fails closed on revision gaps. See
 [Multiplayer chunk-subscription benchmarks](../performance/multiplayer_chunk_subscription_benchmarks.md).
+
+## Deterministic impairment profile
+
+The maintained in-memory impairment profile drives the production prediction/runtime path for 600
+measured 60 Hz ticks at 50 ms configured one-way latency, uniform plus-or-minus 10 ms configured
+delay variation, and 2% unreliable loss. Schema-v1 raw rows retain server and runtime timing,
+prediction/reconciliation/correction work, encoded offered-load bytes, a loss-eligible unreliable
+denominator, simulated drops, impairment depth, reliable backlog, and transport failures.
+
+Three clean Release processes passed every 12.5/16.667/50 ms server P95/P99/max gate with median
+0.018/0.019/0.682 ms. Each accepted 598 of 600 inputs inside the measured interval, ended at
+acknowledged sequence 600, made zero hard corrections, stayed below 0.075 m soft correction,
+averaged 22,253.6 encoded server-to-client bytes/s, peaked at 34,103 bytes in a rolling second, and
+kept in-flight impairment at or below 70 against a 128-message cap. The reliable application FIFO
+ended empty and no transport error or disconnect occurred. This closes the deterministic impaired
+prediction/P99 profile; multi-client impairment, long-soak, and temporal aggregation remain M6
+work. See
+[Multiplayer network-impairment benchmarks](../performance/multiplayer_network_impairment_benchmarks.md).
 
 ## Prediction and interpolation
 
@@ -310,9 +330,10 @@ per-tick drain limits; their defaults remain safety rails pending scale calibrat
 
 Statistics expose encoded bytes/messages, initial/final reliable backlog bytes and messages,
 tick/window deferrals, blocked and overload-disconnected clients, drops, retransmits,
-malformed/rate-limited traffic, reassembly ownership, command/replication counts, prediction
-corrections, and related maintenance activity. Exact measurements from a single acceptance run
-belong in test artifacts or benchmark records, not this architecture contract.
+loss-eligible unreliable messages, in-flight impairment depth, malformed/rate-limited traffic,
+reassembly ownership, command/replication counts, prediction corrections, and related maintenance
+activity. Exact measurements from a single acceptance run belong in test artifacts or benchmark
+records, not this architecture contract.
 
 ## Security and deployment boundary
 
