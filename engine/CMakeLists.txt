@@ -226,6 +226,7 @@ target_sources(
     world/regions/chunk_region_file.cpp
     world/simulation_subjects.cpp
     world/streaming/chunk_streamer.cpp
+    world/streaming/chunk_load_scheduler.cpp
     world/world_commands.cpp
     world/world_snapshot.cpp
     world/world_state.cpp
@@ -468,6 +469,7 @@ target_sources(
       world/regions/chunk_region_file.hpp
       world/simulation_subjects.hpp
       world/streaming/chunk_streamer.hpp
+      world/streaming/chunk_load_scheduler.hpp
       world/world_commands.hpp
       world/world_snapshot.hpp
       world/world_state.hpp

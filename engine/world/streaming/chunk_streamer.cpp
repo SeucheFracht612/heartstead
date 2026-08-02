@@ -79,13 +79,12 @@ edits_grouped_by_chunk(const ChunkDatabase& chunks) {
 
 } // namespace
 
-FileSaveChunkEditDeltaSource::FileSaveChunkEditDeltaSource(
-    const save::FileSaveDatabase& database) noexcept
-    : database_(&database) {}
+FileSaveChunkEditDeltaSource::FileSaveChunkEditDeltaSource(save::FileSaveDatabase database) noexcept
+    : database_(std::move(database)) {}
 
 core::Result<std::optional<save::ChunkEditSaveRecord>>
 FileSaveChunkEditDeltaSource::read_chunk_delta(ChunkCoord coord) const {
-    auto delta = database_->read_chunk_delta(coord);
+    auto delta = database_.read_chunk_delta(coord);
     if (!delta) {
         if (delta.error().code == "save_database.missing_chunk_delta") {
             return core::Result<std::optional<save::ChunkEditSaveRecord>>::success(std::nullopt);

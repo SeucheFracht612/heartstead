@@ -24,6 +24,28 @@ struct VoxelEditRecord {
     VoxelCell next;
 };
 
+// A generated chunk whose persisted edit chain has already been validated and applied while the
+// chunk is still private. Construction is restricted to ChunkDatabase so owner-thread publication
+// cannot accidentally accept an unvalidated background product.
+class PreparedGeneratedChunk {
+  public:
+    PreparedGeneratedChunk(PreparedGeneratedChunk&&) noexcept = default;
+    PreparedGeneratedChunk& operator=(PreparedGeneratedChunk&&) noexcept = default;
+    PreparedGeneratedChunk(const PreparedGeneratedChunk&) = delete;
+    PreparedGeneratedChunk& operator=(const PreparedGeneratedChunk&) = delete;
+
+    [[nodiscard]] ChunkCoord coord() const noexcept;
+    [[nodiscard]] std::size_t saved_edit_count() const noexcept;
+
+  private:
+    friend class ChunkDatabase;
+
+    PreparedGeneratedChunk(VoxelChunk chunk, std::vector<VoxelEditRecord> canonical_edits);
+
+    VoxelChunk chunk_;
+    std::vector<VoxelEditRecord> canonical_edits_;
+};
+
 struct ChunkDatabaseStats {
     std::size_t chunk_count = 0;
     std::size_t edit_count = 0;
@@ -40,6 +62,9 @@ struct ChunkDatabaseStats {
 
 class ChunkDatabase {
   public:
+    [[nodiscard]] static core::Result<PreparedGeneratedChunk>
+    prepare_generated(VoxelChunk chunk, std::span<const VoxelEditRecord> saved_edits = {});
+
     [[nodiscard]] VoxelChunk& get_or_create(ChunkCoord coord);
     [[nodiscard]] VoxelChunk* find(ChunkCoord coord) noexcept;
     [[nodiscard]] const VoxelChunk* find(ChunkCoord coord) const noexcept;
@@ -56,6 +81,9 @@ class ChunkDatabase {
     [[nodiscard]] core::Status
     insert_generated_with_saved_edits(VoxelChunk chunk, std::span<const VoxelEditRecord> edits,
                                       dirty::DirtyRegionTracker& dirty_regions);
+    [[nodiscard]] core::Status insert_prepared_generated(PreparedGeneratedChunk prepared);
+    [[nodiscard]] core::Status insert_prepared_generated(PreparedGeneratedChunk prepared,
+                                                         dirty::DirtyRegionTracker& dirty_regions);
 
     [[nodiscard]] core::Result<VoxelCell> get(ChunkCoord chunk_coord, VoxelCoord voxel_coord) const;
     [[nodiscard]] core::Status set(ChunkCoord chunk_coord, VoxelCoord voxel_coord, VoxelCell cell);
@@ -84,6 +112,9 @@ class ChunkDatabase {
     [[nodiscard]] core::Status
     insert_generated_with_saved_edits_impl(VoxelChunk chunk, std::span<const VoxelEditRecord> edits,
                                            dirty::DirtyRegionTracker* dirty_regions);
+    [[nodiscard]] core::Status
+    insert_prepared_generated_impl(PreparedGeneratedChunk prepared,
+                                   dirty::DirtyRegionTracker* dirty_regions);
     [[nodiscard]] core::Status apply_saved_edits_impl(std::span<const VoxelEditRecord> edits,
                                                       dirty::DirtyRegionTracker* dirty_regions);
     [[nodiscard]] static core::Status

@@ -71,6 +71,47 @@ canonicalize_saved_edits(std::span<const VoxelEditRecord> edits) {
 
 } // namespace
 
+PreparedGeneratedChunk::PreparedGeneratedChunk(VoxelChunk chunk,
+                                               std::vector<VoxelEditRecord> canonical_edits)
+    : chunk_(std::move(chunk)), canonical_edits_(std::move(canonical_edits)) {}
+
+ChunkCoord PreparedGeneratedChunk::coord() const noexcept {
+    return chunk_.coord();
+}
+
+std::size_t PreparedGeneratedChunk::saved_edit_count() const noexcept {
+    return canonical_edits_.size();
+}
+
+core::Result<PreparedGeneratedChunk>
+ChunkDatabase::prepare_generated(VoxelChunk chunk, std::span<const VoxelEditRecord> saved_edits) {
+    const auto coord = chunk.coord();
+    auto status = validate_saved_edit_batch(saved_edits, &coord);
+    if (!status) {
+        return core::Result<PreparedGeneratedChunk>::failure(status.error().code,
+                                                             status.error().message);
+    }
+    for (const auto& edit : saved_edits) {
+        auto current = chunk.get(edit.voxel_coord);
+        if (!current) {
+            return core::Result<PreparedGeneratedChunk>::failure(current.error().code,
+                                                                 current.error().message);
+        }
+        if (!same_persistent_cell(current.value(), edit.previous)) {
+            return core::Result<PreparedGeneratedChunk>::failure(
+                "chunk_database.saved_edit_base_mismatch",
+                "saved edit history does not match the generated terrain baseline");
+        }
+        status = chunk.apply_saved_cell(edit.voxel_coord, edit.next);
+        if (!status) {
+            return core::Result<PreparedGeneratedChunk>::failure(status.error().code,
+                                                                 status.error().message);
+        }
+    }
+    return core::Result<PreparedGeneratedChunk>::success(
+        PreparedGeneratedChunk(std::move(chunk), canonicalize_saved_edits(saved_edits)));
+}
+
 std::size_t ChunkDatabase::ChunkCoordHash::operator()(ChunkCoord coord) const noexcept {
     const auto x = mix(coordinate_bits(coord.x));
     const auto y = mix(coordinate_bits(coord.y) ^ 0x9e3779b97f4a7c15ULL);
@@ -168,6 +209,20 @@ ChunkDatabase::insert_generated_with_saved_edits(VoxelChunk chunk,
                                                  dirty::DirtyRegionTracker& dirty_regions) {
     auto staged_dirty = dirty_regions;
     auto status = insert_generated_with_saved_edits_impl(std::move(chunk), edits, &staged_dirty);
+    if (status) {
+        dirty_regions = std::move(staged_dirty);
+    }
+    return status;
+}
+
+core::Status ChunkDatabase::insert_prepared_generated(PreparedGeneratedChunk prepared) {
+    return insert_prepared_generated_impl(std::move(prepared), nullptr);
+}
+
+core::Status ChunkDatabase::insert_prepared_generated(PreparedGeneratedChunk prepared,
+                                                      dirty::DirtyRegionTracker& dirty_regions) {
+    auto staged_dirty = dirty_regions;
+    auto status = insert_prepared_generated_impl(std::move(prepared), &staged_dirty);
     if (status) {
         dirty_regions = std::move(staged_dirty);
     }
@@ -445,8 +500,7 @@ core::Status
 ChunkDatabase::insert_generated_with_saved_edits_impl(VoxelChunk chunk,
                                                       std::span<const VoxelEditRecord> edits,
                                                       dirty::DirtyRegionTracker* dirty_regions) {
-    const auto coord = chunk.coord();
-    if (contains(coord)) {
+    if (contains(chunk.coord())) {
         return core::Status::failure("chunk_database.duplicate_generated_chunk",
                                      "generated chunk already exists");
     }
@@ -454,38 +508,30 @@ ChunkDatabase::insert_generated_with_saved_edits_impl(VoxelChunk chunk,
         return core::Status::failure("chunk_database.empty_saved_edit_batch",
                                      "generated chunk saved edit batch must not be empty");
     }
+    auto prepared = prepare_generated(std::move(chunk), edits);
+    if (!prepared) {
+        return core::Status::failure(prepared.error().code, prepared.error().message);
+    }
+    return insert_prepared_generated_impl(std::move(prepared).value(), dirty_regions);
+}
 
-    auto status = validate_saved_edit_batch(edits, &coord);
+core::Status
+ChunkDatabase::insert_prepared_generated_impl(PreparedGeneratedChunk prepared,
+                                              dirty::DirtyRegionTracker* dirty_regions) {
+    const auto coord = prepared.coord();
+    if (contains(coord)) {
+        return core::Status::failure("chunk_database.duplicate_generated_chunk",
+                                     "generated chunk already exists");
+    }
+    if (prepared.canonical_edits_.empty()) {
+        return insert_generated_impl(std::move(prepared.chunk_), dirty_regions);
+    }
+    auto staged_edit_log =
+        build_replaced_saved_edit_history(prepared.canonical_edits_, prepared.canonical_edits_);
+    auto status = insert_generated_impl(std::move(prepared.chunk_), dirty_regions);
     if (!status) {
         return status;
     }
-
-    const auto canonical_edits = canonicalize_saved_edits(edits);
-    auto staged_edit_log = build_replaced_saved_edit_history(edits, canonical_edits);
-
-    // Apply to the not-yet-visible chunk first. A malformed batch can therefore never leave a
-    // generated or partially restored chunk in the live database.
-    for (const auto& edit : edits) {
-        auto current = chunk.get(edit.voxel_coord);
-        if (!current) {
-            return core::Status::failure(current.error().code, current.error().message);
-        }
-        if (!same_persistent_cell(current.value(), edit.previous)) {
-            return core::Status::failure(
-                "chunk_database.saved_edit_base_mismatch",
-                "saved edit history does not match the generated terrain baseline");
-        }
-        status = chunk.apply_saved_cell(edit.voxel_coord, edit.next);
-        if (!status) {
-            return status;
-        }
-    }
-
-    status = insert_generated_impl(std::move(chunk), dirty_regions);
-    if (!status) {
-        return status;
-    }
-
     edit_log_.swap(staged_edit_log);
     return core::Status::ok();
 }

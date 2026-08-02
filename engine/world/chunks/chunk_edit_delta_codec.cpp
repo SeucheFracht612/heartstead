@@ -210,6 +210,11 @@ ChunkEditDeltaTextCodec::decode(ChunkCoord expected_coord, std::string_view text
                         "world_snapshot.chunk_delta_voxel_out_of_bounds",
                         "chunk delta edit local voxel coordinate is outside the chunk");
                 }
+                if (edits.size() == VoxelChunk::total_cells) {
+                    return core::Result<std::vector<VoxelEditRecord>>::failure(
+                        "world_snapshot.too_many_chunk_delta_edits",
+                        "chunk delta contains more edit records than chunk cells");
+                }
                 edits.push_back(VoxelEditRecord{
                     actual_coord,
                     {x.value(), y.value(), z.value()},

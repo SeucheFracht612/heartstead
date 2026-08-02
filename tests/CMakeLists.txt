@@ -308,6 +308,8 @@ heartstead_add_foundation_test(heartstead_region_storage_v02_tests region_storag
 heartstead_add_foundation_test(heartstead_save_recovery_v02_tests save_recovery_v02_tests.cpp)
 heartstead_add_foundation_test(heartstead_save_journal_tests save_journal_tests.cpp)
 heartstead_add_foundation_test(heartstead_save_scheduler_tests save_scheduler_tests.cpp)
+heartstead_add_foundation_test(heartstead_chunk_load_scheduler_tests
+                               chunk_load_scheduler_tests.cpp)
 heartstead_add_foundation_test(heartstead_authoritative_server_v02_tests
                                authoritative_server_v02_tests.cpp)
 heartstead_add_foundation_test(heartstead_lazy_process_fire_v02_tests
