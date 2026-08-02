@@ -34,7 +34,13 @@ Implemented foundation:
   - prepare a generated chunk plus its canonical saved-edit chain while it is still private, then
     publish that move-only product through a narrow owner-thread insertion
   - read and write voxel cells
-  - append explicit voxel edit records
+  - retain canonical voxel edit histories in a coordinate-ordered per-chunk index; edits within one
+    chunk preserve canonical order
+  - expose zero-copy per-chunk edit spans to latency-sensitive persistence, replication, and reload
+    publication paths
+  - build the deterministic flat edit-log compatibility/export view lazily only after history
+    changes, so full snapshot export remains available without making narrow paths scale with all
+    edited chunks
   - auto-create edited chunks
   - erase chunk records when the streaming layer unloads them
   - expose sorted loaded identities for initial renderer synchronization without scanning voxels
@@ -44,7 +50,7 @@ Implemented foundation:
   - mark existing face-neighbor chunks dirty for rebuild when boundary voxels change
   - palette-aware edits additionally mark every resident chunk reached by the old/new block
     model's declared mesh invalidation radius
-  - expose dirty/edit statistics
+  - expose dirty/edit statistics, edited-chunk cardinality, and flat-view rebuild telemetry
   - aggregate requested, running, ready, resident, stale, and cancelled lifecycle counts per stage;
     runtime inspection exposes the same counters without scanning worker-owned state
   - optionally emit dirty regions for mesh, collision, and lighting rebuild queues
@@ -91,6 +97,8 @@ Implemented foundation:
     retained dirty chunks separately
   - flushes requested save-dirty chunk edit deltas through an abstract sink, with a
     `FileSaveDatabase` sink adapter for streamed persistence
+  - encodes save and replication payloads directly from the requested chunk's indexed history;
+    flushing one chunk neither scans nor materializes the global compatibility view
   - clears only the save-dirty flag after a successful chunk-delta write; replication-dirty chunks
     remain pinned until the replication side has handled them
   - flushes requested replication-dirty chunk edit deltas through an abstract replication sink
@@ -131,6 +139,8 @@ tests and tooling. Latency-sensitive runtime controllers should plan interest an
 through `ChunkLoadScheduler` instead of calling that convenience loop on a tick thread.
 The reproducible open-loop workload and its resident-publication boundary are documented in
 [Chunk streaming benchmarks](../performance/chunk_streaming_benchmarks.md).
+Its saved-delta workload also retains 16,384 unrelated edits plus one obsolete history per target,
+then requires exact per-target replacement with no flat-view rebuild during publication.
 
 - `ChunkMesher`
   - provides a reference surface extractor and a production greedy extractor
@@ -155,7 +165,6 @@ Current extension areas:
 
 - adopt the asynchronous scheduler in the general generated-world interest controller and add
   bounded eviction waves
-- remove global edit-log copying from the uncommon saved-edit publication path at large scale
 - further mesh compression, simulation/render LOD, and rich-model batching optimization
 
 Collision cooking and voxel-light propagation are maintained as separate systems; see

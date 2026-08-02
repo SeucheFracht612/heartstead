@@ -28,11 +28,15 @@ The chunk-streaming benchmark separately gates the authoritative generated-data 
 | --- | ---: |
 | Near-ring interest to resident publication P95 | 250 ms |
 | Teleport target-ring interest to resident publication P95 | 1,000 ms |
+| Saved-delta interest to resident publication P95 | 250 ms |
 | Owner-thread chunk publication update | 500 us |
 
 These limits use wall-clock raw samples whose interest timestamp precedes bounded scheduler
-admission. They stop at authoritative block-data publication and do not claim lighting, collision,
-client replication, meshing, GPU upload, draw eligibility, or display latency.
+admission. The saved-delta workload retains 16,384 unrelated edits and obsolete target histories,
+but uses an immutable in-memory delta source to isolate decode, private preparation, and indexed
+owner publication from physical filesystem variability. All limits stop at authoritative
+block-data publication and do not claim lighting, collision, client replication, meshing, GPU
+upload, draw eligibility, or display latency.
 
 High defaults include 16 visible terrain chunks horizontally with mesh/resident/load hysteresis,
 8 MiB near and 8 MiB far-terrain uploads per frame, 512 MiB generic residency, 1,024 local lights,
