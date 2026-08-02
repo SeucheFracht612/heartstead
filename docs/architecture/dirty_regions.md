@@ -21,9 +21,13 @@ Implemented foundation:
     network rebuilds
 
 - Chunk database integration
-  - voxel edits can mark chunk mesh/collision/lighting rebuild regions
-  - boundary edits include existing neighbor chunks without mutating neighbor voxel data
-  - voxel edits activate a one-cell `water_network` halo for the bounded fluid frontier
+  - generic voxel edits mark chunk mesh/collision/lighting rebuild regions
+  - palette-aware edits compare mesh, collision geometry, light propagation, and fluid-solver
+    behavior; equivalent material swaps retain mesh work but suppress unrelated derived queues
+  - boundary edits include existing neighbor chunks without mutating neighbor voxel data and apply
+    the same dependency-selective invalidation policy
+  - fluid-relevant edits activate a one-cell `water_network` halo; material-equivalent blocking
+    cells do not wake the bounded fluid frontier
 
 - Room and network integration
   - `RoomGraph::mark_dirty_region`

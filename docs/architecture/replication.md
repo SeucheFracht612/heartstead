@@ -114,6 +114,15 @@ and sends complete, recipient-filtered snapshots. It skips:
 The returned `WorldReplicationDeltaDeliveryReport` records sent, skipped, unmatched, and
 resync-skipped counts.
 
+`ServerRuntime` consumes that report before ordinary chunk-subscription synchronization. Delivery
+and authoritative command rows are matched in linear source order with the same normalized
+replication-sequence rule used on the wire. For each recipient that actually received a routed voxel
+event, a complete publication may advance only when chunk identity matches and its revision is
+exactly one behind the event. If the authoritative chunk is now at that revision, this suppresses
+the redundant full 32-slice snapshot. Missing, partial, identity-mismatched, or non-contiguous
+publications remain stale so the ordinary full-snapshot path repairs them. Advanced, avoided, and
+gap counts are retained in tick inspection and Tracy plots.
+
 ## Client intake and apply
 
 `ReplicationIntake` summarizes queued event batches without mutating client world state. It reports
@@ -132,6 +141,13 @@ Applying a delta preserves client-local runtime handles and session `NetId` valu
 persistent entities. Build-piece and assembly changes mark room and spatial-network regions dirty so
 rebuildable derived state can be regenerated. A partial delta that requires resynchronization is
 rejected before client world state is mutated.
+
+For voxel events, `ClientRuntime` requires an authoritative remote chunk base and rejects generation
+or revision gaps. A contiguous accepted edit advances the remembered remote revision, allowing the
+next command to use the delta-updated publication without waiting for a complete snapshot. A newer
+complete snapshot may supersede an older observed event only when the persistent cell already
+matches that event; this tolerance does not yet provide a unified ordering policy for every mixed
+snapshot/delta queue shape.
 
 ## Relationship to other replication paths
 
@@ -161,10 +177,11 @@ path installs the complete current state.
 
 Replication is not a universal full-state synchronization system. Unsupported or unresolved
 subjects require an explicit snapshot/resync path, and chunk streaming remains separate from saved
-world-store deltas. Voxel event/delta traffic is spatially filtered, but hot-edit throughput,
-impaired-network behavior, and long-soak queue/memory stability still require calibrated workload
-evidence. Public-Internet security, NAT traversal, matchmaking, congestion control, and pacing are
-transport concerns and are not provided by this layer.
+world-store deltas. Voxel event/delta traffic is spatially filtered and isolated material hot-edit
+throughput is calibrated. Revision-safe intake when an older voxel delta and a newer full snapshot
+are both queued, impaired-network behavior, and long-soak queue/memory stability remain open.
+Public-Internet security, NAT traversal, matchmaking, congestion control, and pacing are transport
+concerns and are not provided by this layer.
 
 See [Networking architecture](networking.md), [Commands](commands.md),
 [World model](world_model.md), and [Runtime composition](runtime_composition.md).

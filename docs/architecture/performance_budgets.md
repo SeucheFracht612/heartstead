@@ -167,7 +167,13 @@ clean eight-client Release processes measured 2.505 ms median P95 and 4.747 ms m
 ticks, 27 us median codec overshoot, 10-tick cluster/spread convergence, 9-tick traversal
 convergence, and one-tick reliable-backlog recovery. See
 [Multiplayer chunk-subscription benchmarks](../performance/multiplayer_chunk_subscription_benchmarks.md).
-These are clean in-process chunk-interest gates, not impaired-network, hot-edit, or soak SLOs.
+Schema v2 adds a 120-tick disjoint material-hot-edit phase with independent 12.5/16.667/50 ms
+P95/P99/max gates and a 2 KiB exact wire gate. Three clean Release processes measured median hot
+P95/P99/max of 0.424/0.461/0.616 ms, 860 peak bytes/client/tick, exact apply for all 960 edits, all
+6,720 foreign-region exclusions, 960 delta publication advances/avoided full snapshots, and zero
+gaps. These are clean in-process chunk-interest and isolated material-edit gates, not
+impaired-network or soak SLOs. Mixed older-delta/newer-snapshot client ordering remains a separate
+correctness closure.
 
 High defaults include 16 visible terrain chunks horizontally with mesh/resident/load hysteresis,
 8 MiB near and 8 MiB far-terrain uploads per frame, 512 MiB generic residency, 1,024 local lights,

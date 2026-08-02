@@ -56,6 +56,11 @@ The frontier is reconstructible rather than saved: loading a chunk containing fl
 neighbor beside fluid, activates its fluid cells and six-neighbor halo. The authoritative cells
 are sufficient to resume exactly.
 
+Dirty-region activation first clips the global bounds to each intersecting resident chunk and
+iterates only that local cell box. It does not scan all 32³ cells of every resident chunk inside a
+small edit halo. Palette-aware material swaps wake the frontier only when the old/new cell changes
+the solver's open, blocking, or fluid behavior; derived light changes are deliberately ignored.
+
 The deterministic Foundation pool is authored from explicit source cells. This keeps the
 controller course filled after the live fluid frontier settles instead of making a one-time finite
 volume part of the test fixture.
@@ -88,8 +93,9 @@ prototype.
 
 The default target is 32,768 active cells at 20 Hz with simulation p95 below 2 ms on the published
 reference machine. Each call has a hard cell budget. Statistics expose active/backlog cells,
-visited cells, changed cells/chunks, settled ticks, and budget exhaustion; work is deferred rather
-than extending the authoritative tick.
+visited cells, changed cells/chunks, settled ticks, budget exhaustion, topology-reconciliation time,
+and dirty-collection time; work is deferred rather than extending the authoritative tick. Tracy
+plots retain the two owner-side collection timings separately from snapshot/simulation/apply work.
 
 The `active-water` renderer benchmark keeps exactly 32,768 source cells active throughout warm-up
 and measurement, exercises fluid surface rendering, and publishes fluid snapshot/simulation/apply

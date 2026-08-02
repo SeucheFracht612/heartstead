@@ -9,6 +9,9 @@ Implemented foundation:
 - `VoxelChunk`
   - fixed-size terrain voxel storage
   - each `VoxelCell` preserves compact type, light, state bits, and metadata handle
+  - the dense 32³ cell field is immutable across value copies and uses detach-before-write storage;
+    `cells()` exposes only a const span, while every private mutation path establishes unique
+    ownership first
   - cubic chunk coordinates use signed 64-bit `x/y/z` components for near-unbounded world height
     and distance
   - dirty flags for mesh, collision, lighting, save, and replication
@@ -44,12 +47,16 @@ Implemented foundation:
   - auto-create edited chunks
   - erase chunk records when the streaming layer unloads them
   - expose sorted loaded identities for initial renderer synchronization without scanning voxels
-  - mark edited chunks dirty for mesh, collision, lighting, save, and replication
+  - mark edited chunks dirty for mesh, collision, lighting, save, and replication when no palette
+    dependency information is available
   - apply saved chunk edit deltas without re-marking loaded chunks dirty for save or replication
     while preserving those deltas for later snapshot export
   - mark existing face-neighbor chunks dirty for rebuild when boundary voxels change
-  - palette-aware edits additionally mark every resident chunk reached by the old/new block
-    model's declared mesh invalidation radius
+  - palette-aware edits always invalidate mesh dependencies, but invalidate collision, lighting,
+    and fluid work only when old/new palette behavior differs; material-only replacements preserve
+    the solved light byte and still mark save/replication state
+  - palette-aware edits additionally mark every resident chunk reached by the old/new block model's
+    declared mesh invalidation radius, while applying the same selective policy to face neighbors
   - expose dirty/edit statistics, edited-chunk cardinality, and flat-view rebuild telemetry
   - aggregate requested, running, ready, resident, stale, and cancelled lifecycle counts per stage;
     runtime inspection exposes the same counters without scanning worker-owned state
@@ -170,6 +177,13 @@ Generated chunks and loaded saved edit deltas only mark mesh, collision, and lig
 rebuild state. They do not mark save or replication dirty until a player/world operation
 changes stored voxel data after load.
 
+Command transactions copy `WorldState` before invoking mutating handlers so failure retains the
+strong rollback guarantee. `VoxelChunk` copies therefore share the large read-only cell payload,
+while occupancy, dirty state, stage state, identity, and revisions remain ordinary value state. The
+first write to a staged chunk clones only that chunk's cells; a failed transaction destroys the
+detached staging copy and leaves the authoritative chunk's storage and revision unchanged. No
+mutable cell span or iterator may escape this boundary.
+
 Stage transitions are owner-thread operations. `requested -> running -> ready -> resident` is the
 successful path. A new invalidation always advances that stage's request epoch while retaining the
 older resident product until replacement. Obsolete results increment stale/cancelled telemetry but
@@ -178,8 +192,8 @@ workers never receive a mutable `VoxelChunk` or `ChunkDatabase`.
 
 Current extension areas:
 
-- adopt the asynchronous scheduler in the general generated-world interest controller and add
-  bounded eviction waves
+- adopt the asynchronous scheduler in the general generated-world interest controller; the
+  renderer-proof controller already applies bounded eviction waves
 - further mesh compression, simulation/render LOD, and rich-model batching optimization
 
 Collision cooking and voxel-light propagation are maintained as separate systems; see

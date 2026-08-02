@@ -247,6 +247,15 @@ boundary; already encoded cache hits may still publish, and rotating service pre
 client starvation. Direct local startup plans the complete bounded desired set and retains its
 synchronous codec exception, while transport-driven joins use the ordinary transition and time
 quotas.
+
+Committed voxel deltas can advance this same publication table without serializing another full
+chunk. After recipient filtering and typed-delta admission, the server advances only a complete,
+identity-matched publication whose content revision is exactly one behind the delivered edit. The
+event route must match the authoritative chunk, and only recipients for whom that event was visible
+participate. A gap is counted and left stale, so ordinary subscription synchronization sends the
+complete current snapshot instead of guessing across revisions. Tick inspection and Tracy expose
+advanced publications, avoided snapshots, and gaps.
+
 Because missing client chunks are solid for movement prediction, loaded spawn-interest snapshots
 are queued before the atomic assignment/movement/inventory seed. Transient snapshots exclude a
 client until that seed has been published. A remote transport welcome can precede the seed, so
@@ -269,8 +278,11 @@ teleports one client out of interest, proves the near/far 1:1 decision and absen
 types at the far client, then returns it and verifies exact authoritative recovery through a full
 chunk snapshot.
 
-The separate committed voxel event/delta relevance path is therefore closed. Remaining M6 work
-includes impaired-network and hot-edit P99/SLO evidence plus long-soak coverage. See
+The committed voxel relevance and isolated material-hot-edit paths are therefore closed. Three
+clean eight-client schema-v2 runs retain exact apply/exclusion evidence, 0.461 ms median hot-edit
+P99, 860 peak bytes/client/tick, 960 contiguous publication advances, 960 avoided full snapshots,
+and zero gaps. Remaining M6 work includes mixed snapshot/delta client ordering, impaired-network
+P99/SLO evidence, and long-soak coverage. See
 [Multiplayer chunk-subscription benchmarks](../performance/multiplayer_chunk_subscription_benchmarks.md).
 
 ## Prediction and interpolation

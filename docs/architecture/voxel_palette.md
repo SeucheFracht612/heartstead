@@ -21,6 +21,8 @@ Implemented foundation:
   - looks up definitions by type or prototype id
   - creates `VoxelCell` values from prototype ids
   - owns validated block-model definitions and exposes mesh/neighbor invalidation radii
+  - compares old/new cells by collision geometry, light emission/absorption, and fluid-solver
+    occupancy/state so edit scheduling can invalidate only affected derived consumers
   - exports a `VoxelPaletteManifest` of compact type-to-prototype assignments
 
 - aggregate content validation

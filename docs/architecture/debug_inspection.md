@@ -55,6 +55,8 @@ Implemented foundation:
   - script host command route records
   - script host command report records
   - script host command batch records
+  - chunk-delta publication advances, avoided full snapshots, and revision gaps
+  - voxel-fluid topology reconciliation, dirty collection, active frontier, and processed work
 
 `WorldState` inspection reports save metadata, the next stable save id, the next runtime
 handle, the next entity net id, the next process id, dirty-region count, and

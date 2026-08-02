@@ -3,7 +3,7 @@
 This page records the maintained implementation status of Heartstead. It is not a roadmap or a
 promise that every architecture target is complete.
 
-**Audit baseline:** repository state documented and validated on 2026-08-01.
+**Audit baseline:** repository state documented and validated through 2026-08-02.
 
 ## What works now
 
@@ -36,6 +36,9 @@ The current engine includes signed 64-bit block/chunk coordinates, 32-cubed chun
 voxels, dirty-region propagation, asynchronous chunk meshing, lighting and fluid foundations,
 deterministic world generation, entities, rooms, spatial networks, processes, workpieces, build
 pieces, assemblies, cargo, transactions, commands, snapshots, and replay support.
+Voxel command transactions retain strong rollback while sharing immutable dense chunk-cell fields
+until the staged write detaches its target chunk. Palette dependency comparisons suppress unrelated
+collision, lighting, and fluid work for material-equivalent edits.
 
 ### Presentation and assets
 
@@ -55,21 +58,22 @@ benchmark composes the broader environment stack into a stable integration workl
 
 The deterministic benchmark family retains raw samples and percentile summaries. Renderer schema
 v4, chunk-streaming schema v4, chunk-delta-journal schema v1, voxel-response schema v1,
-chunk-render-readiness schema v1, and multiplayer chunk-subscription schema v1 record
-source/build/machine/device provenance and enforce
-workload-specific absolute gates. Clean reference runs cover renderer/edit workloads, generated
+chunk-render-readiness schema v1, and multiplayer chunk-subscription schema v2 record
+source/build/machine/device provenance and enforce workload-specific absolute gates. Clean
+reference runs cover renderer/edit workloads, generated
 plus in-memory and physical indexed saved-delta publication, warm and Linux cache-drop-advice
 payload reads/index opens, stable-storage chunk appends and full checkpoints, exact collision
 publication through headless and Jolt physics, complete resident-field relighting, and required
 generated chunks through current mesh residency, upload, visibility filtering, and exact
 draw-command construction on headless and Vulkan devices. Eight-client clean-host runs also cover
 clustered/disjoint chunk relevance, rapid traversal, exact per-client wire bytes, shared codec work,
-server tick P99, and bounded reliable-backlog recovery. An optimized `profiling-release` preset
+server tick P99, bounded reliable-backlog recovery, and sustained disjoint material hot edits with
+exact event/delta apply and foreign-region exclusion. An optimized `profiling-release` preset
 links on-demand Tracy instrumentation across the main runtime, renderer, worker, chunk, lighting,
 collision, and streaming boundaries; normal builds compile those call sites to no-ops. Guaranteed
 cold/multi-filesystem I/O, coordinated checkpoint under live streaming, large snapshot capture,
-general-controller loader adoption, actual GPU execution/presentation timing, hot-edit/impaired
-multiplayer, and long-soak scale remain staged in the
+general-controller loader adoption, actual GPU execution/presentation timing, mixed voxel
+snapshot/delta ordering, impaired multiplayer, and long-soak scale remain staged in the
 [voxel optimization roadmap](performance/voxel_optimization_roadmap.md).
 
 The retained UI path uses a packaged Noto Sans font rendered from a deterministic SDF atlas,
@@ -111,8 +115,12 @@ admission, a 4,000 us global ordinary-tick codec boundary, bounded overshoot, an
 across recipients. Three clean eight-client Release runs pass spread/convergence/traversal,
 cross-region exclusion, exact wire, clean-host P99, codec, and one-tick backlog-recovery gates. The
 committed voxel event/delta path now shares exact-published-chunk interest, with a focused
-near-recipient/far-exclusion/late-snapshot recovery proof and recipient telemetry. Hot-region edit
-performance, network impairment, and long-soak gates remain. See
+near-recipient/far-exclusion/late-snapshot recovery proof and recipient telemetry. Contiguous
+delivered edits advance the recipient publication and avoid redundant full chunk snapshots. Three
+clean schema-v2 runs pass a 120-tick, eight-client hot-edit workload with median 0.461 ms hot P99,
+860 peak bytes/client/tick, exact application of 960 edits, all 6,720 cross-region exclusions, and
+zero publication gaps. Mixed older-delta/newer-snapshot client ordering, network impairment, and
+long-soak gates remain. See
 [Multiplayer chunk-subscription benchmarks](performance/multiplayer_chunk_subscription_benchmarks.md).
 
 ### Persistence
