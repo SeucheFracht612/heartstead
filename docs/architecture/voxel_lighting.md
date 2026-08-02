@@ -67,16 +67,20 @@ incrementally copies immutable snapshots under a cell budget, solves off-thread,
 output, and applies complete patches on the owner thread. Mesh work remains a separate consumer of
 `chunk_mesh` regions.
 
-The default owner-thread snapshot budget is 4,096 cells per simulation update. The solver owns one
-background job at a time and coalesces further edits into a follow-up rebuild. A topology, content,
-palette, or external-source change advances the field tickets, makes partial snapshots and
-completed results stale, and cooperatively cancels an obsolete solve. Complete field application
-is timed against a 2 ms budget and records overruns rather than publishing a partially updated
-connected light field.
+The default owner-thread snapshot budget is 49,152 cells per simulation update: one and a half
+32-cubed chunks. A controlled 60 Hz sweep selected this point because it reduced calibrated 3x3
+relight P95 from 1,267.312 ms at the old 4,096-cell budget to 167.449 ms while avoiding the higher
+owner maximum observed at 65,536 cells. The solver owns one background job at a time and coalesces
+further edits into a follow-up rebuild. A topology, content, palette, or external-source change
+advances the field tickets, makes partial snapshots and completed results stale, and cooperatively
+cancels an obsolete solve. Complete field application is timed against a 2 ms budget and records
+overruns rather than publishing a partially updated connected light field.
 
 `ChunkLightSystemStats` exposes snapshot backlog, copied cells, queue visits, solve/apply time,
-changed chunks/cells, stale work, and budget overruns. `Renderer::set_voxel_lighting_stats` mirrors
-the current values into `RendererStats`; `dev_game` does this every frame.
+changed chunks/cells, stale work, budget overruns, pending response, completed response count,
+coalesced/abandoned invalidations, and a bounded convergence-latency distribution.
+`Renderer::set_voxel_lighting_stats` mirrors the current values into `RendererStats`; `dev_game`
+does this every frame.
 
 A changed light patch is replicated to connected clients through a newer revision of the affected
 chunk's bounded binary snapshot slices. This favors correctness and bounded reuse over a
@@ -109,3 +113,7 @@ feeds that update's telemetry into `RendererStats`. It does not synchronously dr
 inside a measured frame.
 JSON/CSV output includes solve/apply p50 and p95, maximum backlog and visited cells, changed chunks,
 stale results, and apply-budget overruns.
+
+The separate [Voxel response benchmark](../performance/voxel_response_benchmarks.md) measures the
+dirty-region timestamp through complete lighting-stage publication at a real 60 Hz owner cadence;
+it fails closed when the field becomes idle without a retained convergence sample.

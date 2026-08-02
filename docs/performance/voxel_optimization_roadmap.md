@@ -24,14 +24,14 @@ requires one.
 | Research capability | Current Heartstead state | Planned action |
 | --- | --- | --- |
 | Permanent hierarchical profiling | Partial: retained CPU/GPU timers, counters, raw benchmark frames, and opt-in Tracy zones now cover major runtime, renderer, chunk, worker, lighting, collision, and streaming paths. | Extend zones and attribution as later stages are changed; add allocation ownership and queue-age plots. |
-| Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. The live renderer-proof test covers rapid interest teleports, cancellation, convergence, and zero-reservation teardown. A separate open-loop chunk benchmark retains near-ring, teleport, and indexed saved-delta request-to-resident percentiles. | Add end-to-end rapid-traversal time-to-visible, server/client, save, cold-start, and long-soak workloads. |
-| Reproducible provenance and gates | Renderer schema v4 and chunk-streaming schema v2 record source/build/CPU/run metadata, warmups, repetitions, raw samples, saved-delta source/count, and edit-index invariants. Optional gates cover frame P50/P95/P99/maximum, upload, available GPU, rapid-edit response, generated near/teleport/saved-delta publication P95, and owner publication time. | Add calibrated reference-machine baselines, relative-regression checks, and the remaining non-renderer gates. |
+| Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. The live renderer-proof test covers rapid interest teleports, cancellation, convergence, and zero-reservation teardown. Separate open-loop chunk and isolated voxel-response benchmarks retain request-to-resident, collision-publication, and whole-field relight percentiles. | Add end-to-end rapid-traversal time-to-visible, server/client, save, cold-start, burst-edit, and long-soak workloads. |
+| Reproducible provenance and gates | Renderer schema v4, chunk-streaming schema v2, and voxel-response schema v1 record source/build/CPU/run metadata, warmups, repetitions, raw samples, workload configuration, and fail-closed lifecycle invariants. Optional gates cover frame distributions, uploads, available GPU, rapid-edit mesh response, generated/saved resident publication, exact collision publication, full-field relight convergence, and owner publication time. | Add relative-regression checks and the remaining upload, visibility, persistence, and scale gates. |
 | Bounded jobs and cancellation | Generic and typed schedulers now bound pending/result work, expose backpressure and queue-age telemetry, age priorities, and support reasoned queued/cooperative cancellation. | Attribute per-type saturation in higher-level pipeline counters and tune limits from traces. |
 | Versioned chunk pipeline | An owner-thread ledger now separates content, light, mesh, collision, persistence, and replication request/output revisions and states. Save/replication, mesh/GPU, collision/physics, and whole-field lighting publication are ticket-validated across edit and reload races. | Calibrate stale-work amplification and latency under representative edit/streaming traces. |
 | Compact voxel sections | Chunks remain fixed 32³ with contiguous dense `VoxelCell` production storage. Reproducible 16/32 experiments now cover dense, split, palette-packed, uniform-light, sparse-metadata, and adaptive split-dense fallback candidates. | Retain dense production storage while mask/macro work proceeds; add a medium-diversity crossover sweep before any storage selection. |
 | Occupancy and opacity masks | A fixed 4 KiB occupancy mask follows the exact chunk content revision. Meshing snapshots also carry pooled greedy-cube and halo-padded full-occluder masks keyed by content dependencies and render-table revision. | Reuse the resident occupancy mask for later measured consumers; keep render-dependent masks derived and consumer-specific. |
 | Face culling and greedy meshing | Implemented with immutable neighborhood snapshots, material/render phases, bounded scheduling, stale rejection, pooled buffers, reproducible isolated benchmarks, occupancy-assisted rejection, word-level face candidates/AO queries, surface-bound reservation, an isolated-cube culled fallback, and bounded invalidation-to-resident traces. | Keep slab or microbrick rebuilds deferred unless a future measured edit P95 again exceeds target. |
-| Dynamic edit propagation | Dirty regions, neighbor dependencies, asynchronous mesh/light/collision work, upload quotas, exact mesh-stage latency tracking, edit-burst coalescing telemetry, and a clean repeated 50 ms visual-response gate exist. | Measure collision/light convergence and enforce explicit time budgets. |
+| Dynamic edit propagation | Dirty regions, neighbor dependencies, asynchronous mesh/light/collision work, upload quotas, exact mesh/collision/relight lifecycle tracking, edit coalescing/abandonment telemetry, and calibrated visual, collision, and relight P95 gates exist. | Add burst-edit collision/relight amplification and end-to-end upload/display response workloads. |
 | Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, per-chunk indexed delta save/replication, residency budgets, and far clipmaps exist. Durable snapshot acceptance/compaction and application saves run through a bounded save worker. A bounded chunk loader moves disk/decode/generation/private edit application off-thread and is active in the live renderer-proof stream. Saved-delta publication and narrow flushes no longer scan or copy global edit history. | Adopt async loading in the general generated-world controller, bound eviction waves, and add scale-calibrated visibility/save-capture gates. |
 | Visibility, LOD, and GPU scaling | Frustum/distance/hierarchical visibility, HZB support, far clipmaps, indirect rendering, GPU arenas, upload staging, and pass timestamps already exist. | Tune only from captures; validate total culling benefit and retain broad fallback paths. |
 | Simulation and multiplayer scale | Simulation LOD, server authority, interest management, replication deltas, and fixed-step runtime exist. | Add multi-client spread/convergence benchmarks, byte/time quotas, backlog recovery gates, and soak coverage. |
@@ -155,7 +155,8 @@ generation, preparation, and owner publication timings; accepts immutable custom
 rejects cancelled/stale work before publication. The renderer-proof runtime uses this path and its
 rapid-teleport test proves cancelled requests drain, off-interest chunks do not publish, server and
 client converge on all 441 desired chunks, and reservations return to zero. The focused save/load
-paths pass warning-as-error builds plus ASan/UBSan and TSAN; the complete suite is 155/155 green.
+and response paths pass warning-as-error builds plus ASan/UBSan and TSAN; the complete suite is
+green.
 
 The open-loop chunk benchmark declares every target coordinate at one instant so bounded admission
 delay remains in each raw sample. Its saved-delta workload retains 16,384 unrelated edits plus one
@@ -167,11 +168,22 @@ exact obsolete cancellation, no off-interest/stale/failed publication, unchanged
 cardinality, zero global-view rebuilds, and zero final reservation. See
 [Chunk streaming benchmarks](chunk_streaming_benchmarks.md).
 
+The isolated voxel-response benchmark issues paired solid add/remove edits only after collision and
+lighting settle, advances the production systems at a 60 Hz owner cadence, and fails closed on
+missing/censored samples, coalescing, abandonment, pending work, failures, or non-current final
+stages. Three clean headless and three clean Jolt Release processes on the reference CPU measured
+collision-publication P95 at 16.776–16.919 ms and complete 3x3-field relight P95 at
+167.314–167.719 ms. All 54 retained edits passed the 100/250 ms gates with zero stale work, failed
+work, coalescing, abandonment, pending responses, or light-apply budget overruns. A controlled
+snapshot-budget sweep replaced the 4,096-cell default, whose relight P95 was 1,267.312 ms, with a
+49,152-cell default selected at 167.449 ms P95 and a 4.212 ms worst combined owner update. See
+[Voxel response benchmarks](voxel_response_benchmarks.md).
+
 A small release lifecycle sample measured save owner handoff at 0.046 ms, below the 0.25 ms target,
 but this is not a scale-qualified closure: snapshot capture still scales with owned world state.
-General-world runtime adoption, explicit upload/collision/light gates, end-to-end near
-time-to-visible, and load-under-save/large-snapshot-capture benchmarks remain before M5 can be
-marked complete.
+General-world runtime adoption, an explicit upload-response gate, end-to-end near time-to-visible,
+burst-edit/large-residency response, and load-under-save/large-snapshot-capture benchmarks remain
+before M5 can be marked complete.
 
 ### M6 — world and multiplayer scale
 

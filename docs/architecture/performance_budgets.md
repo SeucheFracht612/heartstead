@@ -1,4 +1,4 @@
-# Renderer performance budgets
+# Performance budgets
 
 Status: authoritative baseline, not a hardware guarantee.
 
@@ -38,6 +38,25 @@ owner publication from physical filesystem variability. All limits stop at autho
 block-data publication and do not claim lighting, collision, client replication, meshing, GPU
 upload, draw eligibility, or display latency.
 
+The isolated voxel-response benchmark separately gates resident edit propagation:
+
+| Metric | Default limit |
+| --- | ---: |
+| Exact collision-stage publication P95 | 100 ms |
+| Complete resident-field relight convergence P95 | 250 ms |
+
+Each paired add/remove edit begins only after the preceding collision and lighting work settles.
+The first owner update runs immediately after the edit and later updates follow a 16,667 us cadence.
+The report fails closed on a missing/censored sample, timeout, coalesced or abandoned measured
+invalidation, failure, pending response, or non-current final stage. It records combined owner
+update, collision cook/apply, relight solve/apply, copied-cell, and stale-work evidence. The
+physics backend is explicit; retained calibration covers both the deterministic headless backend
+and Jolt rather than treating one as an implicit substitute for the other.
+
+These gates end at collision-body and complete light-field publication over an already resident
+3x3 corpus. They do not claim burst-edit stability, larger-residency scaling, character contact,
+replication, remeshing, upload, draw eligibility, or display response.
+
 High defaults include 16 visible terrain chunks horizontally with mesh/resident/load hysteresis,
 8 MiB near and 8 MiB far-terrain uploads per frame, 512 MiB generic residency, 1,024 local lights,
 32 lights per tile, two local shadow maps, 2048 directional shadow resolution, and 320 m shadow range.
@@ -49,6 +68,8 @@ or unbounded allocation.
 See [Renderer benchmarks](../performance/renderer_benchmarks.md) for workloads, timing semantics,
 comparison rules, command usage, and dated measurements. See
 [Chunk streaming benchmarks](../performance/chunk_streaming_benchmarks.md) for the open-loop
-admission and resident-publication contract. See the
+admission and resident-publication contract, and
+[Voxel response benchmarks](../performance/voxel_response_benchmarks.md) for collision/relight
+timing, invariants, tuning evidence, and dated headless/Jolt measurements. See the
 [voxel optimization roadmap](../performance/voxel_optimization_roadmap.md) for the broader staged
 budget system and calibration policy.

@@ -92,8 +92,14 @@ Implemented foundation:
     geometry advances the resident request without inventing a new collision-output revision
   - creates one chunk-local static compound body and removes it when the chunk unloads
   - consumes only collision dirty regions, leaving mesh and lighting work for their own schedulers
-  - exposes pending, in-flight, stale, box-count, cook-time, and apply-time statistics through the
-    runtime inspection path
+  - carries the earliest dirty-region timestamp through coalescing and completes response only
+    after the exact current collision-stage request publishes, including unchanged geometry
+  - exposes pending, in-flight, stale, box-count, cook/apply time, completed/coalesced/abandoned
+    response counts, and a bounded response-latency distribution through runtime inspection
+
+The [Voxel response benchmark](../performance/voxel_response_benchmarks.md) drives this path with
+paired resident edits at a 60 Hz owner cadence and retains separate headless and Jolt calibration.
+It measures terrain-body acceptance, not moving-character contact latency.
 
 - Character movement
   - `ICharacterCollisionWorld` keeps the Souls-style player state machine independent of voxel and

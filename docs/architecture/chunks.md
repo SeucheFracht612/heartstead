@@ -168,4 +168,6 @@ Current extension areas:
 - further mesh compression, simulation/render LOD, and rich-model batching optimization
 
 Collision cooking and voxel-light propagation are maintained as separate systems; see
-[physics](physics.md) and [voxel lighting](voxel_lighting.md).
+[physics](physics.md) and [voxel lighting](voxel_lighting.md). Their shared isolated
+dirty-region-to-publication gate is documented in
+[Voxel response benchmarks](../performance/voxel_response_benchmarks.md).

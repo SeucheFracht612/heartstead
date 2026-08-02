@@ -156,9 +156,12 @@ constructed or corrupted plans.
 Game runtime inspection reports the active server/client composition, fixed-tick configuration,
 authoritative world and chunk counts, generation-safe entity/component/tombstone counts, command
 and replication queues, presentation proxy counts, gameplay-module registration totals, and
-per-system last/total timings. A synchronization failure records its original typed error as a
-terminal session fault and exposes it as both fields and an error issue, so a failed feature
-replication or presentation callback cannot disappear behind a later successful-looking frame.
+per-system last/total timings. Collision and relight response fields include pending/completed
+counts, rolling P95 and session maximum latency, and coalesced/abandoned invalidations; the F3
+overlay mirrors those values for live diagnosis. A synchronization failure records its original
+typed error as a terminal session fault and exposes it as both fields and an error issue, so a
+failed feature replication or presentation callback cannot disappear behind a later
+successful-looking frame.
 
 Inspection output is not the final tool UI. It is the common data shape future debug
 overlays, inspectors, replay reports, and save tools can render.

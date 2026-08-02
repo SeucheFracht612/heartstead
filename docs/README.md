@@ -133,6 +133,8 @@ data flow, failure behavior, and extension points rather than repeat every class
 - [Renderer debugging](dev/renderer_debugging.md)
 - [Visual regression](dev/visual_regression.md)
 - [Renderer benchmarks](performance/renderer_benchmarks.md)
+- [Chunk streaming benchmarks](performance/chunk_streaming_benchmarks.md)
+- [Voxel response benchmarks](performance/voxel_response_benchmarks.md)
 - [Voxel optimization roadmap](performance/voxel_optimization_roadmap.md)
 - [Voxel storage experiments](performance/voxel_storage_benchmarks.md)
 - [Voxel meshing experiments](performance/voxel_meshing_benchmarks.md)

@@ -133,8 +133,9 @@ The benchmark also stops before lighting, collision cooking, replication transpo
 residency, meshing, GPU upload, draw eligibility, and display. Calling this "time-to-visible" would
 therefore be incorrect.
 
-M5 still requires an end-to-end required-chunk visibility distribution, save-under-streaming and
-large-snapshot-capture measurements, physical-disk/cache coverage, and explicit
-lighting/collision/upload response gates. The general generated-world runtime controller also has
-not yet adopted the loader; the live renderer-proof controller is currently the application path
-that exercises it.
+Resident isolated collision publication and whole-field relight convergence now have separate
+headless/Jolt gates in [Voxel response benchmarks](voxel_response_benchmarks.md). M5 still requires
+an end-to-end required-chunk visibility distribution, save-under-streaming and
+large-snapshot-capture measurements, physical-disk/cache coverage, and an explicit upload-response
+gate. The general generated-world runtime controller also has not yet adopted the loader; the live
+renderer-proof controller is currently the application path that exercises it.
