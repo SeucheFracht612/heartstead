@@ -1,8 +1,8 @@
 # Voxel meshing experiments
 
-Status: occupancy-assisted source enumeration, measured mesh-capacity tuning, and bounded
-invalidation-to-resident latency instrumentation are implemented; face-mask construction and the
-representative edit-latency gate remain open.
+Status: occupancy-assisted source enumeration, revision-coupled packed face candidates, measured
+mesh-capacity tuning, and bounded invalidation-to-resident latency instrumentation are implemented.
+The representative, adversarial, and local-edit M4 gates pass on the declared reference CPU.
 
 This note records the reproducible 32-cubed meshing baseline and the first M4 decisions. The harness
 measures immutable neighborhood snapshot construction, the complete reference mesher, a fresh
@@ -15,7 +15,10 @@ allocated capacity, raw samples, and runtime provenance.
 The retained measurements were produced with:
 
 ```text
-cmake -S . -B build/voxel-storage-release
+cmake -S . -B build/voxel-storage-release \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
+  -DHEARTSTEAD_ENABLE_VULKAN=OFF
 cmake --build build/voxel-storage-release --target heartstead_voxel_meshing_benchmark -j2
 build/voxel-storage-release/apps/voxel_meshing_benchmark/heartstead_voxel_meshing_benchmark \
   --output build/voxel-storage-release/benchmarks/voxel-meshing-<commit>-runN.json
@@ -34,11 +37,15 @@ the three process-level medians or the median of their process-level P95 values.
 | Occupancy consumer | `f6322d7c5d69f6190357544d47eb73e6a986324a` |
 | Dense scan path | `099739ee6a9139aee412f1ef90e19180518c20e9` |
 | Surface-bound reserve | `350aa2e0451d3d60c8ec56c6425ed7dffa88f861` |
+| Packed meshing masks | `78d246f4b6f5f38a373d7fd70a43cb2b898ad8c0` |
+| Isolated-cube fallback | `66271cbd8e82ff85f570bb3be685fb7c903d2c08` |
 | Source state | clean tracked tree in every retained run |
 
 Raw artifacts are retained outside Git under `build/voxel-storage-release/benchmarks/` as
 `voxel-meshing-01e69e4-run{1,2,3}.json`, `voxel-meshing-f6322d7-run{1,2,3}.json`,
-`voxel-meshing-099739e-run{1,2,3}.json`, and `voxel-meshing-350aa2e-run{1,2,3}.json`.
+`voxel-meshing-099739e-run{1,2,3}.json`, `voxel-meshing-350aa2e-run{1,2,3}.json`,
+`voxel-meshing-78d246f-run{1,2,3}.json`, and
+`voxel-meshing-66271cb-run{1,2,3}.json`.
 
 CPU frequency, the desktop workload, power policy, and thermal state were not controlled. Several
 short operations and later P95 samples show material run-to-run noise. Decisions therefore use
@@ -61,8 +68,8 @@ for coherent terrain. Conversely, adversarial checkerboards cannot merge and rem
 | Checkerboard | 9.107 | 12.036 | 98,304 | 98,304 |
 | High entropy | 1.272 | 1.681 | 6,144 | 6,144 |
 
-The representative 4 ms P95 gate is narrowly missed by sparse caves, and the 10 ms adversarial
-gate is missed by the checkerboard. M4 is not complete.
+At this baseline, the representative 4 ms P95 gate was narrowly missed by sparse caves and the
+10 ms adversarial gate was missed by the checkerboard.
 
 ## Revision-coupled occupancy mask
 
@@ -119,6 +126,60 @@ Compared with the immediately preceding dense-path build, meshing medians moved 
 +2.7% outside the sub-microsecond empty case. That is below the roadmap's 5% investigation trigger
 and buys a large reduction in retained memory. The change is accepted.
 
+## Revision-coupled face candidates
+
+Immutable neighborhood snapshots now derive two render-dependent masks while their cells are
+copied: a 32-cubed greedy-cube source mask and a halo-padded full-occluder mask. The product records
+the exact center content revision and block-render-table revision; the containing snapshot retains
+all center and neighbor dependency revisions. A mismatched table revision is rejected before
+meshing. Variable word storage is pooled with the bounded snapshot cell buffers and returned on
+success, cancellation, or scheduler-side rejected submission.
+
+The mask/candidate split follows the hidden-face-culling stage in
+[Binary Greedy Meshing v2](https://github.com/cgerikj/binary-greedy-meshing), whose padded binary
+columns cull many faces per word before merging. Heartstead adopts only that candidate-generation
+shape: its material, light, state, directional occlusion, AO, specialized geometry, and conventional
+vertex output make the demo's binary-opacity and packed-vertex assumptions inapplicable.
+
+The common full-or-open occlusion path constructs directional candidate rows from the two masks.
+Y/Z rows use AND-NOT operations directly, X rows extract aligned padded rows, and set-bit iteration
+visits only exposed source faces. Voxel type, state, material, render phase, face light, and AO remain
+in the existing face key and merger. AO full-occluder queries now read the padded bitset rather than
+repeating block-table lookups. If any captured cell has a nonzero partial directional occlusion mask,
+the snapshot records that fact and the mesher uses the previous per-cell directional path. Tests
+cover that fallback, cross-chunk culling, cross-chunk AO, stale-table rejection, output parity, and
+buffer recycling.
+
+For the normal one-cell halo, the derived payload is 9,016 bytes: 4,096 bytes of greedy-cube bits and
+4,920 bytes for 39,304 padded full-occluder bits. Total snapshot payload rises from 477,688 to 486,704
+bytes (+1.9%). Empty and specialized-only chunks allocate no mask payload. Voxel-meshing benchmark
+schema v2 reports derived-mask payload and retained capacity separately.
+
+The checkerboard exposed a second measured fact: it contains no face-adjacent greedy cubes. In that
+case no two same-direction faces can share a tangent edge, so greedy merging is provably unable to
+reduce the unit-quad output. The production entry point now selects the reference culled emitter for
+that exact condition, unless partial directional occlusion requires the greedy fallback. The culled
+emitter accepts and clears the scheduler's recycled `ChunkMesh`, retaining established vertex,
+index, section, and rich-instance capacity instead of allocating a fresh adversarial output each
+time. Its isolated output is byte-for-byte equal to the direct reference output.
+
+The table below compares the median of three combined process medians and the median of three sums
+of process-level P95 values. “Combined” is the conservative sum of independently measured snapshot
+rebuild and reused production-mesher statistics.
+
+| Corpus | Previous combined median (ms) | Final combined median (ms) | Previous combined P95 (ms) | Final combined P95 (ms) | P95 change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Uniform solid | 1.467 | 1.018 | 1.634 | 1.107 | -32.3% |
+| Layered terrain | 1.006 | 0.780 | 1.100 | 0.862 | -21.6% |
+| Sparse caves | 4.178 | 3.322 | 4.278 | 3.524 | -17.6% |
+| Lit settlement | 1.430 | 1.270 | 1.530 | 1.332 | -12.9% |
+| Checkerboard | 12.322 | 7.685 | 12.762 | 8.549 | -33.0% |
+| High entropy | 1.788 | 1.394 | 1.874 | 1.545 | -17.6% |
+
+Across the three final clean runs, sparse-cave combined P95 is 3.485–3.617 ms and checkerboard
+combined P95 is 8.291–8.569 ms. Both M4 meshing gates pass. The empty path remains approximately
+0.03 ms combined and carries no derived-mask payload.
+
 ## Edit-to-visible mesh latency
 
 Every consumed chunk-mesh dirty region now carries a `steady_clock` timestamp. The renderer tracks
@@ -147,12 +208,14 @@ the summary. Schema v4 resets the observation window after warmup, drains pendin
 mixing drain frames into frame-time statistics, retains censored final work, and reports exact
 completed-job/built-mesh/published-mesh amplification.
 
-## Decision and next experiment
+## Decision
 
-The versioned occupancy mask and surface-bound reservation remain in production. They preserve
-reference/greedy surface parity, rich-model/fluid/AO behavior, deterministic output ordering, and
-snapshot immutability. Empty rejection is a decisive latency win and the fixed 4 KiB mask is also
-available to later collision, lighting, and visibility experiments.
+The versioned occupancy mask, surface-bound reservation, revision-coupled meshing masks, and
+isolated-cube culled fallback remain in production. They preserve reference/greedy directional
+surface parity, rich-model/fluid/AO behavior, deterministic per-strategy output, snapshot
+immutability, stale rejection, and bounded buffer ownership. Empty rejection is a decisive latency
+win and the fixed 4 KiB chunk occupancy mask remains available to later collision, lighting, and
+visibility experiments.
 
 The clean three-run `rapid-edits` baseline now passes the 50 ms local-response P95 gate at
 19.491–19.854 ms with exactly 1.000 built mesh per publication, zero final pending or abandoned
@@ -160,8 +223,8 @@ intervals, and no drain frames; full configuration and raw paths are retained in
 [Renderer benchmarks](renderer_benchmarks.md#voxel-rapid-edit-baseline--2026-08-01). This does not
 justify slab or microbrick rebuild complexity for normal edits.
 
-The next meshing experiment is a render-table-revision-coupled full-occluder/greedy-cube mask used
-to construct directional face candidates with word operations. It must include snapshot-build cost,
-pool any variable scratch storage, retain directional occlusion and AO semantics, and improve total
-snapshot-plus-mesh P95. Slab or microbrick rebuilds remain deferred until a future edit trace shows
-that whole-chunk invalidation, rather than face construction, is the limiting cost.
+The combined sparse-cave and checkerboard P95 gates now pass as well. M4 is complete on the declared
+reference CPU. Slab or microbrick rebuilds remain deferred until a future edit trace shows that
+whole-chunk invalidation, rather than face construction, is again the limiting cost. Work proceeds
+to the bounded asynchronous dynamic-world stages in M5 rather than adding unmeasured meshing
+complexity.

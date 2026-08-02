@@ -29,8 +29,8 @@ requires one.
 | Bounded jobs and cancellation | Generic and typed schedulers now bound pending/result work, expose backpressure and queue-age telemetry, age priorities, and support reasoned queued/cooperative cancellation. | Attribute per-type saturation in higher-level pipeline counters and tune limits from traces. |
 | Versioned chunk pipeline | An owner-thread ledger now separates content, light, mesh, collision, persistence, and replication request/output revisions and states. Save/replication, mesh/GPU, collision/physics, and whole-field lighting publication are ticket-validated across edit and reload races. | Calibrate stale-work amplification and latency under representative edit/streaming traces. |
 | Compact voxel sections | Chunks remain fixed 32³ with contiguous dense `VoxelCell` production storage. Reproducible 16/32 experiments now cover dense, split, palette-packed, uniform-light, sparse-metadata, and adaptive split-dense fallback candidates. | Retain dense production storage while mask/macro work proceeds; add a medium-diversity crossover sweep before any storage selection. |
-| Occupancy and opacity masks | A fixed 4 KiB occupancy mask is maintained with the exact chunk content revision and copied into immutable meshing snapshots. Opacity remains render-table-dependent. | Prototype derived opacity/face masks keyed by content dependencies and render-table revision; measure total snapshot-plus-consumer cost. |
-| Face culling and greedy meshing | Implemented with immutable neighborhood snapshots, material/render phases, bounded scheduling, stale rejection, buffer reuse, a reproducible isolated benchmark, occupancy-assisted empty/source rejection, surface-bound output reservation, and bounded invalidation-to-resident traces. | Prototype word-level face candidates; adopt slab or microbrick rebuilds only if measured edit P95 requires them. |
+| Occupancy and opacity masks | A fixed 4 KiB occupancy mask follows the exact chunk content revision. Meshing snapshots also carry pooled greedy-cube and halo-padded full-occluder masks keyed by content dependencies and render-table revision. | Reuse the resident occupancy mask for later measured consumers; keep render-dependent masks derived and consumer-specific. |
+| Face culling and greedy meshing | Implemented with immutable neighborhood snapshots, material/render phases, bounded scheduling, stale rejection, pooled buffers, reproducible isolated benchmarks, occupancy-assisted rejection, word-level face candidates/AO queries, surface-bound reservation, an isolated-cube culled fallback, and bounded invalidation-to-resident traces. | Keep slab or microbrick rebuilds deferred unless a future measured edit P95 again exceeds target. |
 | Dynamic edit propagation | Dirty regions, neighbor dependencies, asynchronous mesh/light/collision work, upload quotas, exact mesh-stage latency tracking, edit-burst coalescing telemetry, and a clean repeated 50 ms visual-response gate exist. | Measure collision/light convergence and enforce explicit time budgets. |
 | Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, delta save/replication, residency budgets, and far clipmaps exist. Loading/generation and parts of save I/O remain synchronous. | Move disk/decode/generation/save stages off latency-critical threads and add journal durability, queue limits, and recovery tests. |
 | Visibility, LOD, and GPU scaling | Frustum/distance/hierarchical visibility, HZB support, far clipmaps, indirect rendering, GPU arenas, upload staging, and pass timestamps already exist. | Tune only from captures; validate total culling benefit and retain broad fallback paths. |
@@ -102,8 +102,9 @@ Progress: the deterministic corpus, codecs, raw-sample benchmark, exact memory a
 adaptive fallback, and production revision-coupled occupancy mask are implemented and documented
 in [Voxel storage experiments](voxel_storage_benchmarks.md) and
 [Voxel meshing experiments](voxel_meshing_benchmarks.md). The data rejects a universal palette-only
-live format and does not yet justify replacing production storage. Render-table-dependent opacity,
-macro validation, and compatibility tests for any eventually selected format remain open.
+live format and does not yet justify replacing production storage. Consumer-specific,
+render-table-dependent meshing masks and macro validation are now implemented; compatibility tests
+for any eventually selected replacement live format remain open.
 
 ### M4 — meshing and edit latency
 
@@ -124,8 +125,13 @@ documented in [Voxel meshing experiments](voxel_meshing_benchmarks.md). Exact me
 invalidation-to-resident tracking, a fixed rolling percentile window, warmup reset, bounded tail
 drain, mesh-work amplification, and benchmark schema v4 are also implemented. Three clean
 `rapid-edits` runs pass at 19.491–19.854 ms P95 with 1.000 build amplification and no censored work;
-see [Renderer benchmarks](renderer_benchmarks.md#voxel-rapid-edit-baseline--2026-08-01). The
-sparse-cave and checkerboard P95 gates are still missed.
+see [Renderer benchmarks](renderer_benchmarks.md#voxel-rapid-edit-baseline--2026-08-01).
+Revision-coupled greedy-cube/full-occluder masks, word-level directional candidates and AO queries,
+pooled mask storage, partial-direction fallback, and a pooled culled emitter for provably
+unmergeable isolated cubes are implemented. Three clean final runs put combined snapshot-plus-mesh
+P95 at 3.485–3.617 ms for sparse caves and 8.291–8.569 ms for checkerboard. All M4 exit gates pass;
+slab and microbrick rebuilds remain deferred. Full measurements are in
+[Voxel meshing experiments](voxel_meshing_benchmarks.md#revision-coupled-face-candidates).
 
 ### M5 — asynchronous dynamic-world pipeline
 
