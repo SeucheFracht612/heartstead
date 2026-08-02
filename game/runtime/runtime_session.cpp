@@ -126,6 +126,10 @@ core::Status RuntimeConfiguration::validate() const {
     if (!status) {
         return status;
     }
+    status = chunk_subscriptions.validate();
+    if (!status) {
+        return status;
+    }
     net::ReplicationTickBudgetConfig transient_replication_budget;
     transient_replication_budget.max_messages_per_tick = max_transient_snapshot_messages_per_tick;
     transient_replication_budget.max_payload_bytes_per_tick =
@@ -411,6 +415,7 @@ core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& pr
         server_desc.chunk_fluids = config_.chunk_fluids;
         server_desc.chunk_lighting = config_.chunk_lighting;
         server_desc.chunk_loading = config_.chunk_loading;
+        server_desc.chunk_subscriptions = config_.chunk_subscriptions;
         server_desc.simulation_ticks_per_second = config_.fixed_step.ticks_per_second;
         server_desc.transient_replication_budget.max_messages_per_tick =
             config_.max_transient_snapshot_messages_per_tick;

@@ -158,6 +158,10 @@ transport congestion control, pacing, and bytes-in-flight accounting described b
 Every reliable command result, world delta, chunk slice, bootstrap record, and tombstone enters a
 host-owned per-client FIFO before the transport sees it. Exact encoded-wire size is computed once at
 admission and retained with the entry, so retries and budget checks do not repeat the sizing encode.
+Producers that require an indivisible logical publication can submit a reliable replication batch:
+the host validates every message and exact wire size, rejects the whole batch at a count/byte
+boundary, or appends every message contiguously. Chunk snapshots use this path, so a 32-slice
+snapshot never becomes a half-admitted backlog entry when capacity changes.
 The default hard backlog envelope is 8,192 messages/64 MiB globally and 1,024 messages/8 MiB per
 client. Direct producers receive an explicit admission error when either boundary is full. If the
 host command gateway has already committed and its mandatory result or immediate event replication
@@ -193,12 +197,15 @@ loss recovery, and bytes in flight remain separate responsibilities.
 
 Local single-player startup is the one explicit exception to steady-state drain pacing. Before an
 in-memory client is published to the runtime, its already-capped bootstrap FIFO is drained
-synchronously so session creation returns a fully hydrated client, matching the local lifecycle
-contract. This path is rejected for socket-backed clients, does not admit data beyond the normal
-global/per-client backlog caps, and has its own profiling zone. Remote bootstrap remains incremental
-and subject to the ordinary tick and one-second limits.
+synchronously. With the default envelope this returns the collision interest and player seed
+together. If a deliberately smaller cap can admit collision chunks but not the atomic player-state
+batch, session creation retains a connected client with that state marked pending and retries it on
+ordinary ticks; it never publishes a prediction seed ahead of missing collision data. This path is
+rejected for socket-backed clients, does not admit data beyond the normal global/per-client backlog
+caps, and has its own profiling zone. Remote bootstrap is incremental and subject to ordinary tick
+and one-second limits.
 
-### Chunk subscription foundation
+### Chunk subscriptions and snapshot publication
 
 Chunk residency now has a deterministic per-client planning contract below the runtime adoption
 layer. The default desired cylinder has horizontal radius 2 and vertical radius 1 (39 chunks); a
@@ -221,10 +228,31 @@ remembered remote revision, and the resident client chunk; synchronization and i
 the count separately from snapshot slices. This order is required when an unsubscribe follows
 already-queued slices in the reliable FIFO.
 
-This is the protocol and policy foundation only. `ServerRuntime` does not yet derive player centers,
-persist per-client subscription sets, or restrict snapshot publication with this planner. Runtime
-adoption, relevance filtering for other voxel replication, and the multi-client
-spread/convergence/traversal benchmark remain separate M6 work.
+`ServerRuntime` now owns one persistent sorted subscription set and publication table per player
+connection. The exact player chunk is the planning center. Ordinary ticks apply the configured
+addition/removal quotas once per client, rotate client service and snapshot candidates for fairness,
+and publish only loaded subscribed chunks. A publication is keyed by chunk load identity and content
+revision, so comparing authoritative state to the per-client table retries deferred work and
+self-heals without relying on a lossy one-tick changed list. When a subscribed authoritative chunk
+disappears, or interest leaves the retain volume, its reliable removal must enter the FIFO before
+the server forgets the client publication.
+
+A per-tick cache encodes each coordinate/identity/revision snapshot once and reuses the immutable
+slice payloads for every interested recipient. Each client's 32-slice publication enters the
+reliable backlog atomically. Exact admission pressure defers the candidate without creating client
+assembly debris; nearest additions, farthest removals, stale/current publications, payload bytes,
+codec operations/time, and admission deferrals remain inspectable. Direct local startup plans the
+complete bounded desired set, while transport-driven joins use the ordinary transition quota.
+Because missing client chunks are solid for movement prediction, loaded spawn-interest snapshots
+are queued before the atomic assignment/movement/inventory seed. Transient snapshots exclude a
+client until that seed has been published.
+
+Focused runtime coverage proves bounded unrelated-far-chunk exclusion, quota-limited teleport
+convergence, ordered client eviction, one encoding shared by two recipients, atomic deferral and
+recovery behind a constrained reliable backlog, and collision-first recovery with a 64-message
+bootstrap cap. Remaining M6 work includes relevance filtering for the separate committed voxel
+event/delta path, a deterministic multi-client spread/traversal macrobenchmark, calibrated
+serialization/byte SLOs under impairment, server P99 evidence, and long-soak coverage.
 
 ## Prediction and interpolation
 

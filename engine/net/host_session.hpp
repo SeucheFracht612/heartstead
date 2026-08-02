@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace heartstead::net {
@@ -146,6 +147,8 @@ class HostSession {
     [[nodiscard]] core::Status send_client_control(core::NetId client_id, TransportMessage message);
     [[nodiscard]] core::Status send_replication_message(core::NetId client_id,
                                                         TransportMessage message);
+    [[nodiscard]] core::Status
+    send_reliable_replication_batch(core::NetId client_id, std::vector<TransportMessage> messages);
     [[nodiscard]] core::Result<std::vector<TransportEnvelope>>
     drain_client_messages(core::NetId client_id);
 
@@ -229,6 +232,7 @@ class HostSessionCommandResultBinaryCodec {
 [[nodiscard]] std::string_view host_session_state_name(HostSessionState state) noexcept;
 [[nodiscard]] core::Status validate_host_session_outbound_delivery_report(
     const HostSessionOutboundDeliveryReport& report) noexcept;
+[[nodiscard]] bool is_host_session_reliable_backlog_capacity_error(std::string_view code) noexcept;
 [[nodiscard]] core::Status
 validate_host_session_command_result(const HostSessionCommandResult& result) noexcept;
 [[nodiscard]] HostSessionCommandResult

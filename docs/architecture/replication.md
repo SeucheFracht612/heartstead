@@ -130,7 +130,8 @@ separate contracts:
 
 - player input bundles and authoritative movement snapshots support prediction and reconciliation
 - entity-motion snapshots use unreliable latest-wins delivery
-- chunk bootstrap and snapshot slices use dedicated streaming payloads
+- chunk bootstrap, player-centered subscription state, snapshot slices, and reliable removals use a
+  dedicated identity/revision-tracked streaming path with atomic per-chunk backlog admission
 - transport retransmission, per-client encoded-byte ceilings, and transient snapshot budgets live in
   the networking layer
 
@@ -141,8 +142,10 @@ reliability, and replacement requirements into one generic message.
 
 Replication is not a universal full-state synchronization system. Unsupported or unresolved
 subjects require an explicit snapshot/resync path, and chunk streaming remains separate from saved
-world-store deltas. Public-Internet security, NAT traversal, matchmaking, congestion control, and
-pacing are transport concerns and are not provided by this layer.
+world-store deltas. Chunk snapshots are spatially subscribed, but committed voxel event/delta
+traffic still requires its own matching relevance rule. Public-Internet security, NAT traversal,
+matchmaking, congestion control, and pacing are transport concerns and are not provided by this
+layer.
 
 See [Networking architecture](networking.md), [Commands](commands.md),
 [World model](world_model.md), and [Runtime composition](runtime_composition.md).

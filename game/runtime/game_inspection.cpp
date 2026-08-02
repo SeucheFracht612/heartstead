@@ -221,6 +221,24 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     std::uint64_t transient_maximum_client_serialization_time_overshoot_us = 0;
     std::size_t transient_maximum_client_count = 0;
     bool transient_replication_stats_invalid = false;
+    std::size_t chunk_subscription_maximum_count = 0;
+    std::size_t chunk_subscription_maximum_published_count = 0;
+    std::size_t chunk_subscription_maximum_partial_count = 0;
+    std::size_t chunk_subscription_maximum_stale_publication_count = 0;
+    std::uint32_t chunk_subscription_maximum_pending_initial_state_count = 0;
+    std::uint32_t chunk_subscription_published_initial_state_count = 0;
+    std::uint32_t chunk_subscription_added_count = 0;
+    std::uint32_t chunk_subscription_removed_count = 0;
+    std::uint32_t chunk_subscription_removal_message_count = 0;
+    std::uint32_t chunk_snapshot_chunk_count = 0;
+    std::uint32_t chunk_snapshot_slice_message_count = 0;
+    std::uint32_t chunk_snapshot_serialization_operation_count = 0;
+    std::uint64_t chunk_snapshot_payload_bytes = 0;
+    std::uint64_t chunk_snapshot_serialization_time_us = 0;
+    std::uint64_t chunk_subscription_deferred_addition_count = 0;
+    std::uint64_t chunk_subscription_deferred_removal_count = 0;
+    std::uint64_t chunk_snapshot_deferred_count = 0;
+    std::uint32_t chunk_subscription_reliable_admission_deferral_count = 0;
     std::uint32_t physics_body_count = 0;
     std::size_t collision_body_count = 0;
     std::uint64_t collision_box_count = 0;
@@ -294,6 +312,33 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
         }
         transient_replication_stats_invalid |=
             !net::validate_replication_tick_budget_stats(transient);
+        const auto& chunks = tick.chunk_subscriptions;
+        chunk_subscription_maximum_count =
+            std::max(chunk_subscription_maximum_count, chunks.subscription_count);
+        chunk_subscription_maximum_published_count =
+            std::max(chunk_subscription_maximum_published_count, chunks.published_chunk_count);
+        chunk_subscription_maximum_partial_count =
+            std::max(chunk_subscription_maximum_partial_count, chunks.partial_snapshot_count);
+        chunk_subscription_maximum_stale_publication_count = std::max(
+            chunk_subscription_maximum_stale_publication_count, chunks.stale_publication_count);
+        chunk_subscription_maximum_pending_initial_state_count =
+            std::max(chunk_subscription_maximum_pending_initial_state_count,
+                     chunks.pending_initial_state_client_count);
+        chunk_subscription_published_initial_state_count += chunks.published_initial_state_count;
+        chunk_subscription_added_count += chunks.added_subscription_count;
+        chunk_subscription_removed_count += chunks.removed_subscription_count;
+        chunk_subscription_removal_message_count += chunks.removal_message_count;
+        chunk_snapshot_chunk_count += chunks.snapshot_chunk_count;
+        chunk_snapshot_slice_message_count += chunks.snapshot_slice_message_count;
+        chunk_snapshot_serialization_operation_count +=
+            chunks.snapshot_serialization_operation_count;
+        chunk_snapshot_payload_bytes += chunks.snapshot_payload_bytes;
+        chunk_snapshot_serialization_time_us += chunks.snapshot_serialization_time_us;
+        chunk_subscription_deferred_addition_count += chunks.deferred_addition_count;
+        chunk_subscription_deferred_removal_count += chunks.deferred_removal_count;
+        chunk_snapshot_deferred_count += chunks.deferred_snapshot_count;
+        chunk_subscription_reliable_admission_deferral_count +=
+            chunks.reliable_admission_deferral_count;
         physics_body_count = tick.physics.body_count;
         collision_body_count = tick.chunk_collision.resident_body_count;
         collision_box_count = tick.chunk_collision.current_collision_boxes;
@@ -374,6 +419,39 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
               std::to_string(transient_maximum_client_attributed_time_us));
     add_field(data, "transient_maximum_client_serialization_time_overshoot_us",
               std::to_string(transient_maximum_client_serialization_time_overshoot_us));
+    add_field(data, "chunk_subscription_maximum_count",
+              std::to_string(chunk_subscription_maximum_count));
+    add_field(data, "chunk_subscription_maximum_published_count",
+              std::to_string(chunk_subscription_maximum_published_count));
+    add_field(data, "chunk_subscription_maximum_partial_count",
+              std::to_string(chunk_subscription_maximum_partial_count));
+    add_field(data, "chunk_subscription_maximum_stale_publication_count",
+              std::to_string(chunk_subscription_maximum_stale_publication_count));
+    add_field(data, "chunk_subscription_maximum_pending_initial_state_count",
+              std::to_string(chunk_subscription_maximum_pending_initial_state_count));
+    add_field(data, "chunk_subscription_published_initial_state_count",
+              std::to_string(chunk_subscription_published_initial_state_count));
+    add_field(data, "chunk_subscription_added_count",
+              std::to_string(chunk_subscription_added_count));
+    add_field(data, "chunk_subscription_removed_count",
+              std::to_string(chunk_subscription_removed_count));
+    add_field(data, "chunk_subscription_removal_message_count",
+              std::to_string(chunk_subscription_removal_message_count));
+    add_field(data, "chunk_snapshot_chunk_count", std::to_string(chunk_snapshot_chunk_count));
+    add_field(data, "chunk_snapshot_slice_message_count",
+              std::to_string(chunk_snapshot_slice_message_count));
+    add_field(data, "chunk_snapshot_serialization_operation_count",
+              std::to_string(chunk_snapshot_serialization_operation_count));
+    add_field(data, "chunk_snapshot_payload_bytes", std::to_string(chunk_snapshot_payload_bytes));
+    add_field(data, "chunk_snapshot_serialization_time_us",
+              std::to_string(chunk_snapshot_serialization_time_us));
+    add_field(data, "chunk_subscription_deferred_addition_count",
+              std::to_string(chunk_subscription_deferred_addition_count));
+    add_field(data, "chunk_subscription_deferred_removal_count",
+              std::to_string(chunk_subscription_deferred_removal_count));
+    add_field(data, "chunk_snapshot_deferred_count", std::to_string(chunk_snapshot_deferred_count));
+    add_field(data, "chunk_subscription_reliable_admission_deferral_count",
+              std::to_string(chunk_subscription_reliable_admission_deferral_count));
     add_field(data, "physics_body_count", std::to_string(physics_body_count));
     add_field(data, "chunk_collision_body_count", std::to_string(collision_body_count));
     add_field(data, "chunk_collision_box_count", std::to_string(collision_box_count));
@@ -468,6 +546,46 @@ debug::InspectionData GameInspector::inspect(const RuntimeSession& session) {
                   std::to_string(config.max_reliable_delivery_messages_per_tick));
         add_field(data, "configured_max_reliable_delivery_bytes_per_tick",
                   std::to_string(config.max_reliable_delivery_bytes_per_tick));
+        add_field(data, "configured_chunk_subscribe_horizontal_radius",
+                  std::to_string(config.chunk_subscriptions.subscribe_horizontal_radius_chunks));
+        add_field(data, "configured_chunk_subscribe_vertical_radius",
+                  std::to_string(config.chunk_subscriptions.subscribe_vertical_radius_chunks));
+        add_field(data, "configured_chunk_retain_horizontal_radius",
+                  std::to_string(config.chunk_subscriptions.retain_horizontal_radius_chunks));
+        add_field(data, "configured_chunk_retain_vertical_radius",
+                  std::to_string(config.chunk_subscriptions.retain_vertical_radius_chunks));
+        add_field(data, "configured_max_chunk_subscriptions_per_client",
+                  std::to_string(config.chunk_subscriptions.max_chunks_per_client));
+        const auto subscription_clients = server->chunk_subscription_clients();
+        std::size_t subscription_count = 0;
+        std::size_t published_subscription_count = 0;
+        std::size_t partial_subscription_count = 0;
+        std::size_t stale_subscription_publication_count = 0;
+        std::size_t deferred_subscription_count = 0;
+        std::size_t pending_initial_state_count = 0;
+        for (const auto& client : subscription_clients) {
+            subscription_count += client.subscriptions.size();
+            published_subscription_count += client.published_chunk_count;
+            partial_subscription_count += client.partial_snapshot_count;
+            stale_subscription_publication_count += client.stale_publication_count;
+            deferred_subscription_count += client.deferred_addition_count +
+                                           client.deferred_removal_count +
+                                           client.deferred_snapshot_count;
+            pending_initial_state_count += client.initial_state_published ? 0U : 1U;
+        }
+        add_field(data, "chunk_subscription_client_count",
+                  std::to_string(subscription_clients.size()));
+        add_field(data, "chunk_subscription_count", std::to_string(subscription_count));
+        add_field(data, "chunk_subscription_published_count",
+                  std::to_string(published_subscription_count));
+        add_field(data, "chunk_subscription_partial_count",
+                  std::to_string(partial_subscription_count));
+        add_field(data, "chunk_subscription_stale_publication_count",
+                  std::to_string(stale_subscription_publication_count));
+        add_field(data, "chunk_subscription_deferred_count",
+                  std::to_string(deferred_subscription_count));
+        add_field(data, "chunk_subscription_pending_initial_state_count",
+                  std::to_string(pending_initial_state_count));
         add_field(data, "loaded_chunk_count", std::to_string(world_stats.chunk_count));
         add_field(data, "chunk_edit_count", std::to_string(chunk_stats.edit_count));
         add_field(data, "edited_chunk_count", std::to_string(chunk_stats.edited_chunk_count));

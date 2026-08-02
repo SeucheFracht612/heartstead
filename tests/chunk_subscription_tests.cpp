@@ -1,5 +1,6 @@
 #include "engine/net/client_session.hpp"
 #include "engine/net/host_session.hpp"
+#include "engine/world/chunks/chunk_database.hpp"
 #include "engine/world/chunks/chunk_replication.hpp"
 #include "engine/world/chunks/chunk_subscription.hpp"
 
@@ -249,6 +250,79 @@ void test_multi_type_drain_preserves_replication_order() {
     assert(remaining.front().message.payload_type == "test.ignore");
 }
 
+void test_encoded_snapshot_message_round_trip() {
+    world::ChunkDatabase chunks;
+    auto& chunk = chunks.get_or_create({3, -1, 8});
+    chunk.fill({7, 11, 13, 17});
+    auto slices = world::make_chunk_snapshot_slices(chunk);
+    assert(slices && !slices.value().empty());
+    const auto& expected = slices.value().front();
+    const auto payload = world::ChunkSnapshotSliceBinaryCodec::encode(expected);
+    auto message = world::make_encoded_chunk_snapshot_slice_message(payload, 91, 123);
+    assert(message.payload == payload);
+    assert(message.sequence == 91);
+    assert(message.timestamp_ms == 123);
+    const net::TransportEnvelope envelope{core::NetId::from_value(1), core::NetId::from_value(2),
+                                          std::move(message)};
+    auto decoded = world::chunk_snapshot_slice_from_transport(envelope);
+    assert(decoded);
+    assert(decoded.value().identity == expected.identity);
+    assert(decoded.value().content_revision == expected.content_revision);
+    assert(decoded.value().slice_y == expected.slice_y);
+    assert(decoded.value().cells == expected.cells);
+}
+
+void test_reliable_replication_batch_admission_is_atomic() {
+    net::HostSessionConfig config;
+    config.transport = {
+        net::TransportBackend::in_memory,
+        net::InMemoryTransportHostConfig{core::NetId::from_value(100), 4096},
+    };
+    config.max_pending_reliable_messages = 2;
+    config.max_pending_reliable_messages_per_client = 2;
+    net::HostSession host(config);
+    assert(host.start());
+    auto client_id = host.connect_client();
+    assert(client_id);
+    net::ClientSession client(client_id.value());
+    accept_welcome(host, client_id.value(), client);
+
+    const auto make_message = [](std::uint64_t sequence) {
+        return net::TransportMessage{net::TransportMessageKind::replication,
+                                     net::TransportChannel::reliable,
+                                     sequence,
+                                     "test.atomic_batch",
+                                     std::to_string(sequence),
+                                     0};
+    };
+    std::vector<net::TransportMessage> rejected;
+    rejected.push_back(make_message(1));
+    rejected.push_back(make_message(2));
+    rejected.push_back(make_message(3));
+    auto status = host.send_reliable_replication_batch(client_id.value(), std::move(rejected));
+    assert(!status);
+    assert(net::is_host_session_reliable_backlog_capacity_error(status.error().code));
+    assert(host.pending_outbound_message_count() == 0);
+    assert(host.pending_outbound_message_count(client_id.value()) == 0);
+
+    std::vector<net::TransportMessage> admitted;
+    admitted.push_back(make_message(4));
+    admitted.push_back(make_message(5));
+    assert(host.send_reliable_replication_batch(client_id.value(), std::move(admitted)));
+    assert(host.pending_outbound_message_count() == 2);
+    net::HostSessionTickResult tick;
+    assert(host.flush_outbound(tick));
+    auto delivered = host.drain_client_messages(client_id.value());
+    assert(delivered && delivered.value().size() == 2);
+    assert(delivered.value()[0].message.sequence == 4);
+    assert(delivered.value()[1].message.sequence == 5);
+
+    assert(net::is_host_session_reliable_backlog_capacity_error(
+        "host_session.reliable_backlog_client_byte_limit"));
+    assert(!net::is_host_session_reliable_backlog_capacity_error(
+        "host_session.reliable_message_exceeds_delivery_budget"));
+}
+
 } // namespace
 
 int main() {
@@ -259,5 +333,7 @@ int main() {
     test_extreme_centers_remain_unique_and_bounded();
     test_removal_protocol_round_trip_and_validation();
     test_multi_type_drain_preserves_replication_order();
+    test_encoded_snapshot_message_round_trip();
+    test_reliable_replication_batch_admission_is_atomic();
     return 0;
 }

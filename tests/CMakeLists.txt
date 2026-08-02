@@ -249,6 +249,17 @@ target_link_libraries(heartstead_client_chunk_subscription_tests
 heartstead_configure_test_target(heartstead_client_chunk_subscription_tests)
 heartstead_register_unit_test(heartstead_client_chunk_subscription_tests)
 
+add_executable(heartstead_server_chunk_subscription_tests
+               server_chunk_subscription_tests.cpp)
+target_link_libraries(heartstead_server_chunk_subscription_tests
+                      PRIVATE Heartstead::GameRuntime)
+target_compile_definitions(
+  heartstead_server_chunk_subscription_tests
+  PRIVATE HEARTSTEAD_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+heartstead_configure_test_target(heartstead_server_chunk_subscription_tests)
+heartstead_register_unit_test(heartstead_server_chunk_subscription_tests)
+
 add_executable(heartstead_presentation_world_tests presentation_world_tests.cpp)
 target_link_libraries(heartstead_presentation_world_tests PRIVATE Heartstead::GameRuntime)
 heartstead_configure_test_target(heartstead_presentation_world_tests)

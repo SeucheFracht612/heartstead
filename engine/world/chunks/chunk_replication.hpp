@@ -55,6 +55,10 @@ class ChunkSnapshotSliceBinaryCodec {
 make_chunk_snapshot_slice_message(const ChunkSnapshotSlice& slice,
                                   std::uint64_t transport_sequence,
                                   std::int64_t timestamp_ms);
+[[nodiscard]] net::TransportMessage
+make_encoded_chunk_snapshot_slice_message(std::string encoded_payload,
+                                          std::uint64_t transport_sequence,
+                                          std::int64_t timestamp_ms);
 [[nodiscard]] core::Result<ChunkSnapshotSlice>
 chunk_snapshot_slice_from_transport(const net::TransportEnvelope& envelope);
 [[nodiscard]] net::TransportMessage make_chunk_subscription_removal_message(

@@ -349,6 +349,11 @@ core::Result<std::unique_ptr<ServerRuntime>> ServerRuntime::create(ServerRuntime
         return core::Result<std::unique_ptr<ServerRuntime>>::failure(
             replication_budget_status.error().code, replication_budget_status.error().message);
     }
+    auto chunk_subscription_status = desc.chunk_subscriptions.validate();
+    if (!chunk_subscription_status) {
+        return core::Result<std::unique_ptr<ServerRuntime>>::failure(
+            chunk_subscription_status.error().code, chunk_subscription_status.error().message);
+    }
     auto world_time_status = desc.world_time.validate();
     if (!world_time_status) {
         return core::Result<std::unique_ptr<ServerRuntime>>::failure(
@@ -529,9 +534,6 @@ core::Status ServerRuntime::initialize() {
             process_movement_control_messages(current_commands_.control_messages);
             for (const auto client_id : current_commands_.connected_clients) {
                 auto connection_status = spawn_player(client_id);
-                if (connection_status) {
-                    connection_status = send_initial_chunks(client_id);
-                }
                 if (!connection_status) {
                     (void)host_.disconnect_client(client_id);
                     return connection_status;
@@ -741,7 +743,7 @@ core::Status ServerRuntime::initialize() {
                 return core::Status::failure(delivery.error().code, delivery.error().message);
             }
             current_replication_ = std::move(delivery).value();
-            auto chunk_status = replicate_changed_chunks();
+            auto chunk_status = synchronize_chunk_subscriptions();
             if (!chunk_status) {
                 return chunk_status;
             }
@@ -845,6 +847,7 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     current_entity_motion_snapshot_count_ = 0;
     current_entity_motion_tombstone_count_ = 0;
     current_player_tombstone_count_ = 0;
+    current_chunk_subscriptions_ = {};
     auto budget_status = transient_replication_budget_.begin_tick(tick);
     if (!budget_status) {
         return core::Result<ServerRuntimeTickStats>::failure(budget_status.error().code,
@@ -884,6 +887,7 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     stats.entity_motion_tombstone_count = current_entity_motion_tombstone_count_;
     stats.player_tombstone_count = current_player_tombstone_count_;
     stats.transient_replication = transient_replication_budget_.snapshot();
+    stats.chunk_subscriptions = current_chunk_subscriptions_;
     auto replication_stats_status =
         net::validate_replication_tick_budget_stats(stats.transient_replication);
     if (!replication_stats_status) {
@@ -905,10 +909,23 @@ core::Result<core::NetId> ServerRuntime::connect_client() {
         (void)host_.disconnect_client(connected.value());
         return core::Result<core::NetId>::failure(status.error().code, status.error().message);
     }
-    status = send_initial_chunks(connected.value());
+    std::map<world::ChunkCoord, EncodedChunkSnapshot> snapshot_cache;
+    status =
+        synchronize_client_chunk_subscription(connected.value(),
+                                              {desc_.chunk_subscriptions.max_chunks_per_client,
+                                               desc_.chunk_subscriptions.max_chunks_per_client},
+                                              snapshot_cache);
     if (!status) {
         (void)disconnect_client(connected.value());
         return core::Result<core::NetId>::failure(status.error().code, status.error().message);
+    }
+    const auto connection = player_connections_.find(connected.value().value());
+    if (connection != player_connections_.end() && initial_chunk_state_ready(connection->second)) {
+        status = send_initial_state(connected.value());
+        if (!status) {
+            (void)disconnect_client(connected.value());
+            return core::Result<core::NetId>::failure(status.error().code, status.error().message);
+        }
     }
     net::HostSessionOutboundDeliveryReport bootstrap_delivery;
     status = host_.flush_local_client_bootstrap(connected.value(), bootstrap_delivery);
@@ -1135,6 +1152,41 @@ ServerRuntime::player_for_client(core::NetId client_id) const noexcept {
     const auto found = player_connections_.find(client_id.value());
     return found == player_connections_.end() ? nullptr
                                               : players_.find(found->second.runtime_handle);
+}
+
+std::vector<ServerChunkSubscriptionClientSnapshot>
+ServerRuntime::chunk_subscription_clients() const {
+    std::vector<ServerChunkSubscriptionClientSnapshot> snapshots;
+    snapshots.reserve(player_connections_.size());
+    for (const auto& [client_id, connection] : player_connections_) {
+        ServerChunkSubscriptionClientSnapshot snapshot;
+        snapshot.client_id = core::NetId::from_value(client_id);
+        snapshot.center = connection.chunk_subscription_center;
+        snapshot.subscriptions = connection.chunk_subscriptions;
+        for (const auto& [coordinate, publication] : connection.chunk_publications) {
+            if (!publication.complete) {
+                ++snapshot.partial_snapshot_count;
+                continue;
+            }
+            const auto* chunk = world_.chunks().find(coordinate);
+            if (chunk != nullptr && publication.identity == chunk->identity() &&
+                publication.content_revision == chunk->content_revision()) {
+                ++snapshot.published_chunk_count;
+            } else {
+                ++snapshot.stale_publication_count;
+            }
+        }
+        snapshot.deferred_addition_count = connection.deferred_chunk_additions;
+        snapshot.capacity_deferred_addition_count = connection.capacity_deferred_chunk_additions;
+        snapshot.deferred_removal_count = connection.deferred_chunk_removals;
+        snapshot.deferred_snapshot_count = connection.deferred_chunk_snapshots;
+        snapshot.converged = connection.chunk_subscriptions_converged;
+        snapshot.initial_state_published = connection.initial_state_published;
+        snapshots.push_back(std::move(snapshot));
+    }
+    std::ranges::sort(snapshots, {},
+                      [](const auto& snapshot) { return snapshot.client_id.value(); });
+    return snapshots;
 }
 
 void ServerRuntime::process_movement_control_messages(
@@ -1543,10 +1595,11 @@ core::Status ServerRuntime::spawn_player(core::NetId client_id) {
         cleanup_entity();
         return status;
     }
-    player_connections_.emplace(client_id.value(),
-                                PlayerConnection{runtime_handle, entity_id.value(),
-                                                 movement::ServerMovementInputQueue{}, std::nullopt,
-                                                 std::move(physics_collision)});
+    PlayerConnection connection;
+    connection.runtime_handle = runtime_handle;
+    connection.entity_id = entity_id.value();
+    connection.physics_collision = std::move(physics_collision);
+    player_connections_.emplace(client_id.value(), std::move(connection));
     grant_private_subject_access(host_, client_id, save_id);
     return core::Status::ok();
 }
@@ -1741,8 +1794,10 @@ core::Status ServerRuntime::stream_renderer_proof_world() {
 core::Status ServerRuntime::replicate_players() {
     std::vector<std::uint64_t> recipients;
     recipients.reserve(player_connections_.size());
-    for (const auto& [client_id, _] : player_connections_) {
-        recipients.push_back(client_id);
+    for (const auto& [client_id, connection] : player_connections_) {
+        if (connection.initial_state_published) {
+            recipients.push_back(client_id);
+        }
     }
     std::ranges::sort(recipients);
     if (!recipients.empty()) {
@@ -1879,8 +1934,10 @@ core::Status ServerRuntime::replicate_entity_motion(std::uint64_t simulation_tic
     }
     std::vector<std::uint64_t> recipients;
     recipients.reserve(player_connections_.size());
-    for (const auto& [client_id, _] : player_connections_) {
-        recipients.push_back(client_id);
+    for (const auto& [client_id, connection] : player_connections_) {
+        if (connection.initial_state_published) {
+            recipients.push_back(client_id);
+        }
     }
     std::ranges::sort(recipients);
     if (!recipients.empty()) {
@@ -1939,29 +1996,53 @@ core::Status ServerRuntime::replicate_entity_motion(std::uint64_t simulation_tic
     return core::Status::ok();
 }
 
-core::Status ServerRuntime::replicate_changed_chunks() {
+core::Status ServerRuntime::synchronize_chunk_subscriptions() {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("network.chunk_subscription_sync");
+    const auto finalize_stats = [this]() {
+        current_chunk_subscriptions_.client_count =
+            static_cast<std::uint32_t>(player_connections_.size());
+        for (const auto& [_, connection] : player_connections_) {
+            current_chunk_subscriptions_.subscription_count +=
+                connection.chunk_subscriptions.size();
+            current_chunk_subscriptions_.maximum_client_subscription_count =
+                std::max(current_chunk_subscriptions_.maximum_client_subscription_count,
+                         connection.chunk_subscriptions.size());
+            for (const auto& [coordinate, publication] : connection.chunk_publications) {
+                if (!publication.complete) {
+                    ++current_chunk_subscriptions_.partial_snapshot_count;
+                    continue;
+                }
+                const auto* chunk = world_.chunks().find(coordinate);
+                if (chunk != nullptr && publication.identity == chunk->identity() &&
+                    publication.content_revision == chunk->content_revision()) {
+                    ++current_chunk_subscriptions_.published_chunk_count;
+                } else {
+                    ++current_chunk_subscriptions_.stale_publication_count;
+                }
+            }
+            current_chunk_subscriptions_.converged_client_count +=
+                connection.chunk_subscriptions_converged ? 1U : 0U;
+            current_chunk_subscriptions_.pending_initial_state_client_count +=
+                connection.initial_state_published ? 0U : 1U;
+        }
+        HEARTSTEAD_PROFILE_PLOT("network.chunk_subscriptions",
+                                current_chunk_subscriptions_.subscription_count);
+        HEARTSTEAD_PROFILE_PLOT("network.chunk_snapshot_slices",
+                                current_chunk_subscriptions_.snapshot_slice_message_count);
+        HEARTSTEAD_PROFILE_PLOT("network.chunk_snapshot_deferred",
+                                current_chunk_subscriptions_.deferred_snapshot_count);
+    };
     if (desc_.direct_local_chunk_replication && renderer_proof_streaming_enabled_) {
         // A local Renderer Proof session installs streamed chunks directly into its presentation
         // client. Encoding every chunk as 32 reliable transport messages would benchmark the
         // loopback protocol instead of the renderer and create large main-thread bursts.
         pending_streamed_chunks_.clear();
+        finalize_stats();
         return core::Status::ok();
     }
     if (player_connections_.empty()) {
         pending_streamed_chunks_.clear();
-        return core::Status::ok();
-    }
-    std::vector<world::ChunkCoord> changed_chunks;
-    changed_chunks.insert(changed_chunks.end(), chunk_fluids_->changed_chunks().begin(),
-                          chunk_fluids_->changed_chunks().end());
-    changed_chunks.insert(changed_chunks.end(), chunk_lighting_->changed_chunks().begin(),
-                          chunk_lighting_->changed_chunks().end());
-    changed_chunks.insert(changed_chunks.end(), pending_streamed_chunks_.begin(),
-                          pending_streamed_chunks_.end());
-    std::ranges::sort(changed_chunks);
-    changed_chunks.erase(std::unique(changed_chunks.begin(), changed_chunks.end()),
-                         changed_chunks.end());
-    if (changed_chunks.empty()) {
+        finalize_stats();
         return core::Status::ok();
     }
     std::vector<std::uint64_t> client_ids;
@@ -1970,54 +2051,292 @@ core::Status ServerRuntime::replicate_changed_chunks() {
         client_ids.push_back(client_id);
     }
     std::ranges::sort(client_ids);
-    for (const auto coordinate : changed_chunks) {
-        const auto* chunk = world_.chunks().find(coordinate);
-        if (chunk == nullptr) {
-            continue;
+    const auto client_offset =
+        static_cast<std::size_t>(chunk_subscription_client_cursor_++ % client_ids.size());
+    std::rotate(client_ids.begin(),
+                client_ids.begin() +
+                    static_cast<std::vector<std::uint64_t>::difference_type>(client_offset),
+                client_ids.end());
+    std::map<world::ChunkCoord, EncodedChunkSnapshot> snapshot_cache;
+    for (const auto client_id : client_ids) {
+        auto status = synchronize_client_chunk_subscription(
+            core::NetId::from_value(client_id),
+            {desc_.chunk_subscriptions.max_additions_per_update,
+             desc_.chunk_subscriptions.max_removals_per_update},
+            snapshot_cache);
+        if (!status) {
+            return status;
         }
-        auto slices = world::make_chunk_snapshot_slices(*chunk);
-        if (!slices) {
-            return core::Status::failure(slices.error().code, slices.error().message);
-        }
-        for (const auto client_id : client_ids) {
-            for (const auto& slice : slices.value()) {
-                auto sequence = reserve_custom_replication_sequence();
-                if (!sequence) {
-                    return core::Status::failure(sequence.error().code, sequence.error().message);
-                }
-                auto status =
-                    host_.send_replication_message(core::NetId::from_value(client_id),
-                                                   world::make_chunk_snapshot_slice_message(
-                                                       slice, sequence.value(), current_time_ms_));
-                if (!status) {
-                    return status;
-                }
-            }
-        }
-    }
-    pending_streamed_chunks_.clear();
-    return core::Status::ok();
-}
-
-core::Status ServerRuntime::send_initial_chunks(core::NetId client_id) {
-    for (const auto* chunk : world_.chunks().records()) {
-        auto slices = world::make_chunk_snapshot_slices(*chunk);
-        if (!slices) {
-            return core::Status::failure(slices.error().code, slices.error().message);
-        }
-        for (const auto& slice : slices.value()) {
-            auto sequence = reserve_custom_replication_sequence();
-            if (!sequence) {
-                return core::Status::failure(sequence.error().code, sequence.error().message);
-            }
-            auto status = host_.send_replication_message(
-                client_id, world::make_chunk_snapshot_slice_message(slice, sequence.value(),
-                                                                    current_time_ms_));
+        auto& connection = player_connections_.at(client_id);
+        if (!connection.initial_state_published && initial_chunk_state_ready(connection)) {
+            status = send_initial_state(core::NetId::from_value(client_id));
             if (!status) {
                 return status;
             }
         }
     }
+    pending_streamed_chunks_.clear();
+    finalize_stats();
+    return core::Status::ok();
+}
+
+core::Status ServerRuntime::synchronize_client_chunk_subscription(
+    core::NetId client_id, world::ChunkSubscriptionTransitionBudget transition_budget,
+    std::map<world::ChunkCoord, EncodedChunkSnapshot>& snapshot_cache) {
+    const auto found = player_connections_.find(client_id.value());
+    if (found == player_connections_.end()) {
+        return core::Status::failure("server_runtime.player_not_connected",
+                                     "chunk subscription client has no active player");
+    }
+    auto& connection = found->second;
+    const auto* player = players_.find(connection.runtime_handle);
+    if (player == nullptr) {
+        return core::Status::failure("server_runtime.player_record_missing",
+                                     "chunk subscription client has no controller record");
+    }
+    connection.chunk_subscription_center =
+        world::chunk_coord_for_block(player->state.position.anchor);
+    auto planned = world::plan_chunk_subscriptions(connection.chunk_subscriptions,
+                                                   connection.chunk_subscription_center,
+                                                   desc_.chunk_subscriptions, transition_budget);
+    if (!planned) {
+        return core::Status::failure(planned.error().code, planned.error().message);
+    }
+    connection.deferred_chunk_additions = planned.value().deferred_addition_count;
+    connection.capacity_deferred_chunk_additions = planned.value().capacity_deferred_addition_count;
+    connection.deferred_chunk_removals = planned.value().deferred_removal_count;
+    connection.deferred_chunk_snapshots = 0;
+    current_chunk_subscriptions_.deferred_addition_count += planned.value().deferred_addition_count;
+    current_chunk_subscriptions_.capacity_deferred_addition_count +=
+        planned.value().capacity_deferred_addition_count;
+    current_chunk_subscriptions_.deferred_removal_count += planned.value().deferred_removal_count;
+
+    const auto erase_subscription = [&](world::ChunkCoord coordinate) {
+        const auto position = std::ranges::lower_bound(connection.chunk_subscriptions, coordinate);
+        if (position != connection.chunk_subscriptions.end() && *position == coordinate) {
+            connection.chunk_subscriptions.erase(position);
+            return true;
+        }
+        return false;
+    };
+    const auto queue_removal = [&](world::ChunkCoord coordinate) -> core::Result<bool> {
+        auto sequence = reserve_custom_replication_sequence();
+        if (!sequence) {
+            return core::Result<bool>::failure(sequence.error().code, sequence.error().message);
+        }
+        auto status = host_.send_replication_message(
+            client_id, world::make_chunk_subscription_removal_message(
+                           {coordinate}, sequence.value(), current_time_ms_));
+        if (!status) {
+            if (net::is_host_session_reliable_backlog_capacity_error(status.error().code)) {
+                ++current_chunk_subscriptions_.reliable_admission_deferral_count;
+                return core::Result<bool>::success(false);
+            }
+            return core::Result<bool>::failure(status.error().code, status.error().message);
+        }
+        ++current_chunk_subscriptions_.removal_message_count;
+        return core::Result<bool>::success(true);
+    };
+
+    for (const auto coordinate : planned.value().removed_chunks) {
+        const auto publication = connection.chunk_publications.find(coordinate);
+        if (publication != connection.chunk_publications.end()) {
+            auto queued = queue_removal(coordinate);
+            if (!queued) {
+                return core::Status::failure(queued.error().code, queued.error().message);
+            }
+            if (!queued.value()) {
+                ++connection.deferred_chunk_removals;
+                ++current_chunk_subscriptions_.deferred_removal_count;
+                continue;
+            }
+            connection.chunk_publications.erase(publication);
+        }
+        if (erase_subscription(coordinate)) {
+            ++current_chunk_subscriptions_.removed_subscription_count;
+        }
+    }
+    for (const auto coordinate : planned.value().added_chunks) {
+        if (connection.chunk_subscriptions.size() >=
+            desc_.chunk_subscriptions.max_chunks_per_client) {
+            ++connection.deferred_chunk_additions;
+            ++connection.capacity_deferred_chunk_additions;
+            ++current_chunk_subscriptions_.deferred_addition_count;
+            ++current_chunk_subscriptions_.capacity_deferred_addition_count;
+            continue;
+        }
+        const auto position = std::ranges::lower_bound(connection.chunk_subscriptions, coordinate);
+        if (position == connection.chunk_subscriptions.end() || *position != coordinate) {
+            connection.chunk_subscriptions.insert(position, coordinate);
+            ++current_chunk_subscriptions_.added_subscription_count;
+        }
+    }
+
+    for (auto publication = connection.chunk_publications.begin();
+         publication != connection.chunk_publications.end();) {
+        if (world_.chunks().contains(publication->first)) {
+            ++publication;
+            continue;
+        }
+        auto queued = queue_removal(publication->first);
+        if (!queued) {
+            return core::Status::failure(queued.error().code, queued.error().message);
+        }
+        if (!queued.value()) {
+            ++connection.deferred_chunk_snapshots;
+            ++current_chunk_subscriptions_.deferred_snapshot_count;
+            ++publication;
+            continue;
+        }
+        publication = connection.chunk_publications.erase(publication);
+    }
+
+    std::vector<world::ChunkCoord> snapshot_candidates;
+    snapshot_candidates.reserve(connection.chunk_subscriptions.size());
+    for (const auto coordinate : connection.chunk_subscriptions) {
+        const auto* chunk = world_.chunks().find(coordinate);
+        if (chunk == nullptr) {
+            continue;
+        }
+        const auto publication = connection.chunk_publications.find(coordinate);
+        if (publication == connection.chunk_publications.end() || !publication->second.complete ||
+            publication->second.identity != chunk->identity() ||
+            publication->second.content_revision != chunk->content_revision()) {
+            snapshot_candidates.push_back(coordinate);
+        }
+    }
+    if (!snapshot_candidates.empty()) {
+        const auto offset = connection.chunk_snapshot_cursor++ % snapshot_candidates.size();
+        std::rotate(snapshot_candidates.begin(),
+                    snapshot_candidates.begin() +
+                        static_cast<std::vector<world::ChunkCoord>::difference_type>(offset),
+                    snapshot_candidates.end());
+    }
+
+    constexpr auto messages_per_snapshot = static_cast<std::size_t>(world::VoxelChunk::edge_length);
+    for (std::size_t candidate_index = 0; candidate_index < snapshot_candidates.size();
+         ++candidate_index) {
+        const auto remaining_candidates = snapshot_candidates.size() - candidate_index;
+        const auto client_pending = host_.pending_outbound_message_count(client_id);
+        const auto global_pending = host_.pending_outbound_message_count();
+        const auto client_message_capacity =
+            client_pending <=
+            desc_.host.max_pending_reliable_messages_per_client -
+                std::min(
+                    messages_per_snapshot,
+                    static_cast<std::size_t>(desc_.host.max_pending_reliable_messages_per_client));
+        const auto global_message_capacity =
+            global_pending <=
+            desc_.host.max_pending_reliable_messages -
+                std::min(messages_per_snapshot,
+                         static_cast<std::size_t>(desc_.host.max_pending_reliable_messages));
+        if (desc_.host.max_pending_reliable_messages_per_client < messages_per_snapshot ||
+            desc_.host.max_pending_reliable_messages < messages_per_snapshot ||
+            !client_message_capacity || !global_message_capacity) {
+            connection.deferred_chunk_snapshots += remaining_candidates;
+            current_chunk_subscriptions_.deferred_snapshot_count += remaining_candidates;
+            ++current_chunk_subscriptions_.reliable_admission_deferral_count;
+            break;
+        }
+
+        const auto coordinate = snapshot_candidates[candidate_index];
+        const auto* chunk = world_.chunks().find(coordinate);
+        if (chunk == nullptr) {
+            continue;
+        }
+        auto cached = snapshot_cache.find(coordinate);
+        if (cached == snapshot_cache.end() || cached->second.identity != chunk->identity() ||
+            cached->second.content_revision != chunk->content_revision()) {
+            const auto started = ReplicationClock::now();
+            auto slices = world::make_chunk_snapshot_slices(*chunk);
+            if (!slices) {
+                return core::Status::failure(slices.error().code, slices.error().message);
+            }
+            EncodedChunkSnapshot encoded;
+            encoded.identity = chunk->identity();
+            encoded.content_revision = chunk->content_revision();
+            encoded.slices.reserve(slices.value().size());
+            for (const auto& slice : slices.value()) {
+                encoded.slices.push_back(world::ChunkSnapshotSliceBinaryCodec::encode(slice));
+            }
+            current_chunk_subscriptions_.snapshot_serialization_time_us +=
+                elapsed_replication_microseconds(started);
+            ++current_chunk_subscriptions_.snapshot_serialization_operation_count;
+            cached = snapshot_cache.insert_or_assign(coordinate, std::move(encoded)).first;
+        }
+
+        std::vector<net::TransportMessage> messages;
+        messages.reserve(cached->second.slices.size());
+        for (const auto& payload : cached->second.slices) {
+            auto sequence = reserve_custom_replication_sequence();
+            if (!sequence) {
+                return core::Status::failure(sequence.error().code, sequence.error().message);
+            }
+            messages.push_back(world::make_encoded_chunk_snapshot_slice_message(
+                payload, sequence.value(), current_time_ms_));
+        }
+        auto status = host_.send_reliable_replication_batch(client_id, std::move(messages));
+        if (!status) {
+            if (!net::is_host_session_reliable_backlog_capacity_error(status.error().code)) {
+                return status;
+            }
+            const auto deferred = snapshot_candidates.size() - candidate_index;
+            connection.deferred_chunk_snapshots += deferred;
+            current_chunk_subscriptions_.deferred_snapshot_count += deferred;
+            ++current_chunk_subscriptions_.reliable_admission_deferral_count;
+            break;
+        }
+        connection.chunk_publications.insert_or_assign(
+            coordinate,
+            ChunkPublication{cached->second.identity, cached->second.content_revision, true});
+        ++current_chunk_subscriptions_.snapshot_chunk_count;
+        current_chunk_subscriptions_.snapshot_slice_message_count +=
+            static_cast<std::uint32_t>(cached->second.slices.size());
+        for (const auto& payload : cached->second.slices) {
+            current_chunk_subscriptions_.snapshot_payload_bytes += payload.size();
+        }
+    }
+    connection.chunk_subscriptions_converged =
+        connection.deferred_chunk_additions == 0 && connection.deferred_chunk_removals == 0;
+    return core::Status::ok();
+}
+
+bool ServerRuntime::initial_chunk_state_ready(const PlayerConnection& connection) const noexcept {
+    if (desc_.direct_local_chunk_replication && renderer_proof_streaming_enabled_) {
+        return true;
+    }
+    const auto publication_is_current = [this, &connection](world::ChunkCoord coordinate) {
+        const auto* chunk = world_.chunks().find(coordinate);
+        if (chunk == nullptr) {
+            return false;
+        }
+        const auto publication = connection.chunk_publications.find(coordinate);
+        return publication != connection.chunk_publications.end() && publication->second.complete &&
+               publication->second.identity == chunk->identity() &&
+               publication->second.content_revision == chunk->content_revision();
+    };
+    if (!publication_is_current(connection.chunk_subscription_center)) {
+        return false;
+    }
+    return std::ranges::all_of(connection.chunk_subscriptions, [this, &publication_is_current](
+                                                                   world::ChunkCoord coordinate) {
+        return world_.chunks().find(coordinate) == nullptr || publication_is_current(coordinate);
+    });
+}
+
+core::Status ServerRuntime::send_initial_state(core::NetId client_id) {
+    const auto found = player_connections_.find(client_id.value());
+    if (found == player_connections_.end()) {
+        return core::Status::failure("server_runtime.player_not_connected",
+                                     "initial state recipient has no active player");
+    }
+    auto& connection = found->second;
+    if (connection.initial_state_published || !initial_chunk_state_ready(connection)) {
+        return core::Status::ok();
+    }
+
+    std::vector<net::TransportMessage> messages;
+    messages.reserve(world_.entities().records().size() + players_.records().size() + 2U);
     for (const auto* record : world_.entities().records()) {
         if (record->kind == entities::EntityKind::player || !record->net_id.is_valid()) {
             continue;
@@ -2039,10 +2358,7 @@ core::Status ServerRuntime::send_initial_chunks(core::NetId client_id) {
         auto message = entities::make_entity_motion_snapshot_message(snapshot, sequence.value(),
                                                                      current_time_ms_);
         message.channel = net::TransportChannel::reliable;
-        status = host_.send_replication_message(client_id, std::move(message));
-        if (!status) {
-            return status;
-        }
+        messages.push_back(std::move(message));
     }
     const auto* local_player = player_for_client(client_id);
     if (local_player == nullptr) {
@@ -2054,12 +2370,8 @@ core::Status ServerRuntime::send_initial_chunks(core::NetId client_id) {
         return core::Status::failure(assignment_sequence.error().code,
                                      assignment_sequence.error().message);
     }
-    auto assignment_status = host_.send_replication_message(
-        client_id, movement::make_player_assignment_message(
-                       local_player->net_id, assignment_sequence.value(), current_time_ms_));
-    if (!assignment_status) {
-        return assignment_status;
-    }
+    messages.push_back(movement::make_player_assignment_message(
+        local_player->net_id, assignment_sequence.value(), current_time_ms_));
     for (const auto* player : players_.records()) {
         movement::PlayerControllerSnapshot snapshot;
         snapshot.player_net_id = player->net_id;
@@ -2077,10 +2389,7 @@ core::Status ServerRuntime::send_initial_chunks(core::NetId client_id) {
         // snapshot is different: losing it leaves the client without a prediction seed, so carry
         // this one instance on the reliable session FIFO.
         initial_snapshot.channel = net::TransportChannel::reliable;
-        auto status = host_.send_replication_message(client_id, std::move(initial_snapshot));
-        if (!status) {
-            return status;
-        }
+        messages.push_back(std::move(initial_snapshot));
     }
     auto inventory_sequence = reserve_custom_replication_sequence();
     if (!inventory_sequence) {
@@ -2100,10 +2409,17 @@ core::Status ServerRuntime::send_initial_chunks(core::NetId client_id) {
         return core::Status::failure(inventory_message.error().code,
                                      inventory_message.error().message);
     }
-    auto status = host_.send_replication_message(client_id, std::move(inventory_message).value());
+    messages.push_back(std::move(inventory_message).value());
+    auto status = host_.send_reliable_replication_batch(client_id, std::move(messages));
     if (!status) {
+        if (net::is_host_session_reliable_backlog_capacity_error(status.error().code)) {
+            ++current_chunk_subscriptions_.reliable_admission_deferral_count;
+            return core::Status::ok();
+        }
         return status;
     }
+    connection.initial_state_published = true;
+    ++current_chunk_subscriptions_.published_initial_state_count;
     return core::Status::ok();
 }
 

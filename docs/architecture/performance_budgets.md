@@ -152,6 +152,15 @@ stress test clears under a two-message/tick, one-message/client/tick profile in 
 These are bounded defaults, not yet calibrated multiplayer throughput or P99 gates. See
 [Reliable application backlog](networking.md#reliable-application-backlog).
 
+Chunk interest adds a second spatial bound above that FIFO. Defaults request a 39-chunk cylinder,
+retain a wider 3-by-2 hysteresis volume, cap each client at 128 subscriptions, and transition at
+most 4 additions/16 removals per ordinary update. Only loaded subscribed chunks are snapshot
+candidates. A complete 32-slice client snapshot is admitted atomically against the exact reliable
+message/byte envelope, and its encoded source payload is shared across recipients in the same tick.
+Current/stale publications, shared serialization time, payload bytes, transition debt, snapshot
+debt, and admission pressure remain visible. These are safety bounds pending the M6 multi-client
+spread/traversal calibration, not final network SLOs.
+
 High defaults include 16 visible terrain chunks horizontally with mesh/resident/load hysteresis,
 8 MiB near and 8 MiB far-terrain uploads per frame, 512 MiB generic residency, 1,024 local lights,
 32 lights per tile, two local shadow maps, 2048 directional shadow resolution, and 320 m shadow range.

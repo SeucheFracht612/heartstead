@@ -16,6 +16,7 @@
 #include "engine/scenarios/scenario_fixture.hpp"
 #include "engine/simulation/simulation_scheduler.hpp"
 #include "engine/simulation/world_time.hpp"
+#include "engine/world/chunks/chunk_subscription.hpp"
 #include "engine/world/fluids/chunk_fluid_system.hpp"
 #include "engine/world/lighting/chunk_light_system.hpp"
 #include "engine/world/replication_delta.hpp"
@@ -27,11 +28,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
 #include <stop_token>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace heartstead::game {
 
@@ -53,6 +57,7 @@ struct ServerRuntimeDesc {
     world::ChunkFluidSystemConfig chunk_fluids;
     world::ChunkLightSystemConfig chunk_lighting;
     world::ChunkLoadSchedulerConfig chunk_loading;
+    world::ChunkSubscriptionPolicy chunk_subscriptions;
     std::uint32_t simulation_ticks_per_second = 60;
     net::ReplicationTickBudgetConfig transient_replication_budget;
     bool direct_local_chunk_replication = false;
@@ -64,6 +69,46 @@ struct ServerRuntimeDesc {
     std::vector<std::shared_ptr<IGameplayModule>> gameplay_modules;
     std::stop_token stop_token;
     ServerRuntimeStartupProgressCallback startup_progress;
+};
+
+struct ServerChunkSubscriptionTickStats {
+    std::uint32_t client_count = 0;
+    std::size_t subscription_count = 0;
+    std::size_t maximum_client_subscription_count = 0;
+    std::size_t published_chunk_count = 0;
+    std::size_t partial_snapshot_count = 0;
+    std::size_t stale_publication_count = 0;
+    std::uint32_t converged_client_count = 0;
+    std::uint32_t pending_initial_state_client_count = 0;
+    std::uint32_t published_initial_state_count = 0;
+    std::uint32_t added_subscription_count = 0;
+    std::uint32_t removed_subscription_count = 0;
+    std::uint32_t removal_message_count = 0;
+    std::uint32_t snapshot_chunk_count = 0;
+    std::uint32_t snapshot_slice_message_count = 0;
+    std::uint32_t snapshot_serialization_operation_count = 0;
+    std::uint64_t snapshot_payload_bytes = 0;
+    std::uint64_t snapshot_serialization_time_us = 0;
+    std::uint64_t deferred_addition_count = 0;
+    std::uint64_t capacity_deferred_addition_count = 0;
+    std::uint64_t deferred_removal_count = 0;
+    std::uint64_t deferred_snapshot_count = 0;
+    std::uint32_t reliable_admission_deferral_count = 0;
+};
+
+struct ServerChunkSubscriptionClientSnapshot {
+    core::NetId client_id;
+    world::ChunkCoord center;
+    std::vector<world::ChunkCoord> subscriptions;
+    std::size_t published_chunk_count = 0;
+    std::size_t partial_snapshot_count = 0;
+    std::size_t stale_publication_count = 0;
+    std::size_t deferred_addition_count = 0;
+    std::size_t capacity_deferred_addition_count = 0;
+    std::size_t deferred_removal_count = 0;
+    std::size_t deferred_snapshot_count = 0;
+    bool converged = false;
+    bool initial_state_published = false;
 };
 
 struct ServerRuntimeTickStats {
@@ -88,6 +133,7 @@ struct ServerRuntimeTickStats {
     std::uint64_t deferred_transient_snapshot_count = 0;
     std::uint64_t transient_snapshot_payload_bytes = 0;
     net::ReplicationTickBudgetStats transient_replication;
+    ServerChunkSubscriptionTickStats chunk_subscriptions;
 };
 
 class ServerRuntime final {
@@ -150,14 +196,38 @@ class ServerRuntime final {
     player_for_client(core::NetId client_id) noexcept;
     [[nodiscard]] const movement::PlayerControllerRecord*
     player_for_client(core::NetId client_id) const noexcept;
+    [[nodiscard]] std::vector<ServerChunkSubscriptionClientSnapshot>
+    chunk_subscription_clients() const;
 
   private:
+    struct ChunkPublication {
+        world::ChunkIdentity identity;
+        std::uint64_t content_revision = 0;
+        bool complete = false;
+    };
+
+    struct EncodedChunkSnapshot {
+        world::ChunkIdentity identity;
+        std::uint64_t content_revision = 0;
+        std::vector<std::string> slices;
+    };
+
     struct PlayerConnection {
         core::RuntimeHandle runtime_handle;
         entities::EntityId entity_id;
         movement::ServerMovementInputQueue pending_inputs;
         std::optional<movement::PlayerInputFrame> last_input;
         std::unique_ptr<movement::PhysicsCharacterCollisionWorld> physics_collision;
+        world::ChunkCoord chunk_subscription_center;
+        std::vector<world::ChunkCoord> chunk_subscriptions;
+        std::map<world::ChunkCoord, ChunkPublication> chunk_publications;
+        std::size_t chunk_snapshot_cursor = 0;
+        std::size_t deferred_chunk_additions = 0;
+        std::size_t capacity_deferred_chunk_additions = 0;
+        std::size_t deferred_chunk_removals = 0;
+        std::size_t deferred_chunk_snapshots = 0;
+        bool chunk_subscriptions_converged = false;
+        bool initial_state_published = false;
     };
 
     explicit ServerRuntime(ServerRuntimeDesc desc);
@@ -175,8 +245,12 @@ class ServerRuntime final {
     [[nodiscard]] core::Status stream_renderer_proof_world();
     [[nodiscard]] core::Status replicate_players();
     [[nodiscard]] core::Status replicate_entity_motion(std::uint64_t simulation_tick);
-    [[nodiscard]] core::Status replicate_changed_chunks();
-    [[nodiscard]] core::Status send_initial_chunks(core::NetId client_id);
+    [[nodiscard]] core::Status synchronize_chunk_subscriptions();
+    [[nodiscard]] core::Status synchronize_client_chunk_subscription(
+        core::NetId client_id, world::ChunkSubscriptionTransitionBudget transition_budget,
+        std::map<world::ChunkCoord, EncodedChunkSnapshot>& snapshot_cache);
+    [[nodiscard]] bool initial_chunk_state_ready(const PlayerConnection& connection) const noexcept;
+    [[nodiscard]] core::Status send_initial_state(core::NetId client_id);
     [[nodiscard]] core::Result<std::uint64_t> reserve_custom_replication_sequence();
     [[nodiscard]] std::uint64_t collision_world_revision() const noexcept;
 
@@ -220,6 +294,7 @@ class ServerRuntime final {
     std::uint32_t current_entity_motion_snapshot_count_ = 0;
     std::uint32_t current_entity_motion_tombstone_count_ = 0;
     std::uint32_t current_player_tombstone_count_ = 0;
+    ServerChunkSubscriptionTickStats current_chunk_subscriptions_;
     std::int64_t current_time_ms_ = 0;
     std::uint64_t pending_world_time_numerator_ = 0;
     std::uint64_t collision_world_revision_ = 1;
@@ -229,6 +304,7 @@ class ServerRuntime final {
     std::uint64_t movement_replication_source_cursor_ = 0;
     std::uint64_t entity_motion_replication_source_cursor_ = 0;
     std::uint64_t transient_replication_class_cursor_ = 0;
+    std::uint64_t chunk_subscription_client_cursor_ = 0;
     std::optional<std::int64_t> renderer_proof_next_generation_time_ms_;
     bool renderer_proof_streaming_enabled_ = false;
 };

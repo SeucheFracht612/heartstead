@@ -34,7 +34,7 @@ requires one.
 | Dynamic edit propagation | Dirty regions, neighbor dependencies, asynchronous mesh/light/collision work, upload quotas, exact mesh/collision/relight lifecycle tracking, edit coalescing/abandonment telemetry, and calibrated visual, collision, relight, required-chunk upload-preparation, and draw-eligibility P95 gates exist. | Add burst-edit collision/relight amplification and actual GPU execution/presentation/display response workloads. |
 | Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, indexed delta save/replication, residency budgets, and far clipmaps exist. Durable snapshot acceptance/compaction and application saves run through a bounded save worker. A bounded chunk loader moves disk/decode/generation/private edit application off-thread and is active in the live renderer-proof stream. Saved-delta publication and narrow flushes no longer scan or copy global edit history, physical delta sources parse one base-plus-journal view per streaming epoch, and a retained writer publishes one checksummed file per update. Process-local readers/writers pin generation tables; append/publication mutations serialize across database instances; destructive maintenance fails fast for retry. The save-under-streaming harness proves pinned reads across full generation publication, an explicit reader gap, stale pruning, and future-source rotation. Warm/cache-advised reads and durable append/reopen/checkpoint gates pass at 16,384 records. | Add application-owned checkpoint retry cadence plus guaranteed-cold/multi-filesystem coverage, adopt async loading in the general generated-world controller, bound eviction waves, and add scale-calibrated live save-capture gates. |
 | Visibility, LOD, and GPU scaling | Frustum/distance/hierarchical visibility, HZB support, far clipmaps, indirect rendering, GPU arenas, upload staging, and pass timestamps already exist. | Tune only from captures; validate total culling benefit and retain broad fallback paths. |
-| Simulation and multiplayer scale | Simulation LOD, server authority, interest management, replication deltas, and fixed-step runtime exist. | Add multi-client spread/convergence benchmarks, byte/time quotas, backlog recovery gates, and soak coverage. |
+| Simulation and multiplayer scale | Simulation LOD, server authority, fixed-step runtime, bounded reliable/transient replication, and player-centered hysteretic chunk subscriptions now run in `ServerRuntime`. Chunk snapshots are relevance-limited, identity/revision tracked, atomically queued, and encoded once across recipients. | Add the deterministic multi-client spread/convergence/traversal benchmark, filter the separate voxel event/delta path, calibrate chunk serialization/byte SLOs, and add impaired-network P99 plus soak coverage. |
 
 ## Ordered milestones
 
@@ -345,17 +345,23 @@ clients, and zero backlog on the second recovery tick. This follows the bounded-
 warning in [RFC 6458](https://www.rfc-editor.org/rfc/rfc6458#section-3.1.2), without claiming a
 complete congestion controller.
 
-A bounded chunk-subscription foundation now validates per-client caps and transition quotas, plans
-nearest-first desired additions plus farthest-first removals with retain hysteresis, and evicts
-non-desired hysteresis residents under cap pressure so current interest cannot starve. The reliable
-binary unsubscribe protocol is consumed in FIFO order with snapshot slices; clients discard partial
-assemblies, remembered revisions, and resident chunks on removal. Focused tests cover convergence,
-teleports, cap-pressure recovery, signed-coordinate extremes, malformed payloads, multi-type queue
-ordering, and client removal/resubscription behavior. `ServerRuntime` adoption is intentionally not
-claimed yet. Player-centered runtime subscriptions, relevance filtering for other voxel traffic,
-real multi-client spread/convergence/traversal benchmarks, calibrated backlog recovery under network
-impairment, server P99, and long-soak evidence remain before the replication/multiplayer slice is
-accepted.
+A bounded chunk-subscription planner validates per-client caps and transition quotas, selects
+nearest desired additions plus farthest removals with retain hysteresis, and evicts non-desired
+retained chunks under cap pressure so current interest cannot starve. `ServerRuntime` now persists
+that state per player, derives centers from authoritative positions, scans only loaded subscribed
+chunks, and compares load identity/content revision against each client's publication table.
+Reliable unsubscriptions precede server-side publication removal. Whole 32-slice snapshots use
+atomic exact-wire backlog admission, and one per-tick encoded snapshot is reused across all matching
+recipients. Collision-interest snapshots precede the player prediction seed; state remains pending
+and retryable if a small queue cannot accept both.
+
+Focused coverage now spans planner extremes and cap pressure, FIFO removal/resubscription, unrelated
+far-chunk exclusion, bounded teleport convergence, two-client shared encoding, reliable-backlog
+deferral/recovery without partial publication, and collision-first bootstrap under a 64-message cap.
+Runtime adoption for chunk snapshots is therefore implemented. Relevance filtering for the separate
+committed voxel event/delta path, the real multi-client spread/convergence/traversal macrobenchmark,
+calibrated impairment/serialization gates, server P99, and long-soak evidence remain before the
+replication/multiplayer slice is accepted.
 
 ### M7 — trace-gated GPU work
 

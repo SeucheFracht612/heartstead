@@ -359,6 +359,93 @@ core::Status HostSession::send_replication_message(core::NetId client_id,
     return transport_->send_server_to_client(client_id, std::move(message));
 }
 
+core::Status HostSession::send_reliable_replication_batch(core::NetId client_id,
+                                                          std::vector<TransportMessage> messages) {
+    auto running = require_running();
+    if (!running) {
+        return running;
+    }
+    if (!transport_->is_client_connected(client_id)) {
+        return core::Status::failure("transport.unknown_client",
+                                     "replication batch recipient is not connected");
+    }
+    if (messages.empty()) {
+        return core::Status::ok();
+    }
+
+    std::vector<std::uint64_t> wire_bytes;
+    wire_bytes.reserve(messages.size());
+    std::uint64_t batch_bytes = 0;
+    for (const auto& message : messages) {
+        if (message.kind != TransportMessageKind::replication ||
+            message.channel != TransportChannel::reliable) {
+            return core::Status::failure(
+                "host_session.not_reliable_replication_batch",
+                "atomic replication batches accept only reliable replication messages");
+        }
+        auto status =
+            validate_transport_message(message, transport_->capabilities().max_payload_bytes);
+        if (!status) {
+            return status;
+        }
+        const auto encoded_bytes =
+            static_cast<std::uint64_t>(outbound_wire_bytes(client_id, message));
+        if (encoded_bytes > config_.max_outbound_bytes_per_client_per_second ||
+            encoded_bytes > config_.max_reliable_delivery_bytes_per_tick ||
+            encoded_bytes > config_.max_reliable_delivery_bytes_per_client_per_tick) {
+            return core::Status::failure(
+                "host_session.reliable_message_exceeds_delivery_budget",
+                "encoded reliable message cannot fit the configured per-second and per-tick "
+                "delivery budgets");
+        }
+        if (encoded_bytes > std::numeric_limits<std::uint64_t>::max() - batch_bytes) {
+            return core::Status::failure("host_session.reliable_batch_byte_overflow",
+                                         "encoded reliable batch byte size overflows uint64");
+        }
+        batch_bytes += encoded_bytes;
+        wire_bytes.push_back(encoded_bytes);
+    }
+
+    const auto found = pending_outbound_.find(client_id);
+    const auto client_messages =
+        found == pending_outbound_.end() ? 0U : found->second.messages.size();
+    const auto client_bytes = found == pending_outbound_.end() ? 0U : found->second.wire_bytes;
+    if (messages.size() >
+        config_.max_pending_reliable_messages_per_client -
+            std::min(client_messages,
+                     static_cast<std::size_t>(config_.max_pending_reliable_messages_per_client))) {
+        return core::Status::failure("host_session.reliable_backlog_client_message_limit",
+                                     "per-client reliable backlog cannot admit the whole batch");
+    }
+    if (batch_bytes > config_.max_pending_reliable_bytes_per_client ||
+        client_bytes > config_.max_pending_reliable_bytes_per_client - batch_bytes) {
+        return core::Status::failure("host_session.reliable_backlog_client_byte_limit",
+                                     "per-client reliable backlog cannot admit the whole batch");
+    }
+    if (messages.size() >
+        config_.max_pending_reliable_messages -
+            std::min(pending_outbound_message_count_,
+                     static_cast<std::size_t>(config_.max_pending_reliable_messages))) {
+        return core::Status::failure("host_session.reliable_backlog_global_message_limit",
+                                     "global reliable backlog cannot admit the whole batch");
+    }
+    if (batch_bytes > config_.max_pending_reliable_bytes ||
+        pending_outbound_bytes_ > config_.max_pending_reliable_bytes - batch_bytes) {
+        return core::Status::failure("host_session.reliable_backlog_global_byte_limit",
+                                     "global reliable backlog cannot admit the whole batch");
+    }
+
+    auto& queue = pending_outbound_[client_id];
+    queue.wire_bytes += batch_bytes;
+    for (std::size_t index = 0; index < messages.size(); ++index) {
+        queue.messages.push_back(
+            PendingOutboundMessage{std::move(messages[index]), wire_bytes[index], 0});
+    }
+    pending_outbound_message_count_ += messages.size();
+    pending_outbound_bytes_ += batch_bytes;
+    return core::Status::ok();
+}
+
 core::Result<std::vector<TransportEnvelope>>
 HostSession::drain_client_messages(core::NetId client_id) {
     auto running = require_running();
@@ -975,6 +1062,13 @@ std::string_view host_session_state_name(HostSessionState state) noexcept {
         return "running";
     }
     return "unknown";
+}
+
+bool is_host_session_reliable_backlog_capacity_error(std::string_view code) noexcept {
+    return code == "host_session.reliable_backlog_client_message_limit" ||
+           code == "host_session.reliable_backlog_client_byte_limit" ||
+           code == "host_session.reliable_backlog_global_message_limit" ||
+           code == "host_session.reliable_backlog_global_byte_limit";
 }
 
 core::Status validate_host_session_outbound_delivery_report(

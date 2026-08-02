@@ -334,9 +334,19 @@ ChunkSnapshotSliceBinaryCodec::decode(std::string_view payload) {
 net::TransportMessage make_chunk_snapshot_slice_message(const ChunkSnapshotSlice& slice,
                                                         std::uint64_t transport_sequence,
                                                         std::int64_t timestamp_ms) {
-    return {net::TransportMessageKind::replication, net::TransportChannel::reliable,
-            transport_sequence, std::string(chunk_snapshot_slice_payload_type),
-            ChunkSnapshotSliceBinaryCodec::encode(slice), timestamp_ms};
+    return make_encoded_chunk_snapshot_slice_message(ChunkSnapshotSliceBinaryCodec::encode(slice),
+                                                     transport_sequence, timestamp_ms);
+}
+
+net::TransportMessage make_encoded_chunk_snapshot_slice_message(std::string encoded_payload,
+                                                                std::uint64_t transport_sequence,
+                                                                std::int64_t timestamp_ms) {
+    return {net::TransportMessageKind::replication,
+            net::TransportChannel::reliable,
+            transport_sequence,
+            std::string(chunk_snapshot_slice_payload_type),
+            std::move(encoded_payload),
+            timestamp_ms};
 }
 
 core::Result<ChunkSnapshotSlice>
