@@ -155,8 +155,9 @@ snapshot throughput.
 Server/runtime inspection reports configured subscribe/retain radii and client cap; current client,
 subscription, current/stale/partial publication, deferred transition/snapshot, and pending bootstrap
 state counts; per-frame additions/removals; atomic snapshot chunks/slices/payload bytes; shared codec
-operations/time; and reliable admission deferrals. Tracy builds also plot subscription population,
-snapshot slices, and deferred snapshots.
+operations/time/overshoot; serialization-budget deferrals; and reliable admission deferrals. It also
+reports the configured global chunk-snapshot serialization boundary. Tracy builds plot subscription
+population, snapshot slices, and deferred snapshots.
 Simulation LOD inspection reports policy radii and tick intervals, raw subject identity,
 process ids, coordinates, persistence, sleeping/forced state, per-subject LOD decisions, offline
 timestamp deltas, due-tick state, frame-plan counts, and counter mismatches in manually

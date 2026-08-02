@@ -241,18 +241,25 @@ A per-tick cache encodes each coordinate/identity/revision snapshot once and reu
 slice payloads for every interested recipient. Each client's 32-slice publication enters the
 reliable backlog atomically. Exact admission pressure defers the candidate without creating client
 assembly debris; nearest additions, farthest removals, stale/current publications, payload bytes,
-codec operations/time, and admission deferrals remain inspectable. Direct local startup plans the
-complete bounded desired set, while transport-driven joins use the ordinary transition quota.
+codec operations/time/overshoot, time-budget deferrals, and reliable admission deferrals remain
+inspectable. Ordinary ticks stop new cache-miss serialization at a configurable 4,000 us global
+boundary; already encoded cache hits may still publish, and rotating service prevents persistent
+client starvation. Direct local startup plans the complete bounded desired set and retains its
+synchronous codec exception, while transport-driven joins use the ordinary transition and time
+quotas.
 Because missing client chunks are solid for movement prediction, loaded spawn-interest snapshots
 are queued before the atomic assignment/movement/inventory seed. Transient snapshots exclude a
-client until that seed has been published.
+client until that seed has been published. A remote transport welcome can precede the seed, so
+gameplay readiness requires both protocol connection and a local authoritative player snapshot.
 
 Focused runtime coverage proves bounded unrelated-far-chunk exclusion, quota-limited teleport
 convergence, ordered client eviction, one encoding shared by two recipients, atomic deferral and
-recovery behind a constrained reliable backlog, and collision-first recovery with a 64-message
-bootstrap cap. Remaining M6 work includes relevance filtering for the separate committed voxel
-event/delta path, a deterministic multi-client spread/traversal macrobenchmark, calibrated
-serialization/byte SLOs under impairment, server P99 evidence, and long-soak coverage.
+recovery behind constrained reliable and serialization budgets, and collision-first recovery with
+a 64-message bootstrap cap. The deterministic eight-client macrobenchmark adds clustered sharing,
+disjoint relevance, rapid traversal, exact per-client wire bytes, clean-host P99, and bounded
+backlog evidence. Remaining M6 work includes relevance filtering for the separate committed voxel
+event/delta path, impaired-network/hot-edit SLOs, and long-soak coverage. See
+[Multiplayer chunk-subscription benchmarks](../performance/multiplayer_chunk_subscription_benchmarks.md).
 
 ## Prediction and interpolation
 

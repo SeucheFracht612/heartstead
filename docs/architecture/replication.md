@@ -131,7 +131,8 @@ separate contracts:
 - player input bundles and authoritative movement snapshots support prediction and reconciliation
 - entity-motion snapshots use unreliable latest-wins delivery
 - chunk bootstrap, player-centered subscription state, snapshot slices, and reliable removals use a
-  dedicated identity/revision-tracked streaming path with atomic per-chunk backlog admission
+  dedicated identity/revision-tracked streaming path with atomic per-chunk backlog admission and a
+  bounded global codec-time boundary
 - transport retransmission, per-client encoded-byte ceilings, and transient snapshot budgets live in
   the networking layer
 

@@ -54,19 +54,23 @@ benchmark composes the broader environment stack into a stable integration workl
 ### Performance and profiling
 
 The deterministic benchmark family retains raw samples and percentile summaries. Renderer schema
-v4, chunk-streaming schema v3, chunk-delta-journal schema v1, voxel-response schema v1, and
-chunk-render-readiness schema v1 record source/build/machine/device provenance and enforce
+v4, chunk-streaming schema v4, chunk-delta-journal schema v1, voxel-response schema v1,
+chunk-render-readiness schema v1, and multiplayer chunk-subscription schema v1 record
+source/build/machine/device provenance and enforce
 workload-specific absolute gates. Clean reference runs cover renderer/edit workloads, generated
 plus in-memory and physical indexed saved-delta publication, warm and Linux cache-drop-advice
 payload reads/index opens, stable-storage chunk appends and full checkpoints, exact collision
 publication through headless and Jolt physics, complete resident-field relighting, and required
 generated chunks through current mesh residency, upload, visibility filtering, and exact
-draw-command construction on headless and Vulkan devices. An optimized `profiling-release` preset
+draw-command construction on headless and Vulkan devices. Eight-client clean-host runs also cover
+clustered/disjoint chunk relevance, rapid traversal, exact per-client wire bytes, shared codec work,
+server tick P99, and bounded reliable-backlog recovery. An optimized `profiling-release` preset
 links on-demand Tracy instrumentation across the main runtime, renderer, worker, chunk, lighting,
 collision, and streaming boundaries; normal builds compile those call sites to no-ops. Guaranteed
 cold/multi-filesystem I/O, coordinated checkpoint under live streaming, large snapshot capture,
-general-controller loader adoption, actual GPU execution/presentation timing, and multiplayer scale
-remain staged in the [voxel optimization roadmap](performance/voxel_optimization_roadmap.md).
+general-controller loader adoption, actual GPU execution/presentation timing, hot-edit/impaired
+multiplayer, and long-soak scale remain staged in the
+[voxel optimization roadmap](performance/voxel_optimization_roadmap.md).
 
 The retained UI path uses a packaged Noto Sans font rendered from a deterministic SDF atlas,
 strict UTF-8 decoding, DPI-scaled widgets, hierarchical clipping/scissors, nine-slice panels,
@@ -103,9 +107,12 @@ The remote transport is intended for controlled LAN and testing. It does not pro
 account authentication, forward secrecy, NAT traversal, matchmaking, or a complete congestion
 controller. Bounded player-centered chunk subscriptions now run in the server runtime with retain
 hysteresis, transition quotas, reliable unsubscribe, identity/revision retry state, atomic snapshot
-admission, and shared encoding across recipients. The separate committed voxel event/delta path is
-not yet spatially filtered, and calibrated multi-client spread, impairment, P99, and soak gates
-remain.
+admission, a 4,000 us global ordinary-tick codec boundary, bounded overshoot, and shared encoding
+across recipients. Three clean eight-client Release runs pass spread/convergence/traversal,
+cross-region exclusion, exact wire, clean-host P99, codec, and one-tick backlog-recovery gates. The
+separate committed voxel event/delta path is not yet spatially filtered; hot-region edits,
+network impairment, and long-soak gates remain. See
+[Multiplayer chunk-subscription benchmarks](performance/multiplayer_chunk_subscription_benchmarks.md).
 
 ### Persistence
 

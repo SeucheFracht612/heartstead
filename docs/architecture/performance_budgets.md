@@ -157,9 +157,15 @@ retain a wider 3-by-2 hysteresis volume, cap each client at 128 subscriptions, a
 most 4 additions/16 removals per ordinary update. Only loaded subscribed chunks are snapshot
 candidates. A complete 32-slice client snapshot is admitted atomically against the exact reliable
 message/byte envelope, and its encoded source payload is shared across recipients in the same tick.
-Current/stale publications, shared serialization time, payload bytes, transition debt, snapshot
-debt, and admission pressure remain visible. These are safety bounds pending the M6 multi-client
-spread/traversal calibration, not final network SLOs.
+Ordinary ticks also stop new codec work at a 4,000 us global boundary; one non-preemptible snapshot
+may cross it, with exact overshoot reported, while cache hits remain eligible and cache misses defer
+fairly. Current/stale publications, shared serialization time, overshoot, payload bytes, transition
+debt, snapshot debt, time-budget deferral, and reliable admission pressure remain visible. Three
+clean eight-client Release processes measured 2.505 ms median P95 and 4.747 ms median P99 server
+ticks, 27 us median codec overshoot, 10-tick cluster/spread convergence, 9-tick traversal
+convergence, and one-tick reliable-backlog recovery. See
+[Multiplayer chunk-subscription benchmarks](../performance/multiplayer_chunk_subscription_benchmarks.md).
+These are clean in-process chunk-interest gates, not impaired-network, hot-edit, or soak SLOs.
 
 High defaults include 16 visible terrain chunks horizontally with mesh/resident/load hysteresis,
 8 MiB near and 8 MiB far-terrain uploads per frame, 512 MiB generic residency, 1,024 local lights,
