@@ -110,8 +110,9 @@ hysteresis, transition quotas, reliable unsubscribe, identity/revision retry sta
 admission, a 4,000 us global ordinary-tick codec boundary, bounded overshoot, and shared encoding
 across recipients. Three clean eight-client Release runs pass spread/convergence/traversal,
 cross-region exclusion, exact wire, clean-host P99, codec, and one-tick backlog-recovery gates. The
-separate committed voxel event/delta path is not yet spatially filtered; hot-region edits,
-network impairment, and long-soak gates remain. See
+committed voxel event/delta path now shares exact-published-chunk interest, with a focused
+near-recipient/far-exclusion/late-snapshot recovery proof and recipient telemetry. Hot-region edit
+performance, network impairment, and long-soak gates remain. See
 [Multiplayer chunk-subscription benchmarks](performance/multiplayer_chunk_subscription_benchmarks.md).
 
 ### Persistence

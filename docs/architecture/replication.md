@@ -32,16 +32,25 @@ apply code can replay them.
 
 - expose only events whose subject `SaveId` is visible to that client
 - allow or suppress global events whose subject ID is invalid
+- expose chunk-scoped events only when that exact chunk is visible to the client
 - filter the reserved-ID list together with the events
 - fall back to broadcast behavior when no explicit client rule exists
+
+`OperationEvent::routing_chunk` is owner-side routing metadata, not part of the event payload.
+The authoritative host consumes it before encoding `replication.world_events.bin.v1`; clients do
+not need to receive a relevance key that has already served its purpose. An invalid-subject event
+with a routing chunk is spatial rather than global: chunk interest decides visibility. Unscoped
+invalid-subject events continue to use the global-event rule, while saved-subject events retain the
+existing subject and private-access checks.
 
 `derive_replication_relevance_policy` builds those rules from `WorldState` simulation subjects,
 viewer positions, and simulation LOD. Non-saved derived subjects such as networks and chunk regions
 do not become stable saved-object visibility rules.
 
 The resulting `WorldReplicationInterestReport` and `ReplicationRelevanceReport` keep subject counts,
-per-viewer visibility, LOD exclusions, relevant clients, and filtered clients inspectable without
-teaching transport code about world stores.
+per-viewer visibility, LOD exclusions, relevant clients, filtered clients, spatial event-delivery
+counts, and filtered logical payload bytes inspectable without teaching transport code about world
+stores.
 
 ## Typed world deltas
 
@@ -69,8 +78,9 @@ that change.
 Materialization reuses the existing save/runtime record shapes instead of introducing one universal
 replicated-object blob. Server-only workpiece flaw bits are removed before a public record is sent.
 
-`filter_replication_delta_snapshot` applies the same per-recipient visibility policy to the embedded
-plan, events, reserved IDs, and every typed record section, then revalidates aggregate counts.
+`filter_replication_delta_snapshot` applies the same per-event spatial and per-recipient subject
+visibility policy to the embedded plan, events, reserved IDs, and every typed record section, then
+revalidates aggregate counts.
 
 ## Live and tooling codecs
 
@@ -139,14 +149,22 @@ separate contracts:
 These paths share session and transport infrastructure without collapsing their different ordering,
 reliability, and replacement requirements into one generic message.
 
+`ServerRuntime` derives each live chunk-interest rule from complete `ChunkPublication` records whose
+load identity and content revision exactly matched the authoritative chunk before command
+execution. A newly subscribed client therefore does not receive a delta before its base snapshot,
+while a client holding the preceding revision may receive the next edit. Both the immediate event
+batch and typed delta use the same host-tick relevance decision. Omitted replication sequence values
+are legal; when a filtered client later enters that chunk, the ordinary identity/revision snapshot
+path installs the complete current state.
+
 ## Current limits
 
 Replication is not a universal full-state synchronization system. Unsupported or unresolved
 subjects require an explicit snapshot/resync path, and chunk streaming remains separate from saved
-world-store deltas. Chunk snapshots are spatially subscribed, but committed voxel event/delta
-traffic still requires its own matching relevance rule. Public-Internet security, NAT traversal,
-matchmaking, congestion control, and pacing are transport concerns and are not provided by this
-layer.
+world-store deltas. Voxel event/delta traffic is spatially filtered, but hot-edit throughput,
+impaired-network behavior, and long-soak queue/memory stability still require calibrated workload
+evidence. Public-Internet security, NAT traversal, matchmaking, congestion control, and pacing are
+transport concerns and are not provided by this layer.
 
 See [Networking architecture](networking.md), [Commands](commands.md),
 [World model](world_model.md), and [Runtime composition](runtime_composition.md).

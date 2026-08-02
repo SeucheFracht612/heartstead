@@ -118,10 +118,30 @@ pending, stale, or partial state. Peak exact wire traffic was 9,327 bytes/client
 delivered 511,780 reliable wire bytes in total and no unreliable bytes because it issues no movement
 inputs or changing entity-motion state.
 
+## Spatial voxel-event contract
+
+The macrobenchmark above remains a snapshot/subscription workload and does not issue edits. A
+separate deterministic two-client runtime test closes the committed voxel routing correctness
+slice. Both clients begin with the edited chunk published; one is moved 100 chunks away until its
+subscription removal has reached the client. A real authoritative remove-voxel command must then
+produce one spatial event, one relevant event-recipient pair, one filtered pair, no immediate event
+batch or typed delta at the far client, and one accepted edit at the near client. Returning the far
+client must recover the edited cell exactly from a current identity/revision chunk snapshot.
+
+Run that contract in the Debug/Werror configuration with:
+
+```bash
+cmake --build build/default-debug-werror \
+  --target heartstead_server_chunk_subscription_tests -j2
+ctest --test-dir build/default-debug-werror --output-on-failure \
+  -R '^heartstead_server_chunk_subscription_tests$'
+```
+
 ## Scope limit
 
 This is a deterministic, in-process chunk-interest benchmark. It does not simulate RTT, jitter,
-loss, retransmission, socket fragmentation, malicious clients, the separately committed voxel
-event/delta path, dynamic hot-region edits, multi-hour soak, or whole-process memory growth. It
-closes the reproducible spread/convergence/traversal and clean-host P99 evidence slice; impaired
-network, hot-edit, spatial event filtering, and soak acceptance remain separate M6 work.
+loss, retransmission, socket fragmentation, malicious clients, dynamic hot-region edit throughput,
+multi-hour soak, or whole-process memory growth. It closes the reproducible
+spread/convergence/traversal and clean-host P99 evidence slice; the focused test separately closes
+spatial voxel-event correctness. Impaired-network, hot-edit performance, and soak acceptance remain
+M6 work.

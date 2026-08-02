@@ -257,8 +257,20 @@ convergence, ordered client eviction, one encoding shared by two recipients, ato
 recovery behind constrained reliable and serialization budgets, and collision-first recovery with
 a 64-message bootstrap cap. The deterministic eight-client macrobenchmark adds clustered sharing,
 disjoint relevance, rapid traversal, exact per-client wire bytes, clean-host P99, and bounded
-backlog evidence. Remaining M6 work includes relevance filtering for the separate committed voxel
-event/delta path, impaired-network/hot-edit SLOs, and long-soak coverage. See
+backlog evidence.
+
+Committed voxel operations now carry owner-only chunk routing metadata. Before command execution,
+`ServerRuntime` publishes sorted chunk-interest rules from each client's exact-current publication
+table. The same rule filters both the immediate reliable event batch and its typed world delta;
+unpublished or far clients receive neither. Spatial event count, relevant and filtered
+event-recipient pairs, and filtered logical payload bytes are retained in relevance inspection, and
+Tracy builds plot spatial events plus delivered and excluded pairs. A two-client runtime contract
+teleports one client out of interest, proves the near/far 1:1 decision and absence of both payload
+types at the far client, then returns it and verifies exact authoritative recovery through a full
+chunk snapshot.
+
+The separate committed voxel event/delta relevance path is therefore closed. Remaining M6 work
+includes impaired-network and hot-edit P99/SLO evidence plus long-soak coverage. See
 [Multiplayer chunk-subscription benchmarks](../performance/multiplayer_chunk_subscription_benchmarks.md).
 
 ## Prediction and interpolation
