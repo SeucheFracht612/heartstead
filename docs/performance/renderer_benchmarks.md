@@ -136,6 +136,33 @@ Extend this same hierarchy when adding pipeline stages rather than creating one-
 9. Preserve output files; do not transcribe only a headline FPS number.
 10. Add a new dated baseline below only when it remains useful for future decisions.
 
+## Voxel rapid-edit baseline — 2026-08-01
+
+This baseline exercises the sustainable fixed-arrival edit workload and the schema-v4
+right-censoring safeguards. It toggles one guaranteed state-changing voxel every two frames, adds
+periodic chunk-boundary invalidations, advances one bounded lighting update per frame, and enforces
+the `minimum` profile plus the 50 ms mesh-publication P95 and 1.1 build-amplification limits.
+
+- **Build:** clean `a89fd65358ea2a61c36984c7559f9c17e8397808`, GCC 13.3.0, Release
+- **Machine:** Intel Core Ultra 7 258V, 8 logical CPUs, Linux 6.17.0-1030-oem
+- **Configuration:** headless, greedy mesher, 1280×720, radius 2, 120 warm-up frames, 1,000
+  measured frames, 60 FPS cap, `minimum` budget
+- **Command:** `heartstead_render_benchmark --scene rapid-edits --warmup 120 --frames 1000
+  --radius 2 --frame-cap 60 --budget minimum`
+- **Raw output:** `build/default-release/benchmarks/rapid-edits-a89fd65-run{1,2,3}.json`
+
+| Run | Frame median ms | Frame P95 ms | Frame P99 ms | Edit median ms | Edit P95 ms | Edit P99 ms | Edit max ms | Jobs/built/published | Amplification | Final pending/abandoned | Gate |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: |
+| 1 | 1.310 | 2.274 | 2.580 | 17.019 | 19.491 | 20.081 | 20.229 | 600/600/600 | 1.000 | 0/0 | pass |
+| 2 | 1.324 | 2.360 | 2.732 | 17.022 | 19.636 | 20.320 | 20.431 | 600/600/600 | 1.000 | 0/0 | pass |
+| 3 | 1.340 | 2.290 | 2.654 | 17.040 | 19.854 | 20.086 | 20.363 | 600/600/600 | 1.000 | 0/0 | pass |
+
+Each run retained the full 256-sample rolling window, completed 600 measured edit-to-visible
+intervals, needed no tail-drain frame, and passed every evaluated CPU/upload/edit gate. GPU timing is
+intentionally unavailable on the deterministic headless backend. The edit-P95 spread was 0.362 ms;
+the result clears the 50 ms target without evidence that slab or microbrick rebuild complexity is
+needed for this workload.
+
 ## Renderer V2 terrain-material baseline — 2026-07-30
 
 This closure run measures the unified terrain PBR path, three aligned mipmapped texture arrays,

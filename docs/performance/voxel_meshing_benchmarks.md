@@ -154,10 +154,14 @@ reference/greedy surface parity, rich-model/fluid/AO behavior, deterministic out
 snapshot immutability. Empty rejection is a decisive latency win and the fixed 4 KiB mask is also
 available to later collision, lighting, and visibility experiments.
 
-The next measurement is a clean optimized `rapid-edits` macrobenchmark run that applies the 50 ms
-local-response P95 gate and correlates latency with completed/published amplification. The next
-meshing experiment is a render-table-revision-coupled full-occluder/greedy-cube mask used to
-construct directional face candidates with word operations. It must include snapshot-build cost,
+The clean three-run `rapid-edits` baseline now passes the 50 ms local-response P95 gate at
+19.491–19.854 ms with exactly 1.000 built mesh per publication, zero final pending or abandoned
+intervals, and no drain frames; full configuration and raw paths are retained in
+[Renderer benchmarks](renderer_benchmarks.md#voxel-rapid-edit-baseline--2026-08-01). This does not
+justify slab or microbrick rebuild complexity for normal edits.
+
+The next meshing experiment is a render-table-revision-coupled full-occluder/greedy-cube mask used
+to construct directional face candidates with word operations. It must include snapshot-build cost,
 pool any variable scratch storage, retain directional occlusion and AO semantics, and improve total
-snapshot-plus-mesh P95. Slab or microbrick rebuilds remain deferred until the edit traces show that
-whole-chunk invalidation, rather than face construction, is the limiting cost.
+snapshot-plus-mesh P95. Slab or microbrick rebuilds remain deferred until a future edit trace shows
+that whole-chunk invalidation, rather than face construction, is the limiting cost.

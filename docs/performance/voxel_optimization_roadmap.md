@@ -31,7 +31,7 @@ requires one.
 | Compact voxel sections | Chunks remain fixed 32³ with contiguous dense `VoxelCell` production storage. Reproducible 16/32 experiments now cover dense, split, palette-packed, uniform-light, sparse-metadata, and adaptive split-dense fallback candidates. | Retain dense production storage while mask/macro work proceeds; add a medium-diversity crossover sweep before any storage selection. |
 | Occupancy and opacity masks | A fixed 4 KiB occupancy mask is maintained with the exact chunk content revision and copied into immutable meshing snapshots. Opacity remains render-table-dependent. | Prototype derived opacity/face masks keyed by content dependencies and render-table revision; measure total snapshot-plus-consumer cost. |
 | Face culling and greedy meshing | Implemented with immutable neighborhood snapshots, material/render phases, bounded scheduling, stale rejection, buffer reuse, a reproducible isolated benchmark, occupancy-assisted empty/source rejection, surface-bound output reservation, and bounded invalidation-to-resident traces. | Prototype word-level face candidates; adopt slab or microbrick rebuilds only if measured edit P95 requires them. |
-| Dynamic edit propagation | Dirty regions, neighbor dependencies, asynchronous mesh/light/collision work, upload quotas, exact mesh-stage latency tracking, and edit-burst coalescing telemetry exist. | Apply the 50 ms visual-response gate to clean rapid-edit runs; measure collision/light convergence and enforce explicit time budgets. |
+| Dynamic edit propagation | Dirty regions, neighbor dependencies, asynchronous mesh/light/collision work, upload quotas, exact mesh-stage latency tracking, edit-burst coalescing telemetry, and a clean repeated 50 ms visual-response gate exist. | Measure collision/light convergence and enforce explicit time budgets. |
 | Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, delta save/replication, residency budgets, and far clipmaps exist. Loading/generation and parts of save I/O remain synchronous. | Move disk/decode/generation/save stages off latency-critical threads and add journal durability, queue limits, and recovery tests. |
 | Visibility, LOD, and GPU scaling | Frustum/distance/hierarchical visibility, HZB support, far clipmaps, indirect rendering, GPU arenas, upload staging, and pass timestamps already exist. | Tune only from captures; validate total culling benefit and retain broad fallback paths. |
 | Simulation and multiplayer scale | Simulation LOD, server authority, interest management, replication deltas, and fixed-step runtime exist. | Add multi-client spread/convergence benchmarks, byte/time quotas, backlog recovery gates, and soak coverage. |
@@ -122,9 +122,10 @@ Progress: the isolated reference/fresh/reused benchmark, exact output-memory acc
 occupancy-assisted empty/source rejection, and surface-bound output reservation are implemented and
 documented in [Voxel meshing experiments](voxel_meshing_benchmarks.md). Exact mesh-stage
 invalidation-to-resident tracking, a fixed rolling percentile window, warmup reset, bounded tail
-drain, mesh-work amplification, and benchmark schema v4 are also implemented. The sparse-cave and
-checkerboard P95 gates are still missed, and the 50 ms rapid-edit macro gate still needs a clean
-reference-machine run.
+drain, mesh-work amplification, and benchmark schema v4 are also implemented. Three clean
+`rapid-edits` runs pass at 19.491–19.854 ms P95 with 1.000 build amplification and no censored work;
+see [Renderer benchmarks](renderer_benchmarks.md#voxel-rapid-edit-baseline--2026-08-01). The
+sparse-cave and checkerboard P95 gates are still missed.
 
 ### M5 — asynchronous dynamic-world pipeline
 
