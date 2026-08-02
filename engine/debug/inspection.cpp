@@ -2423,11 +2423,16 @@ InspectionData Inspector::inspect(const net::HostSessionTickResult& result) {
     std::uint64_t relevant_spatial_event_delivery_count = 0;
     std::uint64_t filtered_spatial_event_delivery_count = 0;
     std::uint64_t filtered_spatial_payload_bytes = 0;
+    std::uint32_t maximum_client_pending_impaired_message_count = 0;
     for (const auto& report : result.replication_relevance_reports) {
         spatial_event_count += report.spatial_event_count;
         relevant_spatial_event_delivery_count += report.relevant_spatial_event_delivery_count;
         filtered_spatial_event_delivery_count += report.filtered_spatial_event_delivery_count;
         filtered_spatial_payload_bytes += report.filtered_spatial_payload_bytes;
+    }
+    for (const auto& client : result.transport_clients) {
+        maximum_client_pending_impaired_message_count = std::max(
+            maximum_client_pending_impaired_message_count, client.pending_impaired_message_count);
     }
 
     if (result.transport_dropped_reliable_message_count > 0) {
@@ -2472,6 +2477,10 @@ InspectionData Inspector::inspect(const net::HostSessionTickResult& result) {
               std::to_string(result.transport_simulated_dropped_unreliable_message_count));
     add_field(data, "transport_pending_impaired_message_count",
               std::to_string(result.transport_pending_impaired_message_count));
+    add_field(data, "transport_client_maintenance_count",
+              std::to_string(result.transport_clients.size()));
+    add_field(data, "transport_maximum_client_pending_impaired_message_count",
+              std::to_string(maximum_client_pending_impaired_message_count));
     add_field(data, "outbound_budget_dropped_unreliable_message_count",
               std::to_string(result.outbound_budget_dropped_unreliable_message_count));
     add_field(data, "discarded_disconnected_message_count",

@@ -12175,6 +12175,71 @@ void test_network_transport() {
     assert(!limited_second_client);
     assert(limited_second_client.error().code == "transport.client_limit_reached");
 
+    net::InMemoryTransportHostConfig impaired_config;
+    impaired_config.server_id = core::NetId::from_value(7);
+    impaired_config.max_payload_bytes = 1'024;
+    impaired_config.max_clients = 2;
+    impaired_config.simulated_one_way_latency_ms = 10;
+    impaired_config.simulated_unreliable_loss_basis_points = 10'000;
+    impaired_config.impairment_seed = 17;
+    net::InMemoryTransportHost impaired_transport(impaired_config);
+    auto impaired_first = impaired_transport.connect_client();
+    auto impaired_second = impaired_transport.connect_client();
+    assert(impaired_first && impaired_second);
+    for (const auto impaired_client : {impaired_first.value(), impaired_second.value()}) {
+        assert(impaired_transport.send_client_to_server(
+            impaired_client, net::TransportMessage{net::TransportMessageKind::control,
+                                                   net::TransportChannel::unreliable,
+                                                   1,
+                                                   "debug.loss",
+                                                   {},
+                                                   0}));
+        assert(impaired_transport.send_server_to_client(
+            impaired_client, net::TransportMessage{net::TransportMessageKind::control,
+                                                   net::TransportChannel::reliable,
+                                                   1,
+                                                   "debug.delivery",
+                                                   {},
+                                                   0}));
+    }
+    auto impaired_maintenance = impaired_transport.poll_maintenance(0);
+    assert(impaired_maintenance);
+    assert(net::validate_transport_maintenance_result(impaired_maintenance.value()));
+    assert(impaired_maintenance.value().client_to_server_message_count == 2);
+    assert(impaired_maintenance.value().server_to_client_message_count == 2);
+    assert(impaired_maintenance.value().impairment_eligible_unreliable_message_count == 2);
+    assert(impaired_maintenance.value().simulated_dropped_unreliable_message_count == 2);
+    assert(impaired_maintenance.value().pending_impaired_message_count == 2);
+    assert(impaired_maintenance.value().clients.size() == 2);
+    for (const auto& client_maintenance : impaired_maintenance.value().clients) {
+        assert(client_maintenance.client_to_server_message_count == 1);
+        assert(client_maintenance.server_to_client_message_count == 1);
+        assert(client_maintenance.impairment_eligible_unreliable_message_count == 1);
+        assert(client_maintenance.simulated_dropped_unreliable_message_count == 1);
+        assert(client_maintenance.pending_impaired_message_count == 1);
+    }
+    auto invalid_maintenance = impaired_maintenance.value();
+    ++invalid_maintenance.clients.front().pending_impaired_message_count;
+    auto invalid_maintenance_status =
+        net::validate_transport_maintenance_result(invalid_maintenance);
+    assert(!invalid_maintenance_status);
+    assert(invalid_maintenance_status.error().code ==
+           "transport.invalid_client_maintenance_totals");
+
+    auto delivered_maintenance = impaired_transport.poll_maintenance(10);
+    assert(delivered_maintenance);
+    assert(delivered_maintenance.value().pending_impaired_message_count == 0);
+    assert(delivered_maintenance.value().clients.size() == 2);
+    for (const auto& client_maintenance : delivered_maintenance.value().clients) {
+        assert(client_maintenance.client_to_server_message_count == 0);
+        assert(client_maintenance.server_to_client_message_count == 0);
+        assert(client_maintenance.pending_impaired_message_count == 0);
+        auto delivered = impaired_transport.drain_client_messages(client_maintenance.client_id);
+        assert(delivered);
+        assert(delivered.value().size() == 1);
+        assert(delivered.value().front().message.payload_type == "debug.delivery");
+    }
+
     net::InMemoryTransportHost transport(
         net::InMemoryTransportHostConfig{core::NetId::from_value(9), 32});
     assert(transport.backend() == net::TransportBackend::in_memory);
@@ -13068,6 +13133,9 @@ void test_host_session() {
     assert(tick_inspection.find_field("replication_relevance_report_count")->value == "1");
     assert(tick_inspection.find_field("replication_relevant_client_count")->value == "2");
     assert(tick_inspection.find_field("replication_filtered_client_count")->value == "0");
+    assert(tick_inspection.find_field("transport_client_maintenance_count")->value == "2");
+    assert(tick_inspection.find_field("transport_maximum_client_pending_impaired_message_count")
+               ->value == "0");
     assert(tick_inspection.find_field("accepted_command_count")->value == "1");
     assert(tick_inspection.find_field("committed_command_count")->value == "1");
     assert(!tick_inspection.has_errors());

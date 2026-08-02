@@ -487,6 +487,11 @@ core::Result<HostSessionTickResult> HostSession::tick(const ServerCommandDispatc
         return core::Result<HostSessionTickResult>::failure(maintenance.error().code,
                                                             maintenance.error().message);
     }
+    auto maintenance_status = validate_transport_maintenance_result(maintenance.value());
+    if (!maintenance_status) {
+        return core::Result<HostSessionTickResult>::failure(maintenance_status.error().code,
+                                                            maintenance_status.error().message);
+    }
     tick_result.transport_retransmission_count = maintenance.value().retransmission_count;
     tick_result.transport_dropped_reliable_message_count =
         maintenance.value().dropped_reliable_message_count;
@@ -506,6 +511,7 @@ core::Result<HostSessionTickResult> HostSession::tick(const ServerCommandDispatc
         maintenance.value().simulated_dropped_unreliable_message_count;
     tick_result.transport_pending_impaired_message_count =
         maintenance.value().pending_impaired_message_count;
+    tick_result.transport_clients = maintenance.value().clients;
     for (const auto client_id : maintenance.value().connected_clients) {
         auto status = send_welcome(client_id, context.server_time_ms);
         if (!status) {

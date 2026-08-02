@@ -1238,6 +1238,7 @@ void test_prediction_under_deterministic_100ms_rtt_and_two_percent_loss() {
     const auto* initial_snapshot = session->client()->local_player_snapshot();
     assert(initial_snapshot != nullptr);
     const auto initial_position = initial_snapshot->state.position;
+    const auto client_id = session->client()->client_id();
 
     std::uint64_t server_to_client_bytes = 0;
     std::uint64_t one_second_window_bytes = 0;
@@ -1265,6 +1266,19 @@ void test_prediction_under_deterministic_100ms_rtt_and_two_percent_loss() {
         auto frame = runtime.run_frame({16'667, now_ms});
         assert(frame && !frame.value().server_ticks.empty());
         for (const auto& server_tick : frame.value().server_ticks) {
+            assert(server_tick.commands.transport_clients.size() == 1);
+            const auto& transport_client = server_tick.commands.transport_clients.front();
+            assert(transport_client.client_id == client_id);
+            assert(transport_client.client_to_server_bytes ==
+                   server_tick.commands.transport_client_to_server_bytes);
+            assert(transport_client.server_to_client_bytes ==
+                   server_tick.commands.transport_server_to_client_bytes);
+            assert(transport_client.impairment_eligible_unreliable_message_count ==
+                   server_tick.commands.transport_impairment_eligible_unreliable_message_count);
+            assert(transport_client.simulated_dropped_unreliable_message_count ==
+                   server_tick.commands.transport_simulated_dropped_unreliable_message_count);
+            assert(transport_client.pending_impaired_message_count ==
+                   server_tick.commands.transport_pending_impaired_message_count);
             server_to_client_bytes += server_tick.commands.transport_server_to_client_bytes;
             one_second_window_bytes += server_tick.commands.transport_server_to_client_bytes;
             impairment_eligible_unreliable_messages +=
@@ -1295,7 +1309,6 @@ void test_prediction_under_deterministic_100ms_rtt_and_two_percent_loss() {
     assert(maximum_correction_distance < 1.0);
     assert(average_bytes_per_second < 64.0 * 1024.0);
     assert(peak_one_second_bytes < 256U * 1024U);
-    const auto client_id = session->client()->client_id();
     const auto* authoritative = session->server()->player_for_client(client_id);
     assert(authoritative != nullptr);
     assert(authoritative->state.position.relative_to(initial_position.anchor).z >

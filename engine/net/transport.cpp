@@ -1205,7 +1205,9 @@ core::Result<core::NetId> InMemoryTransportHost::connect_client() {
     }
 
     const auto id = next_client_id();
-    clients_.emplace(id.value(), ClientQueues{});
+    ClientQueues queues;
+    queues.maintenance.client_id = id;
+    clients_.emplace(id.value(), std::move(queues));
     return core::Result<core::NetId>::success(id);
 }
 
@@ -1266,6 +1268,23 @@ InMemoryTransportHost::poll_maintenance(std::int64_t now_ms) {
         pending_impairment_eligible_unreliable_message_count_;
     result.simulated_dropped_unreliable_message_count = pending_simulated_drop_count_;
     result.pending_impaired_message_count = static_cast<std::uint32_t>(pending_deliveries_.size());
+    result.clients.reserve(clients_.size());
+    for (const auto& [_, client] : clients_) {
+        result.clients.push_back(client.maintenance);
+    }
+    std::ranges::sort(result.clients, {}, &TransportHostClientMaintenanceResult::client_id);
+    auto status = validate_transport_maintenance_result(result);
+    if (!status) {
+        return core::Result<TransportMaintenanceResult>::failure(status.error().code,
+                                                                 status.error().message);
+    }
+    for (auto& [_, client] : clients_) {
+        const auto client_id = client.maintenance.client_id;
+        const auto pending_impaired = client.maintenance.pending_impaired_message_count;
+        client.maintenance = {};
+        client.maintenance.client_id = client_id;
+        client.maintenance.pending_impaired_message_count = pending_impaired;
+    }
     pending_client_to_server_bytes_ = 0;
     pending_server_to_client_bytes_ = 0;
     pending_client_to_server_message_count_ = 0;
@@ -1321,12 +1340,18 @@ void InMemoryTransportHost::record_client_to_server_sequence(ClientQueues& clien
 
 void InMemoryTransportHost::queue_or_deliver(TransportEnvelope envelope, bool to_server) {
     const auto encoded_bytes = encoded_envelope_bytes(envelope);
+    const auto client_id = to_server ? envelope.sender : envelope.recipient;
+    auto& client_maintenance = clients_.at(client_id.value()).maintenance;
     if (to_server) {
         pending_client_to_server_bytes_ += encoded_bytes;
         ++pending_client_to_server_message_count_;
+        client_maintenance.client_to_server_bytes += encoded_bytes;
+        ++client_maintenance.client_to_server_message_count;
     } else {
         pending_server_to_client_bytes_ += encoded_bytes;
         ++pending_server_to_client_message_count_;
+        client_maintenance.server_to_client_bytes += encoded_bytes;
+        ++client_maintenance.server_to_client_message_count;
     }
 
     if (!impairment_enabled()) {
@@ -1344,8 +1369,10 @@ void InMemoryTransportHost::queue_or_deliver(TransportEnvelope envelope, bool to
     const auto impairment = next_impairment_value();
     if (envelope.message.channel == TransportChannel::unreliable) {
         ++pending_impairment_eligible_unreliable_message_count_;
+        ++client_maintenance.impairment_eligible_unreliable_message_count;
         if (impairment % 10'000U < config_.simulated_unreliable_loss_basis_points) {
             ++pending_simulated_drop_count_;
+            ++client_maintenance.simulated_dropped_unreliable_message_count;
             return;
         }
     }
@@ -1364,6 +1391,7 @@ void InMemoryTransportHost::queue_or_deliver(TransportEnvelope envelope, bool to
         deliver_at = std::max(deliver_at, last_delivery + 1);
         last_delivery = deliver_at;
     }
+    ++client_maintenance.pending_impaired_message_count;
     pending_deliveries_.push_back(PendingDelivery{deliver_at, delivery_order_++, to_server,
                                                   to_server ? envelope.sender : envelope.recipient,
                                                   std::move(envelope)});
@@ -1388,6 +1416,9 @@ void InMemoryTransportHost::deliver_pending(std::int64_t now_ms) {
             continue;
         }
         auto client = find_client(pending.client_id);
+        if (client && client.value()->maintenance.pending_impaired_message_count != 0) {
+            --client.value()->maintenance.pending_impaired_message_count;
+        }
         if (!client || !client.value()->connected) {
             continue;
         }
@@ -1511,6 +1542,79 @@ core::Status validate_transport_host_config(const InMemoryTransportHostConfig& c
         return core::Status::failure(
             "transport.invalid_impairment",
             "simulated latency/jitter must be at most 60 seconds and loss at most 100 percent");
+    }
+    return core::Status::ok();
+}
+
+core::Status
+validate_transport_maintenance_result(const TransportMaintenanceResult& result) noexcept {
+    if (result.simulated_dropped_unreliable_message_count >
+        result.impairment_eligible_unreliable_message_count) {
+        return core::Status::failure(
+            "transport.invalid_impairment_maintenance_totals",
+            "simulated unreliable drops cannot exceed the loss-eligible message count");
+    }
+    if (result.clients.empty()) {
+        return core::Status::ok();
+    }
+
+    std::uint64_t client_to_server_bytes = 0;
+    std::uint64_t server_to_client_bytes = 0;
+    std::uint64_t client_to_server_messages = 0;
+    std::uint64_t server_to_client_messages = 0;
+    std::uint64_t eligible_unreliable_messages = 0;
+    std::uint64_t dropped_unreliable_messages = 0;
+    std::uint64_t pending_impaired_messages = 0;
+    std::uint64_t previous_client = 0;
+    const auto accumulate = [](std::uint64_t& total, std::uint64_t value,
+                               std::uint64_t limit) noexcept {
+        if (value > limit || total > limit - value) {
+            return false;
+        }
+        total += value;
+        return true;
+    };
+    for (const auto& client : result.clients) {
+        if (!client.client_id.is_valid() || client.client_id.value() <= previous_client ||
+            client.simulated_dropped_unreliable_message_count >
+                client.impairment_eligible_unreliable_message_count) {
+            return core::Status::failure(
+                "transport.invalid_client_maintenance",
+                "per-client maintenance rows must be valid, ordered, unique, and retain a valid "
+                "loss denominator");
+        }
+        previous_client = client.client_id.value();
+        if (!accumulate(client_to_server_bytes, client.client_to_server_bytes,
+                        result.client_to_server_bytes) ||
+            !accumulate(server_to_client_bytes, client.server_to_client_bytes,
+                        result.server_to_client_bytes) ||
+            !accumulate(client_to_server_messages, client.client_to_server_message_count,
+                        result.client_to_server_message_count) ||
+            !accumulate(server_to_client_messages, client.server_to_client_message_count,
+                        result.server_to_client_message_count) ||
+            !accumulate(eligible_unreliable_messages,
+                        client.impairment_eligible_unreliable_message_count,
+                        result.impairment_eligible_unreliable_message_count) ||
+            !accumulate(dropped_unreliable_messages,
+                        client.simulated_dropped_unreliable_message_count,
+                        result.simulated_dropped_unreliable_message_count) ||
+            !accumulate(pending_impaired_messages, client.pending_impaired_message_count,
+                        result.pending_impaired_message_count)) {
+            return core::Status::failure(
+                "transport.invalid_client_maintenance_totals",
+                "per-client maintenance rows cannot exceed their aggregate transport totals");
+        }
+    }
+    if (client_to_server_bytes != result.client_to_server_bytes ||
+        server_to_client_bytes != result.server_to_client_bytes ||
+        client_to_server_messages != result.client_to_server_message_count ||
+        server_to_client_messages != result.server_to_client_message_count ||
+        eligible_unreliable_messages != result.impairment_eligible_unreliable_message_count ||
+        dropped_unreliable_messages != result.simulated_dropped_unreliable_message_count ||
+        pending_impaired_messages != result.pending_impaired_message_count) {
+        return core::Status::failure(
+            "transport.mismatched_client_maintenance_totals",
+            "aggregate transport maintenance must equal the sum of its per-client rows");
     }
     return core::Status::ok();
 }

@@ -95,6 +95,17 @@ struct TransportEnvelope {
     TransportSessionToken session_token;
 };
 
+struct TransportHostClientMaintenanceResult {
+    core::NetId client_id;
+    std::uint64_t client_to_server_bytes = 0;
+    std::uint64_t server_to_client_bytes = 0;
+    std::uint32_t client_to_server_message_count = 0;
+    std::uint32_t server_to_client_message_count = 0;
+    std::uint32_t impairment_eligible_unreliable_message_count = 0;
+    std::uint32_t simulated_dropped_unreliable_message_count = 0;
+    std::uint32_t pending_impaired_message_count = 0;
+};
+
 struct TransportMaintenanceResult {
     std::uint32_t retransmission_count = 0;
     std::uint32_t dropped_reliable_message_count = 0;
@@ -108,6 +119,7 @@ struct TransportMaintenanceResult {
     std::uint32_t impairment_eligible_unreliable_message_count = 0;
     std::uint32_t simulated_dropped_unreliable_message_count = 0;
     std::uint32_t pending_impaired_message_count = 0;
+    std::vector<TransportHostClientMaintenanceResult> clients;
     std::vector<TransportEnvelope> dropped_reliable_messages;
     std::vector<core::NetId> connected_clients;
     std::vector<core::NetId> disconnected_clients;
@@ -213,6 +225,7 @@ class InMemoryTransportHost final : public ITransportHost {
   private:
     struct ClientQueues {
         std::queue<TransportEnvelope> inbox;
+        TransportHostClientMaintenanceResult maintenance;
         std::uint64_t last_reliable_command_sequence = 0;
         bool has_reliable_command_sequence = false;
         bool connected = true;
@@ -265,6 +278,8 @@ create_transport_host(TransportHostDesc desc);
 validate_transport_host_config(const InMemoryTransportHostConfig& config);
 [[nodiscard]] core::Status
 validate_external_transport_host_config(const ExternalTransportHostConfig& config);
+[[nodiscard]] core::Status
+validate_transport_maintenance_result(const TransportMaintenanceResult& result) noexcept;
 [[nodiscard]] core::Status validate_transport_endpoint(const TransportEndpoint& endpoint);
 [[nodiscard]] core::Result<TransportEndpoint>
 parse_transport_endpoint(std::string_view endpoint, std::uint16_t default_port = 7777);

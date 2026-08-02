@@ -104,6 +104,7 @@ struct HostSessionTickResult {
     std::uint32_t transport_impairment_eligible_unreliable_message_count = 0;
     std::uint32_t transport_simulated_dropped_unreliable_message_count = 0;
     std::uint32_t transport_pending_impaired_message_count = 0;
+    std::vector<TransportHostClientMaintenanceResult> transport_clients;
     std::uint32_t outbound_budget_dropped_unreliable_message_count = 0;
     std::uint32_t discarded_disconnected_message_count = 0;
     std::uint32_t transport_message_count = 0;
