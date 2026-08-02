@@ -173,6 +173,7 @@ target_sources(
     save/save_metadata.cpp
     save/save_migration.cpp
     save/missing_prototype_recovery.cpp
+    save/save_scheduler.cpp
     save/save_snapshot.cpp
     save/save_slot.cpp
     save/save_text_codec.cpp
@@ -410,6 +411,7 @@ target_sources(
       save/save_metadata.hpp
       save/save_migration.hpp
       save/missing_prototype_recovery.hpp
+      save/save_scheduler.hpp
       save/save_snapshot.hpp
       save/save_slot.hpp
       save/save_text_codec.hpp
