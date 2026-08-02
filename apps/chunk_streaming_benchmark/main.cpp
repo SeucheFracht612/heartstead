@@ -42,6 +42,12 @@ parse_workload(std::string_view name) noexcept {
     if (name == "saved_delta_publication") {
         return benchmark::ChunkStreamingWorkload::saved_delta_publication;
     }
+    if (name == "file_delta_warm") {
+        return benchmark::ChunkStreamingWorkload::file_delta_warm;
+    }
+    if (name == "file_delta_drop_cache_advised") {
+        return benchmark::ChunkStreamingWorkload::file_delta_drop_cache_advised;
+    }
     return std::nullopt;
 }
 
@@ -66,13 +72,25 @@ parse_workload(std::string_view name) noexcept {
             if (!value) {
                 return core::Result<Options>::failure(value.error().code, value.error().message);
             }
-            if (value.value() != "all") {
+            if (value.value() == "all") {
+                options.benchmark.workloads = {
+                    benchmark::ChunkStreamingWorkload::near_load,
+                    benchmark::ChunkStreamingWorkload::teleport_recovery,
+                    benchmark::ChunkStreamingWorkload::saved_delta_publication,
+                    benchmark::ChunkStreamingWorkload::file_delta_warm,
+                };
+#if defined(__linux__)
+                options.benchmark.workloads.push_back(
+                    benchmark::ChunkStreamingWorkload::file_delta_drop_cache_advised);
+#endif
+            } else {
                 const auto parsed = parse_workload(value.value());
                 if (!parsed) {
                     return core::Result<Options>::failure(
                         "chunk_streaming_benchmark.invalid_workload",
                         "--workload must be near_load, teleport_recovery, "
-                        "saved_delta_publication, or all");
+                        "saved_delta_publication, file_delta_warm, "
+                        "file_delta_drop_cache_advised, or all");
                 }
                 options.benchmark.workloads = {*parsed};
             }
@@ -100,7 +118,8 @@ parse_workload(std::string_view name) noexcept {
             }
         } else if (argument == "--radius" || argument == "--warmup" ||
                    argument == "--repetitions" || argument == "--workers" ||
-                   argument == "--publications" || argument == "--history-edits") {
+                   argument == "--publications" || argument == "--history-edits" ||
+                   argument == "--physical-records") {
             auto value = next();
             if (!value) {
                 return core::Result<Options>::failure(value.error().code, value.error().message);
@@ -125,11 +144,15 @@ parse_workload(std::string_view name) noexcept {
                 options.benchmark.scheduler.worker_count = *parsed;
             } else if (argument == "--history-edits") {
                 options.benchmark.unrelated_history_edit_count = *parsed;
+            } else if (argument == "--physical-records") {
+                options.benchmark.physical_saved_delta_record_count = *parsed;
             } else {
                 options.benchmark.scheduler.max_publications_per_update = *parsed;
             }
         } else if (argument == "--near-p95-ms" || argument == "--teleport-p95-ms" ||
-                   argument == "--saved-delta-p95-ms") {
+                   argument == "--saved-delta-p95-ms" || argument == "--file-delta-p95-ms" ||
+                   argument == "--file-disk-read-p95-ms" ||
+                   argument == "--file-reader-open-p95-ms") {
             auto value = next();
             if (!value) {
                 return core::Result<Options>::failure(value.error().code, value.error().message);
@@ -144,9 +167,21 @@ parse_workload(std::string_view name) noexcept {
                 options.benchmark.maximum_near_p95_ms = *parsed;
             } else if (argument == "--teleport-p95-ms") {
                 options.benchmark.maximum_teleport_p95_ms = *parsed;
-            } else {
+            } else if (argument == "--saved-delta-p95-ms") {
                 options.benchmark.maximum_saved_delta_p95_ms = *parsed;
+            } else if (argument == "--file-delta-p95-ms") {
+                options.benchmark.maximum_file_delta_p95_ms = *parsed;
+            } else if (argument == "--file-disk-read-p95-ms") {
+                options.benchmark.maximum_file_delta_disk_read_p95_ms = *parsed;
+            } else {
+                options.benchmark.maximum_file_delta_reader_open_p95_ms = *parsed;
             }
+        } else if (argument == "--physical-fixture-parent") {
+            auto value = next();
+            if (!value) {
+                return core::Result<Options>::failure(value.error().code, value.error().message);
+            }
+            options.benchmark.physical_fixture_parent = value.value();
         } else if (argument == "--output") {
             auto value = next();
             if (!value) {
@@ -168,12 +203,16 @@ parse_workload(std::string_view name) noexcept {
 
 void print_usage(std::ostream& output) {
     output << "usage: heartstead_chunk_streaming_benchmark [options]\n"
-              "  --workload NAME          near_load, teleport_recovery, "
-              "saved_delta_publication, or all\n"
+              "  --workload NAME          near_load, teleport_recovery, saved_delta_publication,\n"
+              "                           file_delta_warm, "
+              "file_delta_drop_cache_advised (Linux), or all supported\n"
               "  --seed N                 Deterministic terrain seed\n"
               "  --radius N               Circular required-ring radius (default 4)\n"
               "  --history-edits N        Unrelated retained edits for saved-delta work "
               "(default 16384)\n"
+              "  --physical-records N     Records in the file-backed delta table (default 16384)\n"
+              "  --physical-fixture-parent PATH\n"
+              "                           Parent volume for the ephemeral physical fixture\n"
               "  --warmup N               Unmeasured workload runs (default 2)\n"
               "  --repetitions N          Retained workload runs (default 9)\n"
               "  --update-us N            Owner publication cadence (default 1000)\n"
@@ -183,6 +222,11 @@ void print_usage(std::ostream& output) {
               "  --near-p95-ms N          Near-ring P95 gate (default 250)\n"
               "  --teleport-p95-ms N      Teleport-ring P95 gate (default 1000)\n"
               "  --saved-delta-p95-ms N   Saved-delta P95 gate (default 250)\n"
+              "  --file-delta-p95-ms N    File-backed saved-delta P95 gate (default 250)\n"
+              "  --file-disk-read-p95-ms N\n"
+              "                           File payload-read P95 gate (default 25)\n"
+              "  --file-reader-open-p95-ms N\n"
+              "                           File index-open P95 gate (default 100)\n"
               "  --owner-publication-us N Owner update gate and scheduler budget (default 500)\n"
               "  --enforce-gates          Return failure when a latency gate is exceeded\n"
               "  --output PATH            Write JSON; otherwise write JSON to stdout\n"
@@ -216,7 +260,14 @@ void print_usage(std::ostream& output) {
             std::cout << benchmark::chunk_streaming_workload_name(summary.workload)
                       << ": P95 interest-to-publication " << summary.p95_interest_to_publication_ms
                       << " ms, max owner publication " << summary.maximum_publication_time_us
-                      << " us\n";
+                      << " us";
+            if (summary.workload == benchmark::ChunkStreamingWorkload::file_delta_warm ||
+                summary.workload ==
+                    benchmark::ChunkStreamingWorkload::file_delta_drop_cache_advised) {
+                std::cout << ", P95 payload read " << summary.p95_disk_read_ms
+                          << " ms, P95 reader open " << summary.p95_delta_reader_open_ms << " ms";
+            }
+            std::cout << '\n';
         }
     }
     if (options.benchmark.enforce_gates && !report.value().gates_passed()) {

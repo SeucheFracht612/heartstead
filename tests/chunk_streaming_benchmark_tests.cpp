@@ -78,7 +78,7 @@ void test_small_benchmark_retains_open_loop_latency_and_bounds() {
     assert(!gated.gates_passed());
 
     const auto json = report.value().to_json();
-    assert(json.contains("\"schema_version\": 2"));
+    assert(json.contains("\"schema_version\": 3"));
     assert(json.contains("\"benchmark\": \"chunk_streaming\""));
     assert(json.contains("\"interest_to_publication_us\""));
     assert(json.contains("\"p95_interest_to_publication_ms\""));
@@ -87,6 +87,7 @@ void test_small_benchmark_retains_open_loop_latency_and_bounds() {
     assert(json.contains("\"source\": \"generated_with_saved_delta\""));
     assert(json.contains("\"unrelated_history_edit_count\": 1024"));
     assert(json.contains("\"edit_log_cache_rebuilds_during_publication\": 0"));
+    assert(json.contains("\"physical_fixture\": {\"used\": false"));
 
     const std::filesystem::path output_path{"chunk_streaming_benchmark_test_output.json"};
     std::error_code error;
@@ -98,6 +99,84 @@ void test_small_benchmark_retains_open_loop_latency_and_bounds() {
     assert(persisted == json);
     input.close();
     assert(std::filesystem::remove(output_path));
+}
+
+void test_file_backed_workloads_report_cache_state_and_scale() {
+    benchmark::ChunkStreamingBenchmarkConfig config;
+    config.workloads = {benchmark::ChunkStreamingWorkload::file_delta_warm};
+#if defined(__linux__)
+    config.workloads.push_back(benchmark::ChunkStreamingWorkload::file_delta_drop_cache_advised);
+#endif
+    config.radius_chunks = 1;
+    config.unrelated_history_edit_count = 64;
+    config.physical_saved_delta_record_count = 32;
+    config.warmup_repetitions = 0;
+    config.repetitions = 1;
+    config.update_interval_us = 50;
+    config.timeout_ms = 5'000;
+    config.scheduler.worker_count = 2;
+    config.scheduler.max_concurrent_requests = 4;
+    config.scheduler.max_completed_results = 4;
+    config.scheduler.reservation_bytes_per_request = 1U * 1024U * 1024U;
+    config.scheduler.max_reserved_working_bytes = 4U * 1024U * 1024U;
+    config.scheduler.max_publications_per_update = 2;
+    config.enforce_gates = true;
+    config.maximum_file_delta_p95_ms = 1'000'000.0;
+    config.maximum_file_delta_disk_read_p95_ms = 1'000'000.0;
+    config.maximum_file_delta_reader_open_p95_ms = 1'000'000.0;
+    config.maximum_owner_publication_us = 1'000'000;
+
+    auto report = benchmark::run_chunk_streaming_benchmark(config);
+    assert(report);
+    assert(report.value().validate());
+    assert(report.value().gates_passed());
+    assert(report.value().physical_fixture.used);
+    assert(report.value().physical_fixture.record_count == 32);
+    assert(report.value().physical_fixture.encoded_payload_bytes > 0);
+    assert(report.value().physical_fixture.setup_ms > 0.0);
+    assert(report.value().physical_fixture.removed_after_run);
+    assert(!std::filesystem::exists(report.value().physical_fixture.ephemeral_root));
+    assert(report.value().runs.size() == config.workloads.size());
+    assert(report.value().raw_samples.size() == config.workloads.size() * 5U);
+
+    const auto summaries = report.value().summaries();
+    assert(summaries.size() == config.workloads.size());
+    for (const auto& summary : summaries) {
+        assert(summary.run_count == 1);
+        assert(summary.sample_count == 5);
+        assert(summary.total_saved_delta_publications == 5);
+        assert(summary.p95_disk_read_ms > 0.0);
+        assert(summary.p95_delta_reader_open_ms > 0.0);
+    }
+    const auto& warm_run = report.value().runs.front();
+    assert(warm_run.workload == benchmark::ChunkStreamingWorkload::file_delta_warm);
+    assert(warm_run.physical_indexed_delta_count == 32);
+    assert(warm_run.cache_preloaded_payload_count == 5);
+    assert(!warm_run.cache_advice_supported);
+    assert(warm_run.cache_advice_attempted_file_count == 0);
+    assert(warm_run.cache_advice_accepted_file_count == 0);
+#if defined(__linux__)
+    const auto& advised_run = report.value().runs.back();
+    assert(advised_run.workload ==
+           benchmark::ChunkStreamingWorkload::file_delta_drop_cache_advised);
+    assert(advised_run.physical_indexed_delta_count == 32);
+    assert(advised_run.cache_preloaded_payload_count == 0);
+    assert(advised_run.cache_advice_supported);
+    assert(advised_run.cache_advice_attempted_file_count == 7);
+    assert(advised_run.cache_advice_accepted_file_count == 7);
+#endif
+
+    const auto json = report.value().to_json();
+    assert(json.contains("\"physical_saved_delta_record_count\": 32"));
+    assert(json.contains("\"file_delta_warm\""));
+    assert(json.contains("\"physical_indexed_delta_count\": 32"));
+    assert(json.contains("\"delta_reader_open_ms\""));
+    assert(json.contains("\"cache_preloaded_payload_count\": 5"));
+    assert(json.contains("\"removed_after_run\": true"));
+
+    auto failed_gate = report.value();
+    failed_gate.config.maximum_file_delta_disk_read_p95_ms = 0.000'000'001;
+    assert(!failed_gate.gates_passed());
 }
 
 void test_invalid_configs_fail_closed() {
@@ -114,6 +193,9 @@ void test_invalid_configs_fail_closed() {
     config.unrelated_history_edit_count = 0;
     assert(!config.validate());
     config.unrelated_history_edit_count = 1;
+    config.physical_saved_delta_record_count = 0;
+    assert(!config.validate());
+    config.physical_saved_delta_record_count = 5;
     config.repetitions = 0;
     assert(!config.validate());
     config.repetitions = 1;
@@ -125,12 +207,18 @@ void test_invalid_configs_fail_closed() {
     assert(benchmark::chunk_streaming_workload_name(
                benchmark::ChunkStreamingWorkload::saved_delta_publication) ==
            "saved_delta_publication");
+    assert(benchmark::chunk_streaming_workload_name(
+               benchmark::ChunkStreamingWorkload::file_delta_warm) == "file_delta_warm");
+    assert(benchmark::chunk_streaming_workload_name(
+               benchmark::ChunkStreamingWorkload::file_delta_drop_cache_advised) ==
+           "file_delta_drop_cache_advised");
 }
 
 } // namespace
 
 int main() {
     test_small_benchmark_retains_open_loop_latency_and_bounds();
+    test_file_backed_workloads_report_cache_state_and_scale();
     test_invalid_configs_fail_closed();
     return 0;
 }

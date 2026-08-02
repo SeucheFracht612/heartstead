@@ -17,6 +17,8 @@ enum class ChunkStreamingWorkload : std::uint8_t {
     near_load,
     teleport_recovery,
     saved_delta_publication,
+    file_delta_warm,
+    file_delta_drop_cache_advised,
 };
 
 [[nodiscard]] std::string_view
@@ -27,6 +29,8 @@ struct ChunkStreamingBenchmarkConfig {
     std::uint64_t seed = 0x4853545245414DULL;
     std::uint16_t radius_chunks = 4;
     std::size_t unrelated_history_edit_count = 16'384;
+    std::size_t physical_saved_delta_record_count = 16'384;
+    std::filesystem::path physical_fixture_parent;
     std::uint32_t warmup_repetitions = 2;
     std::uint32_t repetitions = 9;
     std::uint64_t update_interval_us = 1'000;
@@ -36,6 +40,9 @@ struct ChunkStreamingBenchmarkConfig {
     double maximum_near_p95_ms = 250.0;
     double maximum_teleport_p95_ms = 1'000.0;
     double maximum_saved_delta_p95_ms = 250.0;
+    double maximum_file_delta_p95_ms = 250.0;
+    double maximum_file_delta_disk_read_p95_ms = 25.0;
+    double maximum_file_delta_reader_open_p95_ms = 100.0;
     std::uint64_t maximum_owner_publication_us = 500;
 
     ChunkStreamingBenchmarkConfig();
@@ -83,6 +90,12 @@ struct ChunkStreamingBenchmarkRun {
     std::size_t initial_edit_count = 0;
     std::size_t final_edit_count = 0;
     std::uint64_t edit_log_cache_rebuilds_during_publication = 0;
+    std::size_t physical_indexed_delta_count = 0;
+    double delta_reader_open_ms = 0.0;
+    std::size_t cache_preloaded_payload_count = 0;
+    bool cache_advice_supported = false;
+    std::size_t cache_advice_attempted_file_count = 0;
+    std::size_t cache_advice_accepted_file_count = 0;
 };
 
 struct ChunkStreamingBenchmarkViolation {
@@ -112,6 +125,7 @@ struct ChunkStreamingBenchmarkSummary {
     double p95_generation_ms = 0.0;
     double p95_prepare_ms = 0.0;
     double p95_worker_ms = 0.0;
+    double p95_delta_reader_open_ms = 0.0;
     double mean_chunks_per_second = 0.0;
     std::uint64_t total_cancelled_requests = 0;
     std::uint64_t total_saved_delta_publications = 0;
@@ -119,14 +133,28 @@ struct ChunkStreamingBenchmarkSummary {
     std::uint64_t maximum_edit_log_cache_rebuilds_during_publication = 0;
     std::uint64_t maximum_publication_time_us = 0;
     std::size_t reserved_working_bytes_high_water = 0;
+    std::size_t total_cache_preloaded_payload_count = 0;
+    std::size_t total_cache_advice_attempted_file_count = 0;
+    std::size_t total_cache_advice_accepted_file_count = 0;
     ChunkStreamingBenchmarkGateEvaluation gates;
 };
 
+struct ChunkStreamingPhysicalFixtureMetadata {
+    bool used = false;
+    std::filesystem::path ephemeral_root;
+    std::string active_generation;
+    std::size_t record_count = 0;
+    std::uint64_t encoded_payload_bytes = 0;
+    double setup_ms = 0.0;
+    bool removed_after_run = false;
+};
+
 struct ChunkStreamingBenchmarkReport {
-    static constexpr std::uint32_t schema_version = 2;
+    static constexpr std::uint32_t schema_version = 3;
 
     ChunkStreamingBenchmarkConfig config;
     profiling::RuntimeMetadata runtime;
+    ChunkStreamingPhysicalFixtureMetadata physical_fixture;
     std::vector<ChunkStreamingBenchmarkRun> runs;
     std::vector<ChunkStreamingBenchmarkSample> raw_samples;
 

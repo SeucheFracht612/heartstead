@@ -1,9 +1,12 @@
 #include "engine/world/streaming/chunk_streaming_benchmark.hpp"
 
 #include "engine/profiling/profiler.hpp"
+#include "engine/save/save_database.hpp"
 #include "engine/world/chunks/chunk_edit_delta_codec.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -18,6 +21,11 @@
 #include <tuple>
 #include <utility>
 
+#if defined(__linux__)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 namespace heartstead::world::benchmark {
 
 namespace {
@@ -28,7 +36,9 @@ constexpr ChunkCoord near_center{4'096, 0, -4'096};
 constexpr ChunkCoord teleport_old_center{-8'192, 0, 8'192};
 constexpr ChunkCoord teleport_target_center{8'192, 0, -8'192};
 constexpr ChunkCoord saved_delta_center{12'288, 0, 12'288};
+constexpr ChunkCoord file_delta_center{16'384, 0, -16'384};
 constexpr ChunkCoord unrelated_history_coord{24'576, 0, 24'576};
+constexpr ChunkCoord physical_unrelated_base{1'000'000, 0, -1'000'000};
 constexpr VoxelCoord saved_delta_voxel{0, VoxelChunk::edge_length - 1U, 0};
 constexpr VoxelCoord retained_target_voxel{1, VoxelChunk::edge_length - 1U, 0};
 
@@ -40,7 +50,20 @@ struct WorkloadExecution {
 [[nodiscard]] bool valid_workload(ChunkStreamingWorkload workload) noexcept {
     return workload == ChunkStreamingWorkload::near_load ||
            workload == ChunkStreamingWorkload::teleport_recovery ||
-           workload == ChunkStreamingWorkload::saved_delta_publication;
+           workload == ChunkStreamingWorkload::saved_delta_publication ||
+           workload == ChunkStreamingWorkload::file_delta_warm ||
+           workload == ChunkStreamingWorkload::file_delta_drop_cache_advised;
+}
+
+[[nodiscard]] bool saved_delta_workload(ChunkStreamingWorkload workload) noexcept {
+    return workload == ChunkStreamingWorkload::saved_delta_publication ||
+           workload == ChunkStreamingWorkload::file_delta_warm ||
+           workload == ChunkStreamingWorkload::file_delta_drop_cache_advised;
+}
+
+[[nodiscard]] bool file_delta_workload(ChunkStreamingWorkload workload) noexcept {
+    return workload == ChunkStreamingWorkload::file_delta_warm ||
+           workload == ChunkStreamingWorkload::file_delta_drop_cache_advised;
 }
 
 [[nodiscard]] ChunkCoord workload_center(ChunkStreamingWorkload workload) noexcept {
@@ -51,6 +74,9 @@ struct WorkloadExecution {
         return teleport_target_center;
     case ChunkStreamingWorkload::saved_delta_publication:
         return saved_delta_center;
+    case ChunkStreamingWorkload::file_delta_warm:
+    case ChunkStreamingWorkload::file_delta_drop_cache_advised:
+        return file_delta_center;
     }
     return {};
 }
@@ -59,6 +85,11 @@ struct WorkloadExecution {
                                                  BenchmarkClock::time_point end) noexcept {
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
     return elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0;
+}
+
+[[nodiscard]] double elapsed_milliseconds(BenchmarkClock::time_point begin,
+                                          BenchmarkClock::time_point end) noexcept {
+    return std::chrono::duration<double, std::milli>(end - begin).count();
 }
 
 [[nodiscard]] std::vector<ChunkCoord> circular_interest(ChunkCoord center, std::uint16_t radius) {
@@ -118,6 +149,269 @@ class BenchmarkSavedDeltaSource final : public IChunkEditDeltaSource {
 
   private:
     std::map<ChunkCoord, save::ChunkEditSaveRecord> records_;
+};
+
+struct FileDeltaSourcePreparation {
+    std::shared_ptr<const IChunkEditDeltaSource> source;
+    std::size_t indexed_delta_count = 0;
+    double reader_open_ms = 0.0;
+    std::size_t cache_preloaded_payload_count = 0;
+    bool cache_advice_supported = false;
+    std::size_t cache_advice_attempted_file_count = 0;
+    std::size_t cache_advice_accepted_file_count = 0;
+};
+
+struct CacheAdviceResult {
+    bool supported = false;
+    std::size_t attempted_file_count = 0;
+    std::size_t accepted_file_count = 0;
+};
+
+[[nodiscard]] std::string physical_chunk_filename(ChunkCoord coord) {
+    return "c_" + std::to_string(coord.x) + "_" + std::to_string(coord.y) + "_" +
+           std::to_string(coord.z) + ".delta";
+}
+
+[[nodiscard]] core::Result<CacheAdviceResult>
+advise_drop_file_cache(std::span<const std::filesystem::path> paths) {
+#if defined(__linux__)
+    CacheAdviceResult result;
+    result.supported = true;
+    for (const auto& path : paths) {
+        ++result.attempted_file_count;
+        const auto descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (descriptor < 0) {
+            return core::Result<CacheAdviceResult>::failure(
+                "chunk_streaming_benchmark.cache_advice_open_failed",
+                "failed to open cache-advice target " + path.string() + ": " +
+                    std::error_code(errno, std::generic_category()).message());
+        }
+        const auto advice_error = ::posix_fadvise(descriptor, 0, 0, POSIX_FADV_DONTNEED);
+        const auto close_error = ::close(descriptor) == 0
+                                     ? std::error_code{}
+                                     : std::error_code(errno, std::generic_category());
+        if (advice_error != 0) {
+            return core::Result<CacheAdviceResult>::failure(
+                "chunk_streaming_benchmark.cache_advice_failed",
+                "operating system rejected cache advice for " + path.string() + ": " +
+                    std::error_code(advice_error, std::generic_category()).message());
+        }
+        if (close_error) {
+            return core::Result<CacheAdviceResult>::failure(
+                "chunk_streaming_benchmark.cache_advice_close_failed",
+                "failed to close cache-advice target " + path.string() + ": " +
+                    close_error.message());
+        }
+        ++result.accepted_file_count;
+    }
+    return core::Result<CacheAdviceResult>::success(result);
+#else
+    static_cast<void>(paths);
+    return core::Result<CacheAdviceResult>::failure(
+        "chunk_streaming_benchmark.cache_advice_unsupported",
+        "file_delta_drop_cache_advised requires Linux POSIX_FADV_DONTNEED support");
+#endif
+}
+
+[[nodiscard]] core::Result<std::filesystem::path>
+create_physical_fixture_root(const std::filesystem::path& configured_parent) {
+    std::error_code error;
+    auto parent = configured_parent;
+    if (parent.empty()) {
+        parent = std::filesystem::temp_directory_path(error);
+        if (error) {
+            return core::Result<std::filesystem::path>::failure(
+                "chunk_streaming_benchmark.temp_directory_failed", error.message());
+        }
+    }
+    std::filesystem::create_directories(parent, error);
+    if (error) {
+        return core::Result<std::filesystem::path>::failure(
+            "chunk_streaming_benchmark.fixture_parent_failed",
+            "failed to create physical fixture parent " + parent.string() + ": " + error.message());
+    }
+
+    static std::atomic_uint64_t next_fixture{1};
+    const auto nonce = static_cast<std::uint64_t>(BenchmarkClock::now().time_since_epoch().count());
+    for (std::uint64_t attempt = 0; attempt < 64; ++attempt) {
+        const auto sequence = next_fixture.fetch_add(1, std::memory_order_relaxed);
+        const auto candidate = parent / ("heartstead_chunk_streaming_" + std::to_string(nonce) +
+                                         "_" + std::to_string(sequence));
+        const bool created = std::filesystem::create_directory(candidate, error);
+        if (error) {
+            return core::Result<std::filesystem::path>::failure(
+                "chunk_streaming_benchmark.fixture_create_failed",
+                "failed to create physical fixture " + candidate.string() + ": " + error.message());
+        }
+        if (created) {
+            return core::Result<std::filesystem::path>::success(candidate);
+        }
+    }
+    return core::Result<std::filesystem::path>::failure(
+        "chunk_streaming_benchmark.fixture_create_failed",
+        "could not allocate a unique physical fixture directory");
+}
+
+class PhysicalSavedDeltaFixture {
+  public:
+    [[nodiscard]] static core::Result<std::unique_ptr<PhysicalSavedDeltaFixture>>
+    create(const ChunkStreamingBenchmarkConfig& config, std::span<const ChunkCoord> target) {
+        auto root = create_physical_fixture_root(config.physical_fixture_parent);
+        if (!root) {
+            return core::Result<std::unique_ptr<PhysicalSavedDeltaFixture>>::failure(
+                root.error().code, root.error().message);
+        }
+        auto fixture = std::unique_ptr<PhysicalSavedDeltaFixture>(
+            new PhysicalSavedDeltaFixture(std::move(root).value()));
+
+        save::SaveSnapshot snapshot;
+        snapshot.metadata.game_version = "chunk-streaming-benchmark";
+        snapshot.metadata.world_seed = config.seed;
+        snapshot.chunk_edits.reserve(config.physical_saved_delta_record_count);
+        const auto append_record = [&snapshot, &fixture](ChunkCoord coord) {
+            const std::vector<VoxelEditRecord> edits{saved_delta_edit(coord)};
+            auto payload = ChunkEditDeltaTextCodec::encode(coord, edits);
+            fixture->metadata_.encoded_payload_bytes += payload.size();
+            snapshot.chunk_edits.push_back({coord, std::move(payload)});
+        };
+        for (const auto coord : target) {
+            append_record(coord);
+        }
+        for (std::size_t index = target.size(); index < config.physical_saved_delta_record_count;
+             ++index) {
+            append_record({physical_unrelated_base.x + static_cast<std::int64_t>(index),
+                           physical_unrelated_base.y, physical_unrelated_base.z});
+        }
+
+        const auto setup_started_at = BenchmarkClock::now();
+        const auto status = fixture->database_.write_snapshot(snapshot);
+        fixture->metadata_.setup_ms = elapsed_milliseconds(setup_started_at, BenchmarkClock::now());
+        if (!status) {
+            return core::Result<std::unique_ptr<PhysicalSavedDeltaFixture>>::failure(
+                status.error().code, status.error().message);
+        }
+        auto stats = fixture->database_.stats();
+        if (!stats) {
+            return core::Result<std::unique_ptr<PhysicalSavedDeltaFixture>>::failure(
+                stats.error().code, stats.error().message);
+        }
+        if (stats.value().active_generation.empty() ||
+            stats.value().chunk_delta_count != config.physical_saved_delta_record_count) {
+            return core::Result<std::unique_ptr<PhysicalSavedDeltaFixture>>::failure(
+                "chunk_streaming_benchmark.fixture_incomplete",
+                "physical saved-delta fixture did not commit every indexed record");
+        }
+
+        fixture->target_.assign(target.begin(), target.end());
+        fixture->metadata_.used = true;
+        fixture->metadata_.ephemeral_root = fixture->root_;
+        fixture->metadata_.active_generation = stats.value().active_generation;
+        fixture->metadata_.record_count = stats.value().chunk_delta_count;
+        fixture->generation_root_ =
+            fixture->root_ / "generations" / fixture->metadata_.active_generation;
+        return core::Result<std::unique_ptr<PhysicalSavedDeltaFixture>>::success(
+            std::move(fixture));
+    }
+
+    PhysicalSavedDeltaFixture(const PhysicalSavedDeltaFixture&) = delete;
+    PhysicalSavedDeltaFixture& operator=(const PhysicalSavedDeltaFixture&) = delete;
+
+    ~PhysicalSavedDeltaFixture() {
+        static_cast<void>(remove());
+    }
+
+    [[nodiscard]] core::Status remove() noexcept {
+        if (metadata_.removed_after_run) {
+            return core::Status::ok();
+        }
+        std::error_code error;
+        std::filesystem::remove_all(root_, error);
+        if (error) {
+            return core::Status::failure("chunk_streaming_benchmark.fixture_cleanup_failed",
+                                         "failed to remove physical fixture " + root_.string() +
+                                             ": " + error.message());
+        }
+        metadata_.removed_after_run = true;
+        return core::Status::ok();
+    }
+
+    [[nodiscard]] core::Result<FileDeltaSourcePreparation>
+    prepare(ChunkStreamingWorkload workload) const {
+        FileDeltaSourcePreparation preparation;
+        if (workload == ChunkStreamingWorkload::file_delta_warm) {
+            auto primer = database_.open_chunk_delta_reader();
+            if (!primer) {
+                return core::Result<FileDeltaSourcePreparation>::failure(primer.error().code,
+                                                                         primer.error().message);
+            }
+            for (const auto coord : target_) {
+                auto delta = primer.value().read_chunk_delta(coord);
+                if (!delta || !delta.value().has_value()) {
+                    return core::Result<FileDeltaSourcePreparation>::failure(
+                        delta ? "chunk_streaming_benchmark.fixture_missing_delta"
+                              : delta.error().code,
+                        delta ? "physical fixture is missing a target delta"
+                              : delta.error().message);
+                }
+                ++preparation.cache_preloaded_payload_count;
+            }
+        } else if (workload == ChunkStreamingWorkload::file_delta_drop_cache_advised) {
+            std::vector<std::filesystem::path> advice_paths;
+            advice_paths.reserve(target_.size() + 2U);
+            advice_paths.push_back(root_ / "current.txt");
+            advice_paths.push_back(generation_root_ / "chunks" / "index.txt");
+            for (const auto coord : target_) {
+                advice_paths.push_back(generation_root_ / "chunks" /
+                                       physical_chunk_filename(coord));
+            }
+            auto advice = advise_drop_file_cache(advice_paths);
+            if (!advice) {
+                return core::Result<FileDeltaSourcePreparation>::failure(advice.error().code,
+                                                                         advice.error().message);
+            }
+            preparation.cache_advice_supported = advice.value().supported;
+            preparation.cache_advice_attempted_file_count = advice.value().attempted_file_count;
+            preparation.cache_advice_accepted_file_count = advice.value().accepted_file_count;
+        } else {
+            return core::Result<FileDeltaSourcePreparation>::failure(
+                "chunk_streaming_benchmark.invalid_physical_workload",
+                "physical fixture was asked to prepare a non-file workload");
+        }
+
+        const auto open_started_at = BenchmarkClock::now();
+        auto reader = database_.open_chunk_delta_reader();
+        preparation.reader_open_ms = elapsed_milliseconds(open_started_at, BenchmarkClock::now());
+        if (!reader) {
+            return core::Result<FileDeltaSourcePreparation>::failure(reader.error().code,
+                                                                     reader.error().message);
+        }
+        if (reader.value().stats().storage_kind !=
+                save::FileChunkDeltaStorageKind::external_table ||
+            reader.value().stats().indexed_chunk_delta_count != metadata_.record_count ||
+            reader.value().stats().active_generation != metadata_.active_generation) {
+            return core::Result<FileDeltaSourcePreparation>::failure(
+                "chunk_streaming_benchmark.fixture_reader_mismatch",
+                "physical delta reader did not select the complete fixture generation");
+        }
+        preparation.indexed_delta_count = reader.value().stats().indexed_chunk_delta_count;
+        preparation.source =
+            std::make_shared<FileSaveChunkEditDeltaSource>(std::move(reader).value());
+        return core::Result<FileDeltaSourcePreparation>::success(std::move(preparation));
+    }
+
+    [[nodiscard]] const ChunkStreamingPhysicalFixtureMetadata& metadata() const noexcept {
+        return metadata_;
+    }
+
+  private:
+    explicit PhysicalSavedDeltaFixture(std::filesystem::path root)
+        : root_(std::move(root)), database_(root_) {}
+
+    std::filesystem::path root_;
+    save::FileSaveDatabase database_;
+    std::filesystem::path generation_root_;
+    std::vector<ChunkCoord> target_;
+    ChunkStreamingPhysicalFixtureMetadata metadata_;
 };
 
 [[nodiscard]] core::Status preload_saved_delta_history(WorldState& state,
@@ -235,7 +529,7 @@ find_success_timing(const ChunkLoadPublicationReport& report, ChunkCoord coord) 
 
 [[nodiscard]] core::Result<WorkloadExecution>
 run_workload(const ChunkStreamingBenchmarkConfig& config, ChunkStreamingWorkload workload,
-             std::uint32_t repetition) {
+             std::uint32_t repetition, const PhysicalSavedDeltaFixture* physical_fixture) {
     HEARTSTEAD_PROFILE_ZONE_NAMED("benchmark.chunk_streaming.workload");
     auto context = make_benchmark_context(config.seed);
     if (!context) {
@@ -246,8 +540,36 @@ run_workload(const ChunkStreamingBenchmarkConfig& config, ChunkStreamingWorkload
     const auto target_center = workload_center(workload);
     const auto target = circular_interest(target_center, config.radius_chunks);
     const std::set<ChunkCoord> target_set(target.begin(), target.end());
+
+    WorkloadExecution execution;
+    execution.run.workload = workload;
+    execution.run.repetition = repetition;
+    execution.run.desired_chunks = target.size();
+    execution.samples.reserve(target.size());
+
     if (workload == ChunkStreamingWorkload::saved_delta_publication) {
         context.value().saved_deltas = std::make_shared<BenchmarkSavedDeltaSource>(target);
+    } else if (file_delta_workload(workload)) {
+        if (physical_fixture == nullptr) {
+            return core::Result<WorkloadExecution>::failure(
+                "chunk_streaming_benchmark.missing_physical_fixture",
+                "file-backed workload has no physical saved-delta fixture");
+        }
+        auto prepared = physical_fixture->prepare(workload);
+        if (!prepared) {
+            return core::Result<WorkloadExecution>::failure(prepared.error().code,
+                                                            prepared.error().message);
+        }
+        execution.run.physical_indexed_delta_count = prepared.value().indexed_delta_count;
+        execution.run.delta_reader_open_ms = prepared.value().reader_open_ms;
+        execution.run.cache_preloaded_payload_count =
+            prepared.value().cache_preloaded_payload_count;
+        execution.run.cache_advice_supported = prepared.value().cache_advice_supported;
+        execution.run.cache_advice_attempted_file_count =
+            prepared.value().cache_advice_attempted_file_count;
+        execution.run.cache_advice_accepted_file_count =
+            prepared.value().cache_advice_accepted_file_count;
+        context.value().saved_deltas = std::move(prepared).value().source;
     }
     auto created = ChunkLoadScheduler::create(std::move(context).value(), config.scheduler);
     if (!created) {
@@ -257,14 +579,8 @@ run_workload(const ChunkStreamingBenchmarkConfig& config, ChunkStreamingWorkload
     auto scheduler = std::move(created).value();
     WorldState state;
 
-    WorkloadExecution execution;
-    execution.run.workload = workload;
-    execution.run.repetition = repetition;
-    execution.run.desired_chunks = target.size();
-    execution.samples.reserve(target.size());
-
     std::uint64_t cache_rebuilds_before_publication = 0;
-    if (workload == ChunkStreamingWorkload::saved_delta_publication) {
+    if (saved_delta_workload(workload)) {
         auto status =
             preload_saved_delta_history(state, target, config.unrelated_history_edit_count);
         if (!status) {
@@ -355,8 +671,7 @@ run_workload(const ChunkStreamingBenchmarkConfig& config, ChunkStreamingWorkload
                     "chunk_streaming_benchmark.missing_timing",
                     "published chunk has no successful lifecycle timing sample");
             }
-            const auto expects_saved_delta =
-                workload == ChunkStreamingWorkload::saved_delta_publication;
+            const auto expects_saved_delta = saved_delta_workload(workload);
             const auto source_matches =
                 expects_saved_delta
                     ? timing->source == ChunkStreamLoadSource::generated_with_saved_delta &&
@@ -415,7 +730,7 @@ run_workload(const ChunkStreamingBenchmarkConfig& config, ChunkStreamingWorkload
         std::max(execution.run.maximum_publication_time_us, stats.maximum_publication_time_us);
     execution.run.reserved_working_bytes_high_water = stats.reserved_working_bytes_high_water;
     execution.run.final_reserved_working_bytes = stats.reserved_working_bytes;
-    if (workload == ChunkStreamingWorkload::saved_delta_publication) {
+    if (saved_delta_workload(workload)) {
         const auto history_stats = state.chunks().stats();
         execution.run.final_edit_count = history_stats.edit_count;
         execution.run.edit_log_cache_rebuilds_during_publication =
@@ -436,7 +751,7 @@ run_workload(const ChunkStreamingBenchmarkConfig& config, ChunkStreamingWorkload
             "chunk_streaming_benchmark.cancellation_mismatch",
             "teleport workload did not retire every obsolete request as cancelled");
     }
-    if (workload == ChunkStreamingWorkload::saved_delta_publication) {
+    if (saved_delta_workload(workload)) {
         const auto expected_edit_count = config.unrelated_history_edit_count + target.size();
         if (execution.run.saved_delta_publications != target.size() ||
             execution.run.initial_edit_count != expected_edit_count ||
@@ -459,6 +774,30 @@ run_workload(const ChunkStreamingBenchmarkConfig& config, ChunkStreamingWorkload
                     "chunk_streaming_benchmark.saved_delta_replacement_failed",
                     "saved-delta publication did not replace one target chunk history exactly");
             }
+        }
+    }
+    if (file_delta_workload(workload)) {
+        const auto expected_advice_file_count = target.size() + 2U;
+        const bool warm_cache_state_matches =
+            workload != ChunkStreamingWorkload::file_delta_warm ||
+            (execution.run.cache_preloaded_payload_count == target.size() &&
+             !execution.run.cache_advice_supported &&
+             execution.run.cache_advice_attempted_file_count == 0 &&
+             execution.run.cache_advice_accepted_file_count == 0);
+        const bool advised_cache_state_matches =
+            workload != ChunkStreamingWorkload::file_delta_drop_cache_advised ||
+            (execution.run.cache_preloaded_payload_count == 0 &&
+             execution.run.cache_advice_supported &&
+             execution.run.cache_advice_attempted_file_count == expected_advice_file_count &&
+             execution.run.cache_advice_accepted_file_count == expected_advice_file_count);
+        if (execution.run.physical_indexed_delta_count !=
+                config.physical_saved_delta_record_count ||
+            !std::isfinite(execution.run.delta_reader_open_ms) ||
+            execution.run.delta_reader_open_ms < 0.0 || !warm_cache_state_matches ||
+            !advised_cache_state_matches) {
+            return core::Result<WorkloadExecution>::failure(
+                "chunk_streaming_benchmark.invalid_file_cache_state",
+                "file-backed workload did not establish its declared cache state and index");
         }
     }
     return core::Result<WorkloadExecution>::success(std::move(execution));
@@ -562,6 +901,10 @@ std::string_view chunk_streaming_workload_name(ChunkStreamingWorkload workload) 
         return "teleport_recovery";
     case ChunkStreamingWorkload::saved_delta_publication:
         return "saved_delta_publication";
+    case ChunkStreamingWorkload::file_delta_warm:
+        return "file_delta_warm";
+    case ChunkStreamingWorkload::file_delta_drop_cache_advised:
+        return "file_delta_drop_cache_advised";
     }
     return "unknown";
 }
@@ -594,6 +937,14 @@ core::Status ChunkStreamingBenchmarkConfig::validate() const {
             "chunk_streaming_benchmark.invalid_history_size",
             "unrelated saved-edit history must fit in one non-empty chunk");
     }
+    const auto physical_target_count = circular_interest(file_delta_center, radius_chunks).size();
+    if (physical_saved_delta_record_count < physical_target_count ||
+        physical_saved_delta_record_count > 1'000'000U) {
+        return core::Status::failure(
+            "chunk_streaming_benchmark.invalid_physical_record_count",
+            "physical saved-delta record count must cover the target ring and not exceed one "
+            "million records");
+    }
     if (repetitions == 0 || repetitions > 100 || warmup_repetitions > 100) {
         return core::Status::failure(
             "chunk_streaming_benchmark.invalid_repetitions",
@@ -608,7 +959,11 @@ core::Status ChunkStreamingBenchmarkConfig::validate() const {
     if (!std::isfinite(maximum_near_p95_ms) || maximum_near_p95_ms <= 0.0 ||
         !std::isfinite(maximum_teleport_p95_ms) || maximum_teleport_p95_ms <= 0.0 ||
         !std::isfinite(maximum_saved_delta_p95_ms) || maximum_saved_delta_p95_ms <= 0.0 ||
-        maximum_owner_publication_us == 0) {
+        !std::isfinite(maximum_file_delta_p95_ms) || maximum_file_delta_p95_ms <= 0.0 ||
+        !std::isfinite(maximum_file_delta_disk_read_p95_ms) ||
+        maximum_file_delta_disk_read_p95_ms <= 0.0 ||
+        !std::isfinite(maximum_file_delta_reader_open_p95_ms) ||
+        maximum_file_delta_reader_open_p95_ms <= 0.0 || maximum_owner_publication_us == 0) {
         return core::Status::failure("chunk_streaming_benchmark.invalid_gates",
                                      "streaming latency and publication gates must be positive");
     }
@@ -629,6 +984,25 @@ core::Status ChunkStreamingBenchmarkReport::validate() const {
             "streaming report does not contain every configured run and raw chunk sample");
     }
 
+    const bool expects_physical_fixture =
+        std::ranges::any_of(config.workloads, file_delta_workload);
+    if ((expects_physical_fixture &&
+         (!physical_fixture.used || physical_fixture.ephemeral_root.empty() ||
+          physical_fixture.active_generation.empty() ||
+          physical_fixture.record_count != config.physical_saved_delta_record_count ||
+          physical_fixture.encoded_payload_bytes == 0 ||
+          !std::isfinite(physical_fixture.setup_ms) || physical_fixture.setup_ms <= 0.0 ||
+          !physical_fixture.removed_after_run)) ||
+        (!expects_physical_fixture &&
+         (physical_fixture.used || !physical_fixture.ephemeral_root.empty() ||
+          !physical_fixture.active_generation.empty() || physical_fixture.record_count != 0 ||
+          physical_fixture.encoded_payload_bytes != 0 || physical_fixture.setup_ms != 0.0 ||
+          physical_fixture.removed_after_run))) {
+        return core::Status::failure(
+            "chunk_streaming_benchmark.invalid_physical_fixture",
+            "streaming report physical-fixture metadata does not match its workloads");
+    }
+
     std::set<std::pair<ChunkStreamingWorkload, std::uint32_t>> run_keys;
     for (const auto& run : runs) {
         if (!valid_workload(run.workload) || run.repetition >= config.repetitions ||
@@ -645,8 +1019,7 @@ core::Status ChunkStreamingBenchmarkReport::validate() const {
                 "chunk_streaming_benchmark.invalid_run",
                 "streaming benchmark run did not converge within its hard bounds");
         }
-        if ((run.workload == ChunkStreamingWorkload::near_load && run.obsolete_requests != 0) ||
-            (run.workload == ChunkStreamingWorkload::saved_delta_publication &&
+        if ((run.workload != ChunkStreamingWorkload::teleport_recovery &&
              run.obsolete_requests != 0) ||
             (run.workload == ChunkStreamingWorkload::teleport_recovery &&
              (run.obsolete_requests == 0 || run.cancelled_requests != run.obsolete_requests))) {
@@ -654,8 +1027,7 @@ core::Status ChunkStreamingBenchmarkReport::validate() const {
                 "chunk_streaming_benchmark.invalid_cancellation",
                 "streaming report has inconsistent teleport cancellation counts");
         }
-        const auto saved_delta_run =
-            run.workload == ChunkStreamingWorkload::saved_delta_publication;
+        const auto saved_delta_run = saved_delta_workload(run.workload);
         const auto expected_edit_count = config.unrelated_history_edit_count + desired_count;
         if ((saved_delta_run && (run.saved_delta_publications != desired_count ||
                                  run.initial_edit_count != expected_edit_count ||
@@ -667,6 +1039,32 @@ core::Status ChunkStreamingBenchmarkReport::validate() const {
             return core::Status::failure(
                 "chunk_streaming_benchmark.invalid_saved_delta_run",
                 "streaming report has inconsistent saved-delta publication invariants");
+        }
+
+        const auto physical_run = file_delta_workload(run.workload);
+        const auto expected_advice_file_count = desired_count + 2U;
+        const bool warm_cache_state_matches =
+            run.workload != ChunkStreamingWorkload::file_delta_warm ||
+            (run.cache_preloaded_payload_count == desired_count && !run.cache_advice_supported &&
+             run.cache_advice_attempted_file_count == 0 &&
+             run.cache_advice_accepted_file_count == 0);
+        const bool advised_cache_state_matches =
+            run.workload != ChunkStreamingWorkload::file_delta_drop_cache_advised ||
+            (run.cache_preloaded_payload_count == 0 && run.cache_advice_supported &&
+             run.cache_advice_attempted_file_count == expected_advice_file_count &&
+             run.cache_advice_accepted_file_count == expected_advice_file_count);
+        if ((physical_run &&
+             (run.physical_indexed_delta_count != config.physical_saved_delta_record_count ||
+              !std::isfinite(run.delta_reader_open_ms) || run.delta_reader_open_ms < 0.0 ||
+              !warm_cache_state_matches || !advised_cache_state_matches)) ||
+            (!physical_run &&
+             (run.physical_indexed_delta_count != 0 || run.delta_reader_open_ms != 0.0 ||
+              run.cache_preloaded_payload_count != 0 || run.cache_advice_supported ||
+              run.cache_advice_attempted_file_count != 0 ||
+              run.cache_advice_accepted_file_count != 0))) {
+            return core::Status::failure(
+                "chunk_streaming_benchmark.invalid_physical_run",
+                "streaming report has inconsistent file-backed delta metadata");
         }
     }
 
@@ -686,8 +1084,7 @@ core::Status ChunkStreamingBenchmarkReport::validate() const {
                 "chunk_streaming_benchmark.invalid_sample",
                 "streaming report contains an invalid or duplicate raw sample");
         }
-        const auto saved_delta_sample =
-            sample.workload == ChunkStreamingWorkload::saved_delta_publication;
+        const auto saved_delta_sample = saved_delta_workload(sample.workload);
         if ((saved_delta_sample &&
              (sample.source != ChunkStreamLoadSource::generated_with_saved_delta ||
               sample.saved_edit_count != 1)) ||
@@ -721,6 +1118,7 @@ std::vector<ChunkStreamingBenchmarkSummary> ChunkStreamingBenchmarkReport::summa
         std::vector<double> generation_ms;
         std::vector<double> prepare_ms;
         std::vector<double> worker_ms;
+        std::vector<double> reader_open_ms;
         for (const auto& sample : raw_samples) {
             if (sample.workload != workload) {
                 continue;
@@ -769,6 +1167,13 @@ std::vector<ChunkStreamingBenchmarkSummary> ChunkStreamingBenchmarkReport::summa
                 std::max(summary.maximum_publication_time_us, run.maximum_publication_time_us);
             summary.reserved_working_bytes_high_water = std::max(
                 summary.reserved_working_bytes_high_water, run.reserved_working_bytes_high_water);
+            if (file_delta_workload(workload)) {
+                reader_open_ms.push_back(run.delta_reader_open_ms);
+            }
+            summary.total_cache_preloaded_payload_count += run.cache_preloaded_payload_count;
+            summary.total_cache_advice_attempted_file_count +=
+                run.cache_advice_attempted_file_count;
+            summary.total_cache_advice_accepted_file_count += run.cache_advice_accepted_file_count;
             if (run.elapsed_us != 0) {
                 throughput_total += static_cast<double>(run.desired_chunks) * 1'000'000.0 /
                                     static_cast<double>(run.elapsed_us);
@@ -777,6 +1182,8 @@ std::vector<ChunkStreamingBenchmarkSummary> ChunkStreamingBenchmarkReport::summa
         summary.mean_chunks_per_second =
             summary.run_count == 0 ? 0.0
                                    : throughput_total / static_cast<double>(summary.run_count);
+        std::ranges::sort(reader_open_ms);
+        summary.p95_delta_reader_open_ms = percentile(reader_open_ms, 0.95);
 
         summary.gates.evaluated = config.enforce_gates;
         if (config.enforce_gates) {
@@ -790,6 +1197,10 @@ std::vector<ChunkStreamingBenchmarkSummary> ChunkStreamingBenchmarkReport::summa
             case ChunkStreamingWorkload::saved_delta_publication:
                 latency_limit = config.maximum_saved_delta_p95_ms;
                 break;
+            case ChunkStreamingWorkload::file_delta_warm:
+            case ChunkStreamingWorkload::file_delta_drop_cache_advised:
+                latency_limit = config.maximum_file_delta_p95_ms;
+                break;
             }
             const auto check = [&summary](std::string metric, double actual, double limit) {
                 if (!std::isfinite(actual) || actual > limit) {
@@ -801,6 +1212,12 @@ std::vector<ChunkStreamingBenchmarkSummary> ChunkStreamingBenchmarkReport::summa
             check("maximum_publication_time_us",
                   static_cast<double>(summary.maximum_publication_time_us),
                   static_cast<double>(config.maximum_owner_publication_us));
+            if (file_delta_workload(workload)) {
+                check("p95_disk_read_ms", summary.p95_disk_read_ms,
+                      config.maximum_file_delta_disk_read_p95_ms);
+                check("p95_delta_reader_open_ms", summary.p95_delta_reader_open_ms,
+                      config.maximum_file_delta_reader_open_p95_ms);
+            }
             summary.gates.passed = summary.gates.violations.empty();
         }
         result.push_back(std::move(summary));
@@ -824,6 +1241,11 @@ std::string ChunkStreamingBenchmarkReport::to_json() const {
            << "    \"radius_chunks\": " << config.radius_chunks << ",\n"
            << "    \"unrelated_history_edit_count\": " << config.unrelated_history_edit_count
            << ",\n"
+           << "    \"physical_saved_delta_record_count\": "
+           << config.physical_saved_delta_record_count << ",\n"
+           << "    \"physical_fixture_parent\": ";
+    write_json_string(output, config.physical_fixture_parent.string());
+    output << ",\n"
            << "    \"warmup_repetitions\": " << config.warmup_repetitions << ",\n"
            << "    \"repetitions\": " << config.repetitions << ",\n"
            << "    \"update_interval_us\": " << config.update_interval_us << ",\n"
@@ -832,6 +1254,11 @@ std::string ChunkStreamingBenchmarkReport::to_json() const {
            << "    \"maximum_near_p95_ms\": " << config.maximum_near_p95_ms << ",\n"
            << "    \"maximum_teleport_p95_ms\": " << config.maximum_teleport_p95_ms << ",\n"
            << "    \"maximum_saved_delta_p95_ms\": " << config.maximum_saved_delta_p95_ms << ",\n"
+           << "    \"maximum_file_delta_p95_ms\": " << config.maximum_file_delta_p95_ms << ",\n"
+           << "    \"maximum_file_delta_disk_read_p95_ms\": "
+           << config.maximum_file_delta_disk_read_p95_ms << ",\n"
+           << "    \"maximum_file_delta_reader_open_p95_ms\": "
+           << config.maximum_file_delta_reader_open_p95_ms << ",\n"
            << "    \"maximum_owner_publication_us\": " << config.maximum_owner_publication_us
            << ",\n"
            << "    \"workloads\": [";
@@ -856,6 +1283,17 @@ std::string ChunkStreamingBenchmarkReport::to_json() const {
            << "    }\n"
            << "  },\n";
     write_runtime_metadata(output, runtime);
+
+    output << "  \"physical_fixture\": {\"used\": " << (physical_fixture.used ? "true" : "false")
+           << ", \"ephemeral_root\": ";
+    write_json_string(output, physical_fixture.ephemeral_root.string());
+    output << ", \"active_generation\": ";
+    write_json_string(output, physical_fixture.active_generation);
+    output << ", \"record_count\": " << physical_fixture.record_count
+           << ", \"encoded_payload_bytes\": " << physical_fixture.encoded_payload_bytes
+           << ", \"setup_ms\": " << physical_fixture.setup_ms
+           << ", \"removed_after_run\": " << (physical_fixture.removed_after_run ? "true" : "false")
+           << "},\n";
 
     output << "  \"runs\": [\n";
     for (std::size_t index = 0; index < runs.size(); ++index) {
@@ -884,8 +1322,16 @@ std::string ChunkStreamingBenchmarkReport::to_json() const {
                << ", \"initial_edit_count\": " << run.initial_edit_count
                << ", \"final_edit_count\": " << run.final_edit_count
                << ", \"edit_log_cache_rebuilds_during_publication\": "
-               << run.edit_log_cache_rebuilds_during_publication << '}'
-               << (index + 1U == runs.size() ? "\n" : ",\n");
+               << run.edit_log_cache_rebuilds_during_publication
+               << ", \"physical_indexed_delta_count\": " << run.physical_indexed_delta_count
+               << ", \"delta_reader_open_ms\": " << run.delta_reader_open_ms
+               << ", \"cache_preloaded_payload_count\": " << run.cache_preloaded_payload_count
+               << ", \"cache_advice_supported\": "
+               << (run.cache_advice_supported ? "true" : "false")
+               << ", \"cache_advice_attempted_file_count\": "
+               << run.cache_advice_attempted_file_count
+               << ", \"cache_advice_accepted_file_count\": " << run.cache_advice_accepted_file_count
+               << '}' << (index + 1U == runs.size() ? "\n" : ",\n");
     }
     output << "  ],\n";
 
@@ -932,6 +1378,7 @@ std::string ChunkStreamingBenchmarkReport::to_json() const {
                << ", \"p95_generation_ms\": " << summary.p95_generation_ms
                << ", \"p95_prepare_ms\": " << summary.p95_prepare_ms
                << ", \"p95_worker_ms\": " << summary.p95_worker_ms
+               << ", \"p95_delta_reader_open_ms\": " << summary.p95_delta_reader_open_ms
                << ", \"mean_chunks_per_second\": " << summary.mean_chunks_per_second
                << ", \"total_cancelled_requests\": " << summary.total_cancelled_requests
                << ", \"total_saved_delta_publications\": " << summary.total_saved_delta_publications
@@ -942,6 +1389,12 @@ std::string ChunkStreamingBenchmarkReport::to_json() const {
                << ", \"maximum_publication_time_us\": " << summary.maximum_publication_time_us
                << ", \"reserved_working_bytes_high_water\": "
                << summary.reserved_working_bytes_high_water
+               << ", \"total_cache_preloaded_payload_count\": "
+               << summary.total_cache_preloaded_payload_count
+               << ", \"total_cache_advice_attempted_file_count\": "
+               << summary.total_cache_advice_attempted_file_count
+               << ", \"total_cache_advice_accepted_file_count\": "
+               << summary.total_cache_advice_accepted_file_count
                << ", \"gates\": {\"evaluated\": " << (summary.gates.evaluated ? "true" : "false")
                << ", \"passed\": " << (summary.gates.passed ? "true" : "false")
                << ", \"violations\": [";
@@ -978,12 +1431,25 @@ run_chunk_streaming_benchmark(const ChunkStreamingBenchmarkConfig& config) {
     report.config = config;
     report.runtime = profiling::query_runtime_metadata();
 
+    std::unique_ptr<PhysicalSavedDeltaFixture> physical_fixture;
+    if (std::ranges::any_of(config.workloads, file_delta_workload)) {
+        const auto target = circular_interest(file_delta_center, config.radius_chunks);
+        auto created_fixture = PhysicalSavedDeltaFixture::create(config, target);
+        if (!created_fixture) {
+            return core::Result<ChunkStreamingBenchmarkReport>::failure(
+                created_fixture.error().code, created_fixture.error().message);
+        }
+        physical_fixture = std::move(created_fixture).value();
+        report.physical_fixture = physical_fixture->metadata();
+    }
+
     for (const auto workload : config.workloads) {
         const auto total_passes = config.warmup_repetitions + config.repetitions;
         for (std::uint32_t pass = 0; pass < total_passes; ++pass) {
             const auto measured_repetition =
                 pass < config.warmup_repetitions ? 0 : pass - config.warmup_repetitions;
-            auto executed = run_workload(config, workload, measured_repetition);
+            auto executed =
+                run_workload(config, workload, measured_repetition, physical_fixture.get());
             if (!executed) {
                 return core::Result<ChunkStreamingBenchmarkReport>::failure(
                     executed.error().code, executed.error().message);
@@ -996,6 +1462,14 @@ run_chunk_streaming_benchmark(const ChunkStreamingBenchmarkConfig& config) {
                                       std::make_move_iterator(executed.value().samples.begin()),
                                       std::make_move_iterator(executed.value().samples.end()));
         }
+    }
+    if (physical_fixture != nullptr) {
+        status = physical_fixture->remove();
+        if (!status) {
+            return core::Result<ChunkStreamingBenchmarkReport>::failure(status.error().code,
+                                                                        status.error().message);
+        }
+        report.physical_fixture = physical_fixture->metadata();
     }
     status = report.validate();
     if (!status) {
