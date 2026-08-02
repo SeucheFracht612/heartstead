@@ -3,10 +3,12 @@
 #include "engine/core/ids.hpp"
 #include "engine/core/result.hpp"
 #include "engine/save/save_metadata.hpp"
+#include "engine/world/coords/world_coords.hpp"
 
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace heartstead::world {
@@ -25,9 +27,19 @@ enum class OperationStage {
 };
 
 struct OperationEvent {
+    OperationEvent() = default;
+    OperationEvent(std::string event_type, core::SaveId event_subject, std::string event_message,
+                   std::optional<ChunkCoord> event_routing_chunk = std::nullopt)
+        : type(std::move(event_type)), subject(event_subject), message(std::move(event_message)),
+          routing_chunk(event_routing_chunk) {}
+
     std::string type;
     core::SaveId subject;
     std::string message;
+    // Owner-side routing metadata. Replication codecs intentionally omit this field after the
+    // authoritative host has selected recipients, so adding a spatial scope does not revise the
+    // event wire format.
+    std::optional<ChunkCoord> routing_chunk;
 };
 
 [[nodiscard]] std::string_view operation_stage_name(OperationStage stage) noexcept;

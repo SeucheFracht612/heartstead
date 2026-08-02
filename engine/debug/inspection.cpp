@@ -2271,9 +2271,16 @@ InspectionData Inspector::inspect(const net::ReplicationRelevanceReport& report)
     add_field(data, "command_type", report.command_type);
     add_field(data, "broadcast_by_default", bool_text(report.broadcast_by_default));
     add_field(data, "event_count", std::to_string(report.event_count));
+    add_field(data, "spatial_event_count", std::to_string(report.spatial_event_count));
     add_field(data, "candidate_client_count", std::to_string(report.candidate_client_count));
     add_field(data, "relevant_client_count", std::to_string(report.relevant_client_count));
     add_field(data, "filtered_client_count", std::to_string(report.filtered_client_count));
+    add_field(data, "relevant_spatial_event_delivery_count",
+              std::to_string(report.relevant_spatial_event_delivery_count));
+    add_field(data, "filtered_spatial_event_delivery_count",
+              std::to_string(report.filtered_spatial_event_delivery_count));
+    add_field(data, "filtered_spatial_payload_bytes",
+              std::to_string(report.filtered_spatial_payload_bytes));
     add_field(data, "decision_count", std::to_string(report.decisions.size()));
 
     for (const auto& decision : report.decisions) {
@@ -2282,6 +2289,8 @@ InspectionData Inspector::inspect(const net::ReplicationRelevanceReport& report)
             add_field(data, "first_relevant_reason", decision.reason);
             add_field(data, "first_relevant_event_count",
                       std::to_string(decision.relevant_event_count));
+            add_field(data, "first_relevant_spatial_event_count",
+                      std::to_string(decision.relevant_spatial_event_count));
             break;
         }
     }
@@ -2289,6 +2298,8 @@ InspectionData Inspector::inspect(const net::ReplicationRelevanceReport& report)
         if (!decision.relevant) {
             add_field(data, "first_filtered_client_id", net_id_text(decision.client_id));
             add_field(data, "first_filtered_reason", decision.reason);
+            add_field(data, "first_filtered_spatial_event_count",
+                      std::to_string(decision.filtered_spatial_event_count));
             break;
         }
     }
@@ -2306,6 +2317,23 @@ InspectionData Inspector::inspect(const net::ReplicationRelevanceReport& report)
     if (report.decisions.size() != report.candidate_client_count) {
         add_issue(data, InspectionSeverity::error, "replication_relevance.decision_mismatch",
                   "relevance decision list does not match candidate client count");
+    }
+    std::uint64_t relevant_spatial_event_delivery_count = 0;
+    std::uint64_t filtered_spatial_event_delivery_count = 0;
+    std::uint64_t filtered_spatial_payload_bytes = 0;
+    for (const auto& decision : report.decisions) {
+        relevant_spatial_event_delivery_count += decision.relevant_spatial_event_count;
+        filtered_spatial_event_delivery_count += decision.filtered_spatial_event_count;
+        filtered_spatial_payload_bytes += decision.filtered_spatial_payload_bytes;
+    }
+    if (relevant_spatial_event_delivery_count !=
+            report.relevant_spatial_event_delivery_count ||
+        filtered_spatial_event_delivery_count !=
+            report.filtered_spatial_event_delivery_count ||
+        filtered_spatial_payload_bytes != report.filtered_spatial_payload_bytes) {
+        add_issue(data, InspectionSeverity::error,
+                  "replication_relevance.spatial_count_mismatch",
+                  "spatial relevance delivery aggregates do not match recipient decisions");
     }
     if (data.has_errors()) {
         data.state = "invalid";
@@ -2391,6 +2419,16 @@ InspectionData Inspector::inspect(const net::HostSessionTickResult& result) {
         relevance_relevant_client_total(result.replication_relevance_reports);
     const auto filtered_client_count =
         relevance_filtered_client_total(result.replication_relevance_reports);
+    std::uint64_t spatial_event_count = 0;
+    std::uint64_t relevant_spatial_event_delivery_count = 0;
+    std::uint64_t filtered_spatial_event_delivery_count = 0;
+    std::uint64_t filtered_spatial_payload_bytes = 0;
+    for (const auto& report : result.replication_relevance_reports) {
+        spatial_event_count += report.spatial_event_count;
+        relevant_spatial_event_delivery_count += report.relevant_spatial_event_delivery_count;
+        filtered_spatial_event_delivery_count += report.filtered_spatial_event_delivery_count;
+        filtered_spatial_payload_bytes += report.filtered_spatial_payload_bytes;
+    }
 
     if (result.transport_dropped_reliable_message_count > 0) {
         data.state = "dropped_reliable";
@@ -2474,6 +2512,13 @@ InspectionData Inspector::inspect(const net::HostSessionTickResult& result) {
               std::to_string(result.replication_relevance_reports.size()));
     add_field(data, "replication_relevant_client_count", std::to_string(relevant_client_count));
     add_field(data, "replication_filtered_client_count", std::to_string(filtered_client_count));
+    add_field(data, "replication_spatial_event_count", std::to_string(spatial_event_count));
+    add_field(data, "replication_relevant_spatial_event_delivery_count",
+              std::to_string(relevant_spatial_event_delivery_count));
+    add_field(data, "replication_filtered_spatial_event_delivery_count",
+              std::to_string(filtered_spatial_event_delivery_count));
+    add_field(data, "replication_filtered_spatial_payload_bytes",
+              std::to_string(filtered_spatial_payload_bytes));
 
     std::size_t accepted_command_count = 0;
     std::size_t rejected_command_count = 0;

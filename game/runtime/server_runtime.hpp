@@ -273,6 +273,7 @@ class ServerRuntime final {
         core::NetId client_id, world::ChunkSubscriptionTransitionBudget transition_budget,
         std::map<world::ChunkCoord, EncodedChunkSnapshot>& snapshot_cache,
         bool enforce_serialization_budget = true);
+    void refresh_replication_chunk_interest();
     [[nodiscard]] bool initial_chunk_state_ready(const PlayerConnection& connection) const noexcept;
     [[nodiscard]] core::Status send_initial_state(core::NetId client_id);
     [[nodiscard]] core::Result<std::uint64_t> reserve_custom_replication_sequence();

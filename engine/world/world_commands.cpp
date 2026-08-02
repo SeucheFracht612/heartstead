@@ -1229,7 +1229,8 @@ resolve_process_modifiers(const WorldState& state, const modding::PrototypeRegis
     operation.record_derived_update("chunk_collision");
     operation.record_derived_update("chunk_lighting");
     operation.emit_event(
-        {std::string(voxel_changed_event_type), {}, VoxelChangeTextCodec::encode(change)});
+        {std::string(voxel_changed_event_type), {}, VoxelChangeTextCodec::encode(change),
+         payload.value().chunk});
     operation.mark_replication_dirty();
     operation.mark_save_dirty();
     return core::Status::ok();

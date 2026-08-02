@@ -40,10 +40,16 @@ struct ReplicationPrivateAccessRule {
     std::vector<core::SaveId> private_subjects;
 };
 
+struct ReplicationChunkInterestRule {
+    core::NetId client_id;
+    std::vector<world::ChunkCoord> visible_chunks;
+};
+
 struct ReplicationRelevancePolicy {
     bool broadcast_by_default = true;
     std::vector<ReplicationInterestRule> client_rules;
     std::vector<ReplicationPrivateAccessRule> private_access_rules;
+    std::vector<ReplicationChunkInterestRule> chunk_interest_rules;
 };
 
 struct ReplicationRelevanceDecision {
@@ -51,6 +57,9 @@ struct ReplicationRelevanceDecision {
     bool relevant = false;
     bool explicit_rule = false;
     std::uint32_t relevant_event_count = 0;
+    std::uint32_t relevant_spatial_event_count = 0;
+    std::uint32_t filtered_spatial_event_count = 0;
+    std::uint64_t filtered_spatial_payload_bytes = 0;
     std::string reason;
 };
 
@@ -62,6 +71,10 @@ struct ReplicationRelevanceReport {
     std::uint32_t candidate_client_count = 0;
     std::uint32_t relevant_client_count = 0;
     std::uint32_t filtered_client_count = 0;
+    std::uint32_t spatial_event_count = 0;
+    std::uint64_t relevant_spatial_event_delivery_count = 0;
+    std::uint64_t filtered_spatial_event_delivery_count = 0;
+    std::uint64_t filtered_spatial_payload_bytes = 0;
     std::vector<ReplicationRelevanceDecision> decisions;
     std::uint64_t replication_sequence = 0;
     core::NetId source_client_id;
@@ -114,6 +127,12 @@ class ReplicationRelevance {
     [[nodiscard]] static bool private_subject_is_visible(const ReplicationRelevancePolicy& policy,
                                                          core::NetId client_id,
                                                          core::SaveId subject) noexcept;
+    [[nodiscard]] static bool chunk_is_visible(const ReplicationRelevancePolicy& policy,
+                                               core::NetId client_id,
+                                               world::ChunkCoord chunk) noexcept;
+    [[nodiscard]] static bool event_is_visible(const ReplicationRelevancePolicy& policy,
+                                               core::NetId client_id,
+                                               const world::OperationEvent& event) noexcept;
     [[nodiscard]] static ReplicationBatch
     filter_for_client(const ReplicationRelevancePolicy& policy, const ReplicationBatch& batch,
                       core::NetId client_id);

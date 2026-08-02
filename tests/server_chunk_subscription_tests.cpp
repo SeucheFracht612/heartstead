@@ -1,5 +1,7 @@
 #include "engine/content/content_validation.hpp"
+#include "engine/net/replication.hpp"
 #include "engine/world/chunks/chunk_replication.hpp"
+#include "engine/world/replication_delta.hpp"
 #include "game/foundation/foundation_world.hpp"
 #include "game/runtime/client_runtime.hpp"
 #include "game/runtime/game_runtime.hpp"
@@ -223,6 +225,99 @@ void test_shared_chunk_encoding_is_reused_across_clients(
     assert(secondary_cell.value().type == replacement.type);
 }
 
+void test_voxel_events_follow_published_chunk_interest_and_late_snapshot_recovers(
+    const content::ContentValidationReport& report) {
+    auto runtime = make_runtime(report);
+    game::RuntimeConfiguration config;
+    config.fixed_step = {60, 4, 250'000};
+    assert(runtime.start_session(config, make_session_request(report)));
+    auto* session = runtime.session();
+    assert(session != nullptr && session->server() != nullptr && session->client() != nullptr);
+    auto& server = *session->server();
+    const auto primary_id = session->client()->client_id();
+
+    auto connected = server.connect_client();
+    assert(connected);
+    const auto secondary_id = connected.value();
+    world::WorldStateDesc client_world;
+    client_world.metadata = server.world().metadata();
+    client_world.voxel_palette = server.world().voxel_palette_manifest();
+    game::ClientRuntime secondary(secondary_id, std::move(client_world),
+                                  &server.replication_registry(), &server.voxel_palette());
+    receive_and_synchronize(server, secondary_id, secondary, 0);
+    assert(secondary.is_connected());
+
+    auto near_position = world::WorldPosition{29.5, 1.0, 7.5};
+    set_player_position(server, primary_id, near_position);
+    auto far_position = world::WorldPosition::from_anchor({3'200, 1, 0}, {0.5, 0.0, 0.5});
+    assert(far_position);
+    set_player_position(server, secondary_id, far_position.value());
+
+    std::int64_t now_ms = 0;
+    bool far_interest_converged = false;
+    for (std::uint64_t tick = 1; tick <= 24; ++tick) {
+        (void)run_frame(runtime, now_ms);
+        receive_and_synchronize(server, secondary_id, secondary, tick);
+        const auto clients = server.chunk_subscription_clients();
+        const auto found = std::ranges::find_if(clients, [secondary_id](const auto& client) {
+            return client.client_id == secondary_id;
+        });
+        assert(found != clients.end());
+        if (found->converged &&
+            !std::ranges::binary_search(found->subscriptions, world::ChunkCoord{0, 0, 0}) &&
+            !secondary.world().chunks().contains({0, 0, 0})) {
+            far_interest_converged = true;
+            break;
+        }
+    }
+    assert(far_interest_converged);
+
+    const auto address = world::block_to_chunk_local(game::foundation::boundary_edit_upper);
+    const auto before = server.world().chunks().get(address.chunk, address.local);
+    assert(before && !before.value().is_air());
+    assert(session->submit_remove_voxel({game::foundation::boundary_edit_upper}, now_ms));
+    auto edit_frame = run_frame(runtime, now_ms);
+    assert(edit_frame.server_ticks.front().commands.replication_relevance_reports.size() == 1);
+    const auto& relevance =
+        edit_frame.server_ticks.front().commands.replication_relevance_reports.front();
+    assert(relevance.spatial_event_count == 1);
+    assert(relevance.candidate_client_count == 2);
+    assert(relevance.relevant_client_count == 1);
+    assert(relevance.filtered_client_count == 1);
+    assert(relevance.relevant_spatial_event_delivery_count == 1);
+    assert(relevance.filtered_spatial_event_delivery_count == 1);
+    assert(relevance.filtered_spatial_payload_bytes > 0);
+    assert(session->client()->accepted_voxel_edits().size() == 1);
+
+    auto far_messages = server.drain_client_messages(secondary_id);
+    assert(far_messages);
+    assert(std::ranges::none_of(far_messages.value(), [](const net::TransportEnvelope& envelope) {
+        return envelope.message.payload_type == net::replication_world_events_payload_type ||
+               envelope.message.payload_type == world::replication_delta_snapshot_payload_type;
+    }));
+    assert(secondary.receive(far_messages.value()));
+    auto far_sync = secondary.synchronize(25, std::numeric_limits<std::size_t>::max());
+    assert(far_sync);
+    assert(secondary.accepted_voxel_edits().empty());
+    assert(!secondary.world().chunks().contains(address.chunk));
+
+    set_player_position(server, secondary_id, near_position);
+    bool recovered_from_snapshot = false;
+    for (std::uint64_t tick = 26; tick <= 50; ++tick) {
+        (void)run_frame(runtime, now_ms);
+        receive_and_synchronize(server, secondary_id, secondary, tick);
+        const auto current = secondary.world().chunks().get(address.chunk, address.local);
+        if (current && current.value().is_air()) {
+            recovered_from_snapshot = true;
+            break;
+        }
+    }
+    assert(recovered_from_snapshot);
+    const auto authoritative = server.world().chunks().get(address.chunk, address.local);
+    const auto recovered = secondary.world().chunks().get(address.chunk, address.local);
+    assert(authoritative && recovered && authoritative.value() == recovered.value());
+}
+
 void test_reliable_backlog_defers_and_recovers_without_partial_publication(
     const content::ContentValidationReport& report) {
     auto runtime = make_runtime(report);
@@ -370,6 +465,7 @@ int main() {
     test_runtime_interest_is_bounded_and_ignores_unsubscribed_chunks(report);
     test_teleport_transitions_and_client_removals_are_bounded(report);
     test_shared_chunk_encoding_is_reused_across_clients(report);
+    test_voxel_events_follow_published_chunk_interest_and_late_snapshot_recovers(report);
     test_reliable_backlog_defers_and_recovers_without_partial_publication(report);
     test_collision_chunks_precede_deferred_initial_state(report);
     test_snapshot_serialization_budget_defers_unique_chunks(report);

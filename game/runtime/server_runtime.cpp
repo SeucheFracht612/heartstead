@@ -500,6 +500,21 @@ core::Status ServerRuntime::initialize() {
                 return core::Status::failure(result.error().code, result.error().message);
             }
             current_commands_ = std::move(result).value();
+            std::uint64_t spatial_event_count = 0;
+            std::uint64_t relevant_spatial_delivery_count = 0;
+            std::uint64_t filtered_spatial_delivery_count = 0;
+            for (const auto& relevance : current_commands_.replication_relevance_reports) {
+                spatial_event_count += relevance.spatial_event_count;
+                relevant_spatial_delivery_count +=
+                    relevance.relevant_spatial_event_delivery_count;
+                filtered_spatial_delivery_count +=
+                    relevance.filtered_spatial_event_delivery_count;
+            }
+            HEARTSTEAD_PROFILE_PLOT("network.spatial_events", spatial_event_count);
+            HEARTSTEAD_PROFILE_PLOT("network.spatial_event_deliveries",
+                                    relevant_spatial_delivery_count);
+            HEARTSTEAD_PROFILE_PLOT("network.spatial_event_filtered_deliveries",
+                                    filtered_spatial_delivery_count);
             process_movement_control_messages(current_commands_.control_messages);
             for (const auto client_id : current_commands_.connected_clients) {
                 auto connection_status = spawn_player(client_id);
@@ -819,6 +834,10 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     current_chunk_subscriptions_ = {};
     current_chunk_streaming_ = {};
     current_chunk_streaming_.enabled = chunk_loader_ != nullptr;
+    // Route spatial operation events against the exact chunk versions published before command
+    // execution. A command may advance the authoritative revision later in this tick, but its
+    // delta remains valid for clients that held the immediately preceding revision.
+    refresh_replication_chunk_interest();
     auto budget_status = transient_replication_budget_.begin_tick(tick);
     if (!budget_status) {
         return core::Result<ServerRuntimeTickStats>::failure(budget_status.error().code,
@@ -891,6 +910,7 @@ core::Result<core::NetId> ServerRuntime::connect_client() {
         (void)disconnect_client(connected.value());
         return core::Result<core::NetId>::failure(status.error().code, status.error().message);
     }
+    refresh_replication_chunk_interest();
     const auto connection = player_connections_.find(connected.value().value());
     if (connection != player_connections_.end() && initial_chunk_state_ready(connection->second)) {
         status = send_initial_state(connected.value());
@@ -932,6 +952,11 @@ core::Status ServerRuntime::remove_player_connection(core::NetId client_id) {
     const auto removed_player_net_id = player == nullptr ? core::NetId{} : player->net_id;
     const auto removed_player_save_id = player == nullptr ? core::SaveId{} : player->save_id;
     player_connections_.erase(found);
+    auto policy = host_.replication_relevance_policy();
+    std::erase_if(policy.chunk_interest_rules, [client_id](const auto& rule) {
+        return rule.client_id == client_id;
+    });
+    host_.set_replication_relevance_policy(std::move(policy));
     if (removed_player_save_id.is_valid()) {
         revoke_private_subject_access(host_, client_id, removed_player_save_id);
     }
@@ -1573,6 +1598,7 @@ core::Status ServerRuntime::spawn_player(core::NetId client_id) {
     connection.physics_collision = std::move(physics_collision);
     player_connections_.emplace(client_id.value(), std::move(connection));
     grant_private_subject_access(host_, client_id, save_id);
+    refresh_replication_chunk_interest();
     return core::Status::ok();
 }
 
@@ -2024,6 +2050,7 @@ core::Status ServerRuntime::synchronize_chunk_subscriptions() {
                                 current_chunk_subscriptions_.snapshot_slice_message_count);
         HEARTSTEAD_PROFILE_PLOT("network.chunk_snapshot_deferred",
                                 current_chunk_subscriptions_.deferred_snapshot_count);
+        refresh_replication_chunk_interest();
     };
     if (desc_.direct_local_chunk_replication && renderer_proof_streaming_enabled_) {
         // A local Renderer Proof session installs streamed chunks directly into its presentation
@@ -2071,6 +2098,37 @@ core::Status ServerRuntime::synchronize_chunk_subscriptions() {
     pending_streamed_chunks_.clear();
     finalize_stats();
     return core::Status::ok();
+}
+
+void ServerRuntime::refresh_replication_chunk_interest() {
+    auto policy = host_.replication_relevance_policy();
+    for (const auto& [client_id, _] : player_connections_) {
+        std::erase_if(policy.chunk_interest_rules, [client_id](const auto& rule) {
+            return rule.client_id.value() == client_id;
+        });
+    }
+
+    policy.chunk_interest_rules.reserve(policy.chunk_interest_rules.size() +
+                                        player_connections_.size());
+    for (const auto& [client_id, connection] : player_connections_) {
+        net::ReplicationChunkInterestRule rule;
+        rule.client_id = core::NetId::from_value(client_id);
+        rule.visible_chunks.reserve(connection.chunk_publications.size());
+        for (const auto& [coordinate, publication] : connection.chunk_publications) {
+            if (!publication.complete) {
+                continue;
+            }
+            const auto* chunk = world_.chunks().find(coordinate);
+            if (chunk != nullptr && publication.identity == chunk->identity() &&
+                publication.content_revision == chunk->content_revision()) {
+                rule.visible_chunks.push_back(coordinate);
+            }
+        }
+        policy.chunk_interest_rules.push_back(std::move(rule));
+    }
+    std::ranges::sort(policy.chunk_interest_rules, {},
+                      [](const auto& rule) { return rule.client_id.value(); });
+    host_.set_replication_relevance_policy(std::move(policy));
 }
 
 core::Status ServerRuntime::synchronize_client_chunk_subscription(

@@ -1017,8 +1017,10 @@ filter_replication_delta_snapshot(const WorldReplicationDeltaSnapshot& snapshot,
                                              : snapshot.plan.command_sequence;
     filtered.plan.source_client_id = snapshot.plan.source_client_id;
 
-    if (net::ReplicationRelevance::subject_is_visible(policy, recipient, core::SaveId{})) {
-        filtered.plan.global_events = snapshot.plan.global_events;
+    for (const auto& event : snapshot.plan.global_events) {
+        if (net::ReplicationRelevance::event_is_visible(policy, recipient, event)) {
+            filtered.plan.global_events.push_back(event);
+        }
     }
     filtered.plan.global_event_count =
         static_cast<std::uint32_t>(filtered.plan.global_events.size());

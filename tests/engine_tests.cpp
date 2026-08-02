@@ -12732,6 +12732,50 @@ void test_host_session() {
     assert(relevance_inspection.find_field("first_filtered_reason")->value == "filtered_subject");
     assert(!relevance_inspection.has_errors());
 
+    net::ReplicationBatch spatial_batch;
+    spatial_batch.command_sequence = 43;
+    spatial_batch.command_type = "world.set_voxel";
+    spatial_batch.events.push_back(
+        {"world.voxel_changed.v1", {}, "scoped", world::ChunkCoord{0, 0, 0}});
+    relevance_policy.chunk_interest_rules = {
+        {core::NetId::from_value(7), {{0, 0, 0}}},
+        {core::NetId::from_value(8), {{100, 0, 0}}},
+    };
+    auto spatial_report = net::ReplicationRelevance::evaluate(
+        relevance_policy, spatial_batch,
+        {core::NetId::from_value(7), core::NetId::from_value(8),
+         core::NetId::from_value(9)});
+    assert(spatial_report.spatial_event_count == 1);
+    assert(spatial_report.relevant_client_count == 1);
+    assert(spatial_report.filtered_client_count == 2);
+    assert(spatial_report.relevant_spatial_event_delivery_count == 1);
+    assert(spatial_report.filtered_spatial_event_delivery_count == 2);
+    assert(spatial_report.filtered_spatial_payload_bytes == 2U * (22U + 6U));
+    assert(spatial_report.decisions[0].reason == "matched_chunk");
+    assert(spatial_report.decisions[0].relevant_spatial_event_count == 1);
+    assert(spatial_report.decisions[1].reason == "filtered_chunk");
+    assert(spatial_report.decisions[1].filtered_spatial_event_count == 1);
+    assert(net::ReplicationRelevance::filter_for_client(
+               relevance_policy, spatial_batch, core::NetId::from_value(7))
+               .events.size() == 1);
+    assert(net::ReplicationRelevance::filter_for_client(
+               relevance_policy, spatial_batch, core::NetId::from_value(8))
+               .events.empty());
+    world::WorldState spatial_state;
+    const auto spatial_delta = world::materialize_replication_delta(spatial_state, spatial_batch);
+    auto visible_spatial_delta = world::filter_replication_delta_snapshot(
+        spatial_delta, relevance_policy, core::NetId::from_value(7));
+    auto hidden_spatial_delta = world::filter_replication_delta_snapshot(
+        spatial_delta, relevance_policy, core::NetId::from_value(8));
+    assert(visible_spatial_delta && visible_spatial_delta.value().plan.global_event_count == 1);
+    assert(hidden_spatial_delta && hidden_spatial_delta.value().plan.global_event_count == 0);
+    assert(hidden_spatial_delta.value().plan.event_count == 0);
+    auto spatial_inspection = debug::Inspector::inspect(spatial_report);
+    assert(spatial_inspection.find_field("spatial_event_count")->value == "1");
+    assert(spatial_inspection.find_field("relevant_spatial_event_delivery_count")->value == "1");
+    assert(spatial_inspection.find_field("filtered_spatial_event_delivery_count")->value == "2");
+    assert(!spatial_inspection.has_errors());
+
     std::vector<net::ReplicationBatch> intake_batches;
     net::ReplicationBatch later_intake_batch;
     later_intake_batch.command_sequence = 2;

@@ -157,6 +157,16 @@ find_private_access_rule(const ReplicationRelevancePolicy& policy, core::NetId c
     return found == policy.private_access_rules.end() ? nullptr : &*found;
 }
 
+[[nodiscard]] const ReplicationChunkInterestRule*
+find_chunk_interest_rule(const ReplicationRelevancePolicy& policy,
+                         core::NetId client_id) noexcept {
+    const auto found = std::ranges::find_if(
+        policy.chunk_interest_rules, [client_id](const ReplicationChunkInterestRule& rule) {
+            return rule.client_id == client_id;
+        });
+    return found == policy.chunk_interest_rules.end() ? nullptr : &*found;
+}
+
 [[nodiscard]] bool subject_is_visible_for_rule(const ReplicationInterestRule& rule,
                                                core::SaveId subject) noexcept {
     if (!subject.is_valid()) {
@@ -172,24 +182,35 @@ evaluate_client_relevance(const ReplicationRelevancePolicy& policy, const Replic
     decision.client_id = client_id;
 
     const auto* rule = find_interest_rule(policy, client_id);
-    decision.explicit_rule = rule != nullptr;
+    const auto* chunk_rule = find_chunk_interest_rule(policy, client_id);
+    decision.explicit_rule = rule != nullptr || chunk_rule != nullptr;
     for (const auto& event : batch.events) {
-        const auto publicly_visible = rule == nullptr
-                                          ? policy.broadcast_by_default
-                                          : subject_is_visible_for_rule(*rule, event.subject);
-        const auto privately_visible =
-            !replication_event_requires_private_access(event) ||
-            ReplicationRelevance::private_subject_is_visible(policy, client_id, event.subject);
-        if (publicly_visible && privately_visible) {
+        const auto visible = ReplicationRelevance::event_is_visible(policy, client_id, event);
+        if (visible) {
             ++decision.relevant_event_count;
+        }
+        if (!event.routing_chunk.has_value()) {
+            continue;
+        }
+        if (visible) {
+            ++decision.relevant_spatial_event_count;
+        } else {
+            ++decision.filtered_spatial_event_count;
+            decision.filtered_spatial_payload_bytes +=
+                static_cast<std::uint64_t>(event.type.size() + event.message.size());
         }
     }
     decision.relevant = decision.relevant_event_count > 0;
     if (decision.relevant) {
-        decision.reason = rule == nullptr ? "broadcast_default" : "matched_subject";
+        decision.reason = decision.relevant_spatial_event_count > 0
+                              ? "matched_chunk"
+                              : (rule == nullptr ? "broadcast_default" : "matched_subject");
     } else {
-        decision.reason = rule == nullptr && !policy.broadcast_by_default ? "no_interest_rule"
-                                                                          : "filtered_subject";
+        decision.reason = decision.filtered_spatial_event_count > 0
+                              ? "filtered_chunk"
+                              : (rule == nullptr && !policy.broadcast_by_default
+                                     ? "no_interest_rule"
+                                     : "filtered_subject");
     }
     return decision;
 }
@@ -447,6 +468,10 @@ ReplicationRelevance::evaluate(const ReplicationRelevancePolicy& policy,
     report.command_type = batch.command_type;
     report.broadcast_by_default = policy.broadcast_by_default;
     report.event_count = static_cast<std::uint32_t>(batch.events.size());
+    report.spatial_event_count = static_cast<std::uint32_t>(std::ranges::count_if(
+        batch.events, [](const world::OperationEvent& event) {
+            return event.routing_chunk.has_value();
+        }));
     report.candidate_client_count = static_cast<std::uint32_t>(candidate_clients.size());
     report.decisions.reserve(candidate_clients.size());
 
@@ -457,6 +482,9 @@ ReplicationRelevance::evaluate(const ReplicationRelevancePolicy& policy,
         } else {
             ++report.filtered_client_count;
         }
+        report.relevant_spatial_event_delivery_count += decision.relevant_spatial_event_count;
+        report.filtered_spatial_event_delivery_count += decision.filtered_spatial_event_count;
+        report.filtered_spatial_payload_bytes += decision.filtered_spatial_payload_bytes;
         report.decisions.push_back(std::move(decision));
     }
 
@@ -484,6 +512,35 @@ bool ReplicationRelevance::private_subject_is_visible(const ReplicationRelevance
            std::ranges::find(rule->private_subjects, subject) != rule->private_subjects.end();
 }
 
+bool ReplicationRelevance::chunk_is_visible(const ReplicationRelevancePolicy& policy,
+                                            core::NetId client_id,
+                                            world::ChunkCoord chunk) noexcept {
+    const auto* rule = find_chunk_interest_rule(policy, client_id);
+    if (rule == nullptr) {
+        return policy.broadcast_by_default;
+    }
+    return std::ranges::binary_search(rule->visible_chunks, chunk);
+}
+
+bool ReplicationRelevance::event_is_visible(const ReplicationRelevancePolicy& policy,
+                                            core::NetId client_id,
+                                            const world::OperationEvent& event) noexcept {
+    if (event.subject.is_valid()) {
+        if (!subject_is_visible(policy, client_id, event.subject)) {
+            return false;
+        }
+    } else if (!event.routing_chunk.has_value() &&
+               !subject_is_visible(policy, client_id, event.subject)) {
+        return false;
+    }
+    if (event.routing_chunk.has_value() &&
+        !chunk_is_visible(policy, client_id, *event.routing_chunk)) {
+        return false;
+    }
+    return !replication_event_requires_private_access(event) ||
+           private_subject_is_visible(policy, client_id, event.subject);
+}
+
 ReplicationBatch ReplicationRelevance::filter_for_client(const ReplicationRelevancePolicy& policy,
                                                          const ReplicationBatch& batch,
                                                          core::NetId client_id) {
@@ -494,9 +551,7 @@ ReplicationBatch ReplicationRelevance::filter_for_client(const ReplicationReleva
     filtered.source_client_id = batch.source_client_id;
 
     for (const auto& event : batch.events) {
-        if (subject_is_visible(policy, client_id, event.subject) &&
-            (!replication_event_requires_private_access(event) ||
-             private_subject_is_visible(policy, client_id, event.subject))) {
+        if (event_is_visible(policy, client_id, event)) {
             filtered.events.push_back(event);
         }
     }

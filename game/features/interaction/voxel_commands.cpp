@@ -252,7 +252,8 @@ void commit_resource_grant(PreparedResourceGrant grant, core::SaveId inventory_o
     operation.record_derived_update("voxel_fluids");
     operation.emit_event({std::string(world::voxel_changed_event_type),
                           {},
-                          world::VoxelChangeTextCodec::encode(change)});
+                          world::VoxelChangeTextCodec::encode(change),
+                          address.chunk});
     operation.mark_replication_dirty();
     operation.mark_save_dirty();
     (void)envelope;
