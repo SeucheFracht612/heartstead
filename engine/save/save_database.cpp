@@ -1,12 +1,14 @@
 #include "engine/save/save_database.hpp"
 
 #include "engine/core/filesystem.hpp"
+#include "engine/core/hash.hpp"
 #include "engine/save/save_binary_codec.hpp"
 
 #include <algorithm>
 #include <array>
 #include <charconv>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <optional>
 #include <sstream>
@@ -29,6 +31,14 @@ constexpr std::size_t max_generation_manifest_file_bytes = 64U * 1024U;
 constexpr std::size_t max_chunk_delta_file_bytes = 16U * 1024U * 1024U;
 constexpr std::size_t max_chunk_delta_table_bytes = 512U * 1024U * 1024U;
 constexpr std::size_t max_chunk_delta_count = 1'000'000U;
+constexpr std::string_view journal_magic = "HSTDJRNL";
+constexpr std::uint32_t journal_version = 1;
+constexpr std::string_view journal_entry_prefix = "entry_";
+constexpr std::string_view journal_entry_suffix = ".hsj";
+constexpr std::string_view journal_checkpoint_magic = "heartstead.save_journal_checkpoint.v1";
+constexpr std::size_t journal_header_bytes = 8U + 4U + 8U + 8U + 8U;
+constexpr std::size_t max_journal_entry_count = 8U;
+constexpr std::uintmax_t max_journal_bytes = 1024ULL * 1024ULL * 1024ULL;
 
 struct ChunkIndexEntry {
     world::ChunkCoord coord;
@@ -49,6 +59,18 @@ struct CommittedGenerationEntry {
 struct StagedGenerationEntry {
     std::uint64_t number = 0;
     std::filesystem::path path;
+};
+
+struct JournalEntry {
+    std::uint64_t sequence = 0;
+    std::filesystem::path path;
+    std::uintmax_t bytes = 0;
+};
+
+struct JournalState {
+    std::uint64_t checkpoint_sequence = 0;
+    std::vector<JournalEntry> entries;
+    std::uintmax_t bytes = 0;
 };
 
 [[nodiscard]] std::filesystem::path snapshot_path(const std::filesystem::path& root) {
@@ -73,6 +95,21 @@ struct StagedGenerationEntry {
 
 [[nodiscard]] std::filesystem::path backup_chunk_directory(const std::filesystem::path& root) {
     return root / "chunks.backup";
+}
+
+[[nodiscard]] std::filesystem::path journal_directory(const std::filesystem::path& root) {
+    return root / "journal";
+}
+
+[[nodiscard]] std::filesystem::path journal_checkpoint_path(const std::filesystem::path& root) {
+    return journal_directory(root) / "checkpoint.txt";
+}
+
+[[nodiscard]] std::string journal_entry_filename(std::uint64_t sequence) {
+    std::ostringstream output;
+    output << journal_entry_prefix << std::setw(20) << std::setfill('0') << sequence
+           << journal_entry_suffix;
+    return output.str();
 }
 
 [[nodiscard]] std::string chunk_filename(world::ChunkCoord coord) {
@@ -155,10 +192,19 @@ readable_chunk_directory(const std::filesystem::path& root) {
 }
 
 [[nodiscard]] core::Status ensure_parent_directory(const std::filesystem::path& path) {
+    const auto parent = path.parent_path();
     std::error_code error;
-    std::filesystem::create_directories(path.parent_path(), error);
+    const bool created = std::filesystem::create_directories(parent, error);
     if (error) {
         return filesystem_failure("save_database.create_directory_failed", error);
+    }
+    if (created) {
+        if (auto flush_error = core::flush_directory_to_disk(parent)) {
+            return filesystem_failure("save_database.flush_directory_failed", flush_error);
+        }
+        if (auto flush_error = core::flush_directory_to_disk(parent.parent_path())) {
+            return filesystem_failure("save_database.flush_directory_failed", flush_error);
+        }
     }
     return core::Status::ok();
 }
@@ -178,6 +224,14 @@ readable_chunk_directory(const std::filesystem::path& root) {
     std::filesystem::rename(from, to, error);
     if (error) {
         return filesystem_failure(std::move(code), error);
+    }
+    if (auto flush_error = core::flush_directory_to_disk(to.parent_path())) {
+        return filesystem_failure(std::move(code), flush_error);
+    }
+    if (from.parent_path() != to.parent_path()) {
+        if (auto flush_error = core::flush_directory_to_disk(from.parent_path())) {
+            return filesystem_failure(std::move(code), flush_error);
+        }
     }
     return core::Status::ok();
 }
@@ -205,7 +259,7 @@ readable_chunk_directory(const std::filesystem::path& root) {
         }
     }
 
-    const auto error = core::replace_file(temporary, path);
+    const auto error = core::replace_file_durable(temporary, path);
     if (error) {
         std::error_code cleanup_error;
         std::filesystem::remove(temporary, cleanup_error);
@@ -258,6 +312,311 @@ readable_chunk_directory(const std::filesystem::path& root) {
             "save_database.read_failed", "failed to read save database file: " + path.string());
     }
     return core::Result<std::vector<std::uint8_t>>::success(std::move(bytes));
+}
+
+void append_u32_le(std::vector<std::uint8_t>& bytes, std::uint32_t value) {
+    for (std::uint32_t shift = 0; shift < 32U; shift += 8U) {
+        bytes.push_back(static_cast<std::uint8_t>((value >> shift) & 0xffU));
+    }
+}
+
+void append_u64_le(std::vector<std::uint8_t>& bytes, std::uint64_t value) {
+    for (std::uint32_t shift = 0; shift < 64U; shift += 8U) {
+        bytes.push_back(static_cast<std::uint8_t>((value >> shift) & 0xffU));
+    }
+}
+
+[[nodiscard]] std::uint32_t read_u32_le(std::span<const std::uint8_t> bytes,
+                                        std::size_t offset) noexcept {
+    std::uint32_t value = 0;
+    for (std::uint32_t shift = 0; shift < 32U; shift += 8U) {
+        value |= static_cast<std::uint32_t>(bytes[offset + shift / 8U]) << shift;
+    }
+    return value;
+}
+
+[[nodiscard]] std::uint64_t read_u64_le(std::span<const std::uint8_t> bytes,
+                                        std::size_t offset) noexcept {
+    std::uint64_t value = 0;
+    for (std::uint32_t shift = 0; shift < 64U; shift += 8U) {
+        value |= static_cast<std::uint64_t>(bytes[offset + shift / 8U]) << shift;
+    }
+    return value;
+}
+
+[[nodiscard]] std::uint64_t journal_payload_hash(std::uint64_t sequence,
+                                                 std::span<const std::uint8_t> payload) noexcept {
+    core::StableHash64 hash;
+    hash.add_u64_le(sequence);
+    hash.add_bytes(payload);
+    return hash.value();
+}
+
+[[nodiscard]] std::vector<std::uint8_t>
+encode_journal_entry(std::uint64_t sequence, std::span<const std::uint8_t> payload) {
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(journal_header_bytes + payload.size());
+    for (const auto character : journal_magic) {
+        bytes.push_back(static_cast<std::uint8_t>(character));
+    }
+    append_u32_le(bytes, journal_version);
+    append_u64_le(bytes, sequence);
+    append_u64_le(bytes, static_cast<std::uint64_t>(payload.size()));
+    append_u64_le(bytes, journal_payload_hash(sequence, payload));
+    bytes.insert(bytes.end(), payload.begin(), payload.end());
+    return bytes;
+}
+
+[[nodiscard]] core::Result<SaveSnapshot>
+decode_journal_entry(std::span<const std::uint8_t> bytes, std::uint64_t expected_sequence) {
+    if (bytes.size() < journal_header_bytes) {
+        return core::Result<SaveSnapshot>::failure("save_database.journal_truncated",
+                                                   "save journal entry header is truncated");
+    }
+    for (std::size_t index = 0; index < journal_magic.size(); ++index) {
+        if (bytes[index] != static_cast<std::uint8_t>(journal_magic[index])) {
+            return core::Result<SaveSnapshot>::failure("save_database.invalid_journal_magic",
+                                                       "save journal entry magic is invalid");
+        }
+    }
+    constexpr std::size_t version_offset = 8U;
+    constexpr std::size_t sequence_offset = version_offset + 4U;
+    constexpr std::size_t size_offset = sequence_offset + 8U;
+    constexpr std::size_t hash_offset = size_offset + 8U;
+    const auto version = read_u32_le(bytes, version_offset);
+    const auto sequence = read_u64_le(bytes, sequence_offset);
+    const auto payload_size = read_u64_le(bytes, size_offset);
+    const auto expected_hash = read_u64_le(bytes, hash_offset);
+    if (version != journal_version) {
+        return core::Result<SaveSnapshot>::failure("save_database.unsupported_journal_version",
+                                                   "save journal entry version is unsupported");
+    }
+    if (sequence == 0 || sequence != expected_sequence) {
+        return core::Result<SaveSnapshot>::failure(
+            "save_database.invalid_journal_sequence",
+            "save journal entry sequence does not match its canonical filename");
+    }
+    if (payload_size > max_snapshot_file_bytes ||
+        payload_size != bytes.size() - journal_header_bytes) {
+        return core::Result<SaveSnapshot>::failure("save_database.invalid_journal_size",
+                                                   "save journal payload size is invalid");
+    }
+    const auto payload = bytes.subspan(journal_header_bytes);
+    if (journal_payload_hash(sequence, payload) != expected_hash) {
+        return core::Result<SaveSnapshot>::failure("save_database.journal_checksum_mismatch",
+                                                   "save journal payload checksum does not match");
+    }
+    auto snapshot = SaveBinaryCodec::decode_snapshot(payload);
+    if (!snapshot) {
+        return core::Result<SaveSnapshot>::failure(snapshot.error().code,
+                                                   snapshot.error().message);
+    }
+    return snapshot;
+}
+
+[[nodiscard]] core::Result<std::uint64_t> parse_u64(std::string_view value,
+                                                    std::string_view code,
+                                                    std::string_view description) {
+    std::uint64_t parsed = 0;
+    const auto* begin = value.data();
+    const auto* end = value.data() + value.size();
+    const auto [ptr, error] = std::from_chars(begin, end, parsed);
+    if (error != std::errc{} || ptr != end) {
+        return core::Result<std::uint64_t>::failure(std::string(code),
+                                                    std::string(description));
+    }
+    return core::Result<std::uint64_t>::success(parsed);
+}
+
+[[nodiscard]] core::Result<std::uint64_t>
+read_journal_checkpoint(const std::filesystem::path& root) {
+    const auto path = journal_checkpoint_path(root);
+    std::error_code error;
+    const bool exists = std::filesystem::exists(path, error);
+    if (error) {
+        return core::Result<std::uint64_t>::failure("save_database.journal_read_failed",
+                                                    error.message());
+    }
+    if (!exists) {
+        return core::Result<std::uint64_t>::success(0);
+    }
+    auto bytes = read_bytes(path, max_generation_manifest_file_bytes,
+                            "save_database.journal_checkpoint_too_large",
+                            "save journal checkpoint");
+    if (!bytes) {
+        return core::Result<std::uint64_t>::failure(bytes.error().code, bytes.error().message);
+    }
+    const auto text =
+        std::string_view(reinterpret_cast<const char*>(bytes.value().data()), bytes.value().size());
+    bool saw_magic = false;
+    bool saw_sequence = false;
+    bool saw_end = false;
+    std::uint64_t sequence = 0;
+    std::size_t line_start = 0;
+    while (line_start <= text.size()) {
+        const auto line_end = text.find('\n', line_start);
+        auto line = line_end == std::string_view::npos
+                        ? text.substr(line_start)
+                        : text.substr(line_start, line_end - line_start);
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1);
+        }
+        if (saw_end) {
+            if (!line.empty()) {
+                return core::Result<std::uint64_t>::failure(
+                    "save_database.invalid_journal_checkpoint",
+                    "save journal checkpoint contains trailing data");
+            }
+        } else if (!saw_magic) {
+            if (line != journal_checkpoint_magic) {
+                return core::Result<std::uint64_t>::failure(
+                    "save_database.invalid_journal_checkpoint",
+                    "save journal checkpoint magic is invalid");
+            }
+            saw_magic = true;
+        } else if (line == "end") {
+            saw_end = true;
+        } else if (!line.empty()) {
+            constexpr std::string_view sequence_prefix = "sequence|";
+            const auto encoded_sequence = line.starts_with(sequence_prefix)
+                                              ? line.substr(sequence_prefix.size())
+                                              : std::string_view{};
+            if (encoded_sequence.empty() || encoded_sequence.find('|') != std::string_view::npos ||
+                saw_sequence) {
+                return core::Result<std::uint64_t>::failure(
+                    "save_database.invalid_journal_checkpoint",
+                    "save journal checkpoint must contain one sequence row");
+            }
+            auto parsed = parse_u64(encoded_sequence, "save_database.invalid_journal_checkpoint",
+                                    "save journal checkpoint sequence is invalid");
+            if (!parsed) {
+                return parsed;
+            }
+            sequence = parsed.value();
+            saw_sequence = true;
+        }
+        if (line_end == std::string_view::npos) {
+            break;
+        }
+        line_start = line_end + 1U;
+    }
+    if (!saw_magic || !saw_sequence || !saw_end) {
+        return core::Result<std::uint64_t>::failure("save_database.invalid_journal_checkpoint",
+                                                    "save journal checkpoint is incomplete");
+    }
+    return core::Result<std::uint64_t>::success(sequence);
+}
+
+[[nodiscard]] core::Status write_journal_checkpoint(const std::filesystem::path& root,
+                                                    std::uint64_t sequence) {
+    std::ostringstream output;
+    output << journal_checkpoint_magic << '\n';
+    output << "sequence|" << sequence << '\n';
+    output << "end\n";
+    return write_text_atomic(journal_checkpoint_path(root), output.str());
+}
+
+[[nodiscard]] core::Result<std::uint64_t> parse_journal_entry_filename(std::string_view name) {
+    if (!name.starts_with(journal_entry_prefix) || !name.ends_with(journal_entry_suffix)) {
+        return core::Result<std::uint64_t>::failure("save_database.invalid_journal_filename",
+                                                    "save journal filename is invalid");
+    }
+    const auto digits = name.substr(
+        journal_entry_prefix.size(),
+        name.size() - journal_entry_prefix.size() - journal_entry_suffix.size());
+    if (digits.size() != 20U) {
+        return core::Result<std::uint64_t>::failure("save_database.invalid_journal_filename",
+                                                    "save journal sequence width is invalid");
+    }
+    auto parsed = parse_u64(digits, "save_database.invalid_journal_filename",
+                            "save journal filename sequence is invalid");
+    if (!parsed || parsed.value() == 0 || journal_entry_filename(parsed.value()) != name) {
+        return core::Result<std::uint64_t>::failure("save_database.invalid_journal_filename",
+                                                    "save journal filename is not canonical");
+    }
+    return parsed;
+}
+
+[[nodiscard]] core::Result<JournalState>
+read_journal_state(const std::filesystem::path& root) {
+    auto checkpoint = read_journal_checkpoint(root);
+    if (!checkpoint) {
+        return core::Result<JournalState>::failure(checkpoint.error().code,
+                                                   checkpoint.error().message);
+    }
+    JournalState state;
+    state.checkpoint_sequence = checkpoint.value();
+    const auto directory = journal_directory(root);
+    std::error_code error;
+    const bool exists = std::filesystem::exists(directory, error);
+    if (error) {
+        return core::Result<JournalState>::failure("save_database.journal_read_failed",
+                                                   error.message());
+    }
+    if (!exists) {
+        return core::Result<JournalState>::success(std::move(state));
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
+        if (error) {
+            return core::Result<JournalState>::failure("save_database.journal_read_failed",
+                                                       error.message());
+        }
+        const auto name = entry.path().filename().string();
+        if (!std::string_view(name).ends_with(journal_entry_suffix)) {
+            continue;
+        }
+        const auto status = entry.symlink_status(error);
+        if (error || std::filesystem::is_symlink(status) ||
+            !std::filesystem::is_regular_file(status)) {
+            return core::Result<JournalState>::failure(
+                "save_database.invalid_journal_entry",
+                error ? error.message() : "save journal entries must be regular files");
+        }
+        auto sequence = parse_journal_entry_filename(name);
+        if (!sequence) {
+            return core::Result<JournalState>::failure(sequence.error().code,
+                                                       sequence.error().message);
+        }
+        const auto bytes = entry.file_size(error);
+        if (error) {
+            return core::Result<JournalState>::failure("save_database.journal_read_failed",
+                                                       error.message());
+        }
+        if (bytes > journal_header_bytes + max_snapshot_file_bytes ||
+            bytes > max_journal_bytes - state.bytes) {
+            return core::Result<JournalState>::failure("save_database.journal_too_large",
+                                                       "save journal exceeds its byte budget");
+        }
+        state.bytes += bytes;
+        state.entries.push_back({sequence.value(), entry.path(), bytes});
+        if (state.entries.size() > max_journal_entry_count) {
+            return core::Result<JournalState>::failure("save_database.journal_too_many_entries",
+                                                       "save journal exceeds its entry budget");
+        }
+    }
+    if (error) {
+        return core::Result<JournalState>::failure("save_database.journal_read_failed",
+                                                   error.message());
+    }
+    std::ranges::sort(state.entries, [](const JournalEntry& left, const JournalEntry& right) {
+        return left.sequence < right.sequence;
+    });
+    for (std::size_t index = 1; index < state.entries.size(); ++index) {
+        if (state.entries[index - 1U].sequence == state.entries[index].sequence) {
+            return core::Result<JournalState>::failure("save_database.duplicate_journal_sequence",
+                                                       "save journal sequence is duplicated");
+        }
+    }
+    return core::Result<JournalState>::success(std::move(state));
+}
+
+[[nodiscard]] core::Result<SaveSnapshot> read_journal_snapshot(const JournalEntry& entry) {
+    auto bytes = read_bytes(entry.path, max_snapshot_file_bytes + journal_header_bytes,
+                            "save_database.journal_entry_too_large", "save journal entry");
+    if (!bytes) {
+        return core::Result<SaveSnapshot>::failure(bytes.error().code, bytes.error().message);
+    }
+    return decode_journal_entry(bytes.value(), entry.sequence);
 }
 
 [[nodiscard]] core::Result<std::int64_t> parse_i64(std::string_view value,
@@ -873,11 +1232,45 @@ read_effective_chunk_deltas_from_root(const std::filesystem::path& save_root) {
 }
 
 [[nodiscard]] core::Status
-write_chunk_deltas_to_root(const std::filesystem::path& save_root,
-                           std::span<const ChunkEditSaveRecord> chunk_deltas) {
+validate_chunk_deltas_for_storage(std::span<const ChunkEditSaveRecord> chunk_deltas) {
     if (chunk_deltas.size() > max_chunk_delta_count) {
         return core::Status::failure("save_database.too_many_chunk_deltas",
                                      "chunk delta table exceeds the configured record limit");
+    }
+    std::unordered_set<std::string> seen_coordinates;
+    seen_coordinates.reserve(chunk_deltas.size());
+    std::size_t total_payload_bytes = 0;
+    for (const auto& chunk_delta : chunk_deltas) {
+        if (chunk_delta.encoded_edit_delta.empty()) {
+            return core::Status::failure("save_database.empty_chunk_delta",
+                                         "chunk delta payload must not be empty");
+        }
+        if (chunk_delta.encoded_edit_delta.size() > max_chunk_delta_file_bytes) {
+            return core::Status::failure("save_database.chunk_delta_too_large",
+                                         "chunk delta payload exceeds the configured safety limit");
+        }
+        if (chunk_delta.encoded_edit_delta.size() >
+            max_chunk_delta_table_bytes - total_payload_bytes) {
+            return core::Status::failure(
+                "save_database.chunk_delta_table_too_large",
+                "chunk delta table exceeds the configured aggregate safety limit");
+        }
+        total_payload_bytes += chunk_delta.encoded_edit_delta.size();
+        if (!seen_coordinates.insert(chunk_filename(chunk_delta.coord)).second) {
+            return core::Status::failure(
+                "save_database.duplicate_chunk_delta",
+                "bulk chunk delta replacement contains a duplicate chunk coordinate");
+        }
+    }
+    return core::Status::ok();
+}
+
+[[nodiscard]] core::Status
+write_chunk_deltas_to_root(const std::filesystem::path& save_root,
+                           std::span<const ChunkEditSaveRecord> chunk_deltas) {
+    auto validation = validate_chunk_deltas_for_storage(chunk_deltas);
+    if (!validation) {
+        return validation;
     }
 
     std::vector<ChunkIndexEntry> entries;
@@ -1000,31 +1393,15 @@ write_chunk_deltas_to_root(const std::filesystem::path& save_root,
     return core::Status::ok();
 }
 
-} // namespace
-
-FileSaveDatabase::FileSaveDatabase(std::filesystem::path root) : root_(std::move(root)) {}
-
-bool SaveDatabaseMaintenanceResult::changed() const noexcept {
-    return recovered_staged_generation_count > 0 || pruned_stale_generation_count > 0 ||
-           compacted_chunk_delta_count > 0;
-}
-
-bool SaveDatabaseMigrationResult::changed() const noexcept {
-    return wrote_snapshot || !migration.applied_migrations.empty();
-}
-
-const std::filesystem::path& FileSaveDatabase::root() const noexcept {
-    return root_;
-}
-
-core::Status FileSaveDatabase::write_snapshot(const SaveSnapshot& snapshot) const {
-    auto generation = next_generation_name(root_);
+[[nodiscard]] core::Status write_snapshot_generation(const std::filesystem::path& root,
+                                                     const SaveSnapshot& snapshot) {
+    auto generation = next_generation_name(root);
     if (!generation) {
         return core::Status::failure(generation.error().code, generation.error().message);
     }
 
-    const auto staged_root = generations_directory(root_) / (generation.value() + ".tmp");
-    const auto committed_root = generations_directory(root_) / generation.value();
+    const auto staged_root = generations_directory(root) / (generation.value() + ".tmp");
+    const auto committed_root = generations_directory(root) / generation.value();
 
     auto status = remove_tree(staged_root, "save_database.remove_staged_generation_failed");
     if (!status) {
@@ -1059,10 +1436,62 @@ core::Status FileSaveDatabase::write_snapshot(const SaveSnapshot& snapshot) cons
         return status;
     }
 
-    return write_current_generation(root_, generation.value());
+    return write_current_generation(root, generation.value());
+}
+
+} // namespace
+
+FileSaveDatabase::FileSaveDatabase(std::filesystem::path root) : root_(std::move(root)) {}
+
+bool SaveDatabaseMaintenanceResult::changed() const noexcept {
+    return recovered_staged_generation_count > 0 || pruned_stale_generation_count > 0 ||
+           compacted_chunk_delta_count > 0 || journal_recovery.changed();
+}
+
+bool SaveDatabaseMigrationResult::changed() const noexcept {
+    return wrote_snapshot || !migration.applied_migrations.empty();
+}
+
+bool SaveJournalRecoveryResult::changed() const noexcept {
+    return discarded_temporary_entry_count > 0 || compaction.compacted;
+}
+
+const std::filesystem::path& FileSaveDatabase::root() const noexcept {
+    return root_;
+}
+
+core::Status FileSaveDatabase::write_snapshot(const SaveSnapshot& snapshot) const {
+    auto accepted = journal_snapshot(snapshot);
+    if (!accepted) {
+        return core::Status::failure(accepted.error().code, accepted.error().message);
+    }
+    auto compacted = compact_snapshot_journal();
+    if (!compacted) {
+        return core::Status::failure(compacted.error().code, compacted.error().message);
+    }
+    if (!compacted.value().compacted ||
+        compacted.value().compacted_sequence < accepted.value().sequence) {
+        return core::Status::failure(
+            "save_database.journal_compaction_incomplete",
+            "durably accepted save journal entry was not selected by compaction");
+    }
+    return core::Status::ok();
 }
 
 core::Result<SaveSnapshot> FileSaveDatabase::read_snapshot() const {
+    auto journal = read_journal_state(root_);
+    if (!journal) {
+        return core::Result<SaveSnapshot>::failure(journal.error().code, journal.error().message);
+    }
+    const auto pending = std::ranges::find_if(
+        journal.value().entries.rbegin(), journal.value().entries.rend(),
+        [&journal](const JournalEntry& entry) {
+            return entry.sequence > journal.value().checkpoint_sequence;
+        });
+    if (pending != journal.value().entries.rend()) {
+        return read_journal_snapshot(*pending);
+    }
+
     auto save_root = active_save_root(root_);
     if (!save_root) {
         return core::Result<SaveSnapshot>::failure(save_root.error().code,
@@ -1095,6 +1524,169 @@ core::Result<SaveSnapshot> FileSaveDatabase::read_snapshot() const {
     }
 
     return snapshot;
+}
+
+core::Result<SaveJournalReceipt>
+FileSaveDatabase::journal_snapshot(const SaveSnapshot& snapshot) const {
+    auto validation = validate_chunk_deltas_for_storage(snapshot.chunk_edits);
+    if (!validation) {
+        return core::Result<SaveJournalReceipt>::failure(validation.error().code,
+                                                         validation.error().message);
+    }
+    auto encoded = SaveBinaryCodec::encode_snapshot(snapshot);
+    if (!encoded) {
+        return core::Result<SaveJournalReceipt>::failure(encoded.error().code,
+                                                         encoded.error().message);
+    }
+    if (encoded.value().size() > max_snapshot_file_bytes) {
+        return core::Result<SaveJournalReceipt>::failure(
+            "save_database.snapshot_too_large",
+            "binary save snapshot exceeds the configured safety limit");
+    }
+
+    auto state = read_journal_state(root_);
+    if (!state) {
+        return core::Result<SaveJournalReceipt>::failure(state.error().code,
+                                                         state.error().message);
+    }
+    if (state.value().entries.size() >= max_journal_entry_count) {
+        return core::Result<SaveJournalReceipt>::failure(
+            "save_database.journal_full",
+            "save journal reached its entry budget and requires compaction");
+    }
+    const auto entry_bytes = journal_header_bytes + encoded.value().size();
+    if (entry_bytes > max_journal_bytes - state.value().bytes) {
+        return core::Result<SaveJournalReceipt>::failure(
+            "save_database.journal_full",
+            "save journal reached its byte budget and requires compaction");
+    }
+
+    std::uint64_t highest_sequence = state.value().checkpoint_sequence;
+    if (!state.value().entries.empty()) {
+        highest_sequence = std::max(highest_sequence, state.value().entries.back().sequence);
+    }
+    if (highest_sequence == std::numeric_limits<std::uint64_t>::max()) {
+        return core::Result<SaveJournalReceipt>::failure(
+            "save_database.journal_sequence_exhausted",
+            "save journal sequence identifier range is exhausted");
+    }
+    const auto sequence = highest_sequence + 1U;
+    const auto bytes = encode_journal_entry(sequence, encoded.value());
+    auto status = write_bytes_atomic(journal_directory(root_) / journal_entry_filename(sequence),
+                                     bytes);
+    if (!status) {
+        return core::Result<SaveJournalReceipt>::failure(status.error().code,
+                                                         status.error().message);
+    }
+    return core::Result<SaveJournalReceipt>::success({sequence, encoded.value().size()});
+}
+
+core::Result<SaveJournalCompactionResult>
+FileSaveDatabase::compact_snapshot_journal() const {
+    auto state = read_journal_state(root_);
+    if (!state) {
+        return core::Result<SaveJournalCompactionResult>::failure(state.error().code,
+                                                                  state.error().message);
+    }
+    const auto pending = std::ranges::find_if(
+        state.value().entries.rbegin(), state.value().entries.rend(),
+        [&state](const JournalEntry& entry) {
+            return entry.sequence > state.value().checkpoint_sequence;
+        });
+
+    SaveJournalCompactionResult result;
+    if (pending != state.value().entries.rend()) {
+        auto snapshot = read_journal_snapshot(*pending);
+        if (!snapshot) {
+            return core::Result<SaveJournalCompactionResult>::failure(snapshot.error().code,
+                                                                      snapshot.error().message);
+        }
+        auto status = write_snapshot_generation(root_, snapshot.value());
+        if (!status) {
+            return core::Result<SaveJournalCompactionResult>::failure(status.error().code,
+                                                                      status.error().message);
+        }
+        status = write_journal_checkpoint(root_, pending->sequence);
+        if (!status) {
+            return core::Result<SaveJournalCompactionResult>::failure(status.error().code,
+                                                                      status.error().message);
+        }
+        result.compacted = true;
+        result.compacted_sequence = pending->sequence;
+    }
+
+    const auto removable_sequence = result.compacted ? result.compacted_sequence
+                                                      : state.value().checkpoint_sequence;
+    std::error_code error;
+    for (const auto& entry : state.value().entries) {
+        if (entry.sequence > removable_sequence) {
+            continue;
+        }
+        const bool removed = std::filesystem::remove(entry.path, error);
+        if (error) {
+            return core::Result<SaveJournalCompactionResult>::failure(
+                "save_database.journal_cleanup_failed", error.message());
+        }
+        if (removed) {
+            ++result.removed_entry_count;
+        }
+    }
+    if (result.removed_entry_count > 0) {
+        if (auto flush_error = core::flush_directory_to_disk(journal_directory(root_))) {
+            return core::Result<SaveJournalCompactionResult>::failure(
+                "save_database.journal_cleanup_failed", flush_error.message());
+        }
+    }
+    return core::Result<SaveJournalCompactionResult>::success(std::move(result));
+}
+
+core::Result<SaveJournalRecoveryResult> FileSaveDatabase::recover_snapshot_journal() const {
+    SaveJournalRecoveryResult result;
+    const auto directory = journal_directory(root_);
+    std::error_code error;
+    const bool exists = std::filesystem::exists(directory, error);
+    if (error) {
+        return core::Result<SaveJournalRecoveryResult>::failure(
+            "save_database.journal_recovery_failed", error.message());
+    }
+    if (exists) {
+        for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
+            if (error) {
+                return core::Result<SaveJournalRecoveryResult>::failure(
+                    "save_database.journal_recovery_failed", error.message());
+            }
+            const auto name = entry.path().filename().string();
+            const bool owned_temporary =
+                name == "checkpoint.txt.tmp" ||
+                (std::string_view(name).starts_with(journal_entry_prefix) &&
+                 std::string_view(name).ends_with(".hsj.tmp"));
+            if (!owned_temporary) {
+                continue;
+            }
+            const bool removed = std::filesystem::remove(entry.path(), error);
+            if (error) {
+                return core::Result<SaveJournalRecoveryResult>::failure(
+                    "save_database.journal_recovery_failed", error.message());
+            }
+            if (removed) {
+                ++result.discarded_temporary_entry_count;
+            }
+        }
+        if (result.discarded_temporary_entry_count > 0) {
+            if (auto flush_error = core::flush_directory_to_disk(directory)) {
+                return core::Result<SaveJournalRecoveryResult>::failure(
+                    "save_database.journal_recovery_failed", flush_error.message());
+            }
+        }
+    }
+
+    auto compaction = compact_snapshot_journal();
+    if (!compaction) {
+        return core::Result<SaveJournalRecoveryResult>::failure(compaction.error().code,
+                                                                 compaction.error().message);
+    }
+    result.compaction = std::move(compaction).value();
+    return core::Result<SaveJournalRecoveryResult>::success(std::move(result));
 }
 
 core::Result<SaveSnapshot>
@@ -1365,6 +1957,15 @@ FileSaveDatabase::maintain(const SaveDatabaseMaintenancePolicy& policy) const {
         result.recovered_staged_generation_count = recovered.value();
     }
 
+    if (policy.recover_snapshot_journal) {
+        auto recovered = recover_snapshot_journal();
+        if (!recovered) {
+            return core::Result<SaveDatabaseMaintenanceResult>::failure(recovered.error().code,
+                                                                        recovered.error().message);
+        }
+        result.journal_recovery = std::move(recovered).value();
+    }
+
     if (policy.prune_stale_generations) {
         auto pre_prune = stats();
         if (!pre_prune) {
@@ -1521,6 +2122,20 @@ core::Result<SaveDatabaseStats> FileSaveDatabase::stats() const {
                                                             "chunk delta byte count overflowed");
         }
         result.chunk_delta_bytes += file_bytes;
+    }
+
+    auto journal = read_journal_state(root_);
+    if (!journal) {
+        return core::Result<SaveDatabaseStats>::failure(journal.error().code,
+                                                        journal.error().message);
+    }
+    result.journal_entry_count = journal.value().entries.size();
+    result.journal_bytes = journal.value().bytes;
+    result.journal_checkpoint_sequence = journal.value().checkpoint_sequence;
+    result.journal_highest_sequence = result.journal_checkpoint_sequence;
+    if (!journal.value().entries.empty()) {
+        result.journal_highest_sequence =
+            std::max(result.journal_highest_sequence, journal.value().entries.back().sequence);
     }
 
     return core::Result<SaveDatabaseStats>::success(result);

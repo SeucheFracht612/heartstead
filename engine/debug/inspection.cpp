@@ -3626,7 +3626,11 @@ InspectionData Inspector::inspect(const save::SaveDatabaseStats& stats) {
     InspectionData data;
     data.object_type = "save_database_stats";
     data.display_name = "Save Database";
-    if (!stats.has_snapshot) {
+    const bool has_pending_journal =
+        stats.journal_highest_sequence > stats.journal_checkpoint_sequence;
+    if (has_pending_journal) {
+        data.state = "journal_pending";
+    } else if (!stats.has_snapshot) {
         data.state = "empty";
     } else if (stats.uses_generation_manifest) {
         data.state = "generation";
@@ -3644,10 +3648,20 @@ InspectionData Inspector::inspect(const save::SaveDatabaseStats& stats) {
     add_field(data, "snapshot_bytes", std::to_string(stats.snapshot_bytes));
     add_field(data, "chunk_delta_count", std::to_string(stats.chunk_delta_count));
     add_field(data, "chunk_delta_bytes", std::to_string(stats.chunk_delta_bytes));
+    add_field(data, "journal_entry_count", std::to_string(stats.journal_entry_count));
+    add_field(data, "journal_bytes", std::to_string(stats.journal_bytes));
+    add_field(data, "journal_checkpoint_sequence",
+              std::to_string(stats.journal_checkpoint_sequence));
+    add_field(data, "journal_highest_sequence",
+              std::to_string(stats.journal_highest_sequence));
 
-    if (!stats.has_snapshot) {
+    if (!stats.has_snapshot && !has_pending_journal) {
         add_issue(data, InspectionSeverity::warning, "save_database.empty",
                   "save database does not contain an active snapshot");
+    }
+    if (has_pending_journal) {
+        add_issue(data, InspectionSeverity::warning, "save_database.journal_pending",
+                  "save database has a durable journal entry awaiting background compaction");
     }
     if (stats.uses_generation_manifest && stats.active_generation.empty()) {
         add_issue(data, InspectionSeverity::error, "save_database.missing_active_generation",
@@ -3673,6 +3687,13 @@ InspectionData Inspector::inspect(const save::SaveDatabaseMaintenanceResult& res
     add_field(data, "changed", bool_text(result.changed()));
     add_field(data, "recovered_staged_generation_count",
               std::to_string(result.recovered_staged_generation_count));
+    add_field(data, "discarded_journal_temporary_entry_count",
+              std::to_string(result.journal_recovery.discarded_temporary_entry_count));
+    add_field(data, "journal_compacted", bool_text(result.journal_recovery.compaction.compacted));
+    add_field(data, "journal_compacted_sequence",
+              std::to_string(result.journal_recovery.compaction.compacted_sequence));
+    add_field(data, "removed_journal_entry_count",
+              std::to_string(result.journal_recovery.compaction.removed_entry_count));
     add_field(data, "pruned_stale_generation_count",
               std::to_string(result.pruned_stale_generation_count));
     add_field(data, "compacted_chunk_delta_count",
