@@ -6,8 +6,10 @@
 #include "engine/core/logging.hpp"
 #include "engine/input/input_action.hpp"
 #include "engine/movement/player_camera.hpp"
+#include "engine/profiling/cpu_timing.hpp"
 #include "engine/renderer/testing/visual_regression.hpp"
 #include "engine/save/save_compatibility.hpp"
+#include "engine/save/save_scheduler.hpp"
 #include "engine/save/save_slot.hpp"
 #include "engine/ui/widget_tree.hpp"
 #include "game/application/application_state.hpp"
@@ -30,6 +32,7 @@
 #include <exception>
 #include <future>
 #include <iomanip>
+#include <map>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -355,6 +358,17 @@ struct LoadingProgressState {
     std::atomic<SessionStartupPhase> phase{SessionStartupPhase::validating_request};
 };
 
+enum class ApplicationSaveIntent : std::uint8_t {
+    autosave,
+    session_exit,
+    shutdown,
+};
+
+struct PendingApplicationSave {
+    ApplicationSaveIntent intent = ApplicationSaveIntent::autosave;
+    bool capture_preview_on_success = false;
+};
+
 using SessionLoadResult = core::Result<LoadedSession>;
 
 } // namespace
@@ -386,6 +400,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     ApplicationSettings settings;
     ApplicationSettingsStore settings_store;
     save::FileSaveSlotCatalog save_catalog;
+    std::unique_ptr<save::SaveScheduler> save_scheduler;
+    std::map<save::SaveRequestId, PendingApplicationSave> pending_saves;
     DeveloperWorldRegistry developer_worlds;
     std::vector<save::SaveSlotSummary> save_entries;
     MainMenuNavigation menu_navigation;
@@ -436,6 +452,11 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     std::int64_t loading_started_at_ms = 0;
     std::int64_t loading_ui_updated_at_ms = 0;
     std::uint64_t periodic_save_count = 0;
+    double last_save_owner_handoff_ms = 0.0;
+    double maximum_save_owner_handoff_ms = 0.0;
+    double last_save_durable_acceptance_ms = 0.0;
+    double last_save_worker_ms = 0.0;
+    std::optional<core::Error> required_save_error;
     SessionMode loading_mode = SessionMode::local_single_player;
     bool initialized = false;
     bool diagnostics_visible = false;
@@ -452,6 +473,15 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             snapshot.save_destination = active_save_path->string();
         }
         snapshot.pending_loading_operations = loading.valid() ? 1U : 0U;
+        snapshot.last_save_owner_handoff_ms = last_save_owner_handoff_ms;
+        snapshot.maximum_save_owner_handoff_ms = maximum_save_owner_handoff_ms;
+        snapshot.last_save_durable_acceptance_ms = last_save_durable_acceptance_ms;
+        snapshot.last_save_worker_ms = last_save_worker_ms;
+        if (save_scheduler != nullptr) {
+            const auto& save_stats = save_scheduler->stats();
+            snapshot.pending_save_operations = save_stats.in_flight_requests;
+            snapshot.reserved_save_working_bytes = save_stats.reserved_working_bytes;
+        }
         if (loading_progress != nullptr && loading.valid()) {
             snapshot.loading_phase = loading_progress->phase.load(std::memory_order_relaxed);
         }
@@ -1483,27 +1513,133 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         pending_save_preview.reset();
     }
 
-    [[nodiscard]] core::Status save_active_session(bool capture_preview = false) {
+    void consume_save_results(std::vector<save::SaveResult> results) {
+        for (auto& result : results) {
+            const auto pending = pending_saves.find(result.request_id);
+            const auto intent = pending == pending_saves.end()
+                                    ? ApplicationSaveIntent::autosave
+                                    : pending->second.intent;
+            const auto capture_preview =
+                pending != pending_saves.end() && pending->second.capture_preview_on_success;
+            if (pending != pending_saves.end()) {
+                pending_saves.erase(pending);
+            }
+
+            last_save_durable_acceptance_ms = result.durable_acceptance_ms;
+            last_save_worker_ms = result.total_worker_ms;
+            const auto required = intent != ApplicationSaveIntent::autosave;
+            if (result.state != save::SaveResultState::succeeded ||
+                !result.durably_accepted) {
+                core::Error error;
+                if (result.state == save::SaveResultState::cancelled) {
+                    error = {"heartstead.save_cancelled",
+                             "the background save was cancelled before durable acceptance"};
+                } else if (!result.error_code.empty()) {
+                    error = {result.error_code, result.error_message};
+                } else {
+                    error = {"heartstead.save_not_accepted",
+                             "the background save completed without durable acceptance"};
+                }
+                if (required && !required_save_error.has_value()) {
+                    required_save_error = error;
+                }
+                display_error = error;
+                menu_message = (required ? "Save failed: " : "Autosave failed: ") +
+                               error.code + ": " + error.message;
+                core::log(core::LogLevel::warning, menu_message);
+                continue;
+            }
+
+            if (capture_preview) {
+                capture_active_save_preview();
+            }
+            if (!result.metadata_error_code.empty()) {
+                menu_message = "World data was saved, but slot metadata could not be updated: " +
+                               result.metadata_error_message;
+                core::log(core::LogLevel::warning, menu_message);
+            }
+            if (!result.compaction_error_code.empty()) {
+                menu_message = "World data was journaled, but save compaction was deferred: " +
+                               result.compaction_error_message;
+                core::log(core::LogLevel::warning, menu_message);
+            }
+        }
+    }
+
+    void poll_save_results() {
+        if (save_scheduler != nullptr) {
+            consume_save_results(save_scheduler->drain_completed());
+        }
+    }
+
+    [[nodiscard]] core::Status wait_for_pending_saves() {
+        if (save_scheduler == nullptr) {
+            return core::Status::failure("heartstead.save_scheduler_missing",
+                                         "save scheduler is unavailable");
+        }
+        while (save_scheduler->has_in_flight()) {
+            auto results = save_scheduler->wait_for_completed(std::chrono::seconds(30));
+            if (results.empty()) {
+                return core::Status::failure(
+                    "heartstead.save_timeout",
+                    "background save did not finish within the 30 second shutdown budget");
+            }
+            consume_save_results(std::move(results));
+        }
+        if (required_save_error.has_value()) {
+            return core::Status::failure(required_save_error->code,
+                                         required_save_error->message);
+        }
+        return core::Status::ok();
+    }
+
+    [[nodiscard]] core::Status
+    queue_active_save(ApplicationSaveIntent intent, bool capture_preview = false) {
         if (!session_runtime.has_value() || active_persistence != PersistencePolicy::persistent) {
             return core::Status::ok();
         }
-        auto snapshot = session_runtime->capture_save_snapshot();
-        if (!snapshot) {
-            return core::Status::failure(snapshot.error().code, snapshot.error().message);
+        if (save_scheduler == nullptr) {
+            return core::Status::failure("heartstead.save_scheduler_missing",
+                                         "persistent saves require an active save scheduler");
         }
-        auto status = !active_save_slot.empty()
-                          ? save_catalog.write_snapshot(active_save_slot, snapshot.value(),
-                                                        persisted_timestamp_ms())
-                      : active_save_path.has_value()
-                          ? save::FileSaveDatabase(*active_save_path)
-                                .write_snapshot(snapshot.value())
-                          : core::Status::failure(
-                                "heartstead.persistent_save_path_missing",
-                                "persistent session has no save destination");
-        if (status && capture_preview) {
-            capture_active_save_preview();
+
+        core::Result<save::SaveRequestId> submitted =
+            core::Result<save::SaveRequestId>::failure("heartstead.save_not_submitted",
+                                                       "save request was not submitted");
+        {
+            profiling::ScopedCpuTimer owner_timer(last_save_owner_handoff_ms);
+            auto snapshot = session_runtime->capture_save_snapshot();
+            if (!snapshot) {
+                return core::Status::failure(snapshot.error().code, snapshot.error().message);
+            }
+
+            save::SaveRequest request;
+            if (!active_save_slot.empty()) {
+                request.database_root = save_catalog.root() / active_save_slot;
+                request.slot_metadata_update = save::SaveRequest::SlotMetadataUpdate{
+                    save_catalog.root(), active_save_slot, persisted_timestamp_ms()};
+            } else if (active_save_path.has_value()) {
+                request.database_root = *active_save_path;
+            } else {
+                return core::Status::failure(
+                    "heartstead.persistent_save_path_missing",
+                    "persistent session has no save destination");
+            }
+            request.snapshot = std::move(snapshot).value();
+            request.compact_after_acceptance = true;
+            submitted = save_scheduler->submit(std::move(request));
         }
-        return status;
+        maximum_save_owner_handoff_ms =
+            std::max(maximum_save_owner_handoff_ms, last_save_owner_handoff_ms);
+        if (!submitted) {
+            return core::Status::failure(submitted.error().code, submitted.error().message);
+        }
+        if (intent != ApplicationSaveIntent::autosave) {
+            required_save_error.reset();
+        }
+        pending_saves.emplace(submitted.value(),
+                              PendingApplicationSave{intent, capture_preview});
+        return core::Status::ok();
     }
 
     [[nodiscard]] core::Status autosave_if_due() {
@@ -1512,7 +1648,10 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             last_runtime_time_ms - last_autosave_at_ms < config.autosave_interval_ms) {
             return core::Status::ok();
         }
-        auto status = save_active_session();
+        if (save_scheduler == nullptr || !save_scheduler->has_capacity()) {
+            return core::Status::ok();
+        }
+        auto status = queue_active_save(ApplicationSaveIntent::autosave);
         if (status) {
             last_autosave_at_ms = last_runtime_time_ms;
             ++periodic_save_count;
@@ -1702,6 +1841,23 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 if (!status) {
                     return status;
                 }
+            }
+            if (save_scheduler != nullptr && save_scheduler->has_in_flight()) {
+                return core::Status::ok();
+            }
+            if (required_save_error.has_value()) {
+                auto error = *required_save_error;
+                required_save_error.reset();
+                const auto failed_mode = active_session_mode;
+                auto cleanup = unload_session();
+                if (!cleanup) {
+                    error.message += "; session cleanup also failed: " + cleanup.error().code +
+                                     ": " + cleanup.error().message;
+                }
+                return states.transition(session_mode_is_multiplayer(failed_mode)
+                                             ? ApplicationState::connection_failure
+                                             : ApplicationState::load_failure,
+                                         "final session save failed", std::move(error));
             }
             {
                 const auto failed_mode = active_session_mode;
@@ -2200,7 +2356,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             }
             if (event.target == return_id || event.target == cancel_id) {
                 if (event.target == return_id) {
-                    status = save_active_session(true);
+                    status = queue_active_save(ApplicationSaveIntent::session_exit, true);
                     if (!status) {
                         display_error = status.error();
                         return rebuild_ui(ApplicationState::paused);
@@ -2595,6 +2751,12 @@ core::Status HeartsteadApplicationMode::initialize(GameApplicationServices& serv
         return core::Status::failure("heartstead.invalid_content",
                                      "Heartstead requires validated content at application boot");
     }
+    auto save_scheduler = save::SaveScheduler::create();
+    if (!save_scheduler) {
+        return core::Status::failure(save_scheduler.error().code,
+                                     save_scheduler.error().message);
+    }
+    state.save_scheduler = std::move(save_scheduler).value();
     state.services = &services;
     auto environment =
         GameRuntimeEnvironment::initialize(GameRuntimeConfig{}, *state.config.content_report);
@@ -2681,6 +2843,7 @@ HeartsteadApplicationMode::update(GameApplicationServices& services,
     } frame_pointer_reset{state.frame};
     state.last_runtime_time_ms = frame.now_milliseconds;
     state.last_wall_clock_ms = frame.wall_clock_milliseconds;
+    state.poll_save_results();
     state.frame_rate.record_frame(frame.delta_microseconds);
     ++state.frame_count;
     if (!frame.headless && frame.extent.is_valid()) {
@@ -2767,8 +2930,20 @@ HeartsteadApplicationMode::update(GameApplicationServices& services,
 
 core::Status HeartsteadApplicationMode::shutdown(GameApplicationServices&) {
     auto& state = *implementation_;
-    auto first_failure = state.save_active_session(true);
-    auto status = state.unload_session();
+    state.poll_save_results();
+    state.required_save_error.reset();
+    auto first_failure = state.wait_for_pending_saves();
+    auto status = state.queue_active_save(ApplicationSaveIntent::shutdown, true);
+    if (!status && first_failure) {
+        first_failure = status;
+    }
+    if (status) {
+        status = state.wait_for_pending_saves();
+        if (!status && first_failure) {
+            first_failure = status;
+        }
+    }
+    status = state.unload_session();
     if (!status && first_failure) {
         first_failure = status;
     }
@@ -2793,6 +2968,10 @@ core::Status HeartsteadApplicationMode::shutdown(GameApplicationServices&) {
     if (!status && first_failure) {
         first_failure = status;
     }
+    if (state.save_scheduler != nullptr) {
+        state.save_scheduler->shutdown();
+        state.save_scheduler.reset();
+    }
     state.services = nullptr;
     state.frame = nullptr;
     state.initialized = false;
@@ -2805,7 +2984,10 @@ std::string HeartsteadApplicationMode::summary() const {
            std::string(application_state_name(state.states.state())) +
            " frames=" + std::to_string(state.frame_count) +
            " completed_sessions=" + std::to_string(state.completed_session_count) +
-           " autosaves=" + std::to_string(state.periodic_save_count);
+           " autosaves=" + std::to_string(state.periodic_save_count) +
+           " save_owner_max_ms=" + std::to_string(state.maximum_save_owner_handoff_ms) +
+           " save_durable_ms=" + std::to_string(state.last_save_durable_acceptance_ms) +
+           " save_worker_ms=" + std::to_string(state.last_save_worker_ms);
 }
 
 } // namespace heartstead::game

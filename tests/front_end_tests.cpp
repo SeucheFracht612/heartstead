@@ -339,11 +339,15 @@ void test_runtime_diagnostics_are_explicit() {
     snapshot.session_generation = 9;
     snapshot.authoritative_tick = 120;
     snapshot.physics_objects = 4;
+    snapshot.pending_save_operations = 1;
+    snapshot.reserved_save_working_bytes = 8U * 1024U * 1024U;
+    snapshot.last_save_owner_handoff_ms = 0.2;
     snapshot.device_gpu_usage_bytes = 32U * 1024U * 1024U;
     snapshot.device_gpu_budget_bytes = 512U * 1024U * 1024U;
     const auto text = game::format_runtime_diagnostics(snapshot);
     assert(text.find("application InGame") != std::string::npos);
     assert(text.find("generation 9") != std::string::npos);
+    assert(text.find("save pending/reserved 1/8.0 MiB") != std::string::npos);
     assert(text.find("budget telemetry unavailable") == std::string::npos);
 
     const auto process = game::sample_process_resources();

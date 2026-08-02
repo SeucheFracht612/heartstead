@@ -113,6 +113,11 @@ std::string format_runtime_diagnostics(const RuntimeDiagnosticsSnapshot& snapsho
            << "jobs/loading/network " << snapshot.active_jobs << '/'
            << snapshot.pending_loading_operations << '/' << snapshot.active_network_connections
            << " | callbacks " << snapshot.registered_session_callbacks << '\n'
+           << "save pending/reserved " << snapshot.pending_save_operations << '/'
+           << bytes_text(snapshot.reserved_save_working_bytes) << " | owner last/max "
+           << snapshot.last_save_owner_handoff_ms << '/' << snapshot.maximum_save_owner_handoff_ms
+           << " ms | durable/worker " << snapshot.last_save_durable_acceptance_ms << '/'
+           << snapshot.last_save_worker_ms << " ms\n"
            << "entities/physics/presentation/render " << snapshot.world_entities << '/'
            << snapshot.physics_objects << '/' << snapshot.presentation_objects << '/'
            << snapshot.render_objects << " | audio " << snapshot.audio_emitters << " | assets "

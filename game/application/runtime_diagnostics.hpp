@@ -31,6 +31,12 @@ struct RuntimeDiagnosticsSnapshot {
     double interpolation_alpha = 0.0;
     std::size_t active_jobs = 0;
     std::size_t pending_loading_operations = 0;
+    std::size_t pending_save_operations = 0;
+    std::size_t reserved_save_working_bytes = 0;
+    double last_save_owner_handoff_ms = 0.0;
+    double maximum_save_owner_handoff_ms = 0.0;
+    double last_save_durable_acceptance_ms = 0.0;
+    double last_save_worker_ms = 0.0;
     std::size_t active_network_connections = 0;
     std::size_t registered_session_callbacks = 0;
     std::size_t world_entities = 0;
