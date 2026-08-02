@@ -136,6 +136,52 @@ Extend this same hierarchy when adding pipeline stages rather than creating one-
 9. Preserve output files; do not transcribe only a headline FPS number.
 10. Add a new dated baseline below only when it remains useful for future decisions.
 
+## Near-terrain multi-draw-indirect rejection — 2026-08-02
+
+This trace-gated experiment tested whether replacing compatible near-terrain and terrain-shadow
+draws with Vulkan multi-draw-indirect (MDI) calls improved a shipping configuration. The prototype
+used a four-slot persistently mapped staging ring, copied commands and 16-byte per-draw origins into
+device-local buffers in the consuming graphics submission, and indexed draw data through
+`firstInstance`. It had bounded 16,384-draw capacity, direct fallback, and zero upload waits,
+overflows, or failures in the measured runs. The experiment was removed because the complete frame
+regressed despite reducing command-recording time.
+
+- **Build:** dirty experimental worktree based on `29cc3774bbe2760c28505a53e6c404ab49149df4`,
+  GCC 13.3.0, Release; the rejected implementation is not in the repository
+- **Machine:** Intel Core Ultra 7 258V, 8 logical CPUs, Intel Graphics (LNL), Mesa 25.2.8,
+  Linux 6.17.0-1030-oem
+- **Configuration:** Vulkan, validation disabled, 1920x1080, radius 8, 120 warm-up frames,
+  600 measured frames, immediate/uncapped
+- **Commands:** `heartstead_render_benchmark --vulkan --no-validation --scene SCENE --width
+  1920 --height 1080 --radius 8 --warmup 120 --frames 600 --budget none`, with the prototype's
+  `--no-near-terrain-batching` switch for direct controls
+- **Raw output:** `build/default-release/benchmarks/m7-{mountains,flat}-{direct,near-mdi}-*.json`
+
+| Scene/path | Median ms | P95 ms | Mean CPU ms | Mean GPU ms | Record ms | GPU opaque ms | Batched source draws/calls |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Mountains direct 1 | 18.209 | 22.944 | 18.469 | 14.227 | 0.678 | 6.830 | 0/0 |
+| Mountains direct 2 | 18.326 | 23.596 | 18.732 | 14.602 | 0.694 | 7.230 | 0/0 |
+| Mountains near MDI | 21.968 | 32.305 | 23.081 | 20.897 | 0.373 | 11.469 | 902/12 |
+| Flat direct | 5.043 | 7.851 | 5.298 | 3.409 | 0.514 | 1.093 | 0/0 |
+| Flat near MDI | 5.843 | 15.762 | 7.333 | 5.580 | 0.275 | 0.912 | 977/4 |
+
+Against the mean of the two adjacent mountains controls, MDI reduced recording by 45.5% but raised
+mean CPU time by 24.1%, mean GPU time by 45.0%, median by 20.3%, and P95 by 38.8%. On flat terrain,
+recording fell 46.4%, while CPU rose 38.4%, GPU rose 63.7%, median rose 15.9%, and P95 rose 100.8%.
+The production-mode direct path recorded roughly one thousand logical terrain/shadow draws in only
+0.51-0.69 ms. Earlier validation-enabled traces attributed roughly 4-6 ms to the same area, so
+validation overhead was not accepted as a shipping bottleneck.
+
+The durable decision is to retain direct near-terrain draws and the already effective far-terrain
+indirect path. The renderer now independently checks `multiDrawIndirect`,
+`drawIndirectFirstInstance`, and the device's `maxDrawIndirectCount`; far-terrain groups are split
+at that limit. This follows the separate Vulkan feature and limit contracts described by the
+[Vulkan physical-device feature reference](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceFeatures.html),
+[indexed-indirect command reference](https://docs.vulkan.org/refpages/latest/refpages/source/VkDrawIndexedIndirectCommand.html),
+and [Khronos MDI sample](https://docs.vulkan.org/samples/latest/samples/performance/multi_draw_indirect/README.html).
+Meshlets, compute meshing, descriptor indexing, and broader GPU-driven visibility remain deferred
+until a validation-off capture identifies a production bottleneck they can address.
+
 ## Voxel rapid-edit baseline — 2026-08-01
 
 This baseline exercises the sustainable fixed-arrival edit workload and the schema-v4

@@ -396,6 +396,24 @@ GPU, bandwidth, or residency bottleneck; shipping-hardware measurements; correct
 parity; and a net macrobenchmark improvement. A candidate without that evidence is rejected or
 deferred.
 
+The first candidate has now passed through that decision process. A bounded near-terrain MDI
+prototype collapsed 902 compatible mountains draws to 12 calls and 977 flat draws to four calls.
+On Intel Graphics (LNL), validation-off Release recording fell 45-46%, but mean CPU/GPU time rose
+24/45% on mountains and 38/64% on flat; mountains P95 rose 39% and flat P95 doubled. Direct Vulkan
+recording in the production configuration was only 0.51-0.69 ms, while the earlier 4-6 ms signal
+was validation-instrumented driver work. The prototype was therefore removed rather than hidden
+behind a default-off production path. Raw samples and the complete configuration are retained in
+[Renderer benchmarks](renderer_benchmarks.md#near-terrain-multi-draw-indirect-rejection--2026-08-02).
+
+The standards audit did identify two independent correctness requirements worth retaining:
+`multiDrawIndirect` does not imply `drawIndirectFirstInstance`, and every MDI call must stay within
+`maxDrawIndirectCount`. The renderer now enables and gates the former explicitly, reports the
+physical-device limit through the RHI, splits far-terrain groups at that limit, and falls back to
+direct draws when the limit cannot produce a multi-draw call. No capture currently justifies
+meshlets, compute meshing, descriptor indexing, virtualized resources, or sparse far-field
+structures. Actual GPU execution is now represented by asynchronous timestamps; presentation and
+scan-out latency still need a supported endpoint and a separate acceptance workload.
+
 ## Initial acceptance matrix
 
 | Measure | Starting gate |
