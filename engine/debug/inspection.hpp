@@ -119,9 +119,12 @@ class Inspector {
     [[nodiscard]] static InspectionData inspect(const scripting::ScriptHostEvent& event);
     [[nodiscard]] static InspectionData inspect(const scripting::ScriptHostEventBatch& batch);
     [[nodiscard]] static InspectionData inspect(const simulation::SimulationLodPolicy& policy);
+    [[nodiscard]] static InspectionData inspect(const simulation::SimulationTickBudget& budget);
     [[nodiscard]] static InspectionData inspect(const simulation::SimulationSubject& subject);
     [[nodiscard]] static InspectionData inspect(const simulation::SimulationLodDecision& decision);
     [[nodiscard]] static InspectionData inspect(const simulation::SimulationFramePlan& plan);
+    [[nodiscard]] static InspectionData
+    inspect(const simulation::BudgetedSimulationFramePlan& plan);
     [[nodiscard]] static InspectionData inspect(const net::TransportBackendInfo& backend);
     [[nodiscard]] static InspectionData inspect(const net::TransportCapabilities& capabilities);
     [[nodiscard]] static InspectionData inspect(const net::TransportServerWelcome& welcome);

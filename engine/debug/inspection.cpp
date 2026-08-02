@@ -61,6 +61,32 @@ void add_status_issue(InspectionData& data, const core::Status& status) {
     }
 }
 
+void accumulate_saturated(std::uint64_t& total, std::uint64_t value, bool& saturated) noexcept {
+    constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
+    if (total > maximum - value) {
+        total = maximum;
+        saturated = true;
+        return;
+    }
+    total += value;
+}
+
+[[nodiscard]] simulation::WorldTick
+simulation_catch_up_limit(simulation::SimulationLod lod,
+                          const simulation::SimulationTickBudget& budget) noexcept {
+    switch (lod) {
+    case simulation::SimulationLod::full:
+        return budget.maximum_full_catch_up_delta_ms_per_update;
+    case simulation::SimulationLod::simplified:
+        return budget.maximum_simplified_catch_up_delta_ms_per_update;
+    case simulation::SimulationLod::sleeping:
+        return budget.maximum_sleeping_catch_up_delta_ms_per_update;
+    case simulation::SimulationLod::unloaded:
+        return 0;
+    }
+    return 0;
+}
+
 [[nodiscard]] constexpr std::array<dirty::DirtyRegionKind, 12> all_dirty_region_kinds() noexcept {
     return {
         dirty::DirtyRegionKind::chunk_mesh,
@@ -296,6 +322,135 @@ void add_simulation_frame_plan_issues(InspectionData& data,
         due_tick_count != plan.due_tick_count) {
         add_issue(data, InspectionSeverity::error, "simulation.frame_plan_count_mismatch",
                   "simulation frame plan counters do not match decision contents");
+    }
+}
+
+void add_budgeted_simulation_frame_plan_issues(
+    InspectionData& data, const simulation::BudgetedSimulationFramePlan& plan) {
+    add_simulation_frame_plan_issues(data, plan.frame);
+    add_status_issue(data, plan.budget.validate());
+    if (plan.updates.size() > plan.budget.maximum_updates_per_tick ||
+        plan.scheduled_work_units > plan.budget.maximum_work_units_per_tick ||
+        plan.scheduled_catch_up_delta_ms > plan.budget.maximum_catch_up_delta_ms_per_tick) {
+        add_issue(data, InspectionSeverity::error, "simulation.budget_plan_limit_exceeded",
+                  "scheduled simulation work exceeds its recorded hard budget");
+    }
+
+    std::vector<const simulation::ScheduledSimulationUpdate*> scheduled(plan.frame.decisions.size(),
+                                                                        nullptr);
+    std::uint64_t scheduled_work_units = 0;
+    simulation::WorldTick scheduled_delta_ms = 0;
+    simulation::WorldTick scheduled_catch_up_delta_ms = 0;
+    bool calculated_saturated = false;
+    for (const auto& update : plan.updates) {
+        if (update.decision_index >= plan.frame.decisions.size()) {
+            add_issue(data, InspectionSeverity::error, "simulation.budget_plan_invalid_index",
+                      "scheduled simulation update references a missing decision");
+            continue;
+        }
+        if (scheduled[update.decision_index] != nullptr) {
+            add_issue(data, InspectionSeverity::error, "simulation.budget_plan_duplicate_update",
+                      "one simulation decision was scheduled more than once");
+            continue;
+        }
+        scheduled[update.decision_index] = &update;
+        const auto& decision = plan.frame.decisions[update.decision_index];
+        if (!decision.due_for_tick || decision.tick_interval_ms == 0 ||
+            decision.elapsed_since_update_ms > plan.now_ms ||
+            update.update_delta_ms < decision.tick_interval_ms ||
+            update.update_delta_ms > decision.elapsed_since_update_ms ||
+            update.remaining_delta_ms !=
+                decision.elapsed_since_update_ms - update.update_delta_ms ||
+            update.catch_up_delta_ms != update.update_delta_ms - decision.tick_interval_ms ||
+            update.catch_up_delta_ms > simulation_catch_up_limit(decision.lod, plan.budget) ||
+            update.next_update_time_ms !=
+                plan.now_ms - decision.elapsed_since_update_ms + update.update_delta_ms ||
+            update.estimated_work_units != decision.estimated_update_work_units) {
+            add_issue(data, InspectionSeverity::error, "simulation.budget_plan_invalid_update",
+                      "scheduled simulation update does not match its due decision");
+        }
+        accumulate_saturated(scheduled_work_units, update.estimated_work_units,
+                             calculated_saturated);
+        accumulate_saturated(scheduled_delta_ms, update.update_delta_ms, calculated_saturated);
+        accumulate_saturated(scheduled_catch_up_delta_ms, update.catch_up_delta_ms,
+                             calculated_saturated);
+    }
+
+    std::size_t deferred_due_count = 0;
+    std::size_t catch_up_due_count = 0;
+    std::size_t remaining_catch_up_count = 0;
+    std::uint64_t due_work_units = 0;
+    std::uint64_t deferred_work_units = 0;
+    simulation::WorldTick deferred_delta_ms = 0;
+    simulation::WorldTick deferred_catch_up_delta_ms = 0;
+    simulation::WorldTick maximum_lateness_ms = 0;
+    for (std::size_t index = 0; index < plan.frame.decisions.size(); ++index) {
+        const auto& decision = plan.frame.decisions[index];
+        if (!decision.due_for_tick) {
+            continue;
+        }
+        if (decision.tick_interval_ms == 0 ||
+            decision.elapsed_since_update_ms < decision.tick_interval_ms) {
+            add_issue(data, InspectionSeverity::error, "simulation.budget_plan_invalid_due",
+                      "budgeted simulation plan contains an invalid due decision");
+            continue;
+        }
+
+        accumulate_saturated(due_work_units, decision.estimated_update_work_units,
+                             calculated_saturated);
+        const auto lateness = decision.elapsed_since_update_ms - decision.tick_interval_ms;
+        maximum_lateness_ms = std::max(maximum_lateness_ms, lateness);
+        if (lateness > 0) {
+            ++catch_up_due_count;
+        }
+
+        if (scheduled[index] == nullptr) {
+            ++deferred_due_count;
+            accumulate_saturated(deferred_work_units, decision.estimated_update_work_units,
+                                 calculated_saturated);
+            accumulate_saturated(deferred_delta_ms, decision.elapsed_since_update_ms,
+                                 calculated_saturated);
+            accumulate_saturated(deferred_catch_up_delta_ms, lateness, calculated_saturated);
+            if (lateness > 0) {
+                ++remaining_catch_up_count;
+            }
+            continue;
+        }
+
+        const auto remaining = scheduled[index]->remaining_delta_ms;
+        if (remaining >= decision.tick_interval_ms) {
+            ++remaining_catch_up_count;
+            accumulate_saturated(deferred_delta_ms, remaining, calculated_saturated);
+            accumulate_saturated(deferred_catch_up_delta_ms, remaining - decision.tick_interval_ms,
+                                 calculated_saturated);
+        }
+    }
+
+    const auto expected_budget_exhausted = deferred_due_count > 0 || remaining_catch_up_count > 0;
+    const auto telemetry_mismatch =
+        scheduled_work_units != plan.scheduled_work_units ||
+        scheduled_delta_ms != plan.scheduled_delta_ms ||
+        scheduled_catch_up_delta_ms != plan.scheduled_catch_up_delta_ms ||
+        deferred_due_count != plan.deferred_due_count ||
+        catch_up_due_count != plan.catch_up_due_count ||
+        remaining_catch_up_count != plan.remaining_catch_up_count ||
+        due_work_units != plan.due_work_units || deferred_work_units != plan.deferred_work_units ||
+        deferred_delta_ms != plan.deferred_delta_ms ||
+        deferred_catch_up_delta_ms != plan.deferred_catch_up_delta_ms ||
+        maximum_lateness_ms != plan.maximum_lateness_ms ||
+        expected_budget_exhausted != plan.budget_exhausted ||
+        calculated_saturated != plan.counters_saturated;
+    if (telemetry_mismatch) {
+        add_issue(data, InspectionSeverity::error, "simulation.budget_plan_telemetry_mismatch",
+                  "budgeted simulation telemetry does not match scheduled updates");
+    }
+    if (plan.counters_saturated) {
+        add_issue(data, InspectionSeverity::warning, "simulation.budget_plan_counter_saturated",
+                  "budgeted simulation time or work telemetry saturated");
+    }
+    if (plan.budget_exhausted) {
+        add_issue(data, InspectionSeverity::info, "simulation.budget_plan_backlog",
+                  "simulation work or catch-up debt remains after this tick");
     }
 }
 
@@ -1658,6 +1813,26 @@ InspectionData Inspector::inspect(const simulation::SimulationLodPolicy& policy)
     return data;
 }
 
+InspectionData Inspector::inspect(const simulation::SimulationTickBudget& budget) {
+    InspectionData data;
+    data.object_type = "simulation_tick_budget";
+    data.display_name = "Simulation Tick Budget";
+    add_field(data, "maximum_updates_per_tick", std::to_string(budget.maximum_updates_per_tick));
+    add_field(data, "maximum_work_units_per_tick",
+              std::to_string(budget.maximum_work_units_per_tick));
+    add_field(data, "maximum_full_catch_up_delta_ms_per_update",
+              std::to_string(budget.maximum_full_catch_up_delta_ms_per_update));
+    add_field(data, "maximum_simplified_catch_up_delta_ms_per_update",
+              std::to_string(budget.maximum_simplified_catch_up_delta_ms_per_update));
+    add_field(data, "maximum_sleeping_catch_up_delta_ms_per_update",
+              std::to_string(budget.maximum_sleeping_catch_up_delta_ms_per_update));
+    add_field(data, "maximum_catch_up_delta_ms_per_tick",
+              std::to_string(budget.maximum_catch_up_delta_ms_per_tick));
+    add_status_issue(data, budget.validate());
+    data.state = data.has_errors() ? "invalid" : "valid";
+    return data;
+}
+
 InspectionData Inspector::inspect(const simulation::SimulationSubject& subject) {
     InspectionData data;
     data.object_type = "simulation_subject";
@@ -1681,6 +1856,8 @@ InspectionData Inspector::inspect(const simulation::SimulationSubject& subject) 
     add_field(data, "coord_y", std::to_string(subject.coord.y));
     add_field(data, "coord_z", std::to_string(subject.coord.z));
     add_field(data, "last_update_time_ms", std::to_string(subject.last_update_time_ms));
+    add_field(data, "estimated_update_work_units",
+              std::to_string(subject.estimated_update_work_units));
     add_field(data, "persistent", bool_text(subject.persistent));
     add_field(data, "sleeping", bool_text(subject.sleeping));
     add_field(data, "forced_lod",
@@ -1700,6 +1877,14 @@ InspectionData Inspector::inspect(const simulation::SimulationSubject& subject) 
         !subject.process_id.is_valid()) {
         add_issue(data, InspectionSeverity::error, "simulation.missing_process_id",
                   "process-owner simulation subjects need stable process ids");
+    }
+    if (!subject.persistent && !subject.runtime_handle.is_valid()) {
+        add_issue(data, InspectionSeverity::error, "simulation.missing_runtime_handle",
+                  "non-persistent simulation subjects need stable runtime handles");
+    }
+    if (subject.estimated_update_work_units == 0) {
+        add_issue(data, InspectionSeverity::error, "simulation.invalid_update_work",
+                  "simulation update work estimates must be positive");
     }
 
     if (data.has_errors()) {
@@ -1722,6 +1907,9 @@ InspectionData Inspector::inspect(const simulation::SimulationLodDecision& decis
               std::to_string(decision.nearest_viewer_distance_squared));
     add_field(data, "elapsed_since_update_ms", std::to_string(decision.elapsed_since_update_ms));
     add_field(data, "offline_delta_ms", std::to_string(decision.offline_delta_ms));
+    add_field(data, "tick_interval_ms", std::to_string(decision.tick_interval_ms));
+    add_field(data, "estimated_update_work_units",
+              std::to_string(decision.estimated_update_work_units));
     add_field(data, "due_for_tick", bool_text(decision.due_for_tick));
 
     if (decision.lod == simulation::SimulationLod::unloaded && decision.offline_delta_ms > 0) {
@@ -1772,6 +1960,39 @@ InspectionData Inspector::inspect(const simulation::SimulationFramePlan& plan) {
     }
 
     add_simulation_frame_plan_issues(data, plan);
+    if (data.has_errors()) {
+        data.state = "invalid";
+    }
+    return data;
+}
+
+InspectionData Inspector::inspect(const simulation::BudgetedSimulationFramePlan& plan) {
+    InspectionData data;
+    data.object_type = "budgeted_simulation_frame_plan";
+    data.display_name = "Budgeted Simulation Frame Plan";
+    data.state = plan.frame.decisions.empty() ? "empty"
+                 : plan.budget_exhausted      ? "backlogged"
+                 : plan.updates.empty()       ? "idle"
+                                              : "scheduled";
+    add_field(data, "now_ms", std::to_string(plan.now_ms));
+    add_field(data, "decision_count", std::to_string(plan.frame.decisions.size()));
+    add_field(data, "due_tick_count", std::to_string(plan.frame.due_tick_count));
+    add_field(data, "scheduled_update_count", std::to_string(plan.updates.size()));
+    add_field(data, "deferred_due_count", std::to_string(plan.deferred_due_count));
+    add_field(data, "catch_up_due_count", std::to_string(plan.catch_up_due_count));
+    add_field(data, "remaining_catch_up_count", std::to_string(plan.remaining_catch_up_count));
+    add_field(data, "due_work_units", std::to_string(plan.due_work_units));
+    add_field(data, "scheduled_work_units", std::to_string(plan.scheduled_work_units));
+    add_field(data, "deferred_work_units", std::to_string(plan.deferred_work_units));
+    add_field(data, "scheduled_delta_ms", std::to_string(plan.scheduled_delta_ms));
+    add_field(data, "deferred_delta_ms", std::to_string(plan.deferred_delta_ms));
+    add_field(data, "scheduled_catch_up_delta_ms",
+              std::to_string(plan.scheduled_catch_up_delta_ms));
+    add_field(data, "deferred_catch_up_delta_ms", std::to_string(plan.deferred_catch_up_delta_ms));
+    add_field(data, "maximum_lateness_ms", std::to_string(plan.maximum_lateness_ms));
+    add_field(data, "budget_exhausted", bool_text(plan.budget_exhausted));
+    add_field(data, "counters_saturated", bool_text(plan.counters_saturated));
+    add_budgeted_simulation_frame_plan_issues(data, plan);
     if (data.has_errors()) {
         data.state = "invalid";
     }

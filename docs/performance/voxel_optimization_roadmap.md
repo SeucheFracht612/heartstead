@@ -304,6 +304,18 @@ visible-hole P95 was 6.604/5.683 ms and median worst owner publication was 43 us
 [clean reference calibration](predictive_streaming_benchmarks.md#clean-reference-calibration).
 General runtime adoption remains before this M6 streaming slice is accepted.
 
+Temporal simulation admission is now a separate deterministic layer over raw LOD classification.
+Every subject carries a positive estimated work cost; each tick has hard subject-count, work-unit,
+per-LOD catch-up, and aggregate catch-up limits. Due work is ordered by oldest deadline with stable
+identity tie-breaking, duplicate identities and permanently unserviceable costs fail planning, and
+full-detail catch-up remains fixed-step by default. Scheduled work returns an exact commit timestamp
+while all remaining time debt, maximum lateness, saturation, and exhausted-budget state stay
+inspectable. Focused stress coverage proves a four-subject burst under a two-update budget clears in
+two planning ticks without losing elapsed time. See
+[Simulation LOD architecture](../architecture/simulation_lod.md#catch-up-commit-contract).
+Game-specific aggregate models, calibrated work estimates, runtime execution, and server P99 scale
+evidence remain before the temporal-LOD slice is accepted.
+
 ### M7 — trace-gated GPU work
 
 Candidates include further GPU-driven visibility, meshlets, descriptor indexing, compute meshing,

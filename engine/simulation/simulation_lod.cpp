@@ -1,7 +1,9 @@
 #include "engine/simulation/simulation_lod.hpp"
 
 #include <algorithm>
+#include <compare>
 #include <limits>
+#include <utility>
 
 namespace heartstead::simulation {
 
@@ -74,6 +76,15 @@ nearest_distance_squared(SimulationCoord subject_coord,
         return core::Status::failure("simulation.missing_process_id",
                                      "process-owner simulation subjects need stable process ids");
     }
+    if (!subject.persistent && !subject.runtime_handle.is_valid()) {
+        return core::Status::failure(
+            "simulation.missing_runtime_handle",
+            "non-persistent simulation subjects need stable runtime handles");
+    }
+    if (subject.estimated_update_work_units == 0) {
+        return core::Status::failure("simulation.invalid_update_work",
+                                     "simulation update work estimates must be positive");
+    }
     return core::Status::ok();
 }
 
@@ -120,6 +131,69 @@ void increment_lod_count(SimulationFramePlan& plan, SimulationLod lod) noexcept 
     }
 }
 
+[[nodiscard]] WorldTick
+maximum_catch_up_delta_per_update(SimulationLod lod, const SimulationTickBudget& budget) noexcept {
+    switch (lod) {
+    case SimulationLod::full:
+        return budget.maximum_full_catch_up_delta_ms_per_update;
+    case SimulationLod::simplified:
+        return budget.maximum_simplified_catch_up_delta_ms_per_update;
+    case SimulationLod::sleeping:
+        return budget.maximum_sleeping_catch_up_delta_ms_per_update;
+    case SimulationLod::unloaded:
+        return 0;
+    }
+    return 0;
+}
+
+enum class SimulationIdentitySource : std::uint8_t {
+    process,
+    save,
+    runtime,
+};
+
+struct SimulationIdentity {
+    SimulationSubjectKind kind = SimulationSubjectKind::custom;
+    SimulationIdentitySource source = SimulationIdentitySource::runtime;
+    std::uint64_t value = 0;
+
+    friend auto operator<=>(const SimulationIdentity&, const SimulationIdentity&) = default;
+};
+
+[[nodiscard]] SimulationIdentity identity_for(const SimulationLodDecision& decision) noexcept {
+    if (decision.kind == SimulationSubjectKind::process_owner) {
+        return {decision.kind, SimulationIdentitySource::process, decision.process_id.value()};
+    }
+    if (decision.save_id.is_valid()) {
+        return {decision.kind, SimulationIdentitySource::save, decision.save_id.value()};
+    }
+    return {decision.kind, SimulationIdentitySource::runtime, decision.runtime_handle.value()};
+}
+
+[[nodiscard]] std::uint8_t lod_priority(SimulationLod lod) noexcept {
+    switch (lod) {
+    case SimulationLod::full:
+        return 0;
+    case SimulationLod::simplified:
+        return 1;
+    case SimulationLod::sleeping:
+        return 2;
+    case SimulationLod::unloaded:
+        return 3;
+    }
+    return 3;
+}
+
+void accumulate_saturated(std::uint64_t& total, std::uint64_t value, bool& saturated) noexcept {
+    constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
+    if (total > maximum - value) {
+        total = maximum;
+        saturated = true;
+        return;
+    }
+    total += value;
+}
+
 } // namespace
 
 core::Status SimulationLodPolicy::validate() const {
@@ -131,6 +205,33 @@ core::Status SimulationLodPolicy::validate() const {
         sleeping_tick_interval_ms == 0) {
         return core::Status::failure("simulation.invalid_tick_interval",
                                      "simulation tick intervals must be positive");
+    }
+    if (full_tick_interval_ms > simplified_tick_interval_ms ||
+        simplified_tick_interval_ms > sleeping_tick_interval_ms) {
+        return core::Status::failure(
+            "simulation.invalid_tick_interval_order",
+            "simulation tick intervals must not decrease at lower-detail levels");
+    }
+    return core::Status::ok();
+}
+
+core::Status SimulationTickBudget::validate() const {
+    constexpr std::uint32_t maximum_update_limit = 1'000'000;
+    if (maximum_updates_per_tick == 0 || maximum_updates_per_tick > maximum_update_limit) {
+        return core::Status::failure(
+            "simulation.invalid_update_budget",
+            "simulation update budget must be between 1 and 1000000 updates per tick");
+    }
+    if (maximum_work_units_per_tick == 0) {
+        return core::Status::failure("simulation.invalid_work_budget",
+                                     "simulation work-unit budget must be positive");
+    }
+    if (maximum_full_catch_up_delta_ms_per_update > maximum_catch_up_delta_ms_per_tick ||
+        maximum_simplified_catch_up_delta_ms_per_update > maximum_catch_up_delta_ms_per_tick ||
+        maximum_sleeping_catch_up_delta_ms_per_update > maximum_catch_up_delta_ms_per_tick) {
+        return core::Status::failure(
+            "simulation.invalid_catch_up_budget",
+            "per-update simulation catch-up limits cannot exceed the per-tick limit");
     }
     return core::Status::ok();
 }
@@ -211,6 +312,7 @@ SimulationLodPlanner::classify(const SimulationSubject& subject,
     decision.kind = subject.kind;
     decision.nearest_viewer_distance_squared = nearest_distance_squared(subject.coord, viewers);
     decision.elapsed_since_update_ms = now_ms - subject.last_update_time_ms;
+    decision.estimated_update_work_units = subject.estimated_update_work_units;
 
     if (subject.forced_lod.has_value()) {
         decision.lod = subject.forced_lod.value();
@@ -227,6 +329,7 @@ SimulationLodPlanner::classify(const SimulationSubject& subject,
     }
 
     const auto interval = tick_interval_for(decision.lod, policy);
+    decision.tick_interval_ms = interval;
     decision.due_for_tick = decision.elapsed_since_update_ms >= interval;
     return core::Result<SimulationLodDecision>::success(decision);
 }
@@ -253,6 +356,137 @@ SimulationLodPlanner::plan_frame(const std::vector<SimulationSubject>& subjects,
     }
 
     return core::Result<SimulationFramePlan>::success(std::move(plan));
+}
+
+core::Result<BudgetedSimulationFramePlan> SimulationLodPlanner::plan_budgeted_frame(
+    const std::vector<SimulationSubject>& subjects, const std::vector<SimulationViewer>& viewers,
+    const SimulationLodPolicy& policy, const SimulationTickBudget& budget, WorldTick now_ms) {
+    const auto budget_status = budget.validate();
+    if (!budget_status) {
+        return core::Result<BudgetedSimulationFramePlan>::failure(budget_status.error().code,
+                                                                  budget_status.error().message);
+    }
+
+    auto frame = plan_frame(subjects, viewers, policy, now_ms);
+    if (!frame) {
+        return core::Result<BudgetedSimulationFramePlan>::failure(frame.error().code,
+                                                                  frame.error().message);
+    }
+
+    BudgetedSimulationFramePlan plan;
+    plan.frame = std::move(frame).value();
+    plan.budget = budget;
+    plan.now_ms = now_ms;
+
+    std::vector<std::pair<SimulationIdentity, std::size_t>> identities;
+    identities.reserve(plan.frame.decisions.size());
+    for (std::size_t index = 0; index < plan.frame.decisions.size(); ++index) {
+        identities.emplace_back(identity_for(plan.frame.decisions[index]), index);
+    }
+    std::ranges::sort(identities,
+                      [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+    for (std::size_t index = 1; index < identities.size(); ++index) {
+        if (identities[index - 1].first == identities[index].first) {
+            return core::Result<BudgetedSimulationFramePlan>::failure(
+                "simulation.duplicate_subject",
+                "budgeted simulation frame contains a duplicate stable subject identity");
+        }
+    }
+
+    struct Candidate {
+        std::size_t decision_index = 0;
+        WorldTick lateness_ms = 0;
+        SimulationIdentity identity;
+    };
+
+    std::vector<Candidate> candidates;
+    candidates.reserve(plan.frame.due_tick_count);
+    for (std::size_t index = 0; index < plan.frame.decisions.size(); ++index) {
+        const auto& decision = plan.frame.decisions[index];
+        if (!decision.due_for_tick) {
+            continue;
+        }
+        if (decision.tick_interval_ms == 0 ||
+            decision.elapsed_since_update_ms < decision.tick_interval_ms) {
+            return core::Result<BudgetedSimulationFramePlan>::failure(
+                "simulation.invalid_due_decision",
+                "due simulation decision must have a positive elapsed tick interval");
+        }
+        if (decision.estimated_update_work_units > budget.maximum_work_units_per_tick) {
+            return core::Result<BudgetedSimulationFramePlan>::failure(
+                "simulation.update_exceeds_work_budget",
+                "one simulation subject exceeds the complete per-tick work-unit budget");
+        }
+
+        const auto lateness = decision.elapsed_since_update_ms - decision.tick_interval_ms;
+        candidates.push_back({index, lateness, identity_for(decision)});
+        accumulate_saturated(plan.due_work_units, decision.estimated_update_work_units,
+                             plan.counters_saturated);
+        plan.maximum_lateness_ms = std::max(plan.maximum_lateness_ms, lateness);
+        if (lateness > 0) {
+            ++plan.catch_up_due_count;
+        }
+    }
+
+    std::ranges::sort(candidates, [&plan](const Candidate& lhs, const Candidate& rhs) {
+        if (lhs.lateness_ms != rhs.lateness_ms) {
+            return lhs.lateness_ms > rhs.lateness_ms;
+        }
+        const auto lhs_lod = plan.frame.decisions[lhs.decision_index].lod;
+        const auto rhs_lod = plan.frame.decisions[rhs.decision_index].lod;
+        if (lod_priority(lhs_lod) != lod_priority(rhs_lod)) {
+            return lod_priority(lhs_lod) < lod_priority(rhs_lod);
+        }
+        return lhs.identity < rhs.identity;
+    });
+
+    plan.updates.reserve(std::min<std::size_t>(candidates.size(), budget.maximum_updates_per_tick));
+    for (const auto& candidate : candidates) {
+        const auto& decision = plan.frame.decisions[candidate.decision_index];
+        const auto work_units = static_cast<std::uint64_t>(decision.estimated_update_work_units);
+        const auto update_limit_reached = plan.updates.size() >= budget.maximum_updates_per_tick;
+        const auto work_limit_reached =
+            plan.scheduled_work_units > budget.maximum_work_units_per_tick - work_units;
+        if (update_limit_reached || work_limit_reached) {
+            ++plan.deferred_due_count;
+            accumulate_saturated(plan.deferred_work_units, work_units, plan.counters_saturated);
+            accumulate_saturated(plan.deferred_delta_ms, decision.elapsed_since_update_ms,
+                                 plan.counters_saturated);
+            accumulate_saturated(plan.deferred_catch_up_delta_ms, candidate.lateness_ms,
+                                 plan.counters_saturated);
+            if (candidate.lateness_ms > 0) {
+                ++plan.remaining_catch_up_count;
+            }
+            continue;
+        }
+
+        const auto remaining_catch_up_budget =
+            budget.maximum_catch_up_delta_ms_per_tick - plan.scheduled_catch_up_delta_ms;
+        const auto catch_up_delta = std::min(
+            {candidate.lateness_ms, maximum_catch_up_delta_per_update(decision.lod, budget),
+             remaining_catch_up_budget});
+        const auto update_delta = decision.tick_interval_ms + catch_up_delta;
+        const auto remaining_delta = decision.elapsed_since_update_ms - update_delta;
+        const auto previous_update_time = now_ms - decision.elapsed_since_update_ms;
+
+        plan.updates.push_back({candidate.decision_index, update_delta, catch_up_delta,
+                                remaining_delta, previous_update_time + update_delta,
+                                decision.estimated_update_work_units});
+        plan.scheduled_work_units += work_units;
+        accumulate_saturated(plan.scheduled_delta_ms, update_delta, plan.counters_saturated);
+        accumulate_saturated(plan.scheduled_catch_up_delta_ms, catch_up_delta,
+                             plan.counters_saturated);
+        if (remaining_delta >= decision.tick_interval_ms) {
+            accumulate_saturated(plan.deferred_delta_ms, remaining_delta, plan.counters_saturated);
+            accumulate_saturated(plan.deferred_catch_up_delta_ms,
+                                 remaining_delta - decision.tick_interval_ms,
+                                 plan.counters_saturated);
+            ++plan.remaining_catch_up_count;
+        }
+    }
+
+    plan.budget_exhausted = plan.deferred_due_count > 0 || plan.remaining_catch_up_count > 0;
+    return core::Result<BudgetedSimulationFramePlan>::success(std::move(plan));
 }
 
 } // namespace heartstead::simulation

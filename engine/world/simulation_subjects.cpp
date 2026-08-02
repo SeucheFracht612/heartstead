@@ -248,4 +248,17 @@ plan_world_simulation_frame(const WorldState& state,
                                                         options.policy, options.now_ms);
 }
 
+core::Result<simulation::BudgetedSimulationFramePlan>
+plan_budgeted_world_simulation_frame(const WorldState& state,
+                                     const WorldSimulationFramePlanOptions& options) {
+    auto subjects = derive_simulation_subjects(state, options.subject_options);
+    if (!subjects) {
+        return core::Result<simulation::BudgetedSimulationFramePlan>::failure(
+            subjects.error().code, subjects.error().message);
+    }
+
+    return simulation::SimulationLodPlanner::plan_budgeted_frame(
+        subjects.value(), options.viewers, options.policy, options.tick_budget, options.now_ms);
+}
+
 } // namespace heartstead::world

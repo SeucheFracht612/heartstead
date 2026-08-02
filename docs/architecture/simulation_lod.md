@@ -13,6 +13,7 @@ Implemented foundation:
   - subject kind
   - world coordinate
   - last update timestamp
+  - positive estimated update-work units for deterministic admission control
   - sleeping and forced-LOD state
 
 - `SimulationViewer`
@@ -30,6 +31,20 @@ Implemented foundation:
   - reports offline deltas for unloaded subjects so timestamp-based systems can advance
     when reloaded
   - validates radius, timestamp, and saved-identity invariants
+
+- `SimulationTickBudget` and `plan_budgeted_frame`
+  - cap admitted subject count and estimated work units on every authoritative tick
+  - order due work by oldest deadline, then LOD importance and stable subject identity, so input
+    container order cannot choose winners and persistently deferred work becomes oldest first
+  - reject duplicate stable identities and subjects whose individual estimated cost can never fit
+    the complete tick budget instead of starving them forever
+  - cap analytical catch-up both per update and across the tick
+  - keep full-detail catch-up at zero by default, so a delayed full-detail subject receives its
+    normal fixed interval rather than an unsafe large time step
+  - expose the admitted update delta, analytical catch-up portion, remaining elapsed time, and exact
+    next-update timestamp for each scheduled subject
+  - retain scheduled/deferred counts, work units, simulated time, catch-up debt, maximum lateness,
+    saturation, and budget-exhaustion telemetry
 
 - `derive_simulation_subjects`
   - world-layer adapter that derives deterministic simulation subjects from `WorldState`
@@ -56,6 +71,11 @@ Implemented foundation:
     process owners, networks, and chunks map into generic subjects
   - propagates subject-derivation and planner validation errors without mutating `WorldState`
 
+- `plan_budgeted_world_simulation_frame`
+  - applies the same temporal budget to deterministic subjects derived from `WorldState`
+  - preserves the raw classification plan alongside the ordered admitted-update list
+  - remains side-effect free so a failed game-specific update cannot advance its timestamp
+
 - `derive_replication_relevance_policy`
   - reuses derived simulation subjects and viewer positions to build per-client replication
     interest rules
@@ -69,13 +89,50 @@ Implemented foundation:
 
 - debug inspection
   - exposes policy radii and tick intervals
+  - exposes tick admission and per-LOD catch-up limits
   - exposes raw subject identity, coordinates, timestamps, persistence, sleeping, and forced-LOD
     state before frame planning
-  - exposes per-subject LOD decisions, process ids, due-tick state, and offline delta
+  - exposes per-subject LOD decisions, process ids, due-tick state, work estimate, and offline delta
   - exposes frame-plan counts and reports inconsistent decision/count summaries as errors
+  - exposes budgeted admission, backlog, catch-up, saturation, and maximum-lateness counters and
+    reports a plan that contradicts its hard limits or scheduled updates as invalid
   - exposes world-derived replication interest reports before host sessions consume the
     resulting network relevance policy
 
 The planner is intentionally generic. Game runtime systems should decide what a full,
 simplified, or reload-time update means for animals, crops, machines, wards, storage,
 outposts, and cargo. The engine owns the shared classification and timing contract.
+
+## Catch-up commit contract
+
+A consumer applies scheduled updates in the returned order. It advances a subject timestamp to
+`next_update_time_ms` only after that subject's update succeeds. It must not set the timestamp to the
+frame's `now_ms` when `remaining_delta_ms` is non-zero: doing so would erase simulation debt that was
+not admitted. A failure leaves the prior timestamp intact and can therefore be retried.
+
+Full-detail work receives one fixed interval per admitted update by default. Simplified and sleeping
+models may opt into larger analytical deltas, but only within their per-update and aggregate tick
+limits. If an update leaves at least one complete interval behind, the plan reports remaining
+catch-up work and `budget_exhausted=true`. A sub-interval remainder is normal cadence, not backlog.
+The configured cadence cannot become faster as detail decreases.
+
+A subject returning after a long unloaded interval should run its deterministic aggregate/reload
+model before promotion to full-detail behavior. Otherwise a deliberately fixed-step full-detail
+model may need many bounded ticks to retire old debt, which is observable but not a useful reload
+strategy.
+
+Estimated work units make selection reproducible and bound per-item overhead; they do not prove a
+wall-clock tick budget. Server benchmarks must calibrate estimates against measured system and tick
+durations, and runtime systems must keep aggregate catch-up deterministic for their own state model.
+
+The variable-frequency, per-LOD grouping parallels
+[Unreal Mass Simulation LOD](https://dev.epicgames.com/documentation/en-us/unreal-engine/overview-of-mass-gameplay-in-unreal-engine).
+Its option to spread first updates across an LOD period also reinforces avoiding synchronized
+activation bursts; Heartstead currently contains such bursts through deterministic admission and
+reports the remaining backlog rather than claiming they disappeared.
+Oldest-deadline ordering is informed by Liu and Layland's original
+[deadline-driven scheduling analysis](https://www.cis.upenn.edu/~lee/07cis505/Lec/liu73scheduling.pdf),
+but this cooperative game scheduler does not claim hard-real-time guarantees. Fixed full-detail
+steps and bounded catch-up follow the overload concern described in
+[Fix Your Timestep](https://gafferongames.com/post/fix_your_timestep/): admitting unbounded recovery
+work can make an already-late simulation fall farther behind.

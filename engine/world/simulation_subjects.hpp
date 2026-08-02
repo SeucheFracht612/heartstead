@@ -24,6 +24,7 @@ struct WorldSimulationFramePlanOptions {
     WorldSimulationSubjectOptions subject_options;
     std::vector<simulation::SimulationViewer> viewers;
     simulation::SimulationLodPolicy policy;
+    simulation::SimulationTickBudget tick_budget;
     simulation::WorldTick now_ms = 0;
 };
 
@@ -33,5 +34,9 @@ derive_simulation_subjects(const WorldState& state, WorldSimulationSubjectOption
 [[nodiscard]] core::Result<simulation::SimulationFramePlan>
 plan_world_simulation_frame(const WorldState& state,
                             const WorldSimulationFramePlanOptions& options);
+
+[[nodiscard]] core::Result<simulation::BudgetedSimulationFramePlan>
+plan_budgeted_world_simulation_frame(const WorldState& state,
+                                     const WorldSimulationFramePlanOptions& options);
 
 } // namespace heartstead::world

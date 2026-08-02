@@ -8407,6 +8407,22 @@ void test_debug_inspection() {
     assert(lod_policy_inspection.find_field("simplified_radius")->value == "64");
     assert(lod_policy_inspection.issues.empty());
 
+    heartstead::simulation::SimulationTickBudget simulation_tick_budget;
+    simulation_tick_budget.maximum_updates_per_tick = 8;
+    simulation_tick_budget.maximum_work_units_per_tick = 16;
+    simulation_tick_budget.maximum_full_catch_up_delta_ms_per_update = 0;
+    simulation_tick_budget.maximum_simplified_catch_up_delta_ms_per_update = 1000;
+    simulation_tick_budget.maximum_sleeping_catch_up_delta_ms_per_update = 5000;
+    simulation_tick_budget.maximum_catch_up_delta_ms_per_tick = 10000;
+    auto simulation_tick_budget_inspection =
+        heartstead::debug::Inspector::inspect(simulation_tick_budget);
+    assert(simulation_tick_budget_inspection.object_type == "simulation_tick_budget");
+    assert(simulation_tick_budget_inspection.state == "valid");
+    assert(simulation_tick_budget_inspection.find_field("maximum_updates_per_tick")->value == "8");
+    assert(simulation_tick_budget_inspection.find_field("maximum_work_units_per_tick")->value ==
+           "16");
+    assert(simulation_tick_budget_inspection.issues.empty());
+
     const auto subject_prototype = heartstead::core::PrototypeId::parse("base:entities/hand_cart");
     assert(subject_prototype);
     heartstead::simulation::SimulationSubject lod_subject;
@@ -8459,6 +8475,7 @@ void test_debug_inspection() {
     lod_decision.lod = heartstead::simulation::SimulationLod::simplified;
     lod_decision.nearest_viewer_distance_squared = 2304;
     lod_decision.elapsed_since_update_ms = 1200;
+    lod_decision.tick_interval_ms = 1000;
     lod_decision.due_for_tick = true;
     auto lod_decision_inspection = heartstead::debug::Inspector::inspect(lod_decision);
     assert(lod_decision_inspection.object_type == "simulation_lod_decision");
@@ -8478,6 +8495,7 @@ void test_debug_inspection() {
         std::numeric_limits<std::uint64_t>::max();
     unloaded_lod_decision.elapsed_since_update_ms = 8000;
     unloaded_lod_decision.offline_delta_ms = 8000;
+    unloaded_lod_decision.tick_interval_ms = 0;
     unloaded_lod_decision.due_for_tick = false;
 
     heartstead::simulation::SimulationFramePlan lod_frame_plan;
@@ -8495,6 +8513,32 @@ void test_debug_inspection() {
     assert(lod_frame_plan_inspection.find_field("total_offline_delta_ms")->value == "8000");
     assert(lod_frame_plan_inspection.find_field("first_decision_lod")->value == "simplified");
     assert(lod_frame_plan_inspection.issues.empty());
+
+    heartstead::simulation::BudgetedSimulationFramePlan budgeted_lod_frame_plan;
+    budgeted_lod_frame_plan.frame = lod_frame_plan;
+    budgeted_lod_frame_plan.budget = simulation_tick_budget;
+    budgeted_lod_frame_plan.now_ms = 1200;
+    budgeted_lod_frame_plan.updates = {{0, 1200, 200, 0, 1200, 1}};
+    budgeted_lod_frame_plan.catch_up_due_count = 1;
+    budgeted_lod_frame_plan.due_work_units = 1;
+    budgeted_lod_frame_plan.scheduled_work_units = 1;
+    budgeted_lod_frame_plan.scheduled_delta_ms = 1200;
+    budgeted_lod_frame_plan.scheduled_catch_up_delta_ms = 200;
+    budgeted_lod_frame_plan.maximum_lateness_ms = 200;
+    auto budgeted_lod_frame_plan_inspection =
+        heartstead::debug::Inspector::inspect(budgeted_lod_frame_plan);
+    assert(budgeted_lod_frame_plan_inspection.object_type == "budgeted_simulation_frame_plan");
+    assert(budgeted_lod_frame_plan_inspection.state == "scheduled");
+    assert(budgeted_lod_frame_plan_inspection.find_field("scheduled_update_count")->value == "1");
+    assert(budgeted_lod_frame_plan_inspection.find_field("scheduled_work_units")->value == "1");
+    assert(budgeted_lod_frame_plan_inspection.find_field("budget_exhausted")->value == "false");
+    assert(budgeted_lod_frame_plan_inspection.issues.empty());
+
+    budgeted_lod_frame_plan.scheduled_work_units = 2;
+    auto invalid_budgeted_lod_frame_plan_inspection =
+        heartstead::debug::Inspector::inspect(budgeted_lod_frame_plan);
+    assert(invalid_budgeted_lod_frame_plan_inspection.state == "invalid");
+    assert(invalid_budgeted_lod_frame_plan_inspection.has_errors());
 
     lod_frame_plan.full_count = 1;
     auto invalid_lod_frame_plan_inspection = heartstead::debug::Inspector::inspect(lod_frame_plan);
@@ -9518,6 +9562,17 @@ void test_world_simulation_subject_derivation() {
     assert(world_plan.value().simplified_count == plan.value().simplified_count);
     assert(world_plan.value().sleeping_count == plan.value().sleeping_count);
     assert(world_plan.value().due_tick_count == plan.value().due_tick_count);
+
+    frame_options.tick_budget.maximum_updates_per_tick = 4;
+    frame_options.tick_budget.maximum_work_units_per_tick = 4;
+    auto budgeted_world_plan =
+        heartstead::world::plan_budgeted_world_simulation_frame(state, frame_options);
+    assert(budgeted_world_plan);
+    assert(budgeted_world_plan.value().frame.decisions.size() == plan.value().decisions.size());
+    assert(budgeted_world_plan.value().frame.due_tick_count == 8);
+    assert(budgeted_world_plan.value().updates.size() == 4);
+    assert(budgeted_world_plan.value().deferred_due_count == 4);
+    assert(budgeted_world_plan.value().budget_exhausted);
     assert(world_plan.value().decisions[5].process_id ==
            heartstead::core::ProcessId::from_value(302));
 
