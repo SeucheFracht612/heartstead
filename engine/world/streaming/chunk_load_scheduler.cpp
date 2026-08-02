@@ -41,7 +41,7 @@ struct ChunkLoadScheduler::SharedContext {
     TerrainGenerationConfig generation;
     RegionGraph regions;
     VoxelPalette palette;
-    std::shared_ptr<const IChunkEditDeltaSource> saved_deltas;
+    mutable std::atomic<std::shared_ptr<const IChunkEditDeltaSource>> saved_deltas;
 };
 
 struct ChunkLoadScheduler::SharedState {
@@ -191,6 +191,7 @@ core::Result<ChunkLoadRequestId> ChunkLoadScheduler::submit(ChunkCoord coord,
 
     const auto request_id = ChunkLoadRequestId::from_value(next_request_id_);
     auto context = context_;
+    auto saved_deltas = context_->saved_deltas.load(std::memory_order_acquire);
     auto shared = shared_state_;
     auto cancellation = std::make_shared<std::atomic_bool>(false);
     jobs::JobDesc job;
@@ -200,8 +201,8 @@ core::Result<ChunkLoadRequestId> ChunkLoadScheduler::submit(ChunkCoord coord,
     job.estimated_cost = static_cast<std::uint32_t>(
         std::min(config_.reservation_bytes_per_request / 1024U + 1U,
                  static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
-    job.work = [request_id, coord, context, shared, cancellation,
-                reservation = config_.reservation_bytes_per_request](
+    job.work = [request_id, coord, context, saved_deltas = std::move(saved_deltas), shared,
+                cancellation, reservation = config_.reservation_bytes_per_request](
                    const jobs::JobContext& job_context) mutable {
         HEARTSTEAD_PROFILE_ZONE_NAMED("streaming.chunk_load.worker");
         ChunkLoadResult result;
@@ -223,11 +224,11 @@ core::Result<ChunkLoadRequestId> ChunkLoadScheduler::submit(ChunkCoord coord,
                     }
 
                     std::optional<save::ChunkEditSaveRecord> saved_delta;
-                    if (context->saved_deltas != nullptr) {
+                    if (saved_deltas != nullptr) {
                         auto read = [&] {
                             HEARTSTEAD_PROFILE_ZONE_NAMED("streaming.chunk_load.disk_read");
                             profiling::ScopedCpuTimer timer(result.disk_read_ms);
-                            return context->saved_deltas->read_chunk_delta(coord);
+                            return saved_deltas->read_chunk_delta(coord);
                         }();
                         if (!read) {
                             result.state = ChunkLoadResultState::failed;
@@ -375,6 +376,21 @@ void ChunkLoadScheduler::cancel_all() noexcept {
     for (const auto& [_, request] : active_requests_) {
         request.cancellation->store(true, std::memory_order_release);
     }
+}
+
+core::Status ChunkLoadScheduler::replace_saved_delta_source(
+    std::shared_ptr<const IChunkEditDeltaSource> saved_deltas) noexcept {
+    if (jobs_ == nullptr) {
+        return core::Status::failure("chunk_load_scheduler.stopped",
+                                     "chunk load scheduler is stopped");
+    }
+    const auto* next = saved_deltas.get();
+    auto previous =
+        context_->saved_deltas.exchange(std::move(saved_deltas), std::memory_order_acq_rel);
+    if (previous.get() != next) {
+        ++stats_.saved_delta_source_rotations;
+    }
+    return core::Status::ok();
 }
 
 void ChunkLoadScheduler::collect_completed(ChunkLoadPublicationReport& report) {
@@ -527,6 +543,8 @@ void ChunkLoadScheduler::refresh_stats() const noexcept {
     HEARTSTEAD_PROFILE_PLOT("streaming.load.reserved_bytes", stats_.reserved_working_bytes);
     HEARTSTEAD_PROFILE_PLOT("streaming.load.cancelled_total", stats_.cancelled_requests);
     HEARTSTEAD_PROFILE_PLOT("streaming.load.stale_total", stats_.stale_requests);
+    HEARTSTEAD_PROFILE_PLOT("streaming.load.delta_source_rotations",
+                            stats_.saved_delta_source_rotations);
     HEARTSTEAD_PROFILE_PLOT("streaming.load.pipeline_ms", stats_.last_pipeline_latency_ms);
     HEARTSTEAD_PROFILE_PLOT("streaming.load.publication_max_us",
                             stats_.maximum_publication_time_us);
@@ -534,6 +552,7 @@ void ChunkLoadScheduler::refresh_stats() const noexcept {
 
 void ChunkLoadScheduler::shutdown() noexcept {
     if (jobs_ == nullptr) {
+        context_->saved_deltas.store({}, std::memory_order_release);
         return;
     }
     cancel_all();
@@ -542,6 +561,7 @@ void ChunkLoadScheduler::shutdown() noexcept {
     ready_for_publication_.clear();
     active_by_coord_.clear();
     active_requests_.clear();
+    context_->saved_deltas.store({}, std::memory_order_release);
     stats_.reserved_working_bytes = 0;
     refresh_stats();
 }

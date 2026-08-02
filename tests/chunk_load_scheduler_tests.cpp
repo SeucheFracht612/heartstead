@@ -2,6 +2,7 @@
 #include "engine/world/streaming/chunk_load_scheduler.hpp"
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <map>
@@ -42,6 +43,28 @@ class TestChunkGenerator final : public world::IChunkLoadGenerator {
         }
         return core::Result<world::VoxelChunk>::success(std::move(chunk));
     }
+};
+
+class BlockingChunkGenerator final : public world::IChunkLoadGenerator {
+  public:
+    [[nodiscard]] core::Result<world::VoxelChunk> generate(world::ChunkCoord coord) const override {
+        entered.store(true, std::memory_order_release);
+        while (!released.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        std::vector<world::VoxelCell> cells(world::VoxelChunk::total_cells,
+                                            world::VoxelCell{42, 7});
+        world::VoxelChunk chunk(coord);
+        auto status = chunk.load_generated_cells(std::move(cells));
+        if (!status) {
+            return core::Result<world::VoxelChunk>::failure(status.error().code,
+                                                            status.error().message);
+        }
+        return core::Result<world::VoxelChunk>::success(std::move(chunk));
+    }
+
+    mutable std::atomic_bool entered = false;
+    mutable std::atomic_bool released = false;
 };
 
 [[nodiscard]] world::ChunkLoadSchedulerContext
@@ -262,6 +285,78 @@ void test_custom_generator_uses_bounded_publication_path() {
     assert(cell && cell.value() == (world::VoxelCell{42, 7}));
 }
 
+void test_saved_delta_source_rotation_pins_each_submitted_request() {
+    const world::ChunkCoord old_coord{10, 0, 0};
+    const world::ChunkCoord new_coord{11, 0, 0};
+    const world::VoxelCoord edited_voxel{2, 3, 4};
+    auto old_source = std::make_shared<TestDeltaSource>();
+    auto new_source = std::make_shared<TestDeltaSource>();
+    const auto add_record = [edited_voxel](TestDeltaSource& source, world::ChunkCoord coord,
+                                           std::uint16_t next_type) {
+        const world::VoxelEditRecord edit{coord, edited_voxel, world::VoxelCell{42, 7},
+                                          world::VoxelCell{next_type, 0}};
+        const std::vector<const world::VoxelEditRecord*> edits{&edit};
+        source.records.emplace(
+            coord,
+            save::ChunkEditSaveRecord{coord, world::ChunkEditDeltaTextCodec::encode(coord, edits)});
+    };
+    add_record(*old_source, old_coord, 9);
+    add_record(*new_source, new_coord, 10);
+    std::weak_ptr<const world::IChunkEditDeltaSource> old_lifetime = old_source;
+
+    auto generator = std::make_shared<BlockingChunkGenerator>();
+    world::ChunkLoadSchedulerContext context;
+    context.generator = generator;
+    context.saved_deltas = old_source;
+    world::ChunkLoadSchedulerConfig config;
+    config.worker_count = 1;
+    config.max_concurrent_requests = 2;
+    config.max_completed_results = 2;
+    auto created = world::ChunkLoadScheduler::create(std::move(context), config);
+    assert(created);
+    auto scheduler = std::move(created).value();
+
+    assert(scheduler->submit(old_coord));
+    for (std::size_t attempt = 0;
+         attempt < 10'000 && !generator->entered.load(std::memory_order_acquire); ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    assert(generator->entered.load(std::memory_order_acquire));
+    assert(scheduler->replace_saved_delta_source(new_source));
+    old_source.reset();
+    assert(!old_lifetime.expired());
+    assert(scheduler->submit(new_coord));
+    generator->released.store(true, std::memory_order_release);
+
+    world::WorldState state;
+    std::vector<world::ChunkStreamLoadReport> published;
+    std::vector<world::ChunkCoord> cancelled;
+    std::vector<world::ChunkLoadFailure> failures;
+    drain_until_idle(*scheduler, state, published, cancelled, failures);
+    assert(cancelled.empty() && failures.empty());
+    assert(published.size() == 2);
+    auto old_cell = state.chunks().get(old_coord, edited_voxel);
+    auto new_cell = state.chunks().get(new_coord, edited_voxel);
+    assert(old_cell && old_cell.value().type == 9);
+    assert(new_cell && new_cell.value().type == 10);
+    assert(old_lifetime.expired());
+    assert(scheduler->stats().saved_delta_source_rotations == 1);
+
+    assert(scheduler->replace_saved_delta_source(new_source));
+    assert(scheduler->stats().saved_delta_source_rotations == 1);
+    assert(scheduler->replace_saved_delta_source({}));
+    assert(scheduler->stats().saved_delta_source_rotations == 2);
+    auto shutdown_source = std::make_shared<TestDeltaSource>();
+    std::weak_ptr<const world::IChunkEditDeltaSource> shutdown_lifetime = shutdown_source;
+    assert(scheduler->replace_saved_delta_source(shutdown_source));
+    shutdown_source.reset();
+    assert(!shutdown_lifetime.expired());
+    scheduler->shutdown();
+    assert(shutdown_lifetime.expired());
+    auto stopped = scheduler->replace_saved_delta_source(new_source);
+    assert(!stopped && stopped.error().code == "chunk_load_scheduler.stopped");
+}
+
 void test_validation_and_names() {
     world::ChunkLoadSchedulerConfig config;
     config.worker_count = 0;
@@ -289,6 +384,7 @@ int main() {
     test_cancellation_failure_stale_and_memory_backpressure();
     test_chunk_delta_decode_record_limit();
     test_custom_generator_uses_bounded_publication_path();
+    test_saved_delta_source_rotation_pins_each_submitted_request();
     test_validation_and_names();
     return 0;
 }

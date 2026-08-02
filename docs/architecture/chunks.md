@@ -118,6 +118,9 @@ Implemented foundation:
   - runs disk read, saved-delta decode, terrain generation, and private saved-edit application on a
     fixed worker pool; workers receive immutable generation inputs, share a concurrently readable
     saved-delta index, and never touch live world state
+  - atomically rotates the saved-delta source used by future submissions; each already-submitted
+    request retains its original generation-scoped view until retirement, creating a safe reader
+    gap for later checkpoint/pruning without invalidating in-flight disk reads
   - supports both the deterministic terrain generator and immutable, concurrently callable custom
     generators used by packaged fixtures
   - bounds active requests, completed results, per-request working-memory reservations, aggregate
@@ -129,8 +132,8 @@ Implemented foundation:
   - cancels requests outside a new interest set without allocation; a completed result that becomes
     obsolete during a teleport is rejected before it can publish
   - records queue age, stage/worker/pipeline timing, publication time, high-water memory, failures,
-    cancellations, stale work, and backpressure in runtime inspection, F3 diagnostics, and Tracy
-    zones/plots
+    cancellations, stale work, saved-delta source rotations, and backpressure in runtime
+    inspection, F3 diagnostics, and Tracy zones/plots
   - returns one bounded lifecycle timing sample per processed result; request-to-publication
     latency ends after owner publication or rejection rather than at worker completion
   - is used by the live renderer-proof server stream, where successful bounded publications alone

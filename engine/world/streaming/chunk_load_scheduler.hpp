@@ -118,6 +118,7 @@ struct ChunkLoadSchedulerStats {
     std::uint64_t stale_requests = 0;
     std::uint64_t rejected_requests = 0;
     std::uint64_t duplicate_requests = 0;
+    std::uint64_t saved_delta_source_rotations = 0;
     std::uint64_t oldest_queued_request_age_us = 0;
     double last_disk_read_ms = 0.0;
     double last_decode_ms = 0.0;
@@ -144,6 +145,12 @@ class ChunkLoadScheduler {
     [[nodiscard]] core::Status cancel(ChunkCoord coord) noexcept;
     std::size_t cancel_all_except(std::span<const ChunkCoord> desired) noexcept;
     void cancel_all() noexcept;
+
+    // Atomically selects the saved-delta view captured by future submissions. Already-submitted
+    // jobs retain their previous immutable view until they retire, allowing generation rollover
+    // without invalidating in-flight reads. Passing null selects generation-only loading.
+    [[nodiscard]] core::Status
+    replace_saved_delta_source(std::shared_ptr<const IChunkEditDeltaSource> saved_deltas) noexcept;
 
     [[nodiscard]] ChunkLoadPublicationReport update(WorldState& state);
     [[nodiscard]] bool has_capacity() const noexcept;
