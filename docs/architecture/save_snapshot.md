@@ -80,7 +80,9 @@ transport bits are rejected by snapshot validation instead of being silently dro
 
 `FileSaveDatabase` stores full binary snapshots and independent chunk-delta payloads in a
 directory-backed, generation-staged layout. The external chunk table is authoritative whenever its
-index exists, including when that index is intentionally empty.
+index exists, including when that index is intentionally empty. Streamed updates overlay that base
+through immutable checksummed journal entries until an explicit checkpoint materializes a new base
+table.
 
 Save snapshots can be inspected through the debug inspection layer to report section
 counts and validation issues.

@@ -84,11 +84,12 @@ source and compiled hashes, backend names, source byte counts, and compiler diag
 the renderer-owned shader validation/cook boundary visible before shader-pack UI exists.
 
 Save database inspection reports legacy versus generation-backed layout, active generation,
-committed/staged/stale generation counts, snapshot size, and external chunk-delta table size. This
-keeps the save commit boundary visible after generation manifests are introduced.
-Save database maintenance inspection reports recovered staged generation count, pruned stale
-generation count, compacted chunk-delta count, before/after generation counts, and whether the
-maintenance pass changed persistent storage.
+committed/staged/stale generation counts, snapshot size, effective chunk-delta table size, both
+journal sizes/sequences, and warnings for pending full-snapshot or chunk-delta journal work. This
+keeps the save acceptance/checkpoint boundary visible after generation manifests are introduced.
+Save database maintenance inspection reports recovered staged generation count, full-snapshot and
+chunk-journal recovery/compaction results, pruned stale generation count, compacted orphan count,
+before/after generation counts, and whether the maintenance pass changed persistent storage.
 Save database migration inspection reports previous/final schema versions, applied migration count,
 whether an upgraded snapshot was written, and before/after generation counts.
 Save slot catalog inspection reports root path, slot count, empty/generation/legacy/invalid slot

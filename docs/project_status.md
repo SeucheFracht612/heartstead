@@ -54,18 +54,19 @@ benchmark composes the broader environment stack into a stable integration workl
 ### Performance and profiling
 
 The deterministic benchmark family retains raw samples and percentile summaries. Renderer schema
-v4, chunk-streaming schema v3, voxel-response schema v1, and chunk-render-readiness schema v1 record
-source/build/machine/device provenance and enforce workload-specific absolute gates. Clean
-reference runs cover renderer/edit workloads, generated plus in-memory and physical indexed
-saved-delta publication, warm and Linux cache-drop-advice payload reads/index opens, exact collision
+v4, chunk-streaming schema v3, chunk-delta-journal schema v1, voxel-response schema v1, and
+chunk-render-readiness schema v1 record source/build/machine/device provenance and enforce
+workload-specific absolute gates. Clean reference runs cover renderer/edit workloads, generated
+plus in-memory and physical indexed saved-delta publication, warm and Linux cache-drop-advice
+payload reads/index opens, stable-storage chunk appends and full checkpoints, exact collision
 publication through headless and Jolt physics, complete resident-field relighting, and required
 generated chunks through current mesh residency, upload, visibility filtering, and exact
 draw-command construction on headless and Vulkan devices. An optimized `profiling-release` preset
 links on-demand Tracy instrumentation across the main runtime, renderer, worker, chunk, lighting,
 collision, and streaming boundaries; normal builds compile those call sites to no-ops. Guaranteed
-cold/multi-filesystem I/O, persistence write scale and save-under-load, general-controller loader
-adoption, actual GPU execution/presentation timing, and multiplayer scale remain staged in the
-[voxel optimization roadmap](performance/voxel_optimization_roadmap.md).
+cold/multi-filesystem I/O, coordinated checkpoint under live streaming, large snapshot capture,
+general-controller loader adoption, actual GPU execution/presentation timing, and multiplayer scale
+remain staged in the [voxel optimization roadmap](performance/voxel_optimization_roadmap.md).
 
 The retained UI path uses a packaged Noto Sans font rendered from a deterministic SDF atlas,
 strict UTF-8 decoding, DPI-scaled widgets, hierarchical clipping/scissors, nine-slice panels,
@@ -100,6 +101,13 @@ The player-facing game can create and reopen a versioned save database, includin
 profiles, discovery, logs, migrations, and stable prototype mappings. Missing content is retained
 through explicit placeholder behavior rather than silently discarded.
 
+Streamed chunk updates use a retained generation-scoped writer and one immutable checksummed durable
+journal entry per update. Readers pin a base-plus-journal end mark, and explicit recovery/checkpoint
+paths preserve accepted updates across restart. Reference measurements keep a 16,384-record append
+near 3.3 ms P95 on the save worker, while the complete checkpoint remains roughly 48 seconds and is
+not yet scheduled concurrently with live streaming. See
+[chunk delta journal benchmarks](performance/chunk_delta_journal_benchmarks.md).
+
 The standalone dedicated-server executable currently creates an in-memory authoritative world. It
 has no `--save` option and does not persist its session across restarts. Treat dedicated-server
 persistence as not implemented until the executable owns the save lifecycle explicitly.
@@ -128,6 +136,7 @@ The default build defines these applications:
 - `heartstead_voxel_benchmark`
 - `heartstead_voxel_meshing_benchmark`
 - `heartstead_chunk_streaming_benchmark`
+- `heartstead_chunk_delta_journal_benchmark`
 - `heartstead_chunk_render_readiness_benchmark`
 - `heartstead_voxel_response_benchmark`
 - `heartstead_audio_benchmark`
@@ -180,5 +189,7 @@ ThreadSanitizer presets are available. See [Testing](dev/testing.md) for the exp
 matrix and [Renderer benchmarks](performance/renderer_benchmarks.md) for reproducible performance
 measurement. The [Voxel response benchmarks](performance/voxel_response_benchmarks.md) document
 the isolated collision/relight lifecycle gates and their exact headless/Jolt calibration boundary.
+The [Chunk delta journal benchmarks](performance/chunk_delta_journal_benchmarks.md) document durable
+per-chunk append, reopen, full-checkpoint, restart-verification, and cleanup gates.
 The [Chunk render-readiness benchmarks](performance/chunk_render_readiness_benchmarks.md) document
 the required generated load-to-draw-command gate and its explicit pre-GPU-execution boundary.

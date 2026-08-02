@@ -142,6 +142,9 @@ draw eligibility, display scan-out, and newly requested chunk loading. The separ
 required-chunk loading through exact current draw-command construction, including meshing and RHI
 upload. The separate [chunk streaming benchmark](chunk_streaming_benchmarks.md) now gates warm and
 Linux cache-drop-advice reads through the production indexed save reader. Save-under-streaming,
-large snapshot capture, append-oriented persistence writes, guaranteed-cold/multi-filesystem
-behavior, general generated-world loader adoption, and actual GPU execution/presentation/display
-timing remain M5 work in the [Voxel optimization roadmap](voxel_optimization_roadmap.md).
+large snapshot capture, coordinated background persistence checkpoint,
+guaranteed-cold/multi-filesystem behavior, general generated-world loader adoption, and actual GPU
+execution/presentation/display timing remain M5 work in the
+[Voxel optimization roadmap](voxel_optimization_roadmap.md). Durable per-chunk append and full
+checkpoint scale are covered separately by the
+[chunk delta journal benchmark](chunk_delta_journal_benchmarks.md).

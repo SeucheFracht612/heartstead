@@ -198,8 +198,11 @@ residency, visibility filtering, and production draw-command construction. Resid
 publication and whole-field relight convergence have separate headless/Jolt gates in
 [Voxel response benchmarks](voxel_response_benchmarks.md).
 
-M5 still requires replacing full-table per-chunk writes, save-under-streaming and large-snapshot
-capture measurements, general generated-world runtime-controller adoption, guaranteed-cold and
+The companion [chunk delta journal benchmark](chunk_delta_journal_benchmarks.md) now verifies that
+streamed foreground writes append one durable entry instead of rewriting the full table, while also
+showing that complete checkpoint remains proportional to table size. M5 still requires coordinated
+checkpoint under live streaming, save-under-streaming and large-snapshot-capture measurements,
+general generated-world runtime-controller adoption, guaranteed-cold and
 multi-filesystem/media validation where environments permit it, and GPU
 execution/presentation/display timing beyond the draw-eligibility endpoint. The live
 renderer-proof controller is currently the application path that exercises the asynchronous

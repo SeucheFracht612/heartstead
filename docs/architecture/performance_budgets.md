@@ -43,6 +43,25 @@ establish a guaranteed cold-cache or physical-device miss. All limits stop at au
 block-data publication and do not claim lighting, collision, client replication, meshing, GPU
 upload, draw eligibility, or display latency.
 
+The chunk-delta journal benchmark separately gates production persistence work on the save worker:
+
+| Metric | Default limit |
+| --- | ---: |
+| Initial writer open at 16,384 base records | 250 ms |
+| Stable-storage chunk append P95 | 25 ms |
+| Writer reopen with 136 journal entries P95 | 250 ms |
+| Reader reopen with 136 journal entries P95 | 250 ms |
+| Complete 16,384-record checkpoint | 75,000 ms |
+| Post-checkpoint reader open | 250 ms |
+
+The retained writer validates and accounts for the indexed base once; each timed append then
+publishes one immutable checksummed entry. The stable-storage wait is deliberately included and must
+not run on the gameplay thread. The checkpoint limit is a regression cap on current full-table
+background work, not a latency SLO: reference checkpoint time is roughly 48 seconds and still
+requires explicit scheduling/coordination before live use. The report also requires exact restart
+payload verification, journal teardown, and fixture cleanup. See
+[Chunk delta journal benchmarks](../performance/chunk_delta_journal_benchmarks.md).
+
 The chunk-render-readiness benchmark separately gates the production generated-data path through
 exact current draw-command construction:
 
@@ -90,6 +109,8 @@ See [Renderer benchmarks](../performance/renderer_benchmarks.md) for workloads, 
 comparison rules, command usage, and dated measurements. See
 [Chunk streaming benchmarks](../performance/chunk_streaming_benchmarks.md) for the open-loop
 admission and resident-publication contract,
+[Chunk delta journal benchmarks](../performance/chunk_delta_journal_benchmarks.md) for durable
+per-chunk append, reopen, checkpoint, and restart-verification evidence,
 [Chunk render-readiness benchmarks](../performance/chunk_render_readiness_benchmarks.md) for the
 generated load-to-draw-command contract and physical-device boundary, and
 [Voxel response benchmarks](../performance/voxel_response_benchmarks.md) for collision/relight
