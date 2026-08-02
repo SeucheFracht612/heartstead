@@ -3603,10 +3603,12 @@ InspectionData Inspector::inspect(const world::WorldReplicationDeltaApplyReport&
 
     const auto inserted_record_count = report.build_pieces_inserted + report.entities_inserted +
                                        report.cargo_inserted + report.inventories_inserted +
-                                       report.assemblies_inserted + report.processes_inserted;
+                                       report.workpieces_inserted + report.assemblies_inserted +
+                                       report.processes_inserted;
     const auto updated_record_count = report.build_pieces_updated + report.entities_updated +
                                       report.cargo_updated + report.inventories_updated +
-                                      report.assemblies_updated + report.processes_updated;
+                                      report.workpieces_updated + report.assemblies_updated +
+                                      report.processes_updated + report.voxel_edits_applied;
     const auto applied_record_count = inserted_record_count + updated_record_count;
 
     add_field(data, "command_sequence", std::to_string(report.command_sequence));
@@ -3629,10 +3631,14 @@ InspectionData Inspector::inspect(const world::WorldReplicationDeltaApplyReport&
     add_field(data, "cargo_updated", std::to_string(report.cargo_updated));
     add_field(data, "inventories_inserted", std::to_string(report.inventories_inserted));
     add_field(data, "inventories_updated", std::to_string(report.inventories_updated));
+    add_field(data, "workpieces_inserted", std::to_string(report.workpieces_inserted));
+    add_field(data, "workpieces_updated", std::to_string(report.workpieces_updated));
     add_field(data, "assemblies_inserted", std::to_string(report.assemblies_inserted));
     add_field(data, "assemblies_updated", std::to_string(report.assemblies_updated));
     add_field(data, "processes_inserted", std::to_string(report.processes_inserted));
     add_field(data, "processes_updated", std::to_string(report.processes_updated));
+    add_field(data, "voxel_edits_applied", std::to_string(report.voxel_edits_applied));
+    add_field(data, "voxel_edits_superseded", std::to_string(report.voxel_edits_superseded));
     add_field(data, "dirty_region_count_before", std::to_string(report.dirty_region_count_before));
     add_field(data, "dirty_region_count_after", std::to_string(report.dirty_region_count_after));
     add_field(data, "applied", bool_text(report.applied));
@@ -3645,10 +3651,11 @@ InspectionData Inspector::inspect(const world::WorldReplicationDeltaApplyReport&
         add_issue(data, InspectionSeverity::error, "world_replication_delta_apply.count_mismatch",
                   "world replication delta apply aggregate counts do not add up");
     }
-    if (report.applied && report.applied_record_count != report.planned_record_count) {
+    if (report.applied &&
+        report.applied_record_count != report.planned_record_count + report.voxel_edits_applied) {
         add_issue(
             data, InspectionSeverity::error, "world_replication_delta_apply.planned_count_mismatch",
-            "world replication delta apply count does not match planned materialized records");
+            "world replication delta apply count does not match planned records and voxel edits");
     }
     if (!report.applied) {
         add_issue(data, InspectionSeverity::warning, "world_replication_delta_apply.not_applied",

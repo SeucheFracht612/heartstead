@@ -10,6 +10,141 @@
 
 namespace heartstead::game {
 
+namespace {
+
+using RemoteChunkRevision = std::pair<world::ChunkIdentity, std::uint64_t>;
+using RemoteChunkRevisionMap = std::map<world::ChunkCoord, RemoteChunkRevision>;
+
+[[nodiscard]] bool remote_revision_covers(const RemoteChunkRevision& remote,
+                                          world::ChunkIdentity identity,
+                                          std::uint64_t content_revision) noexcept {
+    return remote.first.load_generation > identity.load_generation ||
+           (remote.first == identity && remote.second >= content_revision);
+}
+
+struct PendingVoxelDeltaState {
+    RemoteChunkRevisionMap advances;
+    std::map<world::BlockCoord, world::VoxelCell> final_applied_cells;
+    std::vector<world::VoxelChangeRecord> accepted_edits;
+};
+
+[[nodiscard]] bool same_voxel_change(const world::VoxelChangeRecord& left,
+                                     const world::VoxelChangeRecord& right) noexcept {
+    return left.position == right.position && left.previous == right.previous &&
+           left.current == right.current && left.chunk_identity == right.chunk_identity &&
+           left.content_revision == right.content_revision;
+}
+
+[[nodiscard]] bool same_persistent_voxel(world::VoxelCell left, world::VoxelCell right) noexcept {
+    return left.type == right.type && left.state_bits == right.state_bits &&
+           left.metadata_handle == right.metadata_handle;
+}
+
+[[nodiscard]] core::Result<world::WorldReplicationVoxelEditDisposition>
+plan_voxel_delta(const world::VoxelChangeRecord& change,
+                 const RemoteChunkRevisionMap& remote_chunks, const world::ChunkDatabase& chunks,
+                 PendingVoxelDeltaState& pending) {
+    auto status = change.validate();
+    if (!status) {
+        return core::Result<world::WorldReplicationVoxelEditDisposition>::failure(
+            status.error().code, status.error().message);
+    }
+    const auto address = world::block_to_chunk_local(change.position);
+    const auto planned = pending.advances.find(address.chunk);
+    const auto remote = remote_chunks.find(address.chunk);
+    const RemoteChunkRevision* cursor = nullptr;
+    if (planned != pending.advances.end()) {
+        cursor = &planned->second;
+    } else if (remote != remote_chunks.end()) {
+        cursor = &remote->second;
+    }
+    if (cursor == nullptr) {
+        return core::Result<world::WorldReplicationVoxelEditDisposition>::failure(
+            "client_runtime.accepted_voxel_base_missing",
+            "accepted voxel edit requires an authoritative chunk snapshot base");
+    }
+    if (!chunks.contains(address.chunk)) {
+        return core::Result<world::WorldReplicationVoxelEditDisposition>::failure(
+            "client_runtime.accepted_voxel_chunk_missing",
+            "accepted voxel edit was dispatched before its client chunk existed");
+    }
+
+    const auto cursor_generation = cursor->first.load_generation;
+    const auto change_generation = change.chunk_identity.load_generation;
+    if (remote_revision_covers(*cursor, change.chunk_identity, change.content_revision)) {
+        if (cursor->first == change.chunk_identity && cursor->second == change.content_revision) {
+            auto current = chunks.get(address.chunk, address.local);
+            if (!current || !same_persistent_voxel(current.value(), change.current)) {
+                return core::Result<world::WorldReplicationVoxelEditDisposition>::failure(
+                    "client_runtime.accepted_voxel_not_applied",
+                    "accepted voxel edit does not match its authoritative chunk revision");
+            }
+        }
+        pending.accepted_edits.push_back(change);
+        return core::Result<world::WorldReplicationVoxelEditDisposition>::success(
+            world::WorldReplicationVoxelEditDisposition::superseded);
+    }
+    if (cursor_generation < change_generation ||
+        cursor->second == std::numeric_limits<std::uint64_t>::max() ||
+        cursor->second + 1 != change.content_revision) {
+        return core::Result<world::WorldReplicationVoxelEditDisposition>::failure(
+            "client_runtime.accepted_voxel_base_gap",
+            "accepted voxel edit is not contiguous with the client's authoritative chunk base");
+    }
+
+    pending.advances.insert_or_assign(
+        address.chunk, RemoteChunkRevision{change.chunk_identity, change.content_revision});
+    pending.final_applied_cells.insert_or_assign(change.position, change.current);
+    pending.accepted_edits.push_back(change);
+    return core::Result<world::WorldReplicationVoxelEditDisposition>::success(
+        world::WorldReplicationVoxelEditDisposition::apply);
+}
+
+[[nodiscard]] core::Status
+validate_observed_voxel_edits(std::span<const world::OperationEvent> observed_events,
+                              std::span<const world::VoxelChangeRecord> planned_edits) {
+    std::size_t planned_index = 0;
+    for (const auto& event : observed_events) {
+        if (event.type != world::voxel_changed_event_type) {
+            continue;
+        }
+        auto change = world::VoxelChangeTextCodec::decode(event.message);
+        if (!change) {
+            return core::Status::failure(change.error().code, change.error().message);
+        }
+        if (planned_index >= planned_edits.size() ||
+            !same_voxel_change(change.value(), planned_edits[planned_index])) {
+            return core::Status::failure(
+                "client_runtime.accepted_voxel_event_mismatch",
+                "accepted voxel delta does not match its observed replication event");
+        }
+        ++planned_index;
+    }
+    if (planned_index != planned_edits.size()) {
+        return core::Status::failure(
+            "client_runtime.accepted_voxel_event_mismatch",
+            "accepted voxel delta does not match its observed replication event");
+    }
+    return core::Status::ok();
+}
+
+[[nodiscard]] core::Status validate_applied_voxel_cells(
+    const world::ChunkDatabase& chunks,
+    const std::map<world::BlockCoord, world::VoxelCell>& final_applied_cells) {
+    for (const auto& [position, expected] : final_applied_cells) {
+        const auto address = world::block_to_chunk_local(position);
+        auto current = chunks.get(address.chunk, address.local);
+        if (!current || current.value() != expected) {
+            return core::Status::failure(
+                "client_runtime.accepted_voxel_not_applied",
+                "accepted voxel edit was dispatched before its client world mutation");
+        }
+    }
+    return core::Status::ok();
+}
+
+} // namespace
+
 ClientRuntime::ClientRuntime(core::NetId expected_client_id, world::WorldStateDesc world_desc,
                              const ReplicationRegistry* replication_registry,
                              const world::VoxelPalette* movement_palette)
@@ -56,26 +191,38 @@ ClientRuntime::synchronize(std::uint64_t render_tick, std::size_t maximum_chunk_
         return core::Result<ClientRuntimeStats>::failure(completed_chunks.error().code,
                                                          completed_chunks.error().message);
     }
-    auto replication = world::apply_client_queued_replication_deltas(world_, session_);
+    PendingVoxelDeltaState pending_voxel_deltas;
+    world::WorldReplicationDeltaApplyOptions replication_options;
+    replication_options.voxel_edit_policy =
+        [this, &pending_voxel_deltas](const world::VoxelChangeRecord& change) {
+            return plan_voxel_delta(change, remote_chunks_, world_.chunks(), pending_voxel_deltas);
+        };
+    auto replication =
+        world::apply_client_queued_replication_deltas(world_, session_, replication_options);
     if (!replication) {
         return core::Result<ClientRuntimeStats>::failure(replication.error().code,
                                                          replication.error().message);
     }
-    for (const auto& event : replication.value().observed_events) {
-        if (event.type != world::voxel_changed_event_type) {
-            continue;
-        }
-        auto change = world::VoxelChangeTextCodec::decode(event.message);
-        if (!change) {
-            return core::Result<ClientRuntimeStats>::failure(change.error().code,
-                                                             change.error().message);
-        }
-        auto status = record_accepted_voxel_edit(std::move(change).value());
-        if (!status) {
-            return core::Result<ClientRuntimeStats>::failure(status.error().code,
-                                                             status.error().message);
+    auto voxel_status = validate_observed_voxel_edits(replication.value().observed_events,
+                                                      pending_voxel_deltas.accepted_edits);
+    if (voxel_status) {
+        voxel_status =
+            validate_applied_voxel_cells(world_.chunks(), pending_voxel_deltas.final_applied_cells);
+    }
+    if (!voxel_status) {
+        return core::Result<ClientRuntimeStats>::failure(voxel_status.error().code,
+                                                         voxel_status.error().message);
+    }
+    for (const auto& [coordinate, revision] : pending_voxel_deltas.advances) {
+        remote_chunks_.insert_or_assign(coordinate, revision);
+        const auto assembly = chunk_snapshot_assemblies_.find(coordinate);
+        if (assembly != chunk_snapshot_assemblies_.end() &&
+            remote_revision_covers(revision, assembly->second.identity,
+                                   assembly->second.content_revision)) {
+            chunk_snapshot_assemblies_.erase(assembly);
         }
     }
+    accepted_voxel_edits_ = std::move(pending_voxel_deltas.accepted_edits);
     ClientReplicationDispatchStats feature_replication;
     if (replication_registry_ != nullptr) {
         auto dispatched =
@@ -497,49 +644,23 @@ std::span<const world::VoxelChangeRecord> ClientRuntime::accepted_voxel_edits() 
 }
 
 core::Status ClientRuntime::record_accepted_voxel_edit(world::VoxelChangeRecord change) {
-    auto status = change.validate();
+    PendingVoxelDeltaState pending;
+    auto disposition = plan_voxel_delta(change, remote_chunks_, world_.chunks(), pending);
+    if (!disposition) {
+        return core::Status::failure(disposition.error().code, disposition.error().message);
+    }
+    auto status = validate_applied_voxel_cells(world_.chunks(), pending.final_applied_cells);
     if (!status) {
         return status;
     }
-    const auto address = world::block_to_chunk_local(change.position);
-    const auto remote = remote_chunks_.find(address.chunk);
-    if (remote == remote_chunks_.end()) {
-        return core::Status::failure(
-            "client_runtime.accepted_voxel_base_missing",
-            "accepted voxel edit requires an authoritative chunk snapshot base");
-    }
-    const auto remote_generation = remote->second.first.load_generation;
-    const auto change_generation = change.chunk_identity.load_generation;
-    if (remote_generation < change_generation ||
-        (remote_generation == change_generation &&
-         remote->second.second < change.content_revision &&
-         (remote->second.second == std::numeric_limits<std::uint64_t>::max() ||
-          remote->second.second + 1 != change.content_revision))) {
-        return core::Status::failure(
-            "client_runtime.accepted_voxel_base_gap",
-            "accepted voxel edit is not contiguous with the client's authoritative chunk base");
-    }
-    auto current = world_.chunks().get(address.chunk, address.local);
-    if (!current) {
-        return core::Status::failure(
-            "client_runtime.accepted_voxel_chunk_missing",
-            "accepted voxel edit was dispatched before its client chunk existed");
-    }
-    const auto delta_is_superseded =
-        remote_generation > change_generation ||
-        (remote_generation == change_generation && remote->second.second > change.content_revision);
-    const auto same_persistent_cell = [](world::VoxelCell left, world::VoxelCell right) {
-        return left.type == right.type && left.state_bits == right.state_bits &&
-               left.metadata_handle == right.metadata_handle;
-    };
-    if ((!delta_is_superseded && current.value() != change.current) ||
-        (delta_is_superseded && !same_persistent_cell(current.value(), change.current))) {
-        return core::Status::failure(
-            "client_runtime.accepted_voxel_not_applied",
-            "accepted voxel edit was dispatched before its client world mutation");
-    }
-    if (remote_generation == change_generation && remote->second.second < change.content_revision) {
-        remote->second.second = change.content_revision;
+    for (const auto& [coordinate, revision] : pending.advances) {
+        remote_chunks_.insert_or_assign(coordinate, revision);
+        const auto assembly = chunk_snapshot_assemblies_.find(coordinate);
+        if (assembly != chunk_snapshot_assemblies_.end() &&
+            remote_revision_covers(revision, assembly->second.identity,
+                                   assembly->second.content_revision)) {
+            chunk_snapshot_assemblies_.erase(assembly);
+        }
     }
     accepted_voxel_edits_.push_back(std::move(change));
     return core::Status::ok();

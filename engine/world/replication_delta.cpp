@@ -901,6 +901,25 @@ void count_updated(WorldReplicationDeltaApplyReport& report, std::uint32_t& sect
         batch.events, [](const auto& event) { return event.type == voxel_changed_event_type; });
 }
 
+[[nodiscard]] bool global_events_match(const WorldReplicationDeltaPlan& plan,
+                                       const net::ReplicationBatch& batch) noexcept {
+    std::size_t global_index = 0;
+    for (const auto& event : batch.events) {
+        if (event.subject.is_valid()) {
+            continue;
+        }
+        if (global_index >= plan.global_events.size()) {
+            return false;
+        }
+        const auto& planned = plan.global_events[global_index++];
+        if (planned.type != event.type || planned.subject != event.subject ||
+            planned.message != event.message) {
+            return false;
+        }
+    }
+    return global_index == plan.global_events.size();
+}
+
 } // namespace
 
 WorldReplicationDeltaPlan plan_replication_delta(const WorldState& state,
@@ -1298,7 +1317,8 @@ core::Result<WorldReplicationDeltaDeliveryReport> send_replication_delta_snapsho
 }
 
 core::Result<WorldReplicationDeltaApplyReport>
-apply_replication_delta(WorldState& state, const WorldReplicationDeltaSnapshot& snapshot) {
+apply_replication_delta(WorldState& state, const WorldReplicationDeltaSnapshot& snapshot,
+                        const WorldReplicationDeltaApplyOptions& options) {
     auto status = validate_delta_for_apply(snapshot);
     if (!status) {
         return core::Result<WorldReplicationDeltaApplyReport>::failure(status.error().code,
@@ -1326,6 +1346,17 @@ apply_replication_delta(WorldState& state, const WorldReplicationDeltaSnapshot& 
         if (!change) {
             return core::Result<WorldReplicationDeltaApplyReport>::failure(change.error().code,
                                                                            change.error().message);
+        }
+        if (options.voxel_edit_policy) {
+            auto disposition = options.voxel_edit_policy(change.value());
+            if (!disposition) {
+                return core::Result<WorldReplicationDeltaApplyReport>::failure(
+                    disposition.error().code, disposition.error().message);
+            }
+            if (disposition.value() == WorldReplicationVoxelEditDisposition::superseded) {
+                ++report.voxel_edits_superseded;
+                continue;
+            }
         }
         const auto address = block_to_chunk_local(change.value().position);
         (void)state.chunks().get_or_create(address.chunk);
@@ -1397,7 +1428,8 @@ apply_replication_delta(WorldState& state, const WorldReplicationDeltaSnapshot& 
 
 core::Result<WorldClientReplicationApplyReport> apply_client_replication_deltas(
     WorldState& state, net::ClientSession& client_session,
-    std::span<const WorldReplicationDeltaSnapshot> decoded_delta_snapshots) {
+    std::span<const WorldReplicationDeltaSnapshot> decoded_delta_snapshots,
+    const WorldReplicationDeltaApplyOptions& options) {
     std::map<std::uint64_t, std::size_t> deltas_by_sequence;
     for (std::size_t index = 0; index < decoded_delta_snapshots.size(); ++index) {
         const auto& plan = decoded_delta_snapshots[index].plan;
@@ -1435,7 +1467,7 @@ core::Result<WorldClientReplicationApplyReport> apply_client_replication_deltas(
             if (!batch_report.has_subject_events && has_voxel_changed_event(batch)) {
                 WorldReplicationDeltaSnapshot event_snapshot;
                 event_snapshot.plan = plan_replication_delta(state, batch);
-                auto applied = apply_replication_delta(state, event_snapshot);
+                auto applied = apply_replication_delta(state, event_snapshot, options);
                 if (!applied) {
                     return core::Result<WorldClientReplicationApplyReport>::failure(
                         applied.error().code, applied.error().message);
@@ -1481,8 +1513,13 @@ core::Result<WorldClientReplicationApplyReport> apply_client_replication_deltas(
                 "world_client_replication.event_count_mismatch",
                 "client replication delta event count does not match queued event batch");
         }
+        if (!global_events_match(snapshot.plan, batch)) {
+            return core::Result<WorldClientReplicationApplyReport>::failure(
+                "world_client_replication.global_event_mismatch",
+                "client replication delta global events do not match the queued event batch");
+        }
 
-        auto applied = apply_replication_delta(state, snapshot);
+        auto applied = apply_replication_delta(state, snapshot, options);
         if (!applied) {
             return core::Result<WorldClientReplicationApplyReport>::failure(
                 applied.error().code, applied.error().message);
@@ -1509,7 +1546,7 @@ core::Result<WorldClientReplicationApplyReport> apply_client_replication_deltas(
         if (snapshot.plan.command_type != "world.initial_snapshot") {
             continue;
         }
-        auto applied = apply_replication_delta(state, snapshot);
+        auto applied = apply_replication_delta(state, snapshot, options);
         if (!applied) {
             return core::Result<WorldClientReplicationApplyReport>::failure(
                 applied.error().code, applied.error().message);
@@ -1561,7 +1598,8 @@ drain_client_replication_delta_snapshots(net::ClientSession& client_session) {
 }
 
 core::Result<WorldClientReplicationApplyReport>
-apply_client_queued_replication_deltas(WorldState& state, net::ClientSession& client_session) {
+apply_client_queued_replication_deltas(WorldState& state, net::ClientSession& client_session,
+                                       const WorldReplicationDeltaApplyOptions& options) {
     auto snapshots = drain_client_replication_delta_snapshots(client_session);
     if (!snapshots) {
         return core::Result<WorldClientReplicationApplyReport>::failure(snapshots.error().code,
@@ -1569,7 +1607,8 @@ apply_client_queued_replication_deltas(WorldState& state, net::ClientSession& cl
     }
 
     return apply_client_replication_deltas(
-        state, client_session, std::span<const WorldReplicationDeltaSnapshot>(snapshots.value()));
+        state, client_session, std::span<const WorldReplicationDeltaSnapshot>(snapshots.value()),
+        options);
 }
 
 std::string

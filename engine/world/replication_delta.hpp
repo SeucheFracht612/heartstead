@@ -8,6 +8,7 @@
 #include "engine/world/operations/world_operation.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -22,6 +23,7 @@ struct HostSessionTickResult;
 namespace heartstead::world {
 
 class WorldState;
+struct VoxelChangeRecord;
 
 inline constexpr std::string_view replication_delta_snapshot_payload_type =
     "replication.world_delta_snapshot.bin.v1";
@@ -148,12 +150,23 @@ struct WorldReplicationDeltaApplyReport {
     std::uint32_t processes_inserted = 0;
     std::uint32_t processes_updated = 0;
     std::uint32_t voxel_edits_applied = 0;
+    std::uint32_t voxel_edits_superseded = 0;
     std::uint32_t dirty_region_count_before = 0;
     std::uint32_t dirty_region_count_after = 0;
     bool applied = false;
     bool requires_snapshot_resync = false;
     std::uint64_t replication_sequence = 0;
     core::NetId source_client_id;
+};
+
+enum class WorldReplicationVoxelEditDisposition : std::uint8_t {
+    apply,
+    superseded,
+};
+
+struct WorldReplicationDeltaApplyOptions {
+    std::function<core::Result<WorldReplicationVoxelEditDisposition>(const VoxelChangeRecord&)>
+        voxel_edit_policy;
 };
 
 struct WorldClientReplicationBatchApplyReport {
@@ -202,14 +215,17 @@ send_replication_delta_snapshots_for_tick(net::HostSession& host,
                                           const net::HostSessionTickResult& tick,
                                           std::int64_t server_time_ms);
 [[nodiscard]] core::Result<WorldReplicationDeltaApplyReport>
-apply_replication_delta(WorldState& state, const WorldReplicationDeltaSnapshot& snapshot);
+apply_replication_delta(WorldState& state, const WorldReplicationDeltaSnapshot& snapshot,
+                        const WorldReplicationDeltaApplyOptions& options = {});
 [[nodiscard]] core::Result<WorldClientReplicationApplyReport> apply_client_replication_deltas(
     WorldState& state, net::ClientSession& client_session,
-    std::span<const WorldReplicationDeltaSnapshot> decoded_delta_snapshots);
+    std::span<const WorldReplicationDeltaSnapshot> decoded_delta_snapshots,
+    const WorldReplicationDeltaApplyOptions& options = {});
 [[nodiscard]] core::Result<std::vector<WorldReplicationDeltaSnapshot>>
 drain_client_replication_delta_snapshots(net::ClientSession& client_session);
 [[nodiscard]] core::Result<WorldClientReplicationApplyReport>
-apply_client_queued_replication_deltas(WorldState& state, net::ClientSession& client_session);
+apply_client_queued_replication_deltas(WorldState& state, net::ClientSession& client_session,
+                                       const WorldReplicationDeltaApplyOptions& options = {});
 
 class WorldReplicationDeltaSnapshotTextCodec {
   public:

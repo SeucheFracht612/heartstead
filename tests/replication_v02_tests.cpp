@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -315,6 +316,44 @@ void test_voxel_event_applies_before_observation_without_separate_delta() {
     assert(current && current.value() == change.current);
 }
 
+void test_typed_delta_rejects_mismatched_global_event_payload() {
+    net::HostSession host(net::HostSessionConfig{
+        net::TransportHostDesc{
+            net::TransportBackend::in_memory,
+            net::InMemoryTransportHostConfig{core::NetId::from_value(75), 4096},
+        },
+        net::ReplicationRelevancePolicy{},
+    });
+    assert(host.start());
+    auto client_id = host.connect_client();
+    assert(client_id);
+    net::ClientSession client(client_id.value());
+    accept_welcome(host, client_id.value(), client);
+
+    net::ReplicationBatch observed;
+    observed.command_sequence = 1;
+    observed.replication_sequence = 1;
+    observed.source_client_id = client_id.value();
+    observed.command_type = "test.global_change";
+    observed.events.push_back({"test.global", {}, "observed"});
+    assert(host.send_replication_message(client_id.value(),
+                                         net::make_replication_transport_message(observed, 10)));
+    net::HostSessionTickResult delivery_tick;
+    assert(host.flush_outbound(delivery_tick));
+    auto messages = host.drain_client_messages(client_id.value());
+    assert(messages && messages.value().size() == 1);
+    assert(client.receive_server_message(messages.value().front()));
+
+    auto mismatched = observed;
+    mismatched.events.front().message = "different";
+    world::WorldState state;
+    const auto snapshot = world::materialize_replication_delta(state, mismatched);
+    const std::span<const world::WorldReplicationDeltaSnapshot> snapshots(&snapshot, 1);
+    auto applied = world::apply_client_replication_deltas(state, client, snapshots);
+    assert(!applied);
+    assert(applied.error().code == "world_client_replication.global_event_mismatch");
+}
+
 void test_replication_message_drain_preserves_a_bounded_backlog() {
     net::HostSession host(net::HostSessionConfig{
         net::TransportHostDesc{
@@ -365,6 +404,7 @@ int main() {
     test_two_clients_may_both_use_command_sequence_one();
     test_mixed_visibility_filters_events_ids_and_typed_state();
     test_voxel_event_applies_before_observation_without_separate_delta();
+    test_typed_delta_rejects_mismatched_global_event_payload();
     test_replication_message_drain_preserves_a_bounded_backlog();
     return 0;
 }
