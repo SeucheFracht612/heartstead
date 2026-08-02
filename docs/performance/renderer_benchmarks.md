@@ -40,6 +40,15 @@ Run the native Vulkan backend and export CSV:
   --format csv --output build/benchmarks/checkerboard-vulkan.csv
 ```
 
+Measure host-observed presentation completion only when diagnosing that endpoint:
+
+```bash
+./build/default-release/apps/render_benchmark/heartstead_render_benchmark \
+  --vulkan --presentation-timing --no-validation --scene mountains \
+  --warmup 120 --frames 600 --radius 8 \
+  --output build/benchmarks/mountains-present-completion.json
+```
+
 Use `--list-scenes` and `--help` rather than relying on an old copied option list. Add
 `--reference-mesher` to compare the readable correctness mesher against the optimized greedy path.
 The runner is uncapped unless `--frame-cap` is explicitly supplied.
@@ -101,10 +110,31 @@ Vulkan timestamps are asynchronous. Every GPU result carries the source frame an
 do not align a delayed GPU sample with the CPU frame that happened to receive it. The headless
 backend reports GPU timing unavailable while preserving the same CPU/counter schema.
 
+`--presentation-timing` is a Vulkan-only, opt-in diagnostic. The device must expose and enable both
+`VK_KHR_present_id` and `VK_KHR_present_wait`. The renderer assigns a non-zero, strictly increasing
+ID to each queued present and waits up to one second for that ID with `vkWaitForPresentKHR`; a
+missing capability, missing entry point, timeout, or unexpected wait result fails closed. Each raw
+frame retains validity, ID, and elapsed wait, while the summary computes mean, median, P95, P99, and
+maximum over valid samples only. The interval begins immediately before `vkQueuePresentKHR` and
+ends when the completion wait returns, so it includes the queue call and the host wait.
+
+This mode deliberately serializes every presentation and therefore changes frame pacing and
+`cpu_frame_ms`. It is not an ordinary throughput mode, an input-to-photon measurement, a precise
+presentation timestamp, or proof of physical scan-out. The normal path does not enable these
+extensions, wait for presentation, or take a presentation clock sample. Vulkan only queues a
+presentation through [`vkQueuePresentKHR`](https://docs.vulkan.org/refpages/latest/refpages/source/vkQueuePresentKHR.html);
+the completion operation and its guarantees come from
+[`VK_KHR_present_wait`](https://docs.vulkan.org/refpages/latest/refpages/source/VK_KHR_present_wait.html)
+and [`vkWaitForPresentKHR`](https://docs.vulkan.org/refpages/latest/refpages/source/vkWaitForPresentKHR.html),
+with IDs supplied by
+[`VkPresentIdKHR`](https://docs.vulkan.org/refpages/latest/refpages/source/VkPresentIdKHR.html).
+
 JSON and CSV schema v4 carry scene/run configuration plus engine version, Git commit and tracked
 dirty state, build configuration, compiler, platform, architecture, OS, CPU model/logical CPUs,
 Tracy state, GPU, driver information, and numeric Vulkan API/driver versions. Budget evaluation and
-violations are retained with the raw frames. Schema v4 records bounded chunk-mesh
+violations are retained with the raw frames. Additive schema-v4 fields retain whether presentation
+timing was requested and supported plus its per-frame and aggregate samples. Schema v4 records
+bounded chunk-mesh
 invalidation-to-resident latency: each event begins at the monotonic dirty-region mark and ends only
 when the exact requested mesh-stage revision is uploaded and published. It includes boundary
 neighbors, reports a fixed 256-completion rolling median/P95/P99, and separates pending, coalesced,
@@ -133,8 +163,43 @@ Extend this same hierarchy when adding pipeline stages rather than creating one-
 6. Separate CPU, GPU, meshing, upload, streaming, and synchronization conclusions.
 7. Use the reference mesher only as an otherwise-identical geometry baseline.
 8. Treat Vulkan validation state as part of the configuration.
-9. Preserve output files; do not transcribe only a headline FPS number.
-10. Add a new dated baseline below only when it remains useful for future decisions.
+9. Never compare a serialized `--presentation-timing` run with an ordinary throughput run.
+10. Preserve output files; do not transcribe only a headline FPS number.
+11. Add a new dated baseline below only when it remains useful for future decisions.
+
+## Vulkan presentation-completion calibration — 2026-08-02
+
+This calibration verifies the new completion endpoint and establishes its run-to-run behavior. It
+does not redefine the normal renderer frame budgets because each sample synchronously waits for its
+own presentation to complete.
+
+- **Build:** clean `3b02b3fa157a447383db92015a3832d658fe3279`, GCC 13.3.0, Release
+- **Machine:** Intel Core Ultra 7 258V, 8 logical CPUs, Intel Graphics (LNL), Mesa 25.2.8,
+  Linux 6.17.0-1030-oem
+- **Configuration:** Vulkan, validation disabled, 1920x1080, radius 8, 120 warm-up frames,
+  600 measured frames, immediate requested/uncapped, three independent processes per scene
+- **Command:** `heartstead_render_benchmark --vulkan --presentation-timing --no-validation
+  --scene SCENE --width 1920 --height 1080 --radius 8 --warmup 120 --frames 600 --budget none`
+- **Raw output:** `build/default-release/benchmarks/m7-{flat,mountains}-present-completion-run{1,2,3}.json`
+
+| Scene/run | Frame median ms | Frame P95 ms | Mean GPU ms | Present mean ms | Present median ms | Present P95 ms | Present P99 ms | Present max ms | Valid/total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Flat 1 | 8.266 | 10.266 | 3.507 | 4.438 | 3.757 | 6.823 | 7.608 | 8.485 | 600/600 |
+| Flat 2 | 7.800 | 10.009 | 3.325 | 4.085 | 3.357 | 6.304 | 7.149 | 8.702 | 600/600 |
+| Flat 3 | 7.963 | 10.064 | 3.471 | 4.195 | 3.396 | 6.687 | 7.227 | 7.993 | 600/600 |
+| Mountains 1 | 14.119 | 15.946 | 8.534 | 9.195 | 8.984 | 11.735 | 13.472 | 14.366 | 600/600 |
+| Mountains 2 | 14.158 | 15.813 | 8.485 | 9.119 | 9.022 | 11.403 | 13.555 | 14.235 | 600/600 |
+| Mountains 3 | 13.839 | 15.789 | 8.551 | 9.308 | 9.111 | 11.844 | 12.928 | 13.986 | 600/600 |
+
+All 3,600 measured waits were valid. Each process retained the contiguous measured ID range
+195-794: IDs 1-74 covered initial settlement and 75-194 covered warm-up. Flat process medians varied
+by 0.400 ms and P95 by 0.519 ms; mountains medians varied by 0.128 ms and P95 by 0.441 ms. A separate
+validation-enabled Debug smoke at 640x360 completed 30/30 waits without a Vulkan validation message.
+
+The result closes a generic host-observed queue-call-to-presentation-completion endpoint. It does
+not yet correlate a voxel edit or required-chunk draw with the presentation ID that first contains
+it, and it cannot observe compositor-to-panel scan-out. Those require a dedicated response workload
+and, for physical display latency, external or platform-specific measurement.
 
 ## Near-terrain multi-draw-indirect rejection — 2026-08-02
 

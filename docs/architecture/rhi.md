@@ -27,5 +27,14 @@ compute dispatch is first-class. Transfer work uses budgeted upload managers.
 Debug Vulkan runs enable validation, `VK_EXT_debug_utils` object/pass labels, and timestamp queries.
 Pipeline variants are prewarmed before the cache is sealed; unexpected runtime creation is an error.
 
+Presentation-completion timing is a diagnostic RHI capability, not a default pacing mechanism.
+`RenderDeviceCapabilities::supports_presentation_completion_timing` reports combined surface,
+`VK_KHR_present_id`, `VK_KHR_present_wait`, and feature support. A
+`RenderDeviceDesc::measure_presentation_completion` request requires that capability, assigns one
+strictly increasing ID per swapchain present, and returns validity, ID, and host-observed
+queue-call-to-completion wait in `RenderFrameStats`. Unsupported or timed-out requests fail closed.
+The opt-in wait serializes presentation and does not claim a precise presentation timestamp,
+physical scan-out, or input-to-photon latency; ordinary devices do not enable or execute it.
+
 See [Rendering](rendering.md), [Resource lifetime and synchronization](resource_lifetime_and_synchronization.md),
 and [Large-world rendering](large_world_rendering.md).

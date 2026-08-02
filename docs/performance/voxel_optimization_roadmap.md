@@ -1,7 +1,7 @@
 # Voxel optimization roadmap
 
 Status: maintained implementation plan derived from the optimization research brief and an audit
-of the current engine on 2026-08-01.
+of the current engine on 2026-08-02.
 
 This roadmap turns the research brief into ordered, testable changes for Heartstead. It is not a
 promise to implement every technique named by the report. Each optimization must improve a measured
@@ -24,14 +24,14 @@ requires one.
 | Research capability | Current Heartstead state | Planned action |
 | --- | --- | --- |
 | Permanent hierarchical profiling | Partial: retained CPU/GPU timers, counters, raw benchmark frames, and opt-in Tracy zones now cover major runtime, renderer, chunk, worker, lighting, collision, and streaming paths. | Extend zones and attribution as later stages are changed; add allocation ownership and queue-age plots. |
-| Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. The live renderer-proof test covers rapid interest teleports, cancellation, convergence, and zero-reservation teardown. Separate open-loop chunk, save-under-streaming, chunk-delta journal, isolated voxel-response, end-to-end render-readiness, near/mid/far edit-transition, and real-runtime multiplayer chunk-subscription benchmarks retain request-to-resident, physical indexed-read, save handoff/acceptance/publication, stable-storage append, checkpoint, collision-publication, whole-field relight, upload, exact current draw-command, retained LOD convergence/continuity, multi-client spread/convergence/traversal, per-client wire, and server-tick percentiles. | Add guaranteed-cold and multi-filesystem, cold-start, burst/hot-edit, impaired-network, actual GPU execution/presentation, and long-soak workloads. |
-| Reproducible provenance and gates | Renderer schema v4, chunk-streaming schema v4, chunk-delta-journal schema v1, voxel-response schema v1, chunk-render-readiness schema v1, and multiplayer chunk-subscription schema v1 record source/build/CPU/device/run metadata, warmups, repetitions or raw ticks, workload configuration, and fail-closed lifecycle invariants. Optional gates cover frame distributions, uploads, available GPU, rapid-edit mesh response, generated/in-memory/file-backed saved resident publication, physical payload reads and index opens, save-under-streaming owner handoff/request-to-durable acceptance/full publication, durable append/reopen/checkpoint, exact collision publication, full-field relight convergence, required-chunk draw eligibility, synchronous GPU waits, mesh amplification, owner publication time, subscription bounds, relevance exclusions, codec reuse/overshoot, backlog recovery, and server P99. | Add relative-regression checks and the remaining guaranteed-cold/multi-filesystem I/O, display, impaired-network, hot-edit, and soak gates. |
+| Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. The live renderer-proof test covers rapid interest teleports, cancellation, convergence, and zero-reservation teardown. Separate open-loop chunk, save-under-streaming, chunk-delta journal, isolated voxel-response, end-to-end render-readiness, near/mid/far edit-transition, and real-runtime multiplayer chunk-subscription benchmarks retain request-to-resident, physical indexed-read, save handoff/acceptance/publication, stable-storage append, checkpoint, collision-publication, whole-field relight, upload, exact current draw-command, retained LOD convergence/continuity, multi-client spread/convergence/traversal, per-client wire, and server-tick percentiles. The Vulkan runner also has a feature-gated, serialized presentation-completion workload with raw present IDs and waits. | Add guaranteed-cold and multi-filesystem, cold-start, burst/hot-edit, impaired-network, correlated edit-to-GPU/presentation, physical-display, and long-soak workloads. |
+| Reproducible provenance and gates | Renderer schema v4, chunk-streaming schema v4, chunk-delta-journal schema v1, voxel-response schema v1, chunk-render-readiness schema v1, and multiplayer chunk-subscription schema v1 record source/build/CPU/device/run metadata, warmups, repetitions or raw ticks, workload configuration, and fail-closed lifecycle invariants. Renderer schema v4 also records presentation-timing request/support, raw validity/ID/wait, and valid-sample distributions. Optional gates cover frame distributions, uploads, available GPU, rapid-edit mesh response, generated/in-memory/file-backed saved resident publication, physical payload reads and index opens, save-under-streaming owner handoff/request-to-durable acceptance/full publication, durable append/reopen/checkpoint, exact collision publication, full-field relight convergence, required-chunk draw eligibility, synchronous GPU waits, mesh amplification, owner publication time, subscription bounds, relevance exclusions, codec reuse/overshoot, backlog recovery, and server P99. | Add relative-regression checks and the remaining guaranteed-cold/multi-filesystem I/O, correlated display, impaired-network, hot-edit, and soak gates. |
 | Bounded jobs and cancellation | Generic and typed schedulers now bound pending/result work, expose backpressure and queue-age telemetry, age priorities, and support reasoned queued/cooperative cancellation. | Attribute per-type saturation in higher-level pipeline counters and tune limits from traces. |
 | Versioned chunk pipeline | An owner-thread ledger now separates content, light, mesh, collision, persistence, and replication request/output revisions and states. Save/replication, mesh/GPU, collision/physics, and whole-field lighting publication are ticket-validated across edit and reload races. | Calibrate stale-work amplification and latency under representative edit/streaming traces. |
 | Compact voxel sections | Chunks remain fixed 32³ with contiguous dense `VoxelCell` production storage. Reproducible 16/32 experiments now cover dense, split, palette-packed, uniform-light, sparse-metadata, and adaptive split-dense fallback candidates. | Retain dense production storage while mask/macro work proceeds; add a medium-diversity crossover sweep before any storage selection. |
 | Occupancy and opacity masks | A fixed 4 KiB occupancy mask follows the exact chunk content revision. Meshing snapshots also carry pooled greedy-cube and halo-padded full-occluder masks keyed by content dependencies and render-table revision. | Reuse the resident occupancy mask for later measured consumers; keep render-dependent masks derived and consumer-specific. |
 | Face culling and greedy meshing | Implemented with immutable neighborhood snapshots, material/render phases, bounded scheduling, stale rejection, pooled buffers, reproducible isolated benchmarks, occupancy-assisted rejection, word-level face candidates/AO queries, surface-bound reservation, an isolated-cube culled fallback, and bounded invalidation-to-resident traces. | Keep slab or microbrick rebuilds deferred unless a future measured edit P95 again exceeds target. |
-| Dynamic edit propagation | Dirty regions, neighbor dependencies, asynchronous mesh/light/collision work, upload quotas, exact mesh/collision/relight lifecycle tracking, edit coalescing/abandonment telemetry, and calibrated visual, collision, relight, required-chunk upload-preparation, and draw-eligibility P95 gates exist. | Add burst-edit collision/relight amplification and actual GPU execution/presentation/display response workloads. |
+| Dynamic edit propagation | Dirty regions, neighbor dependencies, asynchronous mesh/light/collision work, upload quotas, exact mesh/collision/relight lifecycle tracking, edit coalescing/abandonment telemetry, and calibrated visual, collision, relight, required-chunk upload-preparation, and draw-eligibility P95 gates exist. | Add burst-edit collision/relight amplification and correlate the existing GPU/presentation endpoints with edit and physical-display response. |
 | Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, indexed delta save/replication, residency budgets, and far clipmaps exist. Durable snapshot acceptance/compaction and application saves run through a bounded save worker. A bounded chunk loader moves disk/decode/generation/private edit application off-thread and is active in the live renderer-proof stream. Saved-delta publication and narrow flushes no longer scan or copy global edit history, physical delta sources parse one base-plus-journal view per streaming epoch, and a retained writer publishes one checksummed file per update. Process-local readers/writers pin generation tables; append/publication mutations serialize across database instances; destructive maintenance fails fast for retry. The save-under-streaming harness proves pinned reads across full generation publication, an explicit reader gap, stale pruning, and future-source rotation. Warm/cache-advised reads and durable append/reopen/checkpoint gates pass at 16,384 records. | Add application-owned checkpoint retry cadence plus guaranteed-cold/multi-filesystem coverage, adopt async loading in the general generated-world controller, bound eviction waves, and add scale-calibrated live save-capture gates. |
 | Visibility, LOD, and GPU scaling | Frustum/distance/hierarchical visibility, HZB support, far clipmaps, indirect rendering, GPU arenas, upload staging, and pass timestamps already exist. | Tune only from captures; validate total culling benefit and retain broad fallback paths. |
 | Simulation and multiplayer scale | Simulation LOD, server authority, fixed-step runtime, bounded reliable/transient replication, and player-centered hysteretic chunk subscriptions now run in `ServerRuntime`. Chunk snapshots are relevance-limited, identity/revision tracked, atomically queued, globally codec-time-bounded, and encoded once across recipients. A clean eight-client spread/convergence/traversal benchmark passes server P99, relevance, sharing, wire, and backlog-recovery gates. | Filter the separate voxel event/delta path, add hot-edit and impaired-network P99, connect game-specific temporal aggregate models, and add long-soak coverage. |
@@ -244,8 +244,8 @@ durable per-chunk records; the new calibration measures the same full-table shap
 for generation write and 48.254 seconds for checkpoint while keeping individual durable streamed
 appends near 3.3 ms P95. General-world runtime adoption, application checkpoint retry cadence,
 guaranteed-cold and multi-filesystem coverage, burst-edit/large-residency response,
-large live-snapshot-capture benchmarks, and actual GPU
-execution/presentation/display timing remain before M5 can be marked complete.
+large live-snapshot-capture benchmarks, and correlated required-chunk GPU execution,
+presentation-completion, and physical-display timing remain before M5 can be marked complete.
 
 ### M6 — world and multiplayer scale
 
@@ -385,8 +385,8 @@ updates were 1.521/9.189 ms, upload preparation stayed below 0.016 ms, synchrono
 zero, and pipeline occupancy peaked at two of three. All six processes passed the calibrated
 50/250/500/500 ms response, 12 ms owner, 0.5 ms upload-preparation, zero-wait, bounded-work,
 continuity, supersession, and resource-teardown gates. This implements the isolated retained
-near/mid/far transition slice. Burst and broad invalidations, actual GPU execution/display response,
-and long-soak transition evidence remain open.
+near/mid/far transition slice. Burst and broad invalidations, correlated GPU
+execution/presentation/display response, and long-soak transition evidence remain open.
 
 ### M7 — trace-gated GPU work
 
@@ -411,8 +411,25 @@ The standards audit did identify two independent correctness requirements worth 
 physical-device limit through the RHI, splits far-terrain groups at that limit, and falls back to
 direct draws when the limit cannot produce a multi-draw call. No capture currently justifies
 meshlets, compute meshing, descriptor indexing, virtualized resources, or sparse far-field
-structures. Actual GPU execution is now represented by asynchronous timestamps; presentation and
-scan-out latency still need a supported endpoint and a separate acceptance workload.
+structures. Actual GPU execution remains represented by asynchronous timestamps.
+
+An explicit presentation-completion endpoint is now available for diagnostics. When requested, the
+Vulkan device selection and feature chain require `VK_KHR_present_id` plus
+`VK_KHR_present_wait`; each present receives a monotonic ID, waits with a finite timeout, and
+publishes validity/ID/wait telemetry through the RHI and renderer schema v4. Unsupported requests
+fail closed, while ordinary rendering does not enable the extensions, sample a clock, or wait. The
+mode intentionally serializes presentation and therefore cannot be used as a normal frame-throughput
+configuration.
+
+Three clean 600-frame Release processes per scene on Intel Graphics (LNL) retained 3,600/3,600
+valid samples and contiguous measured IDs. Flat presentation-wait medians/P95s ranged
+3.357-3.757/6.304-6.823 ms; mountains ranged 8.984-9.111/11.403-11.844 ms. A validation-enabled
+Debug smoke completed 30/30 waits without validation messages. See
+[Renderer benchmarks](renderer_benchmarks.md#vulkan-presentation-completion-calibration--2026-08-02).
+This closes generic host-observed queue-call-to-presentation-completion instrumentation, not
+edit-to-present correlation, a precise presentation timestamp, compositor-to-panel scan-out, or
+input-to-photon latency. Those still require a separate acceptance workload and, for physical
+display response, an external or platform-specific endpoint.
 
 ## Initial acceptance matrix
 
@@ -425,7 +442,8 @@ scan-out latency still need a supported endpoint and a separate acceptance workl
 | Mesh latency | Representative P95 at most 4 ms; adversarial P95 at most 10 ms. |
 | Local edit | Visual P95 at most 50 ms; adjacent collision at most 100 ms. |
 | Lighting | Begins within one frame; ordinary convergence P95 at most 250 ms. |
-| Near draw eligibility | P95 at most 250 ms for resident or predicted inputs; GPU execution and display require a separate endpoint. |
+| Near draw eligibility | P95 at most 250 ms for resident or predicted inputs; GPU execution and presentation must be correlated separately. |
+| Presentation diagnostic | A requested supported run has valid, strictly increasing present IDs for every ordinary measured frame; wait distributions are descriptive, not normal frame budgets. |
 | Allocation | Zero general-heap allocations in established mesh, visibility, and fixed-tick inner loops. |
 | Regression | Investigate a change exceeding both 5% relative and the metric's measured noise floor. |
 
