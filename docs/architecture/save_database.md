@@ -19,11 +19,22 @@ save_slots_root/
         chunks/
           index.txt
           c_<x>_<y>_<z>.delta
+    journal/
+      checkpoint.txt
+      entry_<zero-padded-sequence>.hsj
 ```
 
 Implemented behavior:
 
 - writes and reads full snapshots through `SaveBinaryCodec`
+- accepts a snapshot durably by writing a versioned, checksummed, immutable journal entry; readers
+  prefer the highest valid accepted entry newer than the compacted checkpoint
+- bounds the journal to eight entries and 1 GiB, rejects non-canonical names, duplicate/exhausted
+  sequences, oversized payloads, truncation, checksum mismatch, and unsupported versions
+- compacts the newest accepted entry into the generation store, durably advances the journal
+  checkpoint, and only then removes covered journal entries
+- recovers interrupted journal work by removing owned `.tmp` files, flushing the directory change,
+  and compacting any accepted entry newer than the checkpoint
 - exposes a validated read helper that checks the loaded snapshot against the active
   `PrototypeRegistry` before callers materialize gameplay/runtime state
 - stages full snapshot commits in `generations/generation_<n>.tmp`, promotes the finished
@@ -33,6 +44,7 @@ Implemented behavior:
 - writes chunk edit deltas as independent per-chunk payload files
 - stores a chunk index so streamed chunk delta records can be loaded separately
 - exposes basic database statistics
+- reports journal entry count/bytes and checkpoint/highest sequences with the generation statistics
 - reports whether the active save is legacy or generation-backed, the active generation name,
   committed generation count, staged generation count, and stale generation count through
   `SaveDatabaseStats`
@@ -60,6 +72,11 @@ Implemented behavior:
 - exposes a catalog-level snapshot commit helper that writes the per-slot save database and advances
   `last_saved_at_ms` only after a successful snapshot commit; wall-clock corrections never move an
   existing saved or played timestamp backwards
+- provides a one-worker `SaveScheduler` with bounded active/completed requests and measured
+  per-request/aggregate working-memory reservations; serialization, stable-storage waits,
+  compaction, and slot-metadata publication stay on that worker
+- treats journal acceptance as success even if later checkpoint compaction fails, reports the
+  compaction error separately, and lets normal reads/recovery select the accepted entry
 - updates `last_played_at_ms` separately when a loaded world becomes active, so Continue ordering
   does not confuse opening a world with saving it
 - keeps an optional `preview.png` sidecar beside the authoritative generation store; production
@@ -71,18 +88,22 @@ Implemented behavior:
 - exposes a save-slot catalog summary for aggregate inspection of slot count, empty slots, active
   generation slots, legacy slots, staged generations, and chunk-delta totals
 
-`current.txt` is the only authority for the active generation. Readers do not guess the newest
+`current.txt` is the only authority for the compacted generation. Readers do not guess the newest
 generation if the manifest is malformed or points to a missing directory. A completed generation
 that was promoted before manifest publication failed is therefore stale, not implicitly active.
-Maintenance validates an existing active generation before deleting staged directories; it does
-not repair a corrupt manifest or choose an older generation automatically.
+An accepted journal entry newer than the journal checkpoint is a separate, explicit authority and
+is preferred by readers. Maintenance validates an existing active generation before deleting
+staged directories; it does not repair a corrupt manifest or choose an older generation
+automatically.
 
-The replacement helpers close files and rename temporary paths, but they do not `fsync` file or
-directory contents and do not provide inter-process locking. On filesystems where replacing an
-existing path by rename fails, the compatibility fallback removes the destination before retrying.
-Consequently this foundation provides staged failure isolation for ordinary API errors, not a
-formal power-loss durability or concurrent-writer guarantee. Callers must serialize writes and use
-an external backup/export policy for production data.
+Durable replacement closes the staged file, requests stable storage for it, atomically replaces the
+destination, and persists the containing directory entry. POSIX uses `fsync` for files and
+directories; Windows uses `FlushFileBuffers` and `MoveFileExW(..., MOVEFILE_WRITE_THROUGH)`, where
+there is no portable directory-`fsync` equivalent. These calls establish the engine's acceptance
+boundary but cannot override guarantees of the filesystem, device firmware, virtualization layer,
+or platform. The scheduler's single worker serializes requests submitted through one scheduler
+instance. Direct database callers and separate processes still require external single-writer
+coordination. Backup/export policy remains an operational responsibility.
 
 This is not a final production save store. It establishes the engine boundary:
 
@@ -91,5 +112,5 @@ This is not a final production save store. It establishes the engine boundary:
 - derived data remains rebuildable and is not saved as authoritative state
 - file layout and slot naming are owned by the engine, not by gameplay systems or mods
 
-Future work should add durable commit/fsync policy, concurrent-writer exclusion, production-scale
-backup/export policy, and save-slot UI workflows.
+Future work should add cross-process writer exclusion, production-scale backup/export policy,
+large-world snapshot-capture benchmarks, and complete save-slot UI workflows.

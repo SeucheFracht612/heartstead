@@ -24,7 +24,7 @@ requires one.
 | Research capability | Current Heartstead state | Planned action |
 | --- | --- | --- |
 | Permanent hierarchical profiling | Partial: retained CPU/GPU timers, counters, raw benchmark frames, and opt-in Tracy zones now cover major runtime, renderer, chunk, worker, lighting, collision, and streaming paths. | Extend zones and attribution as later stages are changed; add allocation ownership and queue-age plots. |
-| Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. | Add teleport, rapid-traversal time-to-visible, server/client, save, cold-start, and long-soak workloads. |
+| Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. The live renderer-proof test now includes rapid interest teleports, cancellation, convergence, and zero-reservation teardown. | Add percentile-bearing rapid-traversal time-to-visible, server/client, save, cold-start, and long-soak workloads. |
 | Reproducible provenance and gates | Benchmark schema v4 records source/build/CPU/GPU/driver/run metadata, warmup-isolated edit latency, a bounded tail drain, and mesh-work amplification. Optional tier gates enforce median, P95, P99, maximum frame, upload, available GPU, and sustainable rapid-edit limits. | Add calibrated reference-machine baselines, repetitions, relative-regression checks, and non-renderer gates. |
 | Bounded jobs and cancellation | Generic and typed schedulers now bound pending/result work, expose backpressure and queue-age telemetry, age priorities, and support reasoned queued/cooperative cancellation. | Attribute per-type saturation in higher-level pipeline counters and tune limits from traces. |
 | Versioned chunk pipeline | An owner-thread ledger now separates content, light, mesh, collision, persistence, and replication request/output revisions and states. Save/replication, mesh/GPU, collision/physics, and whole-field lighting publication are ticket-validated across edit and reload races. | Calibrate stale-work amplification and latency under representative edit/streaming traces. |
@@ -32,7 +32,7 @@ requires one.
 | Occupancy and opacity masks | A fixed 4 KiB occupancy mask follows the exact chunk content revision. Meshing snapshots also carry pooled greedy-cube and halo-padded full-occluder masks keyed by content dependencies and render-table revision. | Reuse the resident occupancy mask for later measured consumers; keep render-dependent masks derived and consumer-specific. |
 | Face culling and greedy meshing | Implemented with immutable neighborhood snapshots, material/render phases, bounded scheduling, stale rejection, pooled buffers, reproducible isolated benchmarks, occupancy-assisted rejection, word-level face candidates/AO queries, surface-bound reservation, an isolated-cube culled fallback, and bounded invalidation-to-resident traces. | Keep slab or microbrick rebuilds deferred unless a future measured edit P95 again exceeds target. |
 | Dynamic edit propagation | Dirty regions, neighbor dependencies, asynchronous mesh/light/collision work, upload quotas, exact mesh-stage latency tracking, edit-burst coalescing telemetry, and a clean repeated 50 ms visual-response gate exist. | Measure collision/light convergence and enforce explicit time budgets. |
-| Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, delta save/replication, residency budgets, and far clipmaps exist. Loading/generation and parts of save I/O remain synchronous. | Move disk/decode/generation/save stages off latency-critical threads and add journal durability, queue limits, and recovery tests. |
+| Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, delta save/replication, residency budgets, and far clipmaps exist. Durable snapshot acceptance/compaction and application saves run through a bounded save worker. A bounded chunk loader moves disk/decode/generation/private edit application off-thread and is active in the live renderer-proof stream. | Adopt async loading in the general generated-world controller, bound eviction waves, and add scale-calibrated latency/save-capture gates. |
 | Visibility, LOD, and GPU scaling | Frustum/distance/hierarchical visibility, HZB support, far clipmaps, indirect rendering, GPU arenas, upload staging, and pass timestamps already exist. | Tune only from captures; validate total culling benefit and retain broad fallback paths. |
 | Simulation and multiplayer scale | Simulation LOD, server authority, interest management, replication deltas, and fixed-step runtime exist. | Add multi-client spread/convergence benchmarks, byte/time quotas, backlog recovery gates, and soak coverage. |
 
@@ -146,6 +146,22 @@ Deliverables:
 Exit gate: gameplay-thread save work stays below 0.25 ms, upload preparation below 0.5 ms/frame,
 player-adjacent collision response below 100 ms, ordinary lighting convergence P95 below 250 ms,
 and required resident/predicted chunks reach visibility P95 within 250 ms.
+
+Progress: durable file replacement, checksummed snapshot journal acceptance, crash recovery,
+checkpoint compaction, bounded save scheduling, worker-side slot metadata, and application-level
+autosave/final-save adoption are implemented. The live chunk-load pipeline now bounds worker,
+mailbox, memory-reservation, item-publication, and publication-time work; separates disk, decode,
+generation, preparation, and owner publication timings; accepts immutable custom generators; and
+rejects cancelled/stale work before publication. The renderer-proof runtime uses this path and its
+rapid-teleport test proves cancelled requests drain, off-interest chunks do not publish, server and
+client converge on all 441 desired chunks, and reservations return to zero. The focused save/load
+paths pass warning-as-error builds plus ASan/UBSan and TSAN; the complete suite is 153/153 green.
+
+A small release lifecycle sample measured save owner handoff at 0.046 ms, below the 0.25 ms target,
+but this is not a scale-qualified closure: snapshot capture still scales with owned world state.
+General-world runtime adoption, saved-edit publication at a large global edit-log size, explicit
+upload/collision/light gates, and percentile-bearing near time-to-visible/load-under-save
+benchmarks remain before M5 can be marked complete.
 
 ### M6 — world and multiplayer scale
 

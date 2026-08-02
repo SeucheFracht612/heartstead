@@ -52,9 +52,17 @@ created and before ticking starts. Missing hooks fail the launch; they never sil
 another world.
 
 The `renderer_proof` hook is shared by the menu world and automated developer-world test. It
-materializes the former retained-renderer proof terrain around chunk coordinates
+materializes an initial 3x3 retained-renderer proof fixture around chunk coordinates
 `(1,000,000,000, 0, -1,000,000,000)`, preserving its floating-origin coverage without making the
-standalone render smoke executable the normal gameplay path.
+standalone render smoke executable the normal gameplay path. The live server then extends the
+fixture to its circular interest radius through the bounded `ChunkLoadScheduler` and an immutable
+scenario generator. Disk/decode/generation/preparation stay off the owner thread; publication is
+item- and time-budgeted.
+
+The automated runtime test briefly teleports the player outside the original interest center and
+back. It verifies that obsolete load requests are cancelled, no off-interest result is published,
+server and client converge on the 441 desired chunks, and the loader releases every working-memory
+reservation at teardown.
 
 ## Current entries
 

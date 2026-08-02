@@ -31,6 +31,8 @@ Implemented foundation:
   - create/find chunk records
   - expose read-only chunk snapshots for inspection, tooling, and simulation LOD derivation
   - insert generated chunks without creating edit records
+  - prepare a generated chunk plus its canonical saved-edit chain while it is still private, then
+    publish that move-only product through a narrow owner-thread insertion
   - read and write voxel cells
   - append explicit voxel edit records
   - auto-create edited chunks
@@ -56,6 +58,8 @@ Implemented foundation:
   - shared by world snapshot export/import and save snapshot validation
   - rejects discontinuous multi-edit chains for one voxel when a delta is applied by
     `ChunkDatabase`
+  - rejects more edit records than there are cells in one chunk before allocating an unbounded
+    decode result
 
 - `ChunkStreamer`
   - loads chunk coordinates into `WorldState` on demand
@@ -101,6 +105,29 @@ Implemented foundation:
   - can also run a loaded maintenance step that satisfies viewer-interest load requests through
     deterministic generation plus optional saved edit deltas before the flush/evict pass
 
+- `ChunkLoadScheduler`
+  - runs disk read, saved-delta decode, terrain generation, and private saved-edit application on a
+    fixed worker pool; workers receive immutable generation inputs and never touch live world state
+  - supports both the deterministic terrain generator and immutable, concurrently callable custom
+    generators used by packaged fixtures
+  - bounds active requests, completed results, per-request working-memory reservations, aggregate
+    reserved memory, publications per update, and owner-thread publication time
+  - retains reservations until owner publication, so draining a worker mailbox cannot create an
+    unbounded resubmission window
+  - rejects duplicate submissions and stale results, and checks cooperative cancellation between
+    disk, decode, generation, and preparation stages
+  - cancels requests outside a new interest set without allocation; a completed result that becomes
+    obsolete during a teleport is rejected before it can publish
+  - records queue age, stage/worker/pipeline timing, publication time, high-water memory, failures,
+    cancellations, stale work, and backpressure in runtime inspection, F3 diagnostics, and Tracy
+    zones/plots
+  - is used by the live renderer-proof server stream, where successful bounded publications alone
+    advance collision-world revision and enter chunk replication
+
+`ChunkStreamer::maintain_loaded_interest` remains a synchronous convenience for deterministic
+tests and tooling. Latency-sensitive runtime controllers should plan interest and feed load requests
+through `ChunkLoadScheduler` instead of calling that convenience loop on a tick thread.
+
 - `ChunkMesher`
   - provides a reference surface extractor and a production greedy extractor
   - uses immutable center-plus-halo snapshots for cross-chunk visibility and rich block-model
@@ -122,7 +149,9 @@ workers never receive a mutable `VoxelChunk` or `ChunkDatabase`.
 
 Current extension areas:
 
-- budgeted/asynchronous streaming jobs for large load and eviction waves
+- adopt the asynchronous scheduler in the general generated-world interest controller and add
+  bounded eviction waves
+- remove global edit-log copying from the uncommon saved-edit publication path at large scale
 - further mesh compression, simulation/render LOD, and rich-model batching optimization
 
 Collision cooking and voxel-light propagation are maintained as separate systems; see
