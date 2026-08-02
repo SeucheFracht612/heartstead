@@ -1242,6 +1242,7 @@ void test_prediction_under_deterministic_100ms_rtt_and_two_percent_loss() {
     std::uint64_t server_to_client_bytes = 0;
     std::uint64_t one_second_window_bytes = 0;
     std::uint64_t peak_one_second_bytes = 0;
+    std::uint32_t impairment_eligible_unreliable_messages = 0;
     std::uint32_t simulated_drops = 0;
     std::uint32_t accepted_inputs = 0;
     std::uint32_t hard_corrections = 0;
@@ -1266,6 +1267,8 @@ void test_prediction_under_deterministic_100ms_rtt_and_two_percent_loss() {
         for (const auto& server_tick : frame.value().server_ticks) {
             server_to_client_bytes += server_tick.commands.transport_server_to_client_bytes;
             one_second_window_bytes += server_tick.commands.transport_server_to_client_bytes;
+            impairment_eligible_unreliable_messages +=
+                server_tick.commands.transport_impairment_eligible_unreliable_message_count;
             simulated_drops +=
                 server_tick.commands.transport_simulated_dropped_unreliable_message_count;
             accepted_inputs += server_tick.accepted_movement_input_count;
@@ -1284,6 +1287,7 @@ void test_prediction_under_deterministic_100ms_rtt_and_two_percent_loss() {
     const auto average_bytes_per_second =
         static_cast<double>(server_to_client_bytes) / measured_seconds;
     assert(simulated_drops > 0);
+    assert(simulated_drops < impairment_eligible_unreliable_messages);
     assert(accepted_inputs > measured_ticks * 9U / 10U);
     // A collision-world revision change may intentionally flush prediction history once during
     // bootstrap; its correction must still remain below the published 1 m comfort threshold.

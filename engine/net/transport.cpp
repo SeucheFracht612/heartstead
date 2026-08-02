@@ -1262,12 +1262,15 @@ InMemoryTransportHost::poll_maintenance(std::int64_t now_ms) {
     result.server_to_client_bytes = pending_server_to_client_bytes_;
     result.client_to_server_message_count = pending_client_to_server_message_count_;
     result.server_to_client_message_count = pending_server_to_client_message_count_;
+    result.impairment_eligible_unreliable_message_count =
+        pending_impairment_eligible_unreliable_message_count_;
     result.simulated_dropped_unreliable_message_count = pending_simulated_drop_count_;
     result.pending_impaired_message_count = static_cast<std::uint32_t>(pending_deliveries_.size());
     pending_client_to_server_bytes_ = 0;
     pending_server_to_client_bytes_ = 0;
     pending_client_to_server_message_count_ = 0;
     pending_server_to_client_message_count_ = 0;
+    pending_impairment_eligible_unreliable_message_count_ = 0;
     pending_simulated_drop_count_ = 0;
     return core::Result<TransportMaintenanceResult>::success(std::move(result));
 }
@@ -1339,10 +1342,12 @@ void InMemoryTransportHost::queue_or_deliver(TransportEnvelope envelope, bool to
     }
 
     const auto impairment = next_impairment_value();
-    if (envelope.message.channel == TransportChannel::unreliable &&
-        impairment % 10'000U < config_.simulated_unreliable_loss_basis_points) {
-        ++pending_simulated_drop_count_;
-        return;
+    if (envelope.message.channel == TransportChannel::unreliable) {
+        ++pending_impairment_eligible_unreliable_message_count_;
+        if (impairment % 10'000U < config_.simulated_unreliable_loss_basis_points) {
+            ++pending_simulated_drop_count_;
+            return;
+        }
     }
 
     const auto jitter_span = static_cast<std::uint64_t>(config_.simulated_jitter_ms) * 2U + 1U;

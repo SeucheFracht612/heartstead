@@ -101,6 +101,7 @@ struct HostSessionTickResult {
     std::uint64_t transport_server_to_client_bytes = 0;
     std::uint32_t transport_client_to_server_message_count = 0;
     std::uint32_t transport_server_to_client_message_count = 0;
+    std::uint32_t transport_impairment_eligible_unreliable_message_count = 0;
     std::uint32_t transport_simulated_dropped_unreliable_message_count = 0;
     std::uint32_t transport_pending_impaired_message_count = 0;
     std::uint32_t outbound_budget_dropped_unreliable_message_count = 0;

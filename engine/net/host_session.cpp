@@ -500,6 +500,8 @@ core::Result<HostSessionTickResult> HostSession::tick(const ServerCommandDispatc
         maintenance.value().client_to_server_message_count;
     tick_result.transport_server_to_client_message_count =
         maintenance.value().server_to_client_message_count;
+    tick_result.transport_impairment_eligible_unreliable_message_count =
+        maintenance.value().impairment_eligible_unreliable_message_count;
     tick_result.transport_simulated_dropped_unreliable_message_count =
         maintenance.value().simulated_dropped_unreliable_message_count;
     tick_result.transport_pending_impaired_message_count =

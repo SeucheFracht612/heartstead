@@ -105,6 +105,7 @@ struct TransportMaintenanceResult {
     std::uint64_t server_to_client_bytes = 0;
     std::uint32_t client_to_server_message_count = 0;
     std::uint32_t server_to_client_message_count = 0;
+    std::uint32_t impairment_eligible_unreliable_message_count = 0;
     std::uint32_t simulated_dropped_unreliable_message_count = 0;
     std::uint32_t pending_impaired_message_count = 0;
     std::vector<TransportEnvelope> dropped_reliable_messages;
@@ -253,6 +254,7 @@ class InMemoryTransportHost final : public ITransportHost {
     std::uint64_t pending_server_to_client_bytes_ = 0;
     std::uint32_t pending_client_to_server_message_count_ = 0;
     std::uint32_t pending_server_to_client_message_count_ = 0;
+    std::uint32_t pending_impairment_eligible_unreliable_message_count_ = 0;
     std::uint32_t pending_simulated_drop_count_ = 0;
 };
 

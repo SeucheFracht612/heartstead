@@ -271,6 +271,17 @@ target_compile_definitions(
 heartstead_configure_test_target(heartstead_multiplayer_chunk_subscription_benchmark_tests)
 heartstead_register_unit_test(heartstead_multiplayer_chunk_subscription_benchmark_tests)
 
+add_executable(heartstead_multiplayer_network_impairment_benchmark_tests
+               multiplayer_network_impairment_benchmark_tests.cpp)
+target_link_libraries(heartstead_multiplayer_network_impairment_benchmark_tests
+                      PRIVATE Heartstead::GameRuntime)
+target_compile_definitions(
+  heartstead_multiplayer_network_impairment_benchmark_tests
+  PRIVATE HEARTSTEAD_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+heartstead_configure_test_target(heartstead_multiplayer_network_impairment_benchmark_tests)
+heartstead_register_unit_test(heartstead_multiplayer_network_impairment_benchmark_tests)
+
 add_executable(heartstead_presentation_world_tests presentation_world_tests.cpp)
 target_link_libraries(heartstead_presentation_world_tests PRIVATE Heartstead::GameRuntime)
 heartstead_configure_test_target(heartstead_presentation_world_tests)

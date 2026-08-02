@@ -28,13 +28,12 @@ namespace heartstead::game {
 
 namespace {
 
-using ReplicationClock = std::chrono::steady_clock;
+using RuntimeClock = std::chrono::steady_clock;
 
 [[nodiscard]] std::uint64_t
-elapsed_replication_microseconds(ReplicationClock::time_point started) noexcept {
+elapsed_runtime_microseconds(RuntimeClock::time_point started) noexcept {
     const auto elapsed =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(ReplicationClock::now() - started)
-            .count();
+        std::chrono::duration_cast<std::chrono::nanoseconds>(RuntimeClock::now() - started).count();
     if (elapsed <= 0) {
         return 1;
     }
@@ -90,9 +89,9 @@ template <typename Snapshot, typename Encoder, typename Sender>
             continue;
         }
 
-        const auto started = ReplicationClock::now();
+        const auto started = RuntimeClock::now();
         const auto payload = encode(snapshot);
-        const auto serialization_time_us = elapsed_replication_microseconds(started);
+        const auto serialization_time_us = elapsed_runtime_microseconds(started);
         auto serialization_status = budget.finish_shared_serialization(serialization_time_us);
         if (!serialization_status) {
             return serialization_status;
@@ -791,6 +790,7 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
         return core::Result<ServerRuntimeTickStats>::failure(
             "server_runtime.not_running", "server runtime must be started before ticking");
     }
+    const auto tick_started = RuntimeClock::now();
     events_.clear();
     current_time_ms_ = now_ms;
     current_commands_ = {};
@@ -861,6 +861,7 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     }
     stats.deferred_transient_snapshot_count = stats.transient_replication.deferred_message_count;
     stats.transient_snapshot_payload_bytes = stats.transient_replication.admitted_payload_bytes;
+    stats.wall_time_us = elapsed_runtime_microseconds(tick_started);
     return core::Result<ServerRuntimeTickStats>::success(std::move(stats));
 }
 
@@ -2359,7 +2360,7 @@ core::Status ServerRuntime::synchronize_client_chunk_subscription(
                 ++current_chunk_subscriptions_.serialization_budget_deferred_snapshot_count;
                 continue;
             }
-            const auto started = ReplicationClock::now();
+            const auto started = RuntimeClock::now();
             auto slices = world::make_chunk_snapshot_slices(*chunk);
             if (!slices) {
                 return core::Status::failure(slices.error().code, slices.error().message);
@@ -2372,7 +2373,7 @@ core::Status ServerRuntime::synchronize_client_chunk_subscription(
                 encoded.slices.push_back(world::ChunkSnapshotSliceBinaryCodec::encode(slice));
             }
             current_chunk_subscriptions_.snapshot_serialization_time_us +=
-                elapsed_replication_microseconds(started);
+                elapsed_runtime_microseconds(started);
             ++current_chunk_subscriptions_.snapshot_serialization_operation_count;
             cached = snapshot_cache.insert_or_assign(coordinate, std::move(encoded)).first;
         }

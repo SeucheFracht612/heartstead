@@ -30,6 +30,7 @@ target_sources(
     runtime/game_inspection.cpp
     runtime/game_runtime.cpp
     runtime/multiplayer_chunk_subscription_benchmark.cpp
+    runtime/multiplayer_network_impairment_benchmark.cpp
     runtime/runtime_session.cpp
     runtime/server_runtime.cpp
     runtime/script_host_commands.cpp
@@ -68,6 +69,7 @@ target_sources(
       runtime/game_inspection.hpp
       runtime/game_runtime.hpp
       runtime/multiplayer_chunk_subscription_benchmark.hpp
+      runtime/multiplayer_network_impairment_benchmark.hpp
       runtime/runtime_session.hpp
       runtime/server_runtime.hpp
       runtime/script_host_commands.hpp

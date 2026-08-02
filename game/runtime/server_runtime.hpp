@@ -137,6 +137,7 @@ struct ServerChunkSubscriptionClientSnapshot {
 };
 
 struct ServerRuntimeTickStats {
+    std::uint64_t wall_time_us = 0;
     simulation::SimulationTickStats simulation;
     net::HostSessionTickResult commands;
     world::WorldReplicationDeltaDeliveryReport replication;
