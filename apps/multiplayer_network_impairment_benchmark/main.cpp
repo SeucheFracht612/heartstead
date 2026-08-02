@@ -49,11 +49,16 @@ template <typename Value> [[nodiscard]] std::optional<Value> parse_number(std::s
             options.help = true;
         } else if (argument == "--enforce-gates") {
             options.benchmark.enforce_gates = true;
-        } else if (argument == "--ticks" || argument == "--warmup-timeout-ticks" ||
-                   argument == "--one-way-latency-ms" || argument == "--variation-ms" ||
-                   argument == "--loss-basis-points" || argument == "--hard-corrections" ||
-                   argument == "--eligible-messages" || argument == "--minimum-drops" ||
-                   argument == "--pending-impaired") {
+        } else if (argument == "--clients" || argument == "--ticks" ||
+                   argument == "--neutral-tail-ticks" || argument == "--warmup-timeout-ticks" ||
+                   argument == "--recovery-timeout-ticks" || argument == "--one-way-latency-ms" ||
+                   argument == "--variation-ms" || argument == "--loss-basis-points" ||
+                   argument == "--hard-corrections" ||
+                   argument == "--hard-corrections-per-client" ||
+                   argument == "--eligible-messages" ||
+                   argument == "--eligible-messages-per-client" || argument == "--minimum-drops" ||
+                   argument == "--minimum-drops-per-client" || argument == "--pending-impaired" ||
+                   argument == "--pending-impaired-per-client") {
             auto value = next();
             if (!value) {
                 return core::Result<Options>::failure(value.error().code, value.error().message);
@@ -64,10 +69,16 @@ template <typename Value> [[nodiscard]] std::optional<Value> parse_number(std::s
                     "multiplayer_network_impairment_benchmark.invalid_count",
                     std::string(argument) + " must be an unsigned integer");
             }
-            if (argument == "--ticks") {
+            if (argument == "--clients") {
+                options.benchmark.client_count = *parsed;
+            } else if (argument == "--ticks") {
                 options.benchmark.measured_ticks = *parsed;
+            } else if (argument == "--neutral-tail-ticks") {
+                options.benchmark.neutral_input_tail_ticks = *parsed;
             } else if (argument == "--warmup-timeout-ticks") {
                 options.benchmark.warmup_timeout_ticks = *parsed;
+            } else if (argument == "--recovery-timeout-ticks") {
+                options.benchmark.recovery_timeout_ticks = *parsed;
             } else if (argument == "--one-way-latency-ms") {
                 options.benchmark.simulated_one_way_latency_ms = *parsed;
             } else if (argument == "--variation-ms") {
@@ -76,15 +87,25 @@ template <typename Value> [[nodiscard]] std::optional<Value> parse_number(std::s
                 options.benchmark.simulated_unreliable_loss_basis_points = *parsed;
             } else if (argument == "--hard-corrections") {
                 options.benchmark.maximum_hard_correction_count = *parsed;
+            } else if (argument == "--hard-corrections-per-client") {
+                options.benchmark.maximum_hard_correction_count_per_client = *parsed;
             } else if (argument == "--eligible-messages") {
                 options.benchmark.minimum_impairment_eligible_unreliable_message_count = *parsed;
+            } else if (argument == "--eligible-messages-per-client") {
+                options.benchmark.minimum_impairment_eligible_unreliable_message_count_per_client =
+                    *parsed;
             } else if (argument == "--minimum-drops") {
                 options.benchmark.minimum_simulated_unreliable_drop_count = *parsed;
-            } else {
+            } else if (argument == "--minimum-drops-per-client") {
+                options.benchmark.minimum_simulated_unreliable_drop_count_per_client = *parsed;
+            } else if (argument == "--pending-impaired") {
                 options.benchmark.maximum_pending_impaired_message_count = *parsed;
+            } else {
+                options.benchmark.maximum_pending_impaired_message_count_per_client = *parsed;
             }
         } else if (argument == "--seed" || argument == "--average-server-bytes" ||
-                   argument == "--rolling-server-bytes") {
+                   argument == "--rolling-server-bytes" || argument == "--average-client-bytes" ||
+                   argument == "--rolling-client-bytes") {
             auto value = next();
             if (!value) {
                 return core::Result<Options>::failure(value.error().code, value.error().message);
@@ -99,12 +120,19 @@ template <typename Value> [[nodiscard]] std::optional<Value> parse_number(std::s
                 options.benchmark.seed = *parsed;
             } else if (argument == "--average-server-bytes") {
                 options.benchmark.maximum_average_server_to_client_bytes_per_second = *parsed;
-            } else {
+            } else if (argument == "--rolling-server-bytes") {
                 options.benchmark.maximum_rolling_one_second_server_to_client_bytes = *parsed;
+            } else if (argument == "--average-client-bytes") {
+                options.benchmark.maximum_average_server_to_client_bytes_per_second_per_client =
+                    *parsed;
+            } else {
+                options.benchmark.maximum_rolling_one_second_server_to_client_bytes_per_client =
+                    *parsed;
             }
         } else if (argument == "--tick-p95-ms" || argument == "--tick-p99-ms" ||
                    argument == "--tick-max-ms" || argument == "--input-ratio" ||
-                   argument == "--correction-distance-m" || argument == "--displacement-m") {
+                   argument == "--client-input-ratio" || argument == "--correction-distance-m" ||
+                   argument == "--final-state-error-m" || argument == "--displacement-m") {
             auto value = next();
             if (!value) {
                 return core::Result<Options>::failure(value.error().code, value.error().message);
@@ -123,8 +151,12 @@ template <typename Value> [[nodiscard]] std::optional<Value> parse_number(std::s
                 options.benchmark.maximum_server_tick_ms = *parsed;
             } else if (argument == "--input-ratio") {
                 options.benchmark.minimum_accepted_input_ratio = *parsed;
+            } else if (argument == "--client-input-ratio") {
+                options.benchmark.minimum_client_authoritative_input_ratio = *parsed;
             } else if (argument == "--correction-distance-m") {
                 options.benchmark.maximum_correction_distance_m = *parsed;
+            } else if (argument == "--final-state-error-m") {
+                options.benchmark.maximum_final_state_error_m = *parsed;
             } else {
                 options.benchmark.minimum_authoritative_displacement_m = *parsed;
             }
@@ -155,8 +187,11 @@ template <typename Value> [[nodiscard]] std::optional<Value> parse_number(std::s
 void print_usage(std::ostream& output) {
     output
         << "usage: heartstead_multiplayer_network_impairment_benchmark [options]\n"
+           "  --clients N                Concurrent clients (default 8)\n"
            "  --ticks N                  Measured 60 Hz movement ticks (default 600)\n"
+           "  --neutral-tail-ticks N     Final measured neutral-input ticks (default 30)\n"
            "  --warmup-timeout-ticks N   Stable bootstrap bound (default 120)\n"
+           "  --recovery-timeout-ticks N Final convergence bound (default 32)\n"
            "  --one-way-latency-ms N     Simulated one-way delay (default 50)\n"
            "  --variation-ms N           Uniform +/- delay variation (default 10)\n"
            "  --loss-basis-points N      Unreliable loss stimulus (default 200)\n"
@@ -164,13 +199,21 @@ void print_usage(std::ostream& output) {
            "  --tick-p99-ms N            Server tick P99 gate (default 16.667)\n"
            "  --tick-max-ms N            Server tick maximum gate (default 50)\n"
            "  --input-ratio N            Exclusive accepted-input ratio floor (default 0.90)\n"
-           "  --hard-corrections N       Maximum hard corrections (default 1)\n"
+           "  --client-input-ratio N     Exclusive per-client progress floor (default 0.90)\n"
+           "  --hard-corrections N       Maximum aggregate hard corrections (default 8)\n"
+           "  --hard-corrections-per-client N  Maximum hard corrections per client (default 1)\n"
            "  --correction-distance-m N  Exclusive correction-distance cap (default 1)\n"
-           "  --average-server-bytes N   Exclusive average S->C bytes/s cap (default 65536)\n"
-           "  --rolling-server-bytes N   Exclusive rolling one-second S->C cap (default 262144)\n"
-           "  --eligible-messages N      Minimum loss-eligible messages (default 1)\n"
-           "  --minimum-drops N           Minimum simulated unreliable drops (default 1)\n"
-           "  --pending-impaired N        Maximum in-flight impaired messages (default 128)\n"
+           "  --final-state-error-m N     Final client/server position cap (default 0.10)\n"
+           "  --average-server-bytes N   Aggregate average S->C bytes/s cap (default 1572864)\n"
+           "  --rolling-server-bytes N   Aggregate rolling one-second S->C cap (default 1572864)\n"
+           "  --average-client-bytes N   Per-client average S->C bytes/s cap (default 196608)\n"
+           "  --rolling-client-bytes N   Per-client rolling one-second S->C cap (default 196608)\n"
+           "  --eligible-messages N      Aggregate minimum loss-eligible messages (default 8)\n"
+           "  --eligible-messages-per-client N  Per-client eligible minimum (default 1)\n"
+           "  --minimum-drops N          Aggregate simulated drop minimum (default 8)\n"
+           "  --minimum-drops-per-client N  Per-client simulated drop minimum (default 1)\n"
+           "  --pending-impaired N       Aggregate in-flight impaired cap (default 256)\n"
+           "  --pending-impaired-per-client N  Per-client in-flight cap (default 48)\n"
            "  --displacement-m N          Exclusive authoritative movement floor (default 5)\n"
            "  --seed N                    Deterministic impairment/world seed\n"
            "  --content-root PATH         Source content root\n"
@@ -208,13 +251,19 @@ void print_usage(std::ostream& output) {
             return 1;
         }
         const auto& summary = report.value().summary;
-        std::cout << "wrote " << summary.measured_tick_count << " impaired ticks to "
-                  << options.output << "; server P95=" << summary.server_tick_p95_ms
+        std::cout << "wrote " << summary.measured_tick_count << " impaired ticks for "
+                  << summary.client_count << " clients to " << options.output
+                  << "; recovery=" << summary.recovery_ticks
+                  << " server P95=" << summary.server_tick_p95_ms
                   << " ms P99=" << summary.server_tick_p99_ms
                   << " ms inputs=" << summary.accepted_input_ratio * 100.0
+                  << "% min_client_progress="
+                  << summary.minimum_client_authoritative_input_ratio * 100.0
                   << "% corrections=" << summary.hard_correction_count
                   << " loss=" << summary.observed_unreliable_loss_ratio * 100.0
                   << "% average_s2c=" << summary.average_server_to_client_bytes_per_second
+                  << " B/s max_client_s2c="
+                  << summary.maximum_client_average_server_to_client_bytes_per_second
                   << " B/s pending_peak=" << summary.peak_pending_impaired_message_count << '\n';
     }
     if (options.benchmark.enforce_gates && !report.value().gates_passed()) {
