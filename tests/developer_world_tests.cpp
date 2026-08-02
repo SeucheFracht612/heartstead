@@ -87,6 +87,8 @@ void test_packaged_renderer_fixture_launch(const content::ContentValidationRepor
     assert(request);
     assert(request.value().world_source == game::WorldSourceKind::packaged_fixture);
     assert(request.value().persistence == game::PersistencePolicy::temporary_copy);
+    request.value().runtime.chunk_streaming.temporal_retention_ms = 1;
+    request.value().runtime.chunk_streaming.max_evictions_per_update = 3;
     request.value().runtime.gameplay_modules.push_back(
         std::make_shared<game::animals::WanderingAnimalModule>());
 
@@ -97,6 +99,7 @@ void test_packaged_renderer_fixture_launch(const content::ContentValidationRepor
     assert(fixture != nullptr && fixture->encoded_state == "renderer_proof");
     assert(world.chunks().find(scenarios::renderer_proof_center) != nullptr);
     const auto initial_server_chunk_count = world.chunks().chunk_count();
+    const auto initial_server_chunk_identities = world.chunks().identities();
     const auto initial_client_chunk_count =
         runtime.session()->client()->world().chunks().chunk_count();
     assert(initial_server_chunk_count == 9);
@@ -116,14 +119,21 @@ void test_packaged_renderer_fixture_launch(const content::ContentValidationRepor
         world::VoxelChunk::edge_length * static_cast<std::int64_t>(40);
     auto teleport_frame = runtime.run_frame({16'667, 34});
     assert(teleport_frame && !teleport_frame.value().server_ticks.empty());
+    const auto teleport_streaming = teleport_frame.value().server_ticks.back().chunk_streaming;
+    assert(teleport_streaming.enabled);
+    assert(teleport_streaming.teleport_mode);
+    assert(teleport_streaming.evicted_chunk_count == 3);
+    assert(teleport_streaming.deferred_eviction_count > 0);
     player->state.position.anchor = original_anchor;
 
     world::ChunkLoadSchedulerStats loading_stats;
+    game::ServerChunkStreamingTickStats streaming_stats;
     for (std::int64_t frame_index = 3; frame_index <= 302; ++frame_index) {
         auto frame = runtime.run_frame({16'667, frame_index * 17});
         assert(frame);
         if (!frame.value().server_ticks.empty()) {
             loading_stats = frame.value().server_ticks.back().chunk_loading;
+            streaming_stats = frame.value().server_ticks.back().chunk_streaming;
         }
     }
     std::size_t expected_chunk_count = 0;
@@ -136,15 +146,47 @@ void test_packaged_renderer_fixture_launch(const content::ContentValidationRepor
                                      scenarios::renderer_proof_stream_radius_chunks;
         }
     }
-    assert(world.chunks().chunk_count() == expected_chunk_count);
+    assert(world.chunks().chunk_count() >= expected_chunk_count);
+    assert(world.chunks().chunk_count() <= streaming_stats.target_resident_chunk_count);
     assert(runtime.session()->client()->world().chunks().chunk_count() ==
            world.chunks().chunk_count());
+    assert(streaming_stats.enabled);
+    assert(streaming_stats.desired_chunk_count == expected_chunk_count);
+    assert(streaming_stats.pending_load_count == 0);
+    assert(streaming_stats.deferred_eviction_count == 0);
+    assert(streaming_stats.projected_resident_overage == 0);
+    assert(streaming_stats.unresolved_resident_overage == 0);
+    assert(streaming_stats.lifetime.planning_updates > 0);
+    assert(streaming_stats.lifetime.teleport_updates >= 2);
+    assert(streaming_stats.lifetime.speculative_submissions > 0);
+    assert(streaming_stats.lifetime.speculative_publications > 0);
+    assert(streaming_stats.lifetime.active_speculative_requests > 0);
+    assert(streaming_stats.lifetime.active_speculative_requests <= 16);
+    for (const auto* chunk : world.chunks().records()) {
+        assert(runtime.session()->client()->local_chunk_snapshot_is_current(*chunk));
+    }
+    assert(std::ranges::any_of(initial_server_chunk_identities, [&world](const auto identity) {
+        const auto* reloaded = world.chunks().find(identity.coordinate);
+        return reloaded != nullptr && reloaded->identity() != identity;
+    }));
+    for (std::int64_t z = -scenarios::renderer_proof_stream_radius_chunks;
+         z <= scenarios::renderer_proof_stream_radius_chunks; ++z) {
+        for (std::int64_t x = -scenarios::renderer_proof_stream_radius_chunks;
+             x <= scenarios::renderer_proof_stream_radius_chunks; ++x) {
+            if (x * x + z * z <= scenarios::renderer_proof_stream_radius_chunks *
+                                     scenarios::renderer_proof_stream_radius_chunks) {
+                assert(world.chunks().contains({scenarios::renderer_proof_center.x + x,
+                                                scenarios::renderer_proof_center.y,
+                                                scenarios::renderer_proof_center.z + z}));
+            }
+        }
+    }
     assert(loading_stats.in_flight_requests == 0);
     assert(loading_stats.reserved_working_bytes == 0);
     assert(loading_stats.reserved_working_bytes_high_water > 0);
     assert(loading_stats.reserved_working_bytes_high_water <=
            world::ChunkLoadSchedulerConfig{}.max_reserved_working_bytes);
-    assert(loading_stats.published_requests == expected_chunk_count - initial_server_chunk_count);
+    assert(loading_stats.published_requests > expected_chunk_count - initial_server_chunk_count);
     assert(loading_stats.cancelled_requests > 0);
     assert(loading_stats.last_worker_ms > 0.0);
     assert(loading_stats.maximum_pipeline_latency_ms > 0.0);

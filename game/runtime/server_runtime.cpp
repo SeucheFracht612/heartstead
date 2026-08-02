@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -26,9 +27,6 @@
 namespace heartstead::game {
 
 namespace {
-
-inline constexpr std::size_t renderer_proof_chunk_submissions_per_update = 4;
-inline constexpr std::int64_t renderer_proof_generation_interval_ms = 32;
 
 using ReplicationClock = std::chrono::steady_clock;
 
@@ -126,11 +124,6 @@ template <typename Snapshot, typename Encoder, typename Sender>
     return core::Status::ok();
 }
 
-struct RendererProofChunkCandidate {
-    world::ChunkCoord coord;
-    std::int64_t distance_squared = 0;
-};
-
 class RendererProofChunkLoadGenerator final : public world::IChunkLoadGenerator {
   public:
     explicit RendererProofChunkLoadGenerator(scenarios::RendererProofVoxelTypes types) noexcept
@@ -143,40 +136,6 @@ class RendererProofChunkLoadGenerator final : public world::IChunkLoadGenerator 
   private:
     scenarios::RendererProofVoxelTypes types_;
 };
-
-[[nodiscard]] std::optional<std::int64_t> checked_axis_offset(std::int64_t base,
-                                                              std::int64_t offset) noexcept {
-    constexpr auto minimum = std::numeric_limits<std::int64_t>::min();
-    constexpr auto maximum = std::numeric_limits<std::int64_t>::max();
-    if ((offset > 0 && base > maximum - offset) || (offset < 0 && base < minimum - offset)) {
-        return std::nullopt;
-    }
-    return base + offset;
-}
-
-[[nodiscard]] bool chunk_fits_physics_island(world::ChunkCoord coord,
-                                             world::PhysicsIslandFrame frame) {
-    const auto block = world::chunk_local_to_block(coord, {0, 0, 0});
-    if (!block) {
-        return false;
-    }
-    const auto position = world::WorldPosition::from_anchor(block.value(), {});
-    if (!position) {
-        return false;
-    }
-    const auto local = world::to_physics_local(position.value(), frame);
-    if (!local) {
-        return false;
-    }
-    constexpr auto chunk_extent = static_cast<float>(world::VoxelChunk::edge_length);
-    if (chunk_extent > frame.max_local_extent * 2.0F) {
-        return false;
-    }
-    const auto maximum_origin = frame.max_local_extent - chunk_extent;
-    return local.value().x >= -frame.max_local_extent && local.value().x <= maximum_origin &&
-           local.value().y >= -frame.max_local_extent && local.value().y <= maximum_origin &&
-           local.value().z >= -frame.max_local_extent && local.value().z <= maximum_origin;
-}
 
 [[nodiscard]] core::Status startup_cancelled(std::stop_token stop_token) {
     if (!stop_token.stop_requested()) {
@@ -353,6 +312,11 @@ core::Result<std::unique_ptr<ServerRuntime>> ServerRuntime::create(ServerRuntime
     if (!chunk_subscription_status) {
         return core::Result<std::unique_ptr<ServerRuntime>>::failure(
             chunk_subscription_status.error().code, chunk_subscription_status.error().message);
+    }
+    auto chunk_streaming_status = desc.chunk_streaming.validate();
+    if (!chunk_streaming_status) {
+        return core::Result<std::unique_ptr<ServerRuntime>>::failure(
+            chunk_streaming_status.error().code, chunk_streaming_status.error().message);
     }
     if (desc.max_chunk_snapshot_serialization_time_us_per_tick == 0) {
         return core::Result<std::unique_ptr<ServerRuntime>>::failure(
@@ -597,7 +561,7 @@ core::Status ServerRuntime::initialize() {
             "runtime.renderer_proof_streaming",
             simulation::SimulationPhase::movement,
             {"runtime.command_gateway"},
-            [this](simulation::SimulationContext&) { return stream_renderer_proof_world(); },
+            [this](simulation::SimulationContext&) { return stream_chunks(); },
         });
         if (!status) {
             return status;
@@ -853,6 +817,8 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     current_entity_motion_tombstone_count_ = 0;
     current_player_tombstone_count_ = 0;
     current_chunk_subscriptions_ = {};
+    current_chunk_streaming_ = {};
+    current_chunk_streaming_.enabled = chunk_loader_ != nullptr;
     auto budget_status = transient_replication_budget_.begin_tick(tick);
     if (!budget_status) {
         return core::Result<ServerRuntimeTickStats>::failure(budget_status.error().code,
@@ -882,6 +848,7 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     if (chunk_loader_ != nullptr) {
         stats.chunk_loading = chunk_loader_->stats();
     }
+    stats.chunk_streaming = current_chunk_streaming_;
     stats.moved_player_count = current_moved_player_count_;
     stats.repeated_input_count = current_repeated_input_count_;
     stats.movement_event_count = current_movement_event_count_;
@@ -1684,8 +1651,8 @@ core::Status ServerRuntime::simulate_players(simulation::SimulationContext& cont
     return core::Status::ok();
 }
 
-core::Status ServerRuntime::stream_renderer_proof_world() {
-    HEARTSTEAD_PROFILE_ZONE_NAMED("streaming.renderer_proof_interest");
+core::Status ServerRuntime::stream_chunks() {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("streaming.predictive_runtime");
     if (!renderer_proof_streaming_enabled_) {
         return core::Status::ok();
     }
@@ -1693,52 +1660,105 @@ core::Status ServerRuntime::stream_renderer_proof_world() {
         return core::Status::failure("server_runtime.chunk_loader_missing",
                                      "renderer-proof streaming has no chunk-load scheduler");
     }
+    if (current_time_ms_ < 0) {
+        return core::Status::failure("server_runtime.invalid_streaming_time",
+                                     "chunk streaming requires nonnegative runtime time");
+    }
 
-    std::vector<RendererProofChunkCandidate> candidates;
-    std::vector<world::ChunkCoord> desired;
-    const auto players = players_.records();
-    const auto expected_interest_count =
-        players.size() *
-        static_cast<std::size_t>(scenarios::renderer_proof_stream_radius_chunks *
-                                 scenarios::renderer_proof_stream_radius_chunks * 4);
-    candidates.reserve(expected_interest_count);
-    desired.reserve(expected_interest_count);
+    auto players = players_.records();
+    std::ranges::sort(
+        players, [](const auto* left, const auto* right) { return left->net_id < right->net_id; });
+    std::vector<world::ChunkStreamViewerMotion> viewers;
+    viewers.reserve(players.size());
+    std::map<std::uint64_t, world::ChunkCoord> current_viewer_chunks;
+    constexpr double degrees_to_radians = 3.14159265358979323846 / 180.0;
+    const auto teleport_threshold =
+        std::max<std::uint64_t>(1, desc_.chunk_streaming.max_prediction_distance_chunks);
+    const auto axis_distance = [](std::int64_t left, std::int64_t right) noexcept {
+        const auto ordered = [](std::int64_t value) noexcept {
+            return static_cast<std::uint64_t>(value) ^ (std::uint64_t{1} << 63U);
+        };
+        const auto ordered_left = ordered(left);
+        const auto ordered_right = ordered(right);
+        return ordered_left >= ordered_right ? ordered_left - ordered_right
+                                             : ordered_right - ordered_left;
+    };
     for (const auto* player : players) {
-        const auto player_chunk = world::chunk_coord_for_block(player->state.position.anchor);
-        for (std::int64_t offset_z = -scenarios::renderer_proof_stream_radius_chunks;
-             offset_z <= scenarios::renderer_proof_stream_radius_chunks; ++offset_z) {
-            for (std::int64_t offset_x = -scenarios::renderer_proof_stream_radius_chunks;
-                 offset_x <= scenarios::renderer_proof_stream_radius_chunks; ++offset_x) {
-                const auto distance_squared = offset_x * offset_x + offset_z * offset_z;
-                if (distance_squared > scenarios::renderer_proof_stream_radius_chunks *
-                                           scenarios::renderer_proof_stream_radius_chunks) {
-                    continue;
-                }
-                const auto x = checked_axis_offset(player_chunk.x, offset_x);
-                const auto z = checked_axis_offset(player_chunk.z, offset_z);
-                if (!x.has_value() || !z.has_value()) {
-                    continue;
-                }
-                const world::ChunkCoord coord{*x, scenarios::renderer_proof_center.y, *z};
-                if (!chunk_fits_physics_island(coord, desc_.chunk_collision.physics_island)) {
-                    continue;
-                }
-                desired.push_back(coord);
-                if (!world_.chunks().contains(coord) && !chunk_loader_->contains(coord)) {
-                    candidates.push_back({coord, distance_squared});
-                }
+        world::ChunkStreamViewerMotion motion;
+        motion.viewer.viewer_id = player->net_id;
+        motion.viewer.coord = player->state.position.anchor;
+        motion.velocity_x_blocks_per_second = player->state.velocity.x;
+        motion.velocity_y_blocks_per_second = player->state.velocity.y;
+        motion.velocity_z_blocks_per_second = player->state.velocity.z;
+        const auto yaw =
+            static_cast<double>(player->state.yaw_centidegrees) * 0.01 * degrees_to_radians;
+        const auto pitch =
+            static_cast<double>(player->state.pitch_centidegrees) * 0.01 * degrees_to_radians;
+        motion.view_direction_x = std::sin(yaw) * std::cos(pitch);
+        motion.view_direction_y = std::sin(pitch);
+        motion.view_direction_z = std::cos(yaw) * std::cos(pitch);
+
+        const auto current_chunk = world::chunk_coord_for_block(player->state.position.anchor);
+        if (const auto previous = previous_chunk_streaming_viewers_.find(player->net_id.value());
+            previous != previous_chunk_streaming_viewers_.end()) {
+            const auto dx = axis_distance(previous->second.x, current_chunk.x);
+            const auto dy = axis_distance(previous->second.y, current_chunk.y);
+            const auto dz = axis_distance(previous->second.z, current_chunk.z);
+            motion.teleport = dx > teleport_threshold || dy > teleport_threshold ||
+                              dz > teleport_threshold;
+            if (!motion.teleport) {
+                // The component guard above bounds every product to at most 32^2.
+                motion.teleport = dx * dx + dy * dy + dz * dz >
+                                  teleport_threshold * teleport_threshold;
             }
         }
+        current_viewer_chunks.emplace(player->net_id.value(), current_chunk);
+        viewers.push_back(motion);
     }
 
-    static_cast<void>(chunk_loader_->cancel_all_except(desired));
-
-    auto publication = chunk_loader_->update(world_);
-    if (!publication.failures.empty()) {
-        const auto& failure = publication.failures.front();
-        return core::Status::failure(failure.error.code, failure.error.message);
+    auto updated =
+        chunk_streaming_controller_.update(world_, *chunk_loader_, viewers, desc_.chunk_streaming,
+                                           world::ChunkStreamMemoryPressure::nominal,
+                                           static_cast<simulation::WorldTick>(current_time_ms_));
+    if (!updated) {
+        return core::Status::failure(updated.error().code, updated.error().message);
     }
-    for (const auto& published : publication.published) {
+    auto report = std::move(updated).value();
+    previous_chunk_streaming_viewers_ = std::move(current_viewer_chunks);
+
+    current_chunk_streaming_.enabled = true;
+    current_chunk_streaming_.lifetime = chunk_streaming_controller_.stats();
+    current_chunk_streaming_.desired_chunk_count = report.policy.immediate.desired_chunk_count;
+    current_chunk_streaming_.target_resident_chunk_count =
+        report.policy.target_resident_chunk_count;
+    current_chunk_streaming_.submitted_required_count = report.submitted_required.size();
+    current_chunk_streaming_.submitted_speculative_count = report.submitted_speculative.size();
+    current_chunk_streaming_.explicit_speculative_cancellation_count =
+        report.explicit_speculative_cancellations;
+    current_chunk_streaming_.obsolete_cancellation_signal_count =
+        report.obsolete_cancellation_signals;
+    current_chunk_streaming_.deferred_required_load_count = report.deferred_required_loads;
+    current_chunk_streaming_.evicted_chunk_count = report.eviction.evicted_count();
+    current_chunk_streaming_.deferred_eviction_count = report.policy.deferred_eviction_count;
+    current_chunk_streaming_.projected_resident_overage = report.policy.projected_resident_overage;
+    current_chunk_streaming_.unresolved_resident_overage =
+        report.policy.unresolved_resident_overage;
+    current_chunk_streaming_.pending_load_count = report.pending_loads;
+    current_chunk_streaming_.teleport_mode = report.policy.teleport_mode;
+    HEARTSTEAD_PROFILE_PLOT("streaming.policy.desired",
+                            current_chunk_streaming_.desired_chunk_count);
+    HEARTSTEAD_PROFILE_PLOT("streaming.policy.pending",
+                            current_chunk_streaming_.pending_load_count);
+    HEARTSTEAD_PROFILE_PLOT("streaming.policy.active_speculative",
+                            current_chunk_streaming_.lifetime.active_speculative_requests);
+    HEARTSTEAD_PROFILE_PLOT("streaming.policy.deferred_evictions",
+                            current_chunk_streaming_.deferred_eviction_count);
+    HEARTSTEAD_PROFILE_PLOT("streaming.policy.projected_overage",
+                            current_chunk_streaming_.projected_resident_overage);
+    HEARTSTEAD_PROFILE_PLOT("streaming.policy.prediction_accuracy",
+                            current_chunk_streaming_.lifetime.prediction_accuracy);
+
+    for (const auto& published : report.publication.published) {
         if (collision_world_revision_ == std::numeric_limits<std::uint64_t>::max()) {
             return core::Status::failure(
                 "server_runtime.collision_revision_exhausted",
@@ -1747,51 +1767,13 @@ core::Status ServerRuntime::stream_renderer_proof_world() {
         ++collision_world_revision_;
         pending_streamed_chunks_.push_back(published.coord);
     }
-
-    if (renderer_proof_next_generation_time_ms_.has_value() &&
-        current_time_ms_ < *renderer_proof_next_generation_time_ms_) {
-        return core::Status::ok();
-    }
-
-    std::ranges::sort(candidates, [](const auto& lhs, const auto& rhs) {
-        return lhs.coord != rhs.coord ? lhs.coord < rhs.coord
-                                      : lhs.distance_squared < rhs.distance_squared;
-    });
-    candidates.erase(
-        std::unique(candidates.begin(), candidates.end(),
-                    [](const auto& lhs, const auto& rhs) { return lhs.coord == rhs.coord; }),
-        candidates.end());
-    std::ranges::sort(candidates, [](const auto& lhs, const auto& rhs) {
-        return lhs.distance_squared != rhs.distance_squared
-                   ? lhs.distance_squared < rhs.distance_squared
-                   : lhs.coord < rhs.coord;
-    });
-
-    std::size_t submitted_count = 0;
-    for (const auto& candidate : candidates) {
-        if (submitted_count >= renderer_proof_chunk_submissions_per_update ||
-            !chunk_loader_->has_capacity()) {
-            break;
+    for (std::size_t index = 0; index < report.eviction.evicted_count(); ++index) {
+        if (collision_world_revision_ == std::numeric_limits<std::uint64_t>::max()) {
+            return core::Status::failure(
+                "server_runtime.collision_revision_exhausted",
+                "authoritative collision-world revision space is exhausted");
         }
-        if (world_.chunks().contains(candidate.coord) || chunk_loader_->contains(candidate.coord)) {
-            continue;
-        }
-        auto submitted = chunk_loader_->submit(candidate.coord, jobs::JobPriority::high);
-        if (!submitted) {
-            if (submitted.error().code == "chunk_load_scheduler.full") {
-                break;
-            }
-            if (submitted.error().code == "chunk_load_scheduler.duplicate_request") {
-                continue;
-            }
-            return core::Status::failure(submitted.error().code, submitted.error().message);
-        }
-        ++submitted_count;
-    }
-    if (submitted_count != 0) {
-        renderer_proof_next_generation_time_ms_ =
-            checked_axis_offset(current_time_ms_, renderer_proof_generation_interval_ms)
-                .value_or(std::numeric_limits<std::int64_t>::max());
+        ++collision_world_revision_;
     }
     return core::Status::ok();
 }

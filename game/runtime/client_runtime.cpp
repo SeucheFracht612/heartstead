@@ -389,9 +389,7 @@ core::Status ClientRuntime::install_local_chunk_snapshot(const world::VoxelChunk
         return core::Status::failure("client_runtime.invalid_local_chunk",
                                      "local chunk fast path requires a resident source chunk");
     }
-    const auto remote = remote_chunks_.find(source.coord());
-    if (remote != remote_chunks_.end() && remote->second.first == source.identity() &&
-        remote->second.second >= source.content_revision()) {
+    if (local_chunk_snapshot_is_current(source)) {
         return core::Status::ok();
     }
     const auto cells = source.cells();
@@ -404,6 +402,20 @@ core::Status ClientRuntime::install_local_chunk_snapshot(const world::VoxelChunk
     remote_chunks_.insert_or_assign(source.coord(),
                                     std::pair{source.identity(), source.content_revision()});
     return core::Status::ok();
+}
+
+bool ClientRuntime::local_chunk_snapshot_is_current(
+    const world::VoxelChunk& source) const noexcept {
+    const auto remote = remote_chunks_.find(source.coord());
+    return remote != remote_chunks_.end() && remote->second.first == source.identity() &&
+           remote->second.second == source.content_revision() &&
+           world_.chunks().contains(source.coord());
+}
+
+bool ClientRuntime::remove_local_chunk_snapshot(world::ChunkCoord coordinate) noexcept {
+    chunk_snapshot_assemblies_.erase(coordinate);
+    remote_chunks_.erase(coordinate);
+    return world_.chunks().erase(coordinate);
 }
 
 net::ClientSession& ClientRuntime::session() noexcept {

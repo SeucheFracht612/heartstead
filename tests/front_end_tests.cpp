@@ -344,6 +344,13 @@ void test_runtime_diagnostics_are_explicit() {
     snapshot.last_chunk_load_worker_ms = 3.5;
     snapshot.maximum_chunk_load_pipeline_latency_ms = 8.25;
     snapshot.maximum_chunk_load_publication_us = 412;
+    snapshot.predictive_streaming_enabled = true;
+    snapshot.desired_streaming_chunks = 441;
+    snapshot.active_speculative_streaming_chunks = 12;
+    snapshot.deferred_streaming_evictions = 3;
+    snapshot.projected_streaming_overage = 5;
+    snapshot.streaming_prediction_accuracy = 0.75;
+    snapshot.streaming_timely_coverage = 0.50;
     snapshot.pending_save_operations = 1;
     snapshot.reserved_save_working_bytes = 8U * 1024U * 1024U;
     snapshot.last_save_owner_handoff_ms = 0.2;
@@ -355,6 +362,9 @@ void test_runtime_diagnostics_are_explicit() {
     assert(text.find("chunk load pending/reserved 2/128.0 MiB") != std::string::npos);
     assert(text.find("worker/pipeline 3.50/8.25 ms | publish max 412 us") !=
            std::string::npos);
+    assert(text.find("stream predictive desired/speculative/deferred/overage 441/12/3/5") !=
+           std::string::npos);
+    assert(text.find("accuracy/coverage 0.75/0.50") != std::string::npos);
     assert(text.find("save pending/reserved 1/8.0 MiB") != std::string::npos);
     assert(text.find("budget telemetry unavailable") == std::string::npos);
 

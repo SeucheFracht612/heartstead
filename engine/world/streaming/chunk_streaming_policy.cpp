@@ -135,8 +135,13 @@ struct CandidateRank {
 void add_prediction_cylinder(std::map<ChunkCoord, CandidateRank>& candidates, ChunkCoord center,
                              ChunkCoord prediction, std::uint32_t trajectory_step,
                              const PredictiveChunkStreamingPolicy& policy) {
-    const auto horizontal = static_cast<std::int64_t>(policy.predictive_horizontal_radius_chunks);
-    const auto vertical = static_cast<std::int64_t>(policy.predictive_vertical_radius_chunks);
+    // Predict the future demand footprint, not merely the viewer's centerline. Otherwise any
+    // immediate radius larger than the prediction distance completely contains the corridor and
+    // a live runtime can never issue a speculative request.
+    const auto horizontal = static_cast<std::int64_t>(
+        policy.interest.load_horizontal_radius_chunks + policy.predictive_horizontal_radius_chunks);
+    const auto vertical = static_cast<std::int64_t>(policy.interest.load_vertical_radius_chunks +
+                                                    policy.predictive_vertical_radius_chunks);
     for (auto offset_z = -horizontal; offset_z <= horizontal; ++offset_z) {
         for (auto offset_x = -horizontal; offset_x <= horizontal; ++offset_x) {
             if (offset_x * offset_x + offset_z * offset_z > horizontal * horizontal) {
@@ -267,9 +272,14 @@ core::Status PredictiveChunkStreamingPolicy::validate() const {
     }
     if (max_prediction_distance_chunks > ChunkStreamInterestPolicy::max_load_radius_chunks ||
         predictive_horizontal_radius_chunks > ChunkStreamInterestPolicy::max_load_radius_chunks ||
-        predictive_vertical_radius_chunks > ChunkStreamInterestPolicy::max_load_radius_chunks) {
+        predictive_vertical_radius_chunks > ChunkStreamInterestPolicy::max_load_radius_chunks ||
+        interest.load_horizontal_radius_chunks + predictive_horizontal_radius_chunks >
+            ChunkStreamInterestPolicy::max_load_radius_chunks ||
+        interest.load_vertical_radius_chunks + predictive_vertical_radius_chunks >
+            ChunkStreamInterestPolicy::max_load_radius_chunks) {
         return core::Status::failure("chunk_stream_policy.prediction_radius_too_large",
-                                     "predictive streaming radii exceed the bounded planner limit");
+                                     "predictive demand-footprint radii exceed the bounded "
+                                     "planner limit");
     }
     if (max_speculative_submissions_per_update == 0 || max_active_speculative_requests == 0 ||
         max_evictions_per_update == 0 || reserved_required_request_slots == 0 ||
@@ -425,16 +435,21 @@ core::Result<PredictiveChunkStreamPlan> PredictiveChunkStreamingPlanner::plan(
             }
             if (record.state == SpeculativeState::published) {
                 invalidated_resident.insert(iterator->first);
+            }
+            if (record.state != SpeculativeState::published) {
+                record.state = SpeculativeState::cancellation_requested;
+                ++stats_.cancellation_requests;
+                plan.speculative_cancellations.push_back(iterator->first);
+            }
+        } else if (record.invalidated && record.state == SpeculativeState::published) {
+            if (state.chunks().contains(iterator->first)) {
+                // Retain the invalidation until a bounded owner eviction has actually removed the
+                // resident. Clearing it when merely selected would lose deferred work.
+                invalidated_resident.insert(iterator->first);
+            } else {
                 iterator = speculative_.erase(iterator);
                 continue;
             }
-            record.state = SpeculativeState::cancellation_requested;
-            ++stats_.cancellation_requests;
-            plan.speculative_cancellations.push_back(iterator->first);
-        } else if (record.invalidated && record.state == SpeculativeState::published) {
-            invalidated_resident.insert(iterator->first);
-            iterator = speculative_.erase(iterator);
-            continue;
         }
         ++iterator;
     }

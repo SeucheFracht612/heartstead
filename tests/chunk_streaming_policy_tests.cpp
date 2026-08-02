@@ -125,6 +125,27 @@ void test_camera_prediction_and_multi_viewer_deduplication() {
     assert(plan.value().speculative_loads[1].coord == (world::ChunkCoord{0, 0, 2}));
 }
 
+void test_prediction_extends_the_future_demand_footprint() {
+    world::WorldState state;
+    world::PredictiveChunkStreamingPlanner planner;
+    auto policy = compact_policy();
+    policy.interest.load_horizontal_radius_chunks = 1;
+    policy.interest.retain_horizontal_radius_chunks = 2;
+    policy.predictive_horizontal_radius_chunks = 0;
+    policy.camera_lookahead_chunks = 0.0;
+    const std::vector<world::ChunkStreamViewerMotion> viewers{moving_viewer(0, 64.0)};
+
+    auto plan =
+        planner.plan(state, viewers, {}, policy, world::ChunkStreamMemoryPressure::nominal, 0);
+    assert(plan);
+    assert(contains(plan.value().immediate.desired_chunks, {1, 0, 0}));
+    assert(contains(plan.value().predicted_chunks, {2, 0, 0}));
+    assert(!contains(plan.value().immediate.desired_chunks, {2, 0, 0}));
+    assert(std::ranges::any_of(plan.value().speculative_loads, [](const auto& candidate) {
+        return candidate.coord == (world::ChunkCoord{2, 0, 0});
+    }));
+}
+
 void test_reversal_teleport_and_actual_cancellation_metrics() {
     world::WorldState state;
     world::PredictiveChunkStreamingPlanner planner;
@@ -179,6 +200,12 @@ void test_reversal_teleport_and_actual_cancellation_metrics() {
         planner.plan(state, teleported, {}, policy, world::ChunkStreamMemoryPressure::nominal, 22);
     assert(cleanup);
     assert(contains(cleanup.value().eviction_requests, second_coord));
+    assert(planner.stats().active_speculative_requests == 1);
+    auto evicted = world::ChunkStreamer::evict_chunks(state, cleanup.value().eviction_requests);
+    assert(evicted.evicted_count() == 1);
+    auto reconciled = planner.plan(state, teleported, {}, policy,
+                                   world::ChunkStreamMemoryPressure::nominal, 23);
+    assert(reconciled);
     assert(planner.stats().active_speculative_requests == 0);
 }
 
@@ -325,6 +352,16 @@ void test_policy_and_motion_validation() {
     assert(status.error().code == "chunk_stream_policy.invalid_speculation_budget");
 
     policy = compact_policy();
+    policy.interest.load_horizontal_radius_chunks =
+        world::ChunkStreamInterestPolicy::max_load_radius_chunks;
+    policy.interest.retain_horizontal_radius_chunks =
+        world::ChunkStreamInterestPolicy::max_load_radius_chunks;
+    policy.predictive_horizontal_radius_chunks = 1;
+    status = policy.validate();
+    assert(!status);
+    assert(status.error().code == "chunk_stream_policy.prediction_radius_too_large");
+
+    policy = compact_policy();
     auto invalid_motion = moving_viewer(0, 0.0);
     invalid_motion.view_direction_x = std::numeric_limits<double>::quiet_NaN();
     world::PredictiveChunkStreamingPlanner planner;
@@ -421,6 +458,7 @@ void test_controller_prioritizes_required_work_and_reconciles_cancellation() {
 int main() {
     test_directional_prediction_and_timely_hit_metrics();
     test_camera_prediction_and_multi_viewer_deduplication();
+    test_prediction_extends_the_future_demand_footprint();
     test_reversal_teleport_and_actual_cancellation_metrics();
     test_pressure_aware_temporal_retention_and_eviction_value();
     test_eviction_waves_are_bounded_and_report_deferred_work();

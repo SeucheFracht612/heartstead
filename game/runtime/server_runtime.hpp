@@ -20,7 +20,7 @@
 #include "engine/world/fluids/chunk_fluid_system.hpp"
 #include "engine/world/lighting/chunk_light_system.hpp"
 #include "engine/world/replication_delta.hpp"
-#include "engine/world/streaming/chunk_load_scheduler.hpp"
+#include "engine/world/streaming/predictive_chunk_streaming_controller.hpp"
 #include "engine/world/voxels/voxel_palette.hpp"
 #include "engine/world/world_state.hpp"
 #include "game/framework/gameplay_module.hpp"
@@ -57,6 +57,7 @@ struct ServerRuntimeDesc {
     world::ChunkFluidSystemConfig chunk_fluids;
     world::ChunkLightSystemConfig chunk_lighting;
     world::ChunkLoadSchedulerConfig chunk_loading;
+    world::PredictiveChunkStreamingPolicy chunk_streaming;
     world::ChunkSubscriptionPolicy chunk_subscriptions;
     std::uint64_t max_chunk_snapshot_serialization_time_us_per_tick = 4'000;
     std::uint32_t simulation_ticks_per_second = 60;
@@ -99,6 +100,24 @@ struct ServerChunkSubscriptionTickStats {
     std::uint32_t reliable_admission_deferral_count = 0;
 };
 
+struct ServerChunkStreamingTickStats {
+    bool enabled = false;
+    world::PredictiveChunkStreamingStats lifetime;
+    std::size_t desired_chunk_count = 0;
+    std::size_t target_resident_chunk_count = 0;
+    std::size_t submitted_required_count = 0;
+    std::size_t submitted_speculative_count = 0;
+    std::size_t explicit_speculative_cancellation_count = 0;
+    std::size_t obsolete_cancellation_signal_count = 0;
+    std::size_t deferred_required_load_count = 0;
+    std::size_t evicted_chunk_count = 0;
+    std::size_t deferred_eviction_count = 0;
+    std::size_t projected_resident_overage = 0;
+    std::size_t unresolved_resident_overage = 0;
+    std::size_t pending_load_count = 0;
+    bool teleport_mode = false;
+};
+
 struct ServerChunkSubscriptionClientSnapshot {
     core::NetId client_id;
     world::ChunkCoord center;
@@ -124,6 +143,7 @@ struct ServerRuntimeTickStats {
     world::ChunkFluidSystemStats chunk_fluids;
     world::ChunkLightSystemStats chunk_lighting;
     world::ChunkLoadSchedulerStats chunk_loading;
+    ServerChunkStreamingTickStats chunk_streaming;
     std::uint32_t moved_player_count = 0;
     std::uint32_t repeated_input_count = 0;
     std::uint32_t movement_event_count = 0;
@@ -245,7 +265,7 @@ class ServerRuntime final {
     [[nodiscard]] core::Status remove_player_connection(core::NetId client_id);
     void process_movement_control_messages(std::span<const net::TransportEnvelope> messages);
     [[nodiscard]] core::Status simulate_players(simulation::SimulationContext& context);
-    [[nodiscard]] core::Status stream_renderer_proof_world();
+    [[nodiscard]] core::Status stream_chunks();
     [[nodiscard]] core::Status replicate_players();
     [[nodiscard]] core::Status replicate_entity_motion(std::uint64_t simulation_tick);
     [[nodiscard]] core::Status synchronize_chunk_subscriptions();
@@ -268,6 +288,7 @@ class ServerRuntime final {
     std::unique_ptr<world::ChunkFluidSystem> chunk_fluids_;
     std::unique_ptr<world::ChunkLightSystem> chunk_lighting_;
     std::unique_ptr<world::ChunkLoadScheduler> chunk_loader_;
+    world::PredictiveChunkStreamingController chunk_streaming_controller_;
     net::HostSession host_;
     net::ServerCommandDispatcher commands_;
     simulation::SimulationScheduler scheduler_;
@@ -299,6 +320,8 @@ class ServerRuntime final {
     std::uint32_t current_entity_motion_tombstone_count_ = 0;
     std::uint32_t current_player_tombstone_count_ = 0;
     ServerChunkSubscriptionTickStats current_chunk_subscriptions_;
+    ServerChunkStreamingTickStats current_chunk_streaming_;
+    std::map<std::uint64_t, world::ChunkCoord> previous_chunk_streaming_viewers_;
     std::int64_t current_time_ms_ = 0;
     std::uint64_t pending_world_time_numerator_ = 0;
     std::uint64_t collision_world_revision_ = 1;
@@ -309,7 +332,6 @@ class ServerRuntime final {
     std::uint64_t entity_motion_replication_source_cursor_ = 0;
     std::uint64_t transient_replication_class_cursor_ = 0;
     std::uint64_t chunk_subscription_client_cursor_ = 0;
-    std::optional<std::int64_t> renderer_proof_next_generation_time_ms_;
     bool renderer_proof_streaming_enabled_ = false;
 };
 

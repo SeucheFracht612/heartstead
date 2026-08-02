@@ -118,6 +118,13 @@ std::string format_runtime_diagnostics(const RuntimeDiagnosticsSnapshot& snapsho
            << snapshot.last_chunk_load_worker_ms << '/'
            << snapshot.maximum_chunk_load_pipeline_latency_ms << " ms | publish max "
            << snapshot.maximum_chunk_load_publication_us << " us\n"
+           << "stream " << (snapshot.predictive_streaming_enabled ? "predictive" : "inactive")
+           << " desired/speculative/deferred/overage " << snapshot.desired_streaming_chunks << '/'
+           << snapshot.active_speculative_streaming_chunks << '/'
+           << snapshot.deferred_streaming_evictions << '/'
+           << snapshot.projected_streaming_overage << " | accuracy/coverage "
+           << snapshot.streaming_prediction_accuracy << '/'
+           << snapshot.streaming_timely_coverage << '\n'
            << "save pending/reserved " << snapshot.pending_save_operations << '/'
            << bytes_text(snapshot.reserved_save_working_bytes) << " | owner last/max "
            << snapshot.last_save_owner_handoff_ms << '/' << snapshot.maximum_save_owner_handoff_ms

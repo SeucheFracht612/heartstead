@@ -36,6 +36,13 @@ struct RuntimeDiagnosticsSnapshot {
     double last_chunk_load_worker_ms = 0.0;
     double maximum_chunk_load_pipeline_latency_ms = 0.0;
     std::uint64_t maximum_chunk_load_publication_us = 0;
+    bool predictive_streaming_enabled = false;
+    std::size_t desired_streaming_chunks = 0;
+    std::size_t active_speculative_streaming_chunks = 0;
+    std::size_t deferred_streaming_evictions = 0;
+    std::size_t projected_streaming_overage = 0;
+    double streaming_prediction_accuracy = 0.0;
+    double streaming_timely_coverage = 0.0;
     std::size_t pending_save_operations = 0;
     std::size_t reserved_save_working_bytes = 0;
     double last_save_owner_handoff_ms = 0.0;

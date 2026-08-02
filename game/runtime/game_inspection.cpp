@@ -259,6 +259,18 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     double chunk_load_worker_ms = 0.0;
     double chunk_load_pipeline_ms = 0.0;
     std::uint64_t chunk_load_publication_us = 0;
+    bool predictive_streaming_enabled = false;
+    std::size_t streaming_desired_chunks = 0;
+    std::size_t streaming_pending_chunks = 0;
+    std::size_t streaming_active_speculative_chunks = 0;
+    std::size_t streaming_deferred_required = 0;
+    std::size_t streaming_deferred_evictions = 0;
+    std::size_t streaming_projected_overage = 0;
+    std::size_t streaming_unresolved_overage = 0;
+    std::uint64_t streaming_planning_updates = 0;
+    std::uint64_t streaming_teleport_updates = 0;
+    double streaming_prediction_accuracy = 0.0;
+    double streaming_timely_coverage = 0.0;
     for (const auto& tick : stats.server_ticks) {
         simulation_ms += tick.simulation.total_ms;
         command_count += static_cast<std::uint32_t>(tick.commands.command_reports.size());
@@ -365,6 +377,19 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
         chunk_load_worker_ms = tick.chunk_loading.last_worker_ms;
         chunk_load_pipeline_ms = tick.chunk_loading.last_pipeline_latency_ms;
         chunk_load_publication_us = tick.chunk_loading.maximum_publication_time_us;
+        predictive_streaming_enabled = tick.chunk_streaming.enabled;
+        streaming_desired_chunks = tick.chunk_streaming.desired_chunk_count;
+        streaming_pending_chunks = tick.chunk_streaming.pending_load_count;
+        streaming_active_speculative_chunks =
+            tick.chunk_streaming.lifetime.active_speculative_requests;
+        streaming_deferred_required = tick.chunk_streaming.deferred_required_load_count;
+        streaming_deferred_evictions = tick.chunk_streaming.deferred_eviction_count;
+        streaming_projected_overage = tick.chunk_streaming.projected_resident_overage;
+        streaming_unresolved_overage = tick.chunk_streaming.unresolved_resident_overage;
+        streaming_planning_updates = tick.chunk_streaming.lifetime.planning_updates;
+        streaming_teleport_updates = tick.chunk_streaming.lifetime.teleport_updates;
+        streaming_prediction_accuracy = tick.chunk_streaming.lifetime.prediction_accuracy;
+        streaming_timely_coverage = tick.chunk_streaming.lifetime.timely_coverage;
     }
     add_field(data, "server_tick_count", std::to_string(stats.server_ticks.size()));
     add_field(data, "simulation_ms", std::to_string(simulation_ms));
@@ -481,6 +506,20 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     add_field(data, "chunk_load_worker_ms", std::to_string(chunk_load_worker_ms));
     add_field(data, "chunk_load_pipeline_ms", std::to_string(chunk_load_pipeline_ms));
     add_field(data, "chunk_load_publication_us", std::to_string(chunk_load_publication_us));
+    add_field(data, "predictive_streaming_enabled",
+              predictive_streaming_enabled ? "true" : "false");
+    add_field(data, "streaming_desired_chunks", std::to_string(streaming_desired_chunks));
+    add_field(data, "streaming_pending_chunks", std::to_string(streaming_pending_chunks));
+    add_field(data, "streaming_active_speculative_chunks",
+              std::to_string(streaming_active_speculative_chunks));
+    add_field(data, "streaming_deferred_required", std::to_string(streaming_deferred_required));
+    add_field(data, "streaming_deferred_evictions", std::to_string(streaming_deferred_evictions));
+    add_field(data, "streaming_projected_overage", std::to_string(streaming_projected_overage));
+    add_field(data, "streaming_unresolved_overage", std::to_string(streaming_unresolved_overage));
+    add_field(data, "streaming_planning_updates", std::to_string(streaming_planning_updates));
+    add_field(data, "streaming_teleport_updates", std::to_string(streaming_teleport_updates));
+    add_field(data, "streaming_prediction_accuracy", std::to_string(streaming_prediction_accuracy));
+    add_field(data, "streaming_timely_coverage", std::to_string(streaming_timely_coverage));
     add_field(data, "client_received_message_count",
               std::to_string(stats.client.received_message_count));
     add_field(data, "presentation_adapter_count", std::to_string(stats.presentation.adapter_count));
@@ -508,6 +547,12 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
         add_issue(data, debug::InspectionSeverity::warning,
                   "runtime_frame.reliable_backlog_overload_disconnect",
                   "reliable backlog limits disconnected one or more clients");
+    }
+    if (streaming_unresolved_overage != 0) {
+        add_issue(data, debug::InspectionSeverity::warning,
+                  "runtime_frame.streaming_unresolved_overage",
+                  "required or dirty chunks prevent the streaming residency target from being "
+                  "reached");
     }
     return data;
 }

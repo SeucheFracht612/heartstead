@@ -71,6 +71,9 @@ class ClientRuntime final {
     [[nodiscard]] world::WorldState& world() noexcept;
     [[nodiscard]] const world::WorldState& world() const noexcept;
     [[nodiscard]] core::Status install_local_chunk_snapshot(const world::VoxelChunk& source);
+    [[nodiscard]] bool
+    local_chunk_snapshot_is_current(const world::VoxelChunk& source) const noexcept;
+    bool remove_local_chunk_snapshot(world::ChunkCoord coordinate) noexcept;
     [[nodiscard]] net::ClientSession& session() noexcept;
     [[nodiscard]] const net::ClientSession& session() const noexcept;
     [[nodiscard]] std::span<const net::HostSessionCommandResult> command_results() const noexcept;

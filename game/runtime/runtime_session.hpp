@@ -41,6 +41,7 @@ struct RuntimeConfiguration {
     world::ChunkFluidSystemConfig chunk_fluids{};
     world::ChunkLightSystemConfig chunk_lighting{};
     world::ChunkLoadSchedulerConfig chunk_loading{};
+    world::PredictiveChunkStreamingPolicy chunk_streaming{};
     world::ChunkSubscriptionPolicy chunk_subscriptions{};
     std::uint64_t max_chunk_snapshot_serialization_time_us_per_tick = 4'000;
     std::uint32_t max_transient_snapshot_messages_per_tick = 512;

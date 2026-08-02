@@ -126,6 +126,10 @@ core::Status RuntimeConfiguration::validate() const {
     if (!status) {
         return status;
     }
+    status = chunk_streaming.validate();
+    if (!status) {
+        return status;
+    }
     status = chunk_subscriptions.validate();
     if (!status) {
         return status;
@@ -420,6 +424,21 @@ core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& pr
         server_desc.chunk_fluids = config_.chunk_fluids;
         server_desc.chunk_lighting = config_.chunk_lighting;
         server_desc.chunk_loading = config_.chunk_loading;
+        server_desc.chunk_streaming = config_.chunk_streaming;
+        if (scenario.value().setup_hook == "renderer_proof") {
+            const auto load_radius =
+                static_cast<std::uint16_t>(scenarios::renderer_proof_stream_radius_chunks);
+            server_desc.chunk_streaming.interest.load_horizontal_radius_chunks = load_radius;
+            server_desc.chunk_streaming.interest.load_vertical_radius_chunks = 0;
+            server_desc.chunk_streaming.interest.retain_horizontal_radius_chunks =
+                static_cast<std::uint16_t>(load_radius + 1U);
+            server_desc.chunk_streaming.interest.retain_vertical_radius_chunks = 0;
+            // Expand the shifted demand footprint without adding a second radial margin.
+            server_desc.chunk_streaming.predictive_horizontal_radius_chunks = 0;
+            server_desc.chunk_streaming.predictive_vertical_radius_chunks = 0;
+            server_desc.chunk_streaming.nominal_resident_chunk_budget = std::max<std::size_t>(
+                server_desc.chunk_streaming.nominal_resident_chunk_budget, 512);
+        }
         server_desc.chunk_subscriptions = config_.chunk_subscriptions;
         server_desc.max_chunk_snapshot_serialization_time_us_per_tick =
             config_.max_chunk_snapshot_serialization_time_us_per_tick;
@@ -908,9 +927,20 @@ core::Status RuntimeSession::synchronize_local_renderer_proof_chunks() {
     if (!local_renderer_proof_chunk_fast_path_ || server_ == nullptr || client_ == nullptr) {
         return core::Status::ok();
     }
+    std::vector<world::ChunkCoord> removed;
+    for (const auto* chunk : client_->world().chunks().records()) {
+        if (server_->world().chunks().find(chunk->coord()) == nullptr) {
+            removed.push_back(chunk->coord());
+        }
+    }
+    std::ranges::sort(removed);
+    for (const auto coordinate : removed) {
+        static_cast<void>(client_->remove_local_chunk_snapshot(coordinate));
+    }
+
     std::vector<const world::VoxelChunk*> missing;
     for (const auto* chunk : server_->world().chunks().records()) {
-        if (client_->world().chunks().find(chunk->coord()) == nullptr) {
+        if (!client_->local_chunk_snapshot_is_current(*chunk)) {
             missing.push_back(chunk);
         }
     }

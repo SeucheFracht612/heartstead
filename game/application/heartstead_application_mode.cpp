@@ -503,6 +503,20 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                     loading_stats.maximum_pipeline_latency_ms;
                 snapshot.maximum_chunk_load_publication_us =
                     loading_stats.maximum_publication_time_us;
+                const auto& streaming_stats =
+                    runtime_stats->server_ticks.back().chunk_streaming;
+                snapshot.predictive_streaming_enabled = streaming_stats.enabled;
+                snapshot.desired_streaming_chunks = streaming_stats.desired_chunk_count;
+                snapshot.active_speculative_streaming_chunks =
+                    streaming_stats.lifetime.active_speculative_requests;
+                snapshot.deferred_streaming_evictions =
+                    streaming_stats.deferred_eviction_count;
+                snapshot.projected_streaming_overage =
+                    streaming_stats.projected_resident_overage;
+                snapshot.streaming_prediction_accuracy =
+                    streaming_stats.lifetime.prediction_accuracy;
+                snapshot.streaming_timely_coverage =
+                    streaming_stats.lifetime.timely_coverage;
             }
         }
         if (session_runtime.has_value() && session_runtime->session() != nullptr) {
