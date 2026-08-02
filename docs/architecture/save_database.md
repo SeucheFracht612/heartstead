@@ -43,6 +43,11 @@ Implemented behavior:
   exists, so early save fixtures remain readable
 - writes chunk edit deltas as independent per-chunk payload files
 - stores a chunk index so streamed chunk delta records can be loaded separately
+- opens a generation-scoped `FileChunkDeltaReader` that selects and validates the active index once;
+  retained readers serve concurrent requests by binary-searching that immutable index and reading
+  only the requested payload instead of reparsing the complete table for every chunk
+- pins legacy inline snapshot deltas in the reader when no external table exists, preserving old
+  fixtures without putting full-snapshot decoding in each worker request
 - exposes basic database statistics
 - reports journal entry count/bytes and checkpoint/highest sequences with the generation statistics
 - reports whether the active save is legacy or generation-backed, the active generation name,
@@ -51,8 +56,8 @@ Implemented behavior:
 - treats the external chunk-delta table as authoritative whenever its index exists, including an
   intentionally empty index, instead of falling back to chunk records embedded in the snapshot
 - writes streamed chunk-delta updates into the active generation when a generation manifest exists
-- provides a world-streaming adapter that converts a missing per-chunk delta into an empty optional
-  while preserving real save/database errors
+- provides a world-streaming adapter that owns an already-opened indexed reader and converts a
+  missing per-chunk delta into an empty optional while preserving real save/database errors
 - prunes stale committed generations with an explicit keep count while preserving the active
   generation and staged `.tmp` generation directories
 - recovers from interrupted full-snapshot commits by removing abandoned staged `.tmp` generation
@@ -105,6 +110,12 @@ or platform. The scheduler's single worker serializes requests submitted through
 instance. Direct database callers and separate processes still require external single-writer
 coordination. Backup/export policy remains an operational responsibility.
 
+An indexed reader is a view of the generation selected when it opens. Callers reopen it after
+mutating that generation and keep the selected generation from being pruned for the reader's
+lifetime. Publishing a newer generation does not redirect an existing reader; this makes all
+worker requests in one streaming epoch observe the same index. Opening fails immediately on a
+malformed manifest or index rather than deferring that failure to an arbitrary worker request.
+
 This is not a final production save store. It establishes the engine boundary:
 
 - permanent world state remains typed `SaveSnapshot` data
@@ -113,4 +124,5 @@ This is not a final production save store. It establishes the engine boundary:
 - file layout and slot naming are owned by the engine, not by gameplay systems or mods
 
 Future work should add cross-process writer exclusion, production-scale backup/export policy,
-large-world snapshot-capture benchmarks, and complete save-slot UI workflows.
+large-world snapshot-capture and physical-I/O benchmarks, an append-oriented per-chunk write path
+that does not rewrite the complete delta table, and complete save-slot UI workflows.

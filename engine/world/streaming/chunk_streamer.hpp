@@ -29,13 +29,15 @@ class IChunkEditDeltaSource {
 
 class FileSaveChunkEditDeltaSource final : public IChunkEditDeltaSource {
   public:
-    explicit FileSaveChunkEditDeltaSource(save::FileSaveDatabase database) noexcept;
+    explicit FileSaveChunkEditDeltaSource(save::FileChunkDeltaReader reader) noexcept;
 
     [[nodiscard]] core::Result<std::optional<save::ChunkEditSaveRecord>>
     read_chunk_delta(ChunkCoord coord) const override;
 
+    [[nodiscard]] const save::FileChunkDeltaReaderStats& stats() const noexcept;
+
   private:
-    save::FileSaveDatabase database_;
+    save::FileChunkDeltaReader reader_;
 };
 
 class IChunkEditDeltaSink {

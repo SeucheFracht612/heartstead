@@ -1441,6 +1441,33 @@ write_chunk_deltas_to_root(const std::filesystem::path& save_root,
 
 } // namespace
 
+core::Result<std::optional<ChunkEditSaveRecord>>
+FileChunkDeltaReader::read_chunk_delta(world::ChunkCoord coord) const {
+    const auto found = std::lower_bound(
+        entries_.begin(), entries_.end(), coord,
+        [](const Entry& entry, world::ChunkCoord requested) { return entry.coord < requested; });
+    if (found == entries_.end() || !same_coord(found->coord, coord)) {
+        return core::Result<std::optional<ChunkEditSaveRecord>>::success(std::nullopt);
+    }
+
+    std::optional<ChunkEditSaveRecord> result;
+    if (stats_.storage_kind == FileChunkDeltaStorageKind::external_table) {
+        auto payload = read_chunk_delta_payload(payload_directory_ / found->value);
+        if (!payload) {
+            return core::Result<std::optional<ChunkEditSaveRecord>>::failure(
+                payload.error().code, payload.error().message);
+        }
+        result.emplace(ChunkEditSaveRecord{found->coord, std::move(payload).value()});
+    } else {
+        result.emplace(ChunkEditSaveRecord{found->coord, found->value});
+    }
+    return core::Result<std::optional<ChunkEditSaveRecord>>::success(std::move(result));
+}
+
+const FileChunkDeltaReaderStats& FileChunkDeltaReader::stats() const noexcept {
+    return stats_;
+}
+
 FileSaveDatabase::FileSaveDatabase(std::filesystem::path root) : root_(std::move(root)) {}
 
 bool SaveDatabaseMaintenanceResult::changed() const noexcept {
@@ -1742,39 +1769,104 @@ FileSaveDatabase::write_chunk_deltas(std::span<const ChunkEditSaveRecord> chunk_
     return write_chunk_deltas_to_root(save_root.value(), chunk_deltas);
 }
 
-core::Result<ChunkEditSaveRecord>
-FileSaveDatabase::read_chunk_delta(world::ChunkCoord coord) const {
+core::Result<FileChunkDeltaReader> FileSaveDatabase::open_chunk_delta_reader() const {
     auto save_root = active_save_root(root_);
     if (!save_root) {
-        return core::Result<ChunkEditSaveRecord>::failure(save_root.error().code,
-                                                          save_root.error().message);
+        return core::Result<FileChunkDeltaReader>::failure(save_root.error().code,
+                                                           save_root.error().message);
     }
 
-    auto entries = read_chunk_index(save_root.value());
-    if (!entries) {
-        return core::Result<ChunkEditSaveRecord>::failure(entries.error().code,
-                                                          entries.error().message);
+    FileChunkDeltaReader reader;
+    reader.stats_.selected_save_root = save_root.value();
+    if (save_root.value().parent_path() == generations_directory(root_)) {
+        reader.stats_.active_generation = save_root.value().filename().string();
     }
 
-    const auto found = std::ranges::find_if(entries.value(), [coord](const ChunkIndexEntry& entry) {
-        return same_coord(entry.coord, coord);
-    });
-    if (found == entries.value().end()) {
+    auto has_chunk_table = has_external_chunk_table(save_root.value());
+    if (!has_chunk_table) {
+        return core::Result<FileChunkDeltaReader>::failure(has_chunk_table.error().code,
+                                                           has_chunk_table.error().message);
+    }
+    if (has_chunk_table.value()) {
+        auto chunks = readable_chunk_directory(save_root.value());
+        if (!chunks) {
+            return core::Result<FileChunkDeltaReader>::failure(chunks.error().code,
+                                                               chunks.error().message);
+        }
+        auto entries = read_chunk_index(save_root.value());
+        if (!entries) {
+            return core::Result<FileChunkDeltaReader>::failure(entries.error().code,
+                                                               entries.error().message);
+        }
+
+        reader.stats_.storage_kind = FileChunkDeltaStorageKind::external_table;
+        reader.payload_directory_ = std::move(chunks).value();
+        reader.entries_.reserve(entries.value().size());
+        for (auto& entry : entries.value()) {
+            reader.entries_.push_back({entry.coord, std::move(entry.filename)});
+        }
+        reader.stats_.indexed_chunk_delta_count = reader.entries_.size();
+        return core::Result<FileChunkDeltaReader>::success(std::move(reader));
+    }
+
+    const auto path = snapshot_path(save_root.value());
+    std::error_code filesystem_error;
+    const bool has_snapshot = std::filesystem::exists(path, filesystem_error);
+    if (filesystem_error) {
+        return core::Result<FileChunkDeltaReader>::failure("save_database.read_failed",
+                                                           filesystem_error.message());
+    }
+    if (!has_snapshot) {
+        return core::Result<FileChunkDeltaReader>::success(std::move(reader));
+    }
+
+    auto bytes = read_bytes(path, max_snapshot_file_bytes, "save_database.snapshot_too_large",
+                            "binary save snapshot");
+    if (!bytes) {
+        return core::Result<FileChunkDeltaReader>::failure(bytes.error().code,
+                                                           bytes.error().message);
+    }
+    auto snapshot = SaveBinaryCodec::decode_snapshot(bytes.value());
+    if (!snapshot) {
+        return core::Result<FileChunkDeltaReader>::failure(snapshot.error().code,
+                                                           snapshot.error().message);
+    }
+    auto& chunk_deltas = snapshot.value().chunk_edits;
+    const auto validation = validate_chunk_deltas_for_storage(chunk_deltas);
+    if (!validation) {
+        return core::Result<FileChunkDeltaReader>::failure(validation.error().code,
+                                                           validation.error().message);
+    }
+    std::ranges::sort(chunk_deltas,
+                      [](const ChunkEditSaveRecord& left, const ChunkEditSaveRecord& right) {
+                          return left.coord < right.coord;
+                      });
+    reader.stats_.storage_kind = FileChunkDeltaStorageKind::inline_snapshot;
+    reader.entries_.reserve(chunk_deltas.size());
+    for (auto& chunk_delta : chunk_deltas) {
+        reader.entries_.push_back({chunk_delta.coord, std::move(chunk_delta.encoded_edit_delta)});
+    }
+    reader.stats_.indexed_chunk_delta_count = reader.entries_.size();
+    return core::Result<FileChunkDeltaReader>::success(std::move(reader));
+}
+
+core::Result<ChunkEditSaveRecord>
+FileSaveDatabase::read_chunk_delta(world::ChunkCoord coord) const {
+    auto reader = open_chunk_delta_reader();
+    if (!reader) {
+        return core::Result<ChunkEditSaveRecord>::failure(reader.error().code,
+                                                          reader.error().message);
+    }
+    auto delta = reader.value().read_chunk_delta(coord);
+    if (!delta) {
+        return core::Result<ChunkEditSaveRecord>::failure(delta.error().code,
+                                                          delta.error().message);
+    }
+    if (!delta.value().has_value()) {
         return core::Result<ChunkEditSaveRecord>::failure(
             "save_database.missing_chunk_delta", "chunk delta is not present in save database");
     }
-
-    auto chunks = readable_chunk_directory(save_root.value());
-    if (!chunks) {
-        return core::Result<ChunkEditSaveRecord>::failure(chunks.error().code,
-                                                          chunks.error().message);
-    }
-    auto payload = read_chunk_delta_payload(chunks.value() / found->filename);
-    if (!payload) {
-        return core::Result<ChunkEditSaveRecord>::failure(payload.error().code,
-                                                          payload.error().message);
-    }
-    return core::Result<ChunkEditSaveRecord>::success({found->coord, std::move(payload).value()});
+    return core::Result<ChunkEditSaveRecord>::success(std::move(*delta.value()));
 }
 
 core::Result<std::vector<ChunkEditSaveRecord>> FileSaveDatabase::read_chunk_deltas() const {

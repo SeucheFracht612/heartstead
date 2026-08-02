@@ -69,21 +69,17 @@ namespace {
 
 } // namespace
 
-FileSaveChunkEditDeltaSource::FileSaveChunkEditDeltaSource(save::FileSaveDatabase database) noexcept
-    : database_(std::move(database)) {}
+FileSaveChunkEditDeltaSource::FileSaveChunkEditDeltaSource(
+    save::FileChunkDeltaReader reader) noexcept
+    : reader_(std::move(reader)) {}
 
 core::Result<std::optional<save::ChunkEditSaveRecord>>
 FileSaveChunkEditDeltaSource::read_chunk_delta(ChunkCoord coord) const {
-    auto delta = database_.read_chunk_delta(coord);
-    if (!delta) {
-        if (delta.error().code == "save_database.missing_chunk_delta") {
-            return core::Result<std::optional<save::ChunkEditSaveRecord>>::success(std::nullopt);
-        }
-        return core::Result<std::optional<save::ChunkEditSaveRecord>>::failure(
-            delta.error().code, delta.error().message);
-    }
-    return core::Result<std::optional<save::ChunkEditSaveRecord>>::success(
-        std::move(delta).value());
+    return reader_.read_chunk_delta(coord);
+}
+
+const save::FileChunkDeltaReaderStats& FileSaveChunkEditDeltaSource::stats() const noexcept {
+    return reader_.stats();
 }
 
 FileSaveChunkEditDeltaSink::FileSaveChunkEditDeltaSink(

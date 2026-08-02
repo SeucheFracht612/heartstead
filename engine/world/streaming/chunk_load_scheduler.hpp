@@ -61,7 +61,8 @@ struct ChunkLoadSchedulerContext {
     RegionGraph regions;
     VoxelPalette palette;
     // Implementations are called concurrently by the configured workers and must be safe for
-    // concurrent const access. FileSaveChunkEditDeltaSource owns an immutable database handle.
+    // concurrent const access. FileSaveChunkEditDeltaSource owns a generation-scoped immutable
+    // index reader.
     std::shared_ptr<const IChunkEditDeltaSource> saved_deltas;
 
     [[nodiscard]] core::Status validate() const;

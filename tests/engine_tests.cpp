@@ -14316,9 +14316,12 @@ void test_chunk_streamer() {
 
     const auto temp_root = make_temp_root();
     heartstead::save::FileSaveDatabase database(temp_root);
-    heartstead::world::FileSaveChunkEditDeltaSource file_source(database);
+    auto empty_reader = database.open_chunk_delta_reader();
+    assert(empty_reader);
+    heartstead::world::FileSaveChunkEditDeltaSource empty_file_source(
+        std::move(empty_reader).value());
     heartstead::world::FileSaveChunkEditDeltaSink file_sink(database);
-    auto missing_delta = file_source.read_chunk_delta({99, 0, 0});
+    auto missing_delta = empty_file_source.read_chunk_delta({99, 0, 0});
     assert(missing_delta);
     assert(!missing_delta.value().has_value());
 
@@ -14332,6 +14335,10 @@ void test_chunk_streamer() {
     assert(database.write_chunk_delta(
         {file_edit.chunk_coord,
          heartstead::world::ChunkEditDeltaTextCodec::encode(file_edit.chunk_coord, file_edits)}));
+    auto indexed_reader = database.open_chunk_delta_reader();
+    assert(indexed_reader);
+    heartstead::world::FileSaveChunkEditDeltaSource file_source(std::move(indexed_reader).value());
+    assert(file_source.stats().indexed_chunk_delta_count == 1);
 
     heartstead::world::WorldState file_state;
     auto file_loaded = heartstead::world::ChunkStreamer::load_chunk(

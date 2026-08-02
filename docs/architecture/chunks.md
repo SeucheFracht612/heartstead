@@ -71,8 +71,9 @@ Implemented foundation:
   - loads chunk coordinates into `WorldState` on demand
   - generates baseline terrain through the deterministic terrain generator
   - can overlay one saved per-chunk edit delta through an abstract delta-source interface
-  - provides a `FileSaveDatabase` adapter that maps a missing per-chunk delta to "no saved edits"
-    without exposing save-directory layout to world streaming callers
+  - provides a `FileSaveDatabase` adapter backed by a generation-scoped indexed reader; opening
+    validates the table once, concurrent worker reads binary-search it and fetch only one payload,
+    and a missing coordinate maps to "no saved edits" without exposing save-directory layout
   - reports whether a request found an already-loaded chunk, generated a fresh baseline chunk, or
     generated a baseline chunk with saved edits applied
   - returns the resident `ChunkIdentity` in every successful load report and the exact evicted
@@ -115,7 +116,8 @@ Implemented foundation:
 
 - `ChunkLoadScheduler`
   - runs disk read, saved-delta decode, terrain generation, and private saved-edit application on a
-    fixed worker pool; workers receive immutable generation inputs and never touch live world state
+    fixed worker pool; workers receive immutable generation inputs, share a concurrently readable
+    saved-delta index, and never touch live world state
   - supports both the deterministic terrain generator and immutable, concurrently callable custom
     generators used by packaged fixtures
   - bounds active requests, completed results, per-request working-memory reservations, aggregate

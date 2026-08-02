@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -77,6 +78,50 @@ struct SaveDatabaseMigrationResult {
     [[nodiscard]] bool changed() const noexcept;
 };
 
+enum class FileChunkDeltaStorageKind {
+    none,
+    external_table,
+    inline_snapshot,
+};
+
+struct FileChunkDeltaReaderStats {
+    FileChunkDeltaStorageKind storage_kind = FileChunkDeltaStorageKind::none;
+    std::filesystem::path selected_save_root;
+    std::string active_generation;
+    std::size_t indexed_chunk_delta_count = 0;
+};
+
+// A generation-scoped, immutable chunk-index view. Opening performs manifest selection and index
+// validation once; concurrent reads then use binary search and read only the selected payload.
+// Callers must reopen after mutating the selected generation and must not prune that generation
+// while the reader is in use.
+class FileChunkDeltaReader {
+  public:
+    FileChunkDeltaReader(const FileChunkDeltaReader&) = delete;
+    FileChunkDeltaReader& operator=(const FileChunkDeltaReader&) = delete;
+    FileChunkDeltaReader(FileChunkDeltaReader&&) noexcept = default;
+    FileChunkDeltaReader& operator=(FileChunkDeltaReader&&) noexcept = default;
+
+    [[nodiscard]] core::Result<std::optional<ChunkEditSaveRecord>>
+    read_chunk_delta(world::ChunkCoord coord) const;
+    [[nodiscard]] const FileChunkDeltaReaderStats& stats() const noexcept;
+
+  private:
+    struct Entry {
+        world::ChunkCoord coord;
+        // An external-table filename or an inline legacy-snapshot payload, selected by stats.
+        std::string value;
+    };
+
+    FileChunkDeltaReader() = default;
+
+    FileChunkDeltaReaderStats stats_;
+    std::filesystem::path payload_directory_;
+    std::vector<Entry> entries_;
+
+    friend class FileSaveDatabase;
+};
+
 class FileSaveDatabase {
   public:
     explicit FileSaveDatabase(std::filesystem::path root);
@@ -101,8 +146,11 @@ class FileSaveDatabase {
     [[nodiscard]] core::Status write_chunk_delta(const ChunkEditSaveRecord& chunk_delta) const;
     [[nodiscard]] core::Status
     write_chunk_deltas(std::span<const ChunkEditSaveRecord> chunk_deltas) const;
+    // Prefer a retained reader for repeated or concurrent streaming reads. This convenience API
+    // opens a fresh generation-scoped reader for each call.
     [[nodiscard]] core::Result<ChunkEditSaveRecord> read_chunk_delta(world::ChunkCoord coord) const;
     [[nodiscard]] core::Result<std::vector<ChunkEditSaveRecord>> read_chunk_deltas() const;
+    [[nodiscard]] core::Result<FileChunkDeltaReader> open_chunk_delta_reader() const;
 
     [[nodiscard]] core::Result<std::size_t> compact_chunk_deltas() const;
     [[nodiscard]] core::Status prune_stale_generations(std::size_t keep_stale_generations) const;

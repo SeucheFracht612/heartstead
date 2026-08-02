@@ -32,7 +32,7 @@ requires one.
 | Occupancy and opacity masks | A fixed 4 KiB occupancy mask follows the exact chunk content revision. Meshing snapshots also carry pooled greedy-cube and halo-padded full-occluder masks keyed by content dependencies and render-table revision. | Reuse the resident occupancy mask for later measured consumers; keep render-dependent masks derived and consumer-specific. |
 | Face culling and greedy meshing | Implemented with immutable neighborhood snapshots, material/render phases, bounded scheduling, stale rejection, pooled buffers, reproducible isolated benchmarks, occupancy-assisted rejection, word-level face candidates/AO queries, surface-bound reservation, an isolated-cube culled fallback, and bounded invalidation-to-resident traces. | Keep slab or microbrick rebuilds deferred unless a future measured edit P95 again exceeds target. |
 | Dynamic edit propagation | Dirty regions, neighbor dependencies, asynchronous mesh/light/collision work, upload quotas, exact mesh/collision/relight lifecycle tracking, edit coalescing/abandonment telemetry, and calibrated visual, collision, relight, required-chunk upload-preparation, and draw-eligibility P95 gates exist. | Add burst-edit collision/relight amplification and actual GPU execution/presentation/display response workloads. |
-| Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, per-chunk indexed delta save/replication, residency budgets, and far clipmaps exist. Durable snapshot acceptance/compaction and application saves run through a bounded save worker. A bounded chunk loader moves disk/decode/generation/private edit application off-thread and is active in the live renderer-proof stream. Saved-delta publication and narrow flushes no longer scan or copy global edit history. | Adopt async loading in the general generated-world controller, bound eviction waves, and add scale-calibrated visibility/save-capture gates. |
+| Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, per-chunk indexed delta save/replication, residency budgets, and far clipmaps exist. Durable snapshot acceptance/compaction and application saves run through a bounded save worker. A bounded chunk loader moves disk/decode/generation/private edit application off-thread and is active in the live renderer-proof stream. Saved-delta publication and narrow flushes no longer scan or copy global edit history, and physical delta sources parse the selected generation index once rather than once per requested chunk. | Add physical cache-state/read-scale gates, replace full-table per-chunk writes, adopt async loading in the general generated-world controller, bound eviction waves, and add scale-calibrated save-capture gates. |
 | Visibility, LOD, and GPU scaling | Frustum/distance/hierarchical visibility, HZB support, far clipmaps, indirect rendering, GPU arenas, upload staging, and pass timestamps already exist. | Tune only from captures; validate total culling benefit and retain broad fallback paths. |
 | Simulation and multiplayer scale | Simulation LOD, server authority, interest management, replication deltas, and fixed-step runtime exist. | Add multi-client spread/convergence benchmarks, byte/time quotas, backlog recovery gates, and soak coverage. |
 
@@ -157,6 +157,13 @@ rapid-teleport test proves cancelled requests drain, off-interest chunks do not 
 client converge on all 441 desired chunks, and reservations return to zero. The focused save/load
 and response paths pass warning-as-error builds plus ASan/UBSan and TSAN; the complete suite is
 green.
+
+The file-backed saved-delta source now opens and validates one generation-scoped sorted index before
+workers use it. Concurrent reads perform `O(log n)` lookup and one payload-file read; they no longer
+parse and sort `index.txt` for every requested coordinate. Existing readers remain pinned across a
+new generation activation, legacy inline snapshots remain supported, and corrupt indexes fail at
+open. Physical cache-state calibration and the full-table streamed-write replacement remain M5
+work.
 
 The open-loop chunk benchmark declares every target coordinate at one instant so bounded admission
 delay remains in each raw sample. Its saved-delta workload retains 16,384 unrelated edits plus one
