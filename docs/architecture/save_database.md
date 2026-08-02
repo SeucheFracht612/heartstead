@@ -102,6 +102,8 @@ Implemented behavior:
 - provides a one-worker `SaveScheduler` with bounded active/completed requests and measured
   per-request/aggregate working-memory reservations; serialization, stable-storage waits,
   compaction, and slot-metadata publication stay on that worker
+- retains request-entry-to-durable-acceptance latency separately from the worker's
+  encode-and-stable-write duration, so queue/dispatch delay cannot be hidden by the component timer
 - treats journal acceptance as success even if later checkpoint compaction fails, reports the
   compaction error separately, and lets normal reads/recovery select the accepted entry
 - updates `last_played_at_ms` separately when a loaded world becomes active, so Continue ordering
@@ -159,8 +161,11 @@ Warm and Linux cache-drop-advice physical read benchmarks exercise the indexed b
 records. The companion
 [chunk delta journal benchmark](../performance/chunk_delta_journal_benchmarks.md) measures one-file
 durable appends, base-plus-journal reopen, exact restart recovery, and complete checkpoint at the
-same record scale. They do not establish guaranteed-cold behavior or cover other filesystems/media.
-Future work should add bounded background checkpoint retry/rotation, cross-process writer
-exclusion, production-scale backup/export policy, large-world snapshot-capture and
-save-under-load benchmarks, guaranteed-cold/multi-filesystem validation, and complete save-slot UI
-workflows.
+same record scale. The schema-v4
+[chunk streaming benchmark](../performance/chunk_streaming_benchmarks.md) also publishes a full save
+while the prior generation serves physical chunk loads, proves maintenance is busy while that view is
+pinned, creates a quiescent null-source reader gap, prunes the stale generation, and installs a new
+reader for future submissions. These benchmarks do not establish guaranteed-cold behavior or cover
+other filesystems/media. Future work should add a bounded application checkpoint retry policy,
+cross-process writer exclusion, production-scale backup/export policy, large-world live snapshot
+capture, guaranteed-cold/multi-filesystem validation, and complete save-slot UI workflows.

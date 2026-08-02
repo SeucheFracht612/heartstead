@@ -2,6 +2,7 @@
 
 #include "engine/profiling/profiler.hpp"
 #include "engine/save/save_database.hpp"
+#include "engine/save/save_scheduler.hpp"
 #include "engine/world/chunks/chunk_edit_delta_codec.hpp"
 
 #include <algorithm>
@@ -153,6 +154,7 @@ class BenchmarkSavedDeltaSource final : public IChunkEditDeltaSource {
 
 struct FileDeltaSourcePreparation {
     std::shared_ptr<const IChunkEditDeltaSource> source;
+    std::string active_generation;
     std::size_t indexed_delta_count = 0;
     double reader_open_ms = 0.0;
     std::size_t cache_preloaded_payload_count = 0;
@@ -307,8 +309,7 @@ class PhysicalSavedDeltaFixture {
         fixture->metadata_.ephemeral_root = fixture->root_;
         fixture->metadata_.active_generation = stats.value().active_generation;
         fixture->metadata_.record_count = stats.value().chunk_delta_count;
-        fixture->generation_root_ =
-            fixture->root_ / "generations" / fixture->metadata_.active_generation;
+        fixture->snapshot_ = std::move(snapshot);
         return core::Result<std::unique_ptr<PhysicalSavedDeltaFixture>>::success(
             std::move(fixture));
     }
@@ -356,13 +357,18 @@ class PhysicalSavedDeltaFixture {
                 ++preparation.cache_preloaded_payload_count;
             }
         } else if (workload == ChunkStreamingWorkload::file_delta_drop_cache_advised) {
+            auto stats = database_.stats();
+            if (!stats) {
+                return core::Result<FileDeltaSourcePreparation>::failure(stats.error().code,
+                                                                         stats.error().message);
+            }
+            const auto generation_root = root_ / "generations" / stats.value().active_generation;
             std::vector<std::filesystem::path> advice_paths;
             advice_paths.reserve(target_.size() + 2U);
             advice_paths.push_back(root_ / "current.txt");
-            advice_paths.push_back(generation_root_ / "chunks" / "index.txt");
+            advice_paths.push_back(generation_root / "chunks" / "index.txt");
             for (const auto coord : target_) {
-                advice_paths.push_back(generation_root_ / "chunks" /
-                                       physical_chunk_filename(coord));
+                advice_paths.push_back(generation_root / "chunks" / physical_chunk_filename(coord));
             }
             auto advice = advise_drop_file_cache(advice_paths);
             if (!advice) {
@@ -378,25 +384,32 @@ class PhysicalSavedDeltaFixture {
                 "physical fixture was asked to prepare a non-file workload");
         }
 
-        const auto open_started_at = BenchmarkClock::now();
-        auto reader = database_.open_chunk_delta_reader();
-        preparation.reader_open_ms = elapsed_milliseconds(open_started_at, BenchmarkClock::now());
-        if (!reader) {
-            return core::Result<FileDeltaSourcePreparation>::failure(reader.error().code,
-                                                                     reader.error().message);
+        auto opened = open_current_reader();
+        if (!opened) {
+            return opened;
         }
-        if (reader.value().stats().storage_kind !=
-                save::FileChunkDeltaStorageKind::external_table ||
-            reader.value().stats().indexed_chunk_delta_count != metadata_.record_count ||
-            reader.value().stats().active_generation != metadata_.active_generation) {
-            return core::Result<FileDeltaSourcePreparation>::failure(
-                "chunk_streaming_benchmark.fixture_reader_mismatch",
-                "physical delta reader did not select the complete fixture generation");
-        }
-        preparation.indexed_delta_count = reader.value().stats().indexed_chunk_delta_count;
-        preparation.source =
-            std::make_shared<FileSaveChunkEditDeltaSource>(std::move(reader).value());
+        preparation.source = std::move(opened.value().source);
+        preparation.active_generation = std::move(opened.value().active_generation);
+        preparation.indexed_delta_count = opened.value().indexed_delta_count;
+        preparation.reader_open_ms = opened.value().reader_open_ms;
         return core::Result<FileDeltaSourcePreparation>::success(std::move(preparation));
+    }
+
+    [[nodiscard]] core::Result<FileDeltaSourcePreparation>
+    prepare_for_save_under_streaming() const {
+        return open_current_reader();
+    }
+
+    [[nodiscard]] save::SaveSnapshot clone_snapshot() const {
+        return snapshot_;
+    }
+
+    [[nodiscard]] const save::FileSaveDatabase& database() const noexcept {
+        return database_;
+    }
+
+    [[nodiscard]] const std::filesystem::path& root() const noexcept {
+        return root_;
     }
 
     [[nodiscard]] const ChunkStreamingPhysicalFixtureMetadata& metadata() const noexcept {
@@ -407,9 +420,33 @@ class PhysicalSavedDeltaFixture {
     explicit PhysicalSavedDeltaFixture(std::filesystem::path root)
         : root_(std::move(root)), database_(root_) {}
 
+    [[nodiscard]] core::Result<FileDeltaSourcePreparation> open_current_reader() const {
+        FileDeltaSourcePreparation preparation;
+        const auto open_started_at = BenchmarkClock::now();
+        auto reader = database_.open_chunk_delta_reader();
+        preparation.reader_open_ms = elapsed_milliseconds(open_started_at, BenchmarkClock::now());
+        if (!reader) {
+            return core::Result<FileDeltaSourcePreparation>::failure(reader.error().code,
+                                                                     reader.error().message);
+        }
+        if (reader.value().stats().storage_kind !=
+                save::FileChunkDeltaStorageKind::external_table ||
+            reader.value().stats().indexed_chunk_delta_count != metadata_.record_count ||
+            reader.value().stats().active_generation.empty()) {
+            return core::Result<FileDeltaSourcePreparation>::failure(
+                "chunk_streaming_benchmark.fixture_reader_mismatch",
+                "physical delta reader did not select a complete fixture generation");
+        }
+        preparation.active_generation = reader.value().stats().active_generation;
+        preparation.indexed_delta_count = reader.value().stats().indexed_chunk_delta_count;
+        preparation.source =
+            std::make_shared<FileSaveChunkEditDeltaSource>(std::move(reader).value());
+        return core::Result<FileDeltaSourcePreparation>::success(std::move(preparation));
+    }
+
     std::filesystem::path root_;
     save::FileSaveDatabase database_;
-    std::filesystem::path generation_root_;
+    save::SaveSnapshot snapshot_;
     std::vector<ChunkCoord> target_;
     ChunkStreamingPhysicalFixtureMetadata metadata_;
 };
@@ -814,6 +851,345 @@ run_workload(const ChunkStreamingBenchmarkConfig& config, ChunkStreamingWorkload
     return sorted[lower] * (1.0 - weight) + sorted[upper] * weight;
 }
 
+[[nodiscard]] core::Result<ChunkStreamingSaveUnderLoadReport>
+run_save_under_streaming(const ChunkStreamingBenchmarkConfig& config,
+                         const PhysicalSavedDeltaFixture& physical_fixture) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("benchmark.chunk_streaming.save_under_load");
+    ChunkStreamingSaveUnderLoadReport report;
+    report.executed = true;
+
+    const auto target = circular_interest(file_delta_center, config.radius_chunks);
+    const std::set<ChunkCoord> target_set(target.begin(), target.end());
+    report.desired_chunks = target.size();
+    report.raw_samples.reserve(target.size());
+
+    auto prepared = physical_fixture.prepare_for_save_under_streaming();
+    if (!prepared) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(prepared.error().code,
+                                                                        prepared.error().message);
+    }
+    report.pinned_generation = prepared.value().active_generation;
+    report.physical_indexed_delta_count = prepared.value().indexed_delta_count;
+    report.delta_reader_open_ms = prepared.value().reader_open_ms;
+
+    auto context = make_benchmark_context(config.seed);
+    if (!context) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(context.error().code,
+                                                                        context.error().message);
+    }
+    context.value().saved_deltas = std::move(prepared.value().source);
+    auto created_loader = ChunkLoadScheduler::create(std::move(context).value(), config.scheduler);
+    if (!created_loader) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+            created_loader.error().code, created_loader.error().message);
+    }
+    auto loader = std::move(created_loader).value();
+
+    const auto clone_started_at = BenchmarkClock::now();
+    auto snapshot = physical_fixture.clone_snapshot();
+    report.snapshot_clone_ms = elapsed_milliseconds(clone_started_at, BenchmarkClock::now());
+
+    save::SaveSchedulerConfig save_config;
+    save_config.max_concurrent_requests = 1;
+    save_config.max_completed_results = 1;
+    auto created_saver = save::SaveScheduler::create(save_config);
+    if (!created_saver) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+            created_saver.error().code, created_saver.error().message);
+    }
+    auto saver = std::move(created_saver).value();
+    WorldState state;
+
+    const auto interest_started_at = BenchmarkClock::now();
+    const auto streaming_deadline =
+        interest_started_at + std::chrono::milliseconds(config.timeout_ms);
+    std::size_t next_submission = 0;
+    const auto submit_available_loads = [&]() -> core::Status {
+        while (next_submission < target.size() && loader->has_capacity()) {
+            auto submitted = loader->submit(target[next_submission], jobs::JobPriority::high);
+            if (!submitted) {
+                return core::Status::failure(submitted.error().code, submitted.error().message);
+            }
+            ++next_submission;
+        }
+        if (next_submission < target.size() && !loader->has_capacity()) {
+            ++report.admission_deferred_updates;
+        }
+        return core::Status::ok();
+    };
+    auto status = submit_available_loads();
+    if (!status) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(status.error().code,
+                                                                        status.error().message);
+    }
+    // Initial saturation is part of the shared interest boundary rather than an update retry.
+    report.admission_deferred_updates = 0;
+
+    save::SaveRequest save_request(physical_fixture.root(), std::move(snapshot), true);
+    const auto save_submitted_at = BenchmarkClock::now();
+    const auto submission_started_at = save_submitted_at;
+    auto submitted_save = saver->submit(std::move(save_request));
+    report.save_submission_ms = elapsed_milliseconds(submission_started_at, BenchmarkClock::now());
+    if (!submitted_save) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+            submitted_save.error().code, submitted_save.error().message);
+    }
+    const auto save_deadline =
+        save_submitted_at + std::chrono::milliseconds(config.save_timeout_ms);
+
+    std::set<ChunkCoord> published;
+    while (published.size() < target.size() || loader->has_in_flight() ||
+           next_submission < target.size()) {
+        if (BenchmarkClock::now() >= streaming_deadline) {
+            return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+                "chunk_streaming_benchmark.save_under_streaming_timeout",
+                "save-under-streaming chunk loads exceeded their wall-clock timeout");
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(config.update_interval_us));
+
+        auto publication = loader->update(state);
+        const auto publication_finished_at = BenchmarkClock::now();
+        report.maximum_publication_time_us =
+            std::max(report.maximum_publication_time_us, publication.publication_time_us);
+        if (!publication.failures.empty()) {
+            const auto& failure = publication.failures.front();
+            return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(failure.error.code,
+                                                                            failure.error.message);
+        }
+        if (!publication.stale.empty()) {
+            return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+                "chunk_streaming_benchmark.save_under_streaming_stale_result",
+                "save-under-streaming produced an unexpected stale chunk load");
+        }
+
+        for (const auto& load : publication.published) {
+            if (!target_set.contains(load.coord) || !published.insert(load.coord).second) {
+                return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+                    "chunk_streaming_benchmark.save_under_streaming_publication_mismatch",
+                    "save-under-streaming published an off-interest or duplicate chunk");
+            }
+            const auto* timing = find_success_timing(publication, load.coord);
+            if (timing == nullptr ||
+                timing->source != ChunkStreamLoadSource::generated_with_saved_delta ||
+                timing->saved_edit_count != 1) {
+                return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+                    "chunk_streaming_benchmark.save_under_streaming_source_mismatch",
+                    "save-under-streaming did not retain the pinned saved-delta view");
+            }
+            ++report.saved_delta_publications;
+            const auto ordinal =
+                static_cast<std::uint32_t>(std::ranges::find(target, load.coord) - target.begin());
+            report.raw_samples.push_back({
+                ordinal,
+                load.coord,
+                timing->request_id.value(),
+                timing->source,
+                timing->saved_edit_count,
+                elapsed_microseconds(interest_started_at, publication_finished_at),
+                timing->pipeline_latency_ms,
+                timing->disk_read_ms,
+                timing->decode_ms,
+                timing->generation_ms,
+                timing->prepare_ms,
+                timing->worker_ms,
+            });
+        }
+
+        status = submit_available_loads();
+        if (!status) {
+            return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(status.error().code,
+                                                                            status.error().message);
+        }
+    }
+
+    report.streaming_elapsed_us = elapsed_microseconds(interest_started_at, BenchmarkClock::now());
+    const auto& load_stats = loader->stats();
+    report.submitted_requests = load_stats.submitted_requests;
+    report.published_requests = load_stats.published_requests;
+    report.failed_requests = load_stats.failed_requests;
+    report.stale_requests = load_stats.stale_requests;
+    report.rejected_requests = load_stats.rejected_requests;
+    report.maximum_publication_time_us =
+        std::max(report.maximum_publication_time_us, load_stats.maximum_publication_time_us);
+    report.reserved_working_bytes_high_water = load_stats.reserved_working_bytes_high_water;
+    report.final_reserved_working_bytes = load_stats.reserved_working_bytes;
+    if (report.raw_samples.size() != target.size() ||
+        state.chunks().chunk_count() != target.size() ||
+        report.submitted_requests != target.size() || report.published_requests != target.size() ||
+        report.failed_requests != 0 || report.stale_requests != 0 ||
+        report.rejected_requests != 0 || load_stats.cancelled_requests != 0 ||
+        report.final_reserved_working_bytes != 0) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+            "chunk_streaming_benchmark.save_under_streaming_incomplete",
+            "save-under-streaming did not converge within its load and memory bounds");
+    }
+    for (const auto coord : target) {
+        const auto edits = state.chunks().edits_for_chunk(coord);
+        const auto cell = state.chunks().get(coord, saved_delta_voxel);
+        if (edits.size() != 1 || edits.front().voxel_coord != saved_delta_voxel ||
+            edits.front().next.type != 1 || !cell || cell.value().type != 1) {
+            return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+                "chunk_streaming_benchmark.save_under_streaming_delta_mismatch",
+                "save-under-streaming did not publish every pinned generation delta exactly");
+        }
+    }
+
+    const auto now = BenchmarkClock::now();
+    if (now >= save_deadline) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+            "chunk_streaming_benchmark.save_timeout",
+            "save-under-streaming save exceeded its wall-clock timeout");
+    }
+    auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(save_deadline - now);
+    remaining = std::max(remaining, std::chrono::milliseconds(1));
+    auto completed_saves = saver->wait_for_completed(remaining, 1);
+    if (completed_saves.size() != 1 ||
+        completed_saves.front().request_id != submitted_save.value()) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+            "chunk_streaming_benchmark.save_timeout",
+            "save-under-streaming did not publish its save result before timeout");
+    }
+    const auto& save_result = completed_saves.front();
+    if (save_result.state != save::SaveResultState::succeeded || !save_result.durably_accepted ||
+        !save_result.compacted || !save_result.error_code.empty() ||
+        !save_result.compaction_error_code.empty()) {
+        const auto error_code = !save_result.error_code.empty()
+                                    ? save_result.error_code
+                                    : (!save_result.compaction_error_code.empty()
+                                           ? save_result.compaction_error_code
+                                           : "chunk_streaming_benchmark.save_incomplete");
+        const auto error_message = !save_result.error_message.empty()
+                                       ? save_result.error_message
+                                       : (!save_result.compaction_error_message.empty()
+                                              ? save_result.compaction_error_message
+                                              : "save was not durably accepted and compacted");
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(error_code, error_message);
+    }
+    report.save_durably_accepted = save_result.durably_accepted;
+    report.save_compacted = save_result.compacted;
+    report.save_durable_acceptance_ms = save_result.request_to_durable_acceptance_ms;
+    report.save_durable_operation_ms = save_result.durable_acceptance_ms;
+    report.save_compaction_ms = save_result.compaction_ms;
+    report.save_total_worker_ms = save_result.total_worker_ms;
+
+    auto database_stats = physical_fixture.database().stats();
+    if (!database_stats) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+            database_stats.error().code, database_stats.error().message);
+    }
+    report.published_generation = database_stats.value().active_generation;
+    if (report.published_generation.empty() ||
+        report.published_generation == report.pinned_generation ||
+        database_stats.value().chunk_delta_count != config.physical_saved_delta_record_count ||
+        database_stats.value().stale_generation_count == 0) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+            "chunk_streaming_benchmark.save_generation_mismatch",
+            "save-under-streaming did not publish a complete replacement generation");
+    }
+
+    const auto busy_prune = physical_fixture.database().prune_stale_generations(0);
+    if (busy_prune || busy_prune.error().code != "save_database.busy") {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+            "chunk_streaming_benchmark.reader_lease_not_enforced",
+            "destructive maintenance did not fail fast while the prior generation was pinned");
+    }
+    report.destructive_maintenance_busy_while_pinned = true;
+
+    status = loader->replace_saved_delta_source(nullptr);
+    if (!status) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(status.error().code,
+                                                                        status.error().message);
+    }
+    status = physical_fixture.database().prune_stale_generations(0);
+    if (!status) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(status.error().code,
+                                                                        status.error().message);
+    }
+    const auto pinned_root = physical_fixture.root() / "generations" / report.pinned_generation;
+    std::error_code filesystem_error;
+    const bool pinned_root_exists = std::filesystem::exists(pinned_root, filesystem_error);
+    if (filesystem_error || pinned_root_exists) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+            "chunk_streaming_benchmark.reader_gap_prune_failed",
+            filesystem_error ? filesystem_error.message()
+                             : "stale pinned generation survived the explicit reader gap");
+    }
+    report.reader_gap_pruned_stale_generation = true;
+
+    auto current = physical_fixture.prepare_for_save_under_streaming();
+    if (!current) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(current.error().code,
+                                                                        current.error().message);
+    }
+    if (current.value().active_generation != report.published_generation) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+            "chunk_streaming_benchmark.reader_rotation_mismatch",
+            "replacement saved-delta reader did not select the published generation");
+    }
+    for (const auto coord : target) {
+        auto delta = current.value().source->read_chunk_delta(coord);
+        const std::vector<VoxelEditRecord> expected_edits{saved_delta_edit(coord)};
+        const auto expected_payload = ChunkEditDeltaTextCodec::encode(coord, expected_edits);
+        if (!delta || !delta.value().has_value() ||
+            delta.value()->encoded_edit_delta != expected_payload) {
+            return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+                delta ? "chunk_streaming_benchmark.reader_rotation_payload_mismatch"
+                      : delta.error().code,
+                delta ? "replacement saved-delta reader did not retain every target payload"
+                      : delta.error().message);
+        }
+    }
+    status = loader->replace_saved_delta_source(std::move(current.value().source));
+    if (!status) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(status.error().code,
+                                                                        status.error().message);
+    }
+    report.saved_delta_source_rotations = loader->stats().saved_delta_source_rotations;
+    if (report.saved_delta_source_rotations != 2) {
+        return core::Result<ChunkStreamingSaveUnderLoadReport>::failure(
+            "chunk_streaming_benchmark.reader_rotation_count_mismatch",
+            "saved-delta source did not record the null gap and replacement rotation");
+    }
+
+    std::vector<double> interest_ms;
+    std::vector<double> disk_read_ms;
+    interest_ms.reserve(report.raw_samples.size());
+    disk_read_ms.reserve(report.raw_samples.size());
+    for (const auto& sample : report.raw_samples) {
+        interest_ms.push_back(static_cast<double>(sample.interest_to_publication_us) / 1'000.0);
+        disk_read_ms.push_back(sample.disk_read_ms);
+    }
+    std::ranges::sort(interest_ms);
+    std::ranges::sort(disk_read_ms);
+    report.p95_interest_to_publication_ms = percentile(interest_ms, 0.95);
+    report.p95_disk_read_ms = percentile(disk_read_ms, 0.95);
+
+    report.gates.evaluated = config.enforce_gates;
+    if (config.enforce_gates) {
+        const auto check = [&report](std::string metric, double actual, double limit) {
+            if (!std::isfinite(actual) || actual > limit) {
+                report.gates.violations.push_back({std::move(metric), actual, limit});
+            }
+        };
+        check("p95_interest_to_publication_ms", report.p95_interest_to_publication_ms,
+              config.maximum_save_under_streaming_p95_ms);
+        check("p95_disk_read_ms", report.p95_disk_read_ms,
+              config.maximum_file_delta_disk_read_p95_ms);
+        check("delta_reader_open_ms", report.delta_reader_open_ms,
+              config.maximum_file_delta_reader_open_p95_ms);
+        check("maximum_publication_time_us",
+              static_cast<double>(report.maximum_publication_time_us),
+              static_cast<double>(config.maximum_owner_publication_us));
+        check("save_submission_ms", report.save_submission_ms, config.maximum_save_submission_ms);
+        check("save_durable_acceptance_ms", report.save_durable_acceptance_ms,
+              config.maximum_save_durable_acceptance_ms);
+        check("save_compaction_ms", report.save_compaction_ms, config.maximum_save_compaction_ms);
+        report.gates.passed = report.gates.violations.empty();
+    }
+
+    return core::Result<ChunkStreamingSaveUnderLoadReport>::success(std::move(report));
+}
+
 [[nodiscard]] std::string json_escape(std::string_view value) {
     std::string escaped;
     escaped.reserve(value.size());
@@ -951,10 +1327,10 @@ core::Status ChunkStreamingBenchmarkConfig::validate() const {
             "streaming benchmark repetitions must be 1..100 and warmups 0..100");
     }
     if (update_interval_us == 0 || update_interval_us > 1'000'000 || timeout_ms == 0 ||
-        timeout_ms > 600'000) {
+        timeout_ms > 600'000 || save_timeout_ms == 0 || save_timeout_ms > 600'000) {
         return core::Status::failure(
             "chunk_streaming_benchmark.invalid_timing",
-            "update cadence and workload timeout must be positive and bounded");
+            "update cadence and workload/save timeouts must be positive and bounded");
     }
     if (!std::isfinite(maximum_near_p95_ms) || maximum_near_p95_ms <= 0.0 ||
         !std::isfinite(maximum_teleport_p95_ms) || maximum_teleport_p95_ms <= 0.0 ||
@@ -963,7 +1339,12 @@ core::Status ChunkStreamingBenchmarkConfig::validate() const {
         !std::isfinite(maximum_file_delta_disk_read_p95_ms) ||
         maximum_file_delta_disk_read_p95_ms <= 0.0 ||
         !std::isfinite(maximum_file_delta_reader_open_p95_ms) ||
-        maximum_file_delta_reader_open_p95_ms <= 0.0 || maximum_owner_publication_us == 0) {
+        maximum_file_delta_reader_open_p95_ms <= 0.0 || maximum_owner_publication_us == 0 ||
+        !std::isfinite(maximum_save_under_streaming_p95_ms) ||
+        maximum_save_under_streaming_p95_ms <= 0.0 || !std::isfinite(maximum_save_submission_ms) ||
+        maximum_save_submission_ms <= 0.0 || !std::isfinite(maximum_save_durable_acceptance_ms) ||
+        maximum_save_durable_acceptance_ms <= 0.0 || !std::isfinite(maximum_save_compaction_ms) ||
+        maximum_save_compaction_ms <= 0.0) {
         return core::Status::failure("chunk_streaming_benchmark.invalid_gates",
                                      "streaming latency and publication gates must be positive");
     }
@@ -985,6 +1366,7 @@ core::Status ChunkStreamingBenchmarkReport::validate() const {
     }
 
     const bool expects_physical_fixture =
+        config.run_save_under_streaming ||
         std::ranges::any_of(config.workloads, file_delta_workload);
     if ((expects_physical_fixture &&
          (!physical_fixture.used || physical_fixture.ephemeral_root.empty() ||
@@ -1101,6 +1483,107 @@ core::Status ChunkStreamingBenchmarkReport::validate() const {
                 "chunk_streaming_benchmark.sample_outside_interest",
                 "streaming raw sample is outside its declared target interest set");
         }
+    }
+
+    if (save_under_streaming.executed != config.run_save_under_streaming) {
+        return core::Status::failure(
+            "chunk_streaming_benchmark.save_under_streaming_execution_mismatch",
+            "save-under-streaming report execution does not match its configuration");
+    }
+    if (!config.run_save_under_streaming) {
+        if (!save_under_streaming.pinned_generation.empty() ||
+            !save_under_streaming.published_generation.empty() ||
+            save_under_streaming.physical_indexed_delta_count != 0 ||
+            save_under_streaming.desired_chunks != 0 ||
+            save_under_streaming.submitted_requests != 0 ||
+            save_under_streaming.published_requests != 0 ||
+            save_under_streaming.save_durably_accepted || save_under_streaming.save_compacted ||
+            save_under_streaming.destructive_maintenance_busy_while_pinned ||
+            save_under_streaming.reader_gap_pruned_stale_generation ||
+            save_under_streaming.saved_delta_source_rotations != 0 ||
+            !save_under_streaming.raw_samples.empty() || save_under_streaming.gates.evaluated ||
+            !save_under_streaming.gates.passed || !save_under_streaming.gates.violations.empty()) {
+            return core::Status::failure(
+                "chunk_streaming_benchmark.unexpected_save_under_streaming_data",
+                "disabled save-under-streaming phase contains retained observations");
+        }
+        return core::Status::ok();
+    }
+
+    const auto& save_report = save_under_streaming;
+    const auto valid_nonnegative = [](double value) {
+        return std::isfinite(value) && value >= 0.0;
+    };
+    if (save_report.pinned_generation.empty() || save_report.published_generation.empty() ||
+        save_report.pinned_generation == save_report.published_generation ||
+        save_report.physical_indexed_delta_count != config.physical_saved_delta_record_count ||
+        save_report.desired_chunks != desired_count ||
+        save_report.submitted_requests != desired_count ||
+        save_report.published_requests != desired_count || save_report.failed_requests != 0 ||
+        save_report.stale_requests != 0 || save_report.rejected_requests != 0 ||
+        save_report.saved_delta_publications != desired_count ||
+        save_report.streaming_elapsed_us == 0 ||
+        save_report.reserved_working_bytes_high_water >
+            config.scheduler.max_reserved_working_bytes ||
+        save_report.final_reserved_working_bytes != 0 ||
+        !valid_nonnegative(save_report.delta_reader_open_ms) ||
+        !valid_nonnegative(save_report.snapshot_clone_ms) ||
+        !valid_nonnegative(save_report.save_submission_ms) ||
+        !valid_nonnegative(save_report.save_durable_acceptance_ms) ||
+        !valid_nonnegative(save_report.save_durable_operation_ms) ||
+        !valid_nonnegative(save_report.save_compaction_ms) ||
+        !valid_nonnegative(save_report.save_total_worker_ms) ||
+        !valid_nonnegative(save_report.p95_interest_to_publication_ms) ||
+        !valid_nonnegative(save_report.p95_disk_read_ms) ||
+        save_report.save_durable_acceptance_ms < save_report.save_durable_operation_ms ||
+        save_report.save_total_worker_ms < save_report.save_durable_operation_ms ||
+        save_report.save_total_worker_ms < save_report.save_compaction_ms ||
+        !save_report.save_durably_accepted || !save_report.save_compacted ||
+        !save_report.destructive_maintenance_busy_while_pinned ||
+        !save_report.reader_gap_pruned_stale_generation ||
+        save_report.saved_delta_source_rotations != 2 ||
+        save_report.raw_samples.size() != desired_count ||
+        save_report.gates.evaluated != config.enforce_gates ||
+        save_report.gates.passed != save_report.gates.violations.empty()) {
+        return core::Status::failure(
+            "chunk_streaming_benchmark.invalid_save_under_streaming_report",
+            "save-under-streaming report violates a persistence, timing, or lifecycle invariant");
+    }
+
+    const auto save_target = circular_interest(file_delta_center, config.radius_chunks);
+    std::set<ChunkCoord> save_sample_coords;
+    std::vector<double> save_interest_ms;
+    std::vector<double> save_disk_read_ms;
+    save_interest_ms.reserve(save_report.raw_samples.size());
+    save_disk_read_ms.reserve(save_report.raw_samples.size());
+    for (const auto& sample : save_report.raw_samples) {
+        if (sample.ordinal >= desired_count || sample.request_id == 0 ||
+            sample.source != ChunkStreamLoadSource::generated_with_saved_delta ||
+            sample.saved_edit_count != 1 ||
+            std::ranges::find(save_target, sample.coord) == save_target.end() ||
+            !save_sample_coords.insert(sample.coord).second ||
+            !valid_nonnegative(sample.scheduler_pipeline_ms) ||
+            !valid_nonnegative(sample.disk_read_ms) || !valid_nonnegative(sample.decode_ms) ||
+            !valid_nonnegative(sample.generation_ms) || !valid_nonnegative(sample.prepare_ms) ||
+            !valid_nonnegative(sample.worker_ms)) {
+            return core::Status::failure(
+                "chunk_streaming_benchmark.invalid_save_under_streaming_sample",
+                "save-under-streaming report contains an invalid or duplicate raw sample");
+        }
+        save_interest_ms.push_back(static_cast<double>(sample.interest_to_publication_us) /
+                                   1'000.0);
+        save_disk_read_ms.push_back(sample.disk_read_ms);
+    }
+    std::ranges::sort(save_interest_ms);
+    std::ranges::sort(save_disk_read_ms);
+    constexpr double percentile_tolerance = 1.0e-9;
+    if (std::abs(save_report.p95_interest_to_publication_ms - percentile(save_interest_ms, 0.95)) >
+            percentile_tolerance ||
+        std::abs(save_report.p95_disk_read_ms - percentile(save_disk_read_ms, 0.95)) >
+            percentile_tolerance) {
+        return core::Status::failure(
+            "chunk_streaming_benchmark.save_under_streaming_percentile_mismatch",
+            "save-under-streaming percentiles do not match their raw samples");
     }
     return core::Status::ok();
 }
@@ -1227,7 +1710,8 @@ std::vector<ChunkStreamingBenchmarkSummary> ChunkStreamingBenchmarkReport::summa
 
 bool ChunkStreamingBenchmarkReport::gates_passed() const {
     const auto values = summaries();
-    return std::ranges::all_of(values, [](const auto& summary) { return summary.gates.passed; });
+    return std::ranges::all_of(values, [](const auto& summary) { return summary.gates.passed; }) &&
+           (!config.run_save_under_streaming || save_under_streaming.gates.passed);
 }
 
 std::string ChunkStreamingBenchmarkReport::to_json() const {
@@ -1250,6 +1734,9 @@ std::string ChunkStreamingBenchmarkReport::to_json() const {
            << "    \"repetitions\": " << config.repetitions << ",\n"
            << "    \"update_interval_us\": " << config.update_interval_us << ",\n"
            << "    \"timeout_ms\": " << config.timeout_ms << ",\n"
+           << "    \"run_save_under_streaming\": "
+           << (config.run_save_under_streaming ? "true" : "false") << ",\n"
+           << "    \"save_timeout_ms\": " << config.save_timeout_ms << ",\n"
            << "    \"enforce_gates\": " << (config.enforce_gates ? "true" : "false") << ",\n"
            << "    \"maximum_near_p95_ms\": " << config.maximum_near_p95_ms << ",\n"
            << "    \"maximum_teleport_p95_ms\": " << config.maximum_teleport_p95_ms << ",\n"
@@ -1261,6 +1748,12 @@ std::string ChunkStreamingBenchmarkReport::to_json() const {
            << config.maximum_file_delta_reader_open_p95_ms << ",\n"
            << "    \"maximum_owner_publication_us\": " << config.maximum_owner_publication_us
            << ",\n"
+           << "    \"maximum_save_under_streaming_p95_ms\": "
+           << config.maximum_save_under_streaming_p95_ms << ",\n"
+           << "    \"maximum_save_submission_ms\": " << config.maximum_save_submission_ms << ",\n"
+           << "    \"maximum_save_durable_acceptance_ms\": "
+           << config.maximum_save_durable_acceptance_ms << ",\n"
+           << "    \"maximum_save_compaction_ms\": " << config.maximum_save_compaction_ms << ",\n"
            << "    \"workloads\": [";
     for (std::size_t index = 0; index < config.workloads.size(); ++index) {
         output << (index == 0 ? "" : ", ");
@@ -1357,6 +1850,82 @@ std::string ChunkStreamingBenchmarkReport::to_json() const {
     }
     output << "  ],\n";
 
+    const auto& save_report = save_under_streaming;
+    output << "  \"save_under_streaming\": {\n"
+           << "    \"executed\": " << (save_report.executed ? "true" : "false") << ",\n"
+           << "    \"pinned_generation\": ";
+    write_json_string(output, save_report.pinned_generation);
+    output << ",\n    \"published_generation\": ";
+    write_json_string(output, save_report.published_generation);
+    output << ",\n"
+           << "    \"physical_indexed_delta_count\": " << save_report.physical_indexed_delta_count
+           << ",\n"
+           << "    \"desired_chunks\": " << save_report.desired_chunks << ",\n"
+           << "    \"submitted_requests\": " << save_report.submitted_requests << ",\n"
+           << "    \"published_requests\": " << save_report.published_requests << ",\n"
+           << "    \"failed_requests\": " << save_report.failed_requests << ",\n"
+           << "    \"stale_requests\": " << save_report.stale_requests << ",\n"
+           << "    \"rejected_requests\": " << save_report.rejected_requests << ",\n"
+           << "    \"saved_delta_publications\": " << save_report.saved_delta_publications << ",\n"
+           << "    \"admission_deferred_updates\": " << save_report.admission_deferred_updates
+           << ",\n"
+           << "    \"streaming_elapsed_us\": " << save_report.streaming_elapsed_us << ",\n"
+           << "    \"maximum_publication_time_us\": " << save_report.maximum_publication_time_us
+           << ",\n"
+           << "    \"reserved_working_bytes_high_water\": "
+           << save_report.reserved_working_bytes_high_water << ",\n"
+           << "    \"final_reserved_working_bytes\": " << save_report.final_reserved_working_bytes
+           << ",\n"
+           << "    \"delta_reader_open_ms\": " << save_report.delta_reader_open_ms << ",\n"
+           << "    \"snapshot_clone_ms\": " << save_report.snapshot_clone_ms << ",\n"
+           << "    \"save_submission_ms\": " << save_report.save_submission_ms << ",\n"
+           << "    \"save_durable_acceptance_ms\": " << save_report.save_durable_acceptance_ms
+           << ",\n"
+           << "    \"save_durable_operation_ms\": " << save_report.save_durable_operation_ms
+           << ",\n"
+           << "    \"save_compaction_ms\": " << save_report.save_compaction_ms << ",\n"
+           << "    \"save_total_worker_ms\": " << save_report.save_total_worker_ms << ",\n"
+           << "    \"p95_interest_to_publication_ms\": "
+           << save_report.p95_interest_to_publication_ms << ",\n"
+           << "    \"p95_disk_read_ms\": " << save_report.p95_disk_read_ms << ",\n"
+           << "    \"save_durably_accepted\": "
+           << (save_report.save_durably_accepted ? "true" : "false") << ",\n"
+           << "    \"save_compacted\": " << (save_report.save_compacted ? "true" : "false") << ",\n"
+           << "    \"destructive_maintenance_busy_while_pinned\": "
+           << (save_report.destructive_maintenance_busy_while_pinned ? "true" : "false") << ",\n"
+           << "    \"reader_gap_pruned_stale_generation\": "
+           << (save_report.reader_gap_pruned_stale_generation ? "true" : "false") << ",\n"
+           << "    \"saved_delta_source_rotations\": " << save_report.saved_delta_source_rotations
+           << ",\n"
+           << "    \"raw_samples\": [\n";
+    for (std::size_t index = 0; index < save_report.raw_samples.size(); ++index) {
+        const auto& sample = save_report.raw_samples[index];
+        output << "      {\"ordinal\": " << sample.ordinal << ", \"coord\": [" << sample.coord.x
+               << ", " << sample.coord.y << ", " << sample.coord.z
+               << "], \"request_id\": " << sample.request_id << ", \"source\": ";
+        write_json_string(output, chunk_stream_load_source_name(sample.source));
+        output << ", \"saved_edit_count\": " << sample.saved_edit_count
+               << ", \"interest_to_publication_us\": " << sample.interest_to_publication_us
+               << ", \"scheduler_pipeline_ms\": " << sample.scheduler_pipeline_ms
+               << ", \"disk_read_ms\": " << sample.disk_read_ms
+               << ", \"decode_ms\": " << sample.decode_ms
+               << ", \"generation_ms\": " << sample.generation_ms
+               << ", \"prepare_ms\": " << sample.prepare_ms
+               << ", \"worker_ms\": " << sample.worker_ms << '}'
+               << (index + 1U == save_report.raw_samples.size() ? "\n" : ",\n");
+    }
+    output << "    ],\n"
+           << "    \"gates\": {\"evaluated\": " << (save_report.gates.evaluated ? "true" : "false")
+           << ", \"passed\": " << (save_report.gates.passed ? "true" : "false")
+           << ", \"violations\": [";
+    for (std::size_t index = 0; index < save_report.gates.violations.size(); ++index) {
+        const auto& violation = save_report.gates.violations[index];
+        output << (index == 0 ? "" : ", ") << "{\"metric\": ";
+        write_json_string(output, violation.metric);
+        output << ", \"actual\": " << violation.actual << ", \"limit\": " << violation.limit << '}';
+    }
+    output << "]}\n  },\n";
+
     const auto summary_values = summaries();
     output << "  \"summaries\": [\n";
     for (std::size_t index = 0; index < summary_values.size(); ++index) {
@@ -1432,7 +2001,8 @@ run_chunk_streaming_benchmark(const ChunkStreamingBenchmarkConfig& config) {
     report.runtime = profiling::query_runtime_metadata();
 
     std::unique_ptr<PhysicalSavedDeltaFixture> physical_fixture;
-    if (std::ranges::any_of(config.workloads, file_delta_workload)) {
+    if (config.run_save_under_streaming ||
+        std::ranges::any_of(config.workloads, file_delta_workload)) {
         const auto target = circular_interest(file_delta_center, config.radius_chunks);
         auto created_fixture = PhysicalSavedDeltaFixture::create(config, target);
         if (!created_fixture) {
@@ -1462,6 +2032,19 @@ run_chunk_streaming_benchmark(const ChunkStreamingBenchmarkConfig& config) {
                                       std::make_move_iterator(executed.value().samples.begin()),
                                       std::make_move_iterator(executed.value().samples.end()));
         }
+    }
+    if (config.run_save_under_streaming) {
+        if (physical_fixture == nullptr) {
+            return core::Result<ChunkStreamingBenchmarkReport>::failure(
+                "chunk_streaming_benchmark.missing_physical_fixture",
+                "save-under-streaming has no physical saved-delta fixture");
+        }
+        auto save_under_load = run_save_under_streaming(config, *physical_fixture);
+        if (!save_under_load) {
+            return core::Result<ChunkStreamingBenchmarkReport>::failure(
+                save_under_load.error().code, save_under_load.error().message);
+        }
+        report.save_under_streaming = std::move(save_under_load).value();
     }
     if (physical_fixture != nullptr) {
         status = physical_fixture->remove();

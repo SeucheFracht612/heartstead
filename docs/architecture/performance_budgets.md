@@ -33,6 +33,10 @@ The chunk-streaming benchmark separately gates the authoritative generated-data 
 | File-backed payload-read P95 | 25 ms |
 | File-backed generation-index open P95 | 100 ms |
 | Owner-thread chunk publication update | 500 us |
+| Save-under-streaming interest to resident publication P95 | 250 ms |
+| Owner-side save submission | 0.25 ms |
+| Save request to durable journal acceptance | 5,000 ms |
+| Complete background save compaction | 75,000 ms |
 
 These limits use wall-clock raw samples whose interest timestamp precedes bounded scheduler
 admission. The saved-delta workload retains 16,384 unrelated edits and obsolete target histories,
@@ -42,6 +46,16 @@ and cache-treatment evidence separately. Accepted `POSIX_FADV_DONTNEED` is advis
 establish a guaranteed cold-cache or physical-device miss. All limits stop at authoritative
 block-data publication and do not claim lighting, collision, client replication, meshing, GPU
 upload, draw eligibility, or display latency.
+
+The save-under-streaming gates are opt-in because the current full generation publication is
+proportional to the 16,384-record table. The benchmark submits one save at the same boundary as a
+physical load ring, measures the entire owner handoff, measures request entry through stable journal
+acceptance, and reports the worker encode/stable-write component separately. Snapshot cloning is
+reported but not gated because the fixture already owns a `SaveSnapshot`; a production live-world
+capture path still needs its own scale-qualified budget. Correctness gates require the old immutable
+reader to remain valid through publication, destructive maintenance to fail fast while it is pinned,
+and a quiescent null-source reader gap before stale-generation pruning and replacement-source
+installation.
 
 The chunk-delta journal benchmark separately gates production persistence work on the save worker:
 

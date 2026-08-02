@@ -153,9 +153,10 @@ are a local absolute-gate calibration, not a portable hardware guarantee.
 
 This workload closes the required generated-chunk path through exact CPU-side draw eligibility and
 explicitly gates upload preparation and synchronous fence waits. It does not cover saved deltas,
-save-under-streaming, large snapshot capture, general generated-world controller adoption,
-replication transport, GPU execution timestamps, presentation timing, or display scan-out. The
-companion [chunk streaming benchmark](chunk_streaming_benchmarks.md) covers warm and Linux
-cache-drop-advice physical-file reads, but not guaranteed-cold or multi-filesystem behavior. Those
+large snapshot capture, general generated-world controller adoption, replication transport, GPU
+execution timestamps, presentation timing, or display scan-out. The companion
+[chunk streaming benchmark](chunk_streaming_benchmarks.md) covers warm and Linux cache-drop-advice
+physical-file reads plus opt-in save-under-streaming generation rollover, but not guaranteed-cold,
+multi-filesystem, or live-world snapshot-capture behavior. Those
 remaining boundaries stay staged in the
 [voxel optimization roadmap](voxel_optimization_roadmap.md).

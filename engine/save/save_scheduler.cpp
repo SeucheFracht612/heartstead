@@ -330,6 +330,7 @@ SaveScheduler::~SaveScheduler() {
 }
 
 core::Result<SaveRequestId> SaveScheduler::submit(SaveRequest request) {
+    const auto request_received_at = std::chrono::steady_clock::now();
     if (jobs_ == nullptr) {
         ++stats_.rejected_requests;
         return core::Result<SaveRequestId>::failure("save_scheduler.stopped",
@@ -371,7 +372,7 @@ core::Result<SaveRequestId> SaveScheduler::submit(SaveRequest request) {
     job.estimated_cost = static_cast<std::uint32_t>(
         std::min(memory.working_reservation_bytes / 1024U + 1U,
                  static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
-    job.work = [request_id, request = std::move(request), memory, shared,
+    job.work = [request_id, request = std::move(request), memory, shared, request_received_at,
                 cancellation](const jobs::JobContext& context) mutable {
         SaveResult result;
         result.request_id = request_id;
@@ -394,6 +395,10 @@ core::Result<SaveRequestId> SaveScheduler::submit(SaveRequest request) {
                     } else {
                         result.state = SaveResultState::succeeded;
                         result.durably_accepted = true;
+                        result.request_to_durable_acceptance_ms =
+                            std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - request_received_at)
+                                .count();
                         result.journal_sequence = accepted.value().sequence;
                         result.encoded_bytes = accepted.value().encoded_bytes;
                         if (request.slot_metadata_update.has_value()) {

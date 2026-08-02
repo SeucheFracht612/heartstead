@@ -67,6 +67,8 @@ parse_workload(std::string_view name) noexcept {
             options.help = true;
         } else if (argument == "--enforce-gates") {
             options.benchmark.enforce_gates = true;
+        } else if (argument == "--save-under-streaming") {
+            options.benchmark.run_save_under_streaming = true;
         } else if (argument == "--workload") {
             auto value = next();
             if (!value) {
@@ -95,7 +97,8 @@ parse_workload(std::string_view name) noexcept {
                 options.benchmark.workloads = {*parsed};
             }
         } else if (argument == "--seed" || argument == "--update-us" ||
-                   argument == "--timeout-ms" || argument == "--owner-publication-us") {
+                   argument == "--timeout-ms" || argument == "--save-timeout-ms" ||
+                   argument == "--owner-publication-us") {
             auto value = next();
             if (!value) {
                 return core::Result<Options>::failure(value.error().code, value.error().message);
@@ -112,6 +115,8 @@ parse_workload(std::string_view name) noexcept {
                 options.benchmark.update_interval_us = *parsed;
             } else if (argument == "--timeout-ms") {
                 options.benchmark.timeout_ms = *parsed;
+            } else if (argument == "--save-timeout-ms") {
+                options.benchmark.save_timeout_ms = *parsed;
             } else {
                 options.benchmark.maximum_owner_publication_us = *parsed;
                 options.benchmark.scheduler.max_publication_time_us = *parsed;
@@ -152,7 +157,9 @@ parse_workload(std::string_view name) noexcept {
         } else if (argument == "--near-p95-ms" || argument == "--teleport-p95-ms" ||
                    argument == "--saved-delta-p95-ms" || argument == "--file-delta-p95-ms" ||
                    argument == "--file-disk-read-p95-ms" ||
-                   argument == "--file-reader-open-p95-ms") {
+                   argument == "--file-reader-open-p95-ms" ||
+                   argument == "--save-streaming-p95-ms" || argument == "--save-submission-ms" ||
+                   argument == "--save-durable-ms" || argument == "--save-compaction-ms") {
             auto value = next();
             if (!value) {
                 return core::Result<Options>::failure(value.error().code, value.error().message);
@@ -173,8 +180,16 @@ parse_workload(std::string_view name) noexcept {
                 options.benchmark.maximum_file_delta_p95_ms = *parsed;
             } else if (argument == "--file-disk-read-p95-ms") {
                 options.benchmark.maximum_file_delta_disk_read_p95_ms = *parsed;
-            } else {
+            } else if (argument == "--file-reader-open-p95-ms") {
                 options.benchmark.maximum_file_delta_reader_open_p95_ms = *parsed;
+            } else if (argument == "--save-streaming-p95-ms") {
+                options.benchmark.maximum_save_under_streaming_p95_ms = *parsed;
+            } else if (argument == "--save-submission-ms") {
+                options.benchmark.maximum_save_submission_ms = *parsed;
+            } else if (argument == "--save-durable-ms") {
+                options.benchmark.maximum_save_durable_acceptance_ms = *parsed;
+            } else {
+                options.benchmark.maximum_save_compaction_ms = *parsed;
             }
         } else if (argument == "--physical-fixture-parent") {
             auto value = next();
@@ -217,6 +232,8 @@ void print_usage(std::ostream& output) {
               "  --repetitions N          Retained workload runs (default 9)\n"
               "  --update-us N            Owner publication cadence (default 1000)\n"
               "  --timeout-ms N           Per-run fail-closed timeout (default 10000)\n"
+              "  --save-under-streaming   Run one physical load ring while publishing a save\n"
+              "  --save-timeout-ms N      Save phase fail-closed timeout (default 90000)\n"
               "  --workers N              Chunk-load worker count (default 2)\n"
               "  --publications N         Maximum results per owner update (default 2)\n"
               "  --near-p95-ms N          Near-ring P95 gate (default 250)\n"
@@ -228,6 +245,11 @@ void print_usage(std::ostream& output) {
               "  --file-reader-open-p95-ms N\n"
               "                           File index-open P95 gate (default 100)\n"
               "  --owner-publication-us N Owner update gate and scheduler budget (default 500)\n"
+              "  --save-streaming-p95-ms N\n"
+              "                           Concurrent physical-load P95 gate (default 250)\n"
+              "  --save-submission-ms N   Owner save handoff gate (default 0.25)\n"
+              "  --save-durable-ms N      Stable-storage acceptance gate (default 5000)\n"
+              "  --save-compaction-ms N   Full generation publication gate (default 75000)\n"
               "  --enforce-gates          Return failure when a latency gate is exceeded\n"
               "  --output PATH            Write JSON; otherwise write JSON to stdout\n"
               "\nPerformance measurements require an optimized build. All target chunks become "
@@ -269,6 +291,14 @@ void print_usage(std::ostream& output) {
             }
             std::cout << '\n';
         }
+        if (report.value().save_under_streaming.executed) {
+            const auto& save = report.value().save_under_streaming;
+            std::cout << "save_under_streaming: P95 interest-to-publication "
+                      << save.p95_interest_to_publication_ms << " ms, owner handoff "
+                      << save.save_submission_ms << " ms, durable acceptance "
+                      << save.save_durable_acceptance_ms << " ms, compaction "
+                      << save.save_compaction_ms << " ms\n";
+        }
     }
     if (options.benchmark.enforce_gates && !report.value().gates_passed()) {
         for (const auto& summary : report.value().summaries()) {
@@ -277,6 +307,10 @@ void print_usage(std::ostream& output) {
                           << violation.metric << '=' << violation.actual << " exceeds "
                           << violation.limit << '\n';
             }
+        }
+        for (const auto& violation : report.value().save_under_streaming.gates.violations) {
+            std::cerr << "save_under_streaming: " << violation.metric << '=' << violation.actual
+                      << " exceeds " << violation.limit << '\n';
         }
         return 3;
     }

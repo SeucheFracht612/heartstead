@@ -35,6 +35,8 @@ struct ChunkStreamingBenchmarkConfig {
     std::uint32_t repetitions = 9;
     std::uint64_t update_interval_us = 1'000;
     std::uint64_t timeout_ms = 10'000;
+    bool run_save_under_streaming = false;
+    std::uint64_t save_timeout_ms = 90'000;
     ChunkLoadSchedulerConfig scheduler;
     bool enforce_gates = false;
     double maximum_near_p95_ms = 250.0;
@@ -44,6 +46,10 @@ struct ChunkStreamingBenchmarkConfig {
     double maximum_file_delta_disk_read_p95_ms = 25.0;
     double maximum_file_delta_reader_open_p95_ms = 100.0;
     std::uint64_t maximum_owner_publication_us = 500;
+    double maximum_save_under_streaming_p95_ms = 250.0;
+    double maximum_save_submission_ms = 0.25;
+    double maximum_save_durable_acceptance_ms = 5'000.0;
+    double maximum_save_compaction_ms = 75'000.0;
 
     ChunkStreamingBenchmarkConfig();
 
@@ -110,6 +116,56 @@ struct ChunkStreamingBenchmarkGateEvaluation {
     std::vector<ChunkStreamingBenchmarkViolation> violations;
 };
 
+struct ChunkStreamingSaveUnderLoadSample {
+    std::uint32_t ordinal = 0;
+    ChunkCoord coord;
+    std::uint64_t request_id = 0;
+    ChunkStreamLoadSource source = ChunkStreamLoadSource::generated;
+    std::size_t saved_edit_count = 0;
+    std::uint64_t interest_to_publication_us = 0;
+    double scheduler_pipeline_ms = 0.0;
+    double disk_read_ms = 0.0;
+    double decode_ms = 0.0;
+    double generation_ms = 0.0;
+    double prepare_ms = 0.0;
+    double worker_ms = 0.0;
+};
+
+struct ChunkStreamingSaveUnderLoadReport {
+    bool executed = false;
+    std::string pinned_generation;
+    std::string published_generation;
+    std::size_t physical_indexed_delta_count = 0;
+    std::uint64_t desired_chunks = 0;
+    std::uint64_t submitted_requests = 0;
+    std::uint64_t published_requests = 0;
+    std::uint64_t failed_requests = 0;
+    std::uint64_t stale_requests = 0;
+    std::uint64_t rejected_requests = 0;
+    std::uint64_t saved_delta_publications = 0;
+    std::uint64_t admission_deferred_updates = 0;
+    std::uint64_t streaming_elapsed_us = 0;
+    std::uint64_t maximum_publication_time_us = 0;
+    std::size_t reserved_working_bytes_high_water = 0;
+    std::size_t final_reserved_working_bytes = 0;
+    double delta_reader_open_ms = 0.0;
+    double snapshot_clone_ms = 0.0;
+    double save_submission_ms = 0.0;
+    double save_durable_acceptance_ms = 0.0;
+    double save_durable_operation_ms = 0.0;
+    double save_compaction_ms = 0.0;
+    double save_total_worker_ms = 0.0;
+    double p95_interest_to_publication_ms = 0.0;
+    double p95_disk_read_ms = 0.0;
+    bool save_durably_accepted = false;
+    bool save_compacted = false;
+    bool destructive_maintenance_busy_while_pinned = false;
+    bool reader_gap_pruned_stale_generation = false;
+    std::uint64_t saved_delta_source_rotations = 0;
+    std::vector<ChunkStreamingSaveUnderLoadSample> raw_samples;
+    ChunkStreamingBenchmarkGateEvaluation gates;
+};
+
 struct ChunkStreamingBenchmarkSummary {
     ChunkStreamingWorkload workload = ChunkStreamingWorkload::near_load;
     std::size_t run_count = 0;
@@ -150,13 +206,14 @@ struct ChunkStreamingPhysicalFixtureMetadata {
 };
 
 struct ChunkStreamingBenchmarkReport {
-    static constexpr std::uint32_t schema_version = 3;
+    static constexpr std::uint32_t schema_version = 4;
 
     ChunkStreamingBenchmarkConfig config;
     profiling::RuntimeMetadata runtime;
     ChunkStreamingPhysicalFixtureMetadata physical_fixture;
     std::vector<ChunkStreamingBenchmarkRun> runs;
     std::vector<ChunkStreamingBenchmarkSample> raw_samples;
+    ChunkStreamingSaveUnderLoadReport save_under_streaming;
 
     [[nodiscard]] core::Status validate() const;
     [[nodiscard]] std::vector<ChunkStreamingBenchmarkSummary> summaries() const;

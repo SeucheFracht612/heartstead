@@ -146,6 +146,9 @@ The reproducible open-loop workload and its resident-publication boundary are do
 [Chunk streaming benchmarks](../performance/chunk_streaming_benchmarks.md).
 Its saved-delta workload also retains 16,384 unrelated edits plus one obsolete history per target,
 then requires exact per-target replacement with no flat-view rebuild during publication.
+The opt-in save-under-streaming phase pins one physical generation while a full save publishes its
+replacement, requires maintenance to fail fast until submissions quiesce, then exercises the null
+reader gap, stale-generation prune, and future-source rotation supported by `ChunkLoadScheduler`.
 
 - `ChunkMesher`
   - provides a reference surface extractor and a production greedy extractor

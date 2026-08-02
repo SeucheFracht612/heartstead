@@ -58,7 +58,9 @@ checkpoint/replacement/recovery/pruning while a generation view is pinned, safe 
 publication under a pinned reader, repeated-key ordering, stale writer/generation rejection,
 pending full-snapshot authority, restart, temporary-file recovery, checkpoint recovery, legacy
 inline snapshots, and checksum corruption. This does not claim cross-process exclusion, crash
-injection at every filesystem boundary, guaranteed-cold behavior, or save-under-streaming latency.
+injection at every filesystem boundary, guaranteed-cold behavior, or save-under-streaming latency;
+the latter is covered by the schema-v4
+[chunk streaming benchmark](chunk_streaming_benchmarks.md).
 
 ## Default regression gates
 
@@ -153,10 +155,9 @@ scheduling/coordination work.
 This milestone closes the measured full-table rewrite from the streamed foreground update path. It
 does not close the broader M5 persistence goal. Remaining work includes:
 
-- rotate/close retained streaming views and move fail-fast checkpoint retries behind an explicit
+- move the proven reader-gap rotation and fail-fast checkpoint retries behind an application-owned,
   bounded background policy with visible backlog/age;
 - measure owner-thread capture and worker handoff with large dirty populations;
-- run load/save/teleport concurrency workloads and prove streaming deadlines under persistence I/O;
 - add crash injection around append publication and checkpoint directory transitions;
 - add guaranteed-cold and additional filesystem/media calibration; and
 - add cross-process writer exclusion before treating one save directory as multi-process safe.

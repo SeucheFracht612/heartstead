@@ -69,6 +69,10 @@ struct SaveResult {
     std::uint64_t journal_sequence = 0;
     std::size_t encoded_bytes = 0;
     std::size_t reserved_working_bytes = 0;
+    // Request-entry through successful stable journal publication, including bounded owner work,
+    // dispatch, queueing, serialization, and the stable-storage wait.
+    double request_to_durable_acceptance_ms = 0.0;
+    // Worker component for snapshot encoding and stable journal publication only.
     double durable_acceptance_ms = 0.0;
     double compaction_ms = 0.0;
     double total_worker_ms = 0.0;

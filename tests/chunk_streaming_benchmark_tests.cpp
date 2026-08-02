@@ -56,6 +56,8 @@ void test_small_benchmark_retains_open_loop_latency_and_bounds() {
                run.off_interest_publications == 0 && run.final_reserved_working_bytes == 0 &&
                run.reserved_working_bytes_high_water <= config.scheduler.max_reserved_working_bytes;
     }));
+    assert(!report.value().save_under_streaming.executed);
+    assert(report.value().save_under_streaming.raw_samples.empty());
     assert(std::ranges::all_of(report.value().runs, [&](const auto& run) {
         if (run.workload != benchmark::ChunkStreamingWorkload::saved_delta_publication) {
             return run.saved_delta_publications == 0 && run.initial_edit_count == 0 &&
@@ -78,7 +80,7 @@ void test_small_benchmark_retains_open_loop_latency_and_bounds() {
     assert(!gated.gates_passed());
 
     const auto json = report.value().to_json();
-    assert(json.contains("\"schema_version\": 3"));
+    assert(json.contains("\"schema_version\": 4"));
     assert(json.contains("\"benchmark\": \"chunk_streaming\""));
     assert(json.contains("\"interest_to_publication_us\""));
     assert(json.contains("\"p95_interest_to_publication_ms\""));
@@ -88,6 +90,8 @@ void test_small_benchmark_retains_open_loop_latency_and_bounds() {
     assert(json.contains("\"unrelated_history_edit_count\": 1024"));
     assert(json.contains("\"edit_log_cache_rebuilds_during_publication\": 0"));
     assert(json.contains("\"physical_fixture\": {\"used\": false"));
+    assert(json.contains("\"save_under_streaming\": {"));
+    assert(json.contains("\"executed\": false"));
 
     const std::filesystem::path output_path{"chunk_streaming_benchmark_test_output.json"};
     std::error_code error;
@@ -114,6 +118,8 @@ void test_file_backed_workloads_report_cache_state_and_scale() {
     config.repetitions = 1;
     config.update_interval_us = 50;
     config.timeout_ms = 5'000;
+    config.run_save_under_streaming = true;
+    config.save_timeout_ms = 5'000;
     config.scheduler.worker_count = 2;
     config.scheduler.max_concurrent_requests = 4;
     config.scheduler.max_completed_results = 4;
@@ -125,6 +131,10 @@ void test_file_backed_workloads_report_cache_state_and_scale() {
     config.maximum_file_delta_disk_read_p95_ms = 1'000'000.0;
     config.maximum_file_delta_reader_open_p95_ms = 1'000'000.0;
     config.maximum_owner_publication_us = 1'000'000;
+    config.maximum_save_under_streaming_p95_ms = 1'000'000.0;
+    config.maximum_save_submission_ms = 1'000'000.0;
+    config.maximum_save_durable_acceptance_ms = 1'000'000.0;
+    config.maximum_save_compaction_ms = 1'000'000.0;
 
     auto report = benchmark::run_chunk_streaming_benchmark(config);
     assert(report);
@@ -138,6 +148,39 @@ void test_file_backed_workloads_report_cache_state_and_scale() {
     assert(!std::filesystem::exists(report.value().physical_fixture.ephemeral_root));
     assert(report.value().runs.size() == config.workloads.size());
     assert(report.value().raw_samples.size() == config.workloads.size() * 5U);
+
+    const auto& save = report.value().save_under_streaming;
+    assert(save.executed);
+    assert(!save.pinned_generation.empty());
+    assert(!save.published_generation.empty());
+    assert(save.pinned_generation != save.published_generation);
+    assert(save.physical_indexed_delta_count == 32);
+    assert(save.desired_chunks == 5);
+    assert(save.submitted_requests == 5);
+    assert(save.published_requests == 5);
+    assert(save.failed_requests == 0);
+    assert(save.stale_requests == 0);
+    assert(save.rejected_requests == 0);
+    assert(save.saved_delta_publications == 5);
+    assert(save.final_reserved_working_bytes == 0);
+    assert(save.delta_reader_open_ms >= 0.0);
+    assert(save.snapshot_clone_ms >= 0.0);
+    assert(save.save_submission_ms >= 0.0);
+    assert(save.save_durable_acceptance_ms > 0.0);
+    assert(save.save_durable_operation_ms > 0.0);
+    assert(save.save_durable_acceptance_ms >= save.save_durable_operation_ms);
+    assert(save.save_compaction_ms > 0.0);
+    assert(save.save_total_worker_ms >= save.save_compaction_ms);
+    assert(save.p95_interest_to_publication_ms > 0.0);
+    assert(save.p95_disk_read_ms > 0.0);
+    assert(save.save_durably_accepted);
+    assert(save.save_compacted);
+    assert(save.destructive_maintenance_busy_while_pinned);
+    assert(save.reader_gap_pruned_stale_generation);
+    assert(save.saved_delta_source_rotations == 2);
+    assert(save.raw_samples.size() == 5);
+    assert(save.gates.evaluated);
+    assert(save.gates.passed);
 
     const auto summaries = report.value().summaries();
     assert(summaries.size() == config.workloads.size());
@@ -173,9 +216,18 @@ void test_file_backed_workloads_report_cache_state_and_scale() {
     assert(json.contains("\"delta_reader_open_ms\""));
     assert(json.contains("\"cache_preloaded_payload_count\": 5"));
     assert(json.contains("\"removed_after_run\": true"));
+    assert(json.contains("\"run_save_under_streaming\": true"));
+    assert(json.contains("\"destructive_maintenance_busy_while_pinned\": true"));
+    assert(json.contains("\"reader_gap_pruned_stale_generation\": true"));
+    assert(json.contains("\"saved_delta_source_rotations\": 2"));
 
     auto failed_gate = report.value();
     failed_gate.config.maximum_file_delta_disk_read_p95_ms = 0.000'000'001;
+    assert(!failed_gate.gates_passed());
+    failed_gate = report.value();
+    failed_gate.save_under_streaming.gates.passed = false;
+    failed_gate.save_under_streaming.gates.violations.push_back(
+        {"save_submission_ms", failed_gate.save_under_streaming.save_submission_ms, 0.0});
     assert(!failed_gate.gates_passed());
 }
 
@@ -199,6 +251,12 @@ void test_invalid_configs_fail_closed() {
     config.repetitions = 0;
     assert(!config.validate());
     config.repetitions = 1;
+    config.save_timeout_ms = 0;
+    assert(!config.validate());
+    config.save_timeout_ms = 5'000;
+    config.maximum_save_submission_ms = 0.0;
+    assert(!config.validate());
+    config.maximum_save_submission_ms = 0.25;
     config.scheduler.worker_count = 0;
     assert(!config.validate());
     assert(!benchmark::run_chunk_streaming_benchmark(config));

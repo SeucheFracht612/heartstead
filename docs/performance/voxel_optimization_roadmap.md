@@ -24,15 +24,15 @@ requires one.
 | Research capability | Current Heartstead state | Planned action |
 | --- | --- | --- |
 | Permanent hierarchical profiling | Partial: retained CPU/GPU timers, counters, raw benchmark frames, and opt-in Tracy zones now cover major runtime, renderer, chunk, worker, lighting, collision, and streaming paths. | Extend zones and attribution as later stages are changed; add allocation ownership and queue-age plots. |
-| Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. The live renderer-proof test covers rapid interest teleports, cancellation, convergence, and zero-reservation teardown. Separate open-loop chunk, chunk-delta journal, isolated voxel-response, and end-to-end render-readiness benchmarks retain request-to-resident, physical indexed-read, stable-storage append, checkpoint, collision-publication, whole-field relight, upload, and exact draw-command percentiles. | Add server/client, save-under-streaming, guaranteed-cold and multi-filesystem, cold-start, burst-edit, actual GPU execution/presentation, and long-soak workloads. |
-| Reproducible provenance and gates | Renderer schema v4, chunk-streaming schema v3, chunk-delta-journal schema v1, voxel-response schema v1, and chunk-render-readiness schema v1 record source/build/CPU/device/run metadata, warmups, repetitions, raw samples, workload configuration, and fail-closed lifecycle invariants. Optional gates cover frame distributions, uploads, available GPU, rapid-edit mesh response, generated/in-memory/file-backed saved resident publication, physical payload reads and index opens, durable append/reopen/checkpoint, exact collision publication, full-field relight convergence, required-chunk draw eligibility, synchronous GPU waits, mesh amplification, and owner publication time. | Add relative-regression checks and the remaining guaranteed-cold/multi-filesystem I/O, display, save-under-streaming, and multiplayer gates. |
+| Deterministic macrobenchmarks | Strong renderer catalog with representative and adversarial voxel, edit, streaming, lighting, fluid, particle, material, and environment scenes. The live renderer-proof test covers rapid interest teleports, cancellation, convergence, and zero-reservation teardown. Separate open-loop chunk, save-under-streaming, chunk-delta journal, isolated voxel-response, and end-to-end render-readiness benchmarks retain request-to-resident, physical indexed-read, save handoff/acceptance/publication, stable-storage append, checkpoint, collision-publication, whole-field relight, upload, and exact draw-command percentiles. | Add server/client, guaranteed-cold and multi-filesystem, cold-start, burst-edit, actual GPU execution/presentation, and long-soak workloads. |
+| Reproducible provenance and gates | Renderer schema v4, chunk-streaming schema v4, chunk-delta-journal schema v1, voxel-response schema v1, and chunk-render-readiness schema v1 record source/build/CPU/device/run metadata, warmups, repetitions, raw samples, workload configuration, and fail-closed lifecycle invariants. Optional gates cover frame distributions, uploads, available GPU, rapid-edit mesh response, generated/in-memory/file-backed saved resident publication, physical payload reads and index opens, save-under-streaming owner handoff/request-to-durable acceptance/full publication, durable append/reopen/checkpoint, exact collision publication, full-field relight convergence, required-chunk draw eligibility, synchronous GPU waits, mesh amplification, and owner publication time. | Add relative-regression checks and the remaining guaranteed-cold/multi-filesystem I/O, display, and multiplayer gates. |
 | Bounded jobs and cancellation | Generic and typed schedulers now bound pending/result work, expose backpressure and queue-age telemetry, age priorities, and support reasoned queued/cooperative cancellation. | Attribute per-type saturation in higher-level pipeline counters and tune limits from traces. |
 | Versioned chunk pipeline | An owner-thread ledger now separates content, light, mesh, collision, persistence, and replication request/output revisions and states. Save/replication, mesh/GPU, collision/physics, and whole-field lighting publication are ticket-validated across edit and reload races. | Calibrate stale-work amplification and latency under representative edit/streaming traces. |
 | Compact voxel sections | Chunks remain fixed 32³ with contiguous dense `VoxelCell` production storage. Reproducible 16/32 experiments now cover dense, split, palette-packed, uniform-light, sparse-metadata, and adaptive split-dense fallback candidates. | Retain dense production storage while mask/macro work proceeds; add a medium-diversity crossover sweep before any storage selection. |
 | Occupancy and opacity masks | A fixed 4 KiB occupancy mask follows the exact chunk content revision. Meshing snapshots also carry pooled greedy-cube and halo-padded full-occluder masks keyed by content dependencies and render-table revision. | Reuse the resident occupancy mask for later measured consumers; keep render-dependent masks derived and consumer-specific. |
 | Face culling and greedy meshing | Implemented with immutable neighborhood snapshots, material/render phases, bounded scheduling, stale rejection, pooled buffers, reproducible isolated benchmarks, occupancy-assisted rejection, word-level face candidates/AO queries, surface-bound reservation, an isolated-cube culled fallback, and bounded invalidation-to-resident traces. | Keep slab or microbrick rebuilds deferred unless a future measured edit P95 again exceeds target. |
 | Dynamic edit propagation | Dirty regions, neighbor dependencies, asynchronous mesh/light/collision work, upload quotas, exact mesh/collision/relight lifecycle tracking, edit coalescing/abandonment telemetry, and calibrated visual, collision, relight, required-chunk upload-preparation, and draw-eligibility P95 gates exist. | Add burst-edit collision/relight amplification and actual GPU execution/presentation/display response workloads. |
-| Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, indexed delta save/replication, residency budgets, and far clipmaps exist. Durable snapshot acceptance/compaction and application saves run through a bounded save worker. A bounded chunk loader moves disk/decode/generation/private edit application off-thread and is active in the live renderer-proof stream. Saved-delta publication and narrow flushes no longer scan or copy global edit history, physical delta sources parse one base-plus-journal view per streaming epoch, and a retained writer publishes one checksummed file per update. Process-local readers/writers pin generation tables; append/publication mutations serialize across database instances; destructive maintenance fails fast for retry. Warm/cache-advised reads and durable append/reopen/checkpoint gates pass at 16,384 records. | Add bounded checkpoint rotation/retry and save-under-streaming plus guaranteed-cold/multi-filesystem coverage, adopt async loading in the general generated-world controller, bound eviction waves, and add scale-calibrated save-capture gates. |
+| Streaming and persistence | Interest hysteresis, dirty pinning, deterministic generation, indexed delta save/replication, residency budgets, and far clipmaps exist. Durable snapshot acceptance/compaction and application saves run through a bounded save worker. A bounded chunk loader moves disk/decode/generation/private edit application off-thread and is active in the live renderer-proof stream. Saved-delta publication and narrow flushes no longer scan or copy global edit history, physical delta sources parse one base-plus-journal view per streaming epoch, and a retained writer publishes one checksummed file per update. Process-local readers/writers pin generation tables; append/publication mutations serialize across database instances; destructive maintenance fails fast for retry. The save-under-streaming harness proves pinned reads across full generation publication, an explicit reader gap, stale pruning, and future-source rotation. Warm/cache-advised reads and durable append/reopen/checkpoint gates pass at 16,384 records. | Add application-owned checkpoint retry cadence plus guaranteed-cold/multi-filesystem coverage, adopt async loading in the general generated-world controller, bound eviction waves, and add scale-calibrated live save-capture gates. |
 | Visibility, LOD, and GPU scaling | Frustum/distance/hierarchical visibility, HZB support, far clipmaps, indirect rendering, GPU arenas, upload staging, and pass timestamps already exist. | Tune only from captures; validate total culling benefit and retain broad fallback paths. |
 | Simulation and multiplayer scale | Simulation LOD, server authority, interest management, replication deltas, and fixed-step runtime exist. | Add multi-client spread/convergence benchmarks, byte/time quotas, backlog recovery gates, and soak coverage. |
 
@@ -171,7 +171,15 @@ ordering, legacy conversion, and corruption failure have focused coverage. Check
 materializes the effective base before removing the covered journal. Database instances for one
 normalized root now share process-local mutation serialization and generation-table leases;
 destructive maintenance returns `save_database.busy` while a retained reader or writer is live.
-Cross-process exclusion and a bounded runtime checkpoint retry/rotation policy remain open.
+Cross-process exclusion and a bounded application checkpoint retry cadence remain open.
+
+Schema v4 adds an opt-in save-under-streaming phase around the production scheduler and database. One
+physical reader stays pinned while a one-worker save is submitted at the same boundary as an open-loop
+load ring. The report gates owner submission, request-to-stable-journal acceptance, full background
+generation publication, concurrent chunk P95, payload reads, reader open, and owner publication. It
+then requires destructive maintenance to return busy, pauses new submissions, installs a null-source
+reader gap, prunes the stale generation, and rotates future submissions to a newly opened reader.
+Fixture snapshot cloning is reported but not gated because it is not a live-world capture path.
 
 The schema-v1 physical journal benchmark retains individual append samples, restart-style writer
 and reader opens, complete checkpoint, exact post-restart payload verification, provenance, and
@@ -183,7 +191,7 @@ foreground update but confirms that checkpoint remains proportional to the compl
 [Chunk delta journal benchmarks](chunk_delta_journal_benchmarks.md).
 
 The open-loop chunk benchmark declares every target coordinate at one instant so bounded admission
-delay remains in each raw sample. Schema v3 adds a real 16,384-record `FileSaveDatabase` generation,
+delay remains in each raw sample. Schema v3 added a real 16,384-record `FileSaveDatabase` generation,
 separate one-time index-open and per-payload-read timings, an explicitly primed workload, and a Linux
 workload that records whether cache-drop advice was accepted. On the declared reference CPU, three
 clean Release processes measured median process-level P95 at 37.694 ms near, 40.755 ms after
@@ -219,14 +227,17 @@ of 250 ms, 0.5 ms, 0 ms, and 2.5 respectively. The endpoint deliberately precede
 execution, presentation, and scan-out. See
 [Chunk render-readiness benchmarks](chunk_render_readiness_benchmarks.md).
 
-A small release lifecycle sample measured save owner handoff at 0.046 ms, below the 0.25 ms target,
-but this is not a scale-qualified closure: snapshot capture still scales with owned world state.
+A small release lifecycle sample measured save owner handoff at 0.046 ms, below the 0.25 ms target.
+The schema-v4 save-under-streaming phase now retains a scale-selectable snapshot, separates owner
+handoff, request-to-durable acceptance, worker durable operation, and full compaction, and exercises
+reader rollover. This is still not complete live-capture closure: snapshot capture scales with owned
+world state and the benchmark fixture already owns the typed snapshot.
 The original physical fixture's production writer took a median 48.324 seconds to create 16,384
 durable per-chunk records; the new calibration measures the same full-table shape at 48.047 seconds
 for generation write and 48.254 seconds for checkpoint while keeping individual durable streamed
-appends near 3.3 ms P95. General-world runtime adoption, coordinated background checkpoint,
+appends near 3.3 ms P95. General-world runtime adoption, application checkpoint retry cadence,
 guaranteed-cold and multi-filesystem coverage, burst-edit/large-residency response,
-save-under-streaming/large-snapshot-capture benchmarks, and actual GPU
+large live-snapshot-capture benchmarks, and actual GPU
 execution/presentation/display timing remain before M5 can be marked complete.
 
 ### M6 — world and multiplayer scale

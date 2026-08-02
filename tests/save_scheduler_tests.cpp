@@ -114,6 +114,8 @@ void test_background_save_is_bounded_durable_and_compacted() {
     assert(results.front().journal_sequence == 1);
     assert(results.front().encoded_bytes > 0);
     assert(results.front().reserved_working_bytes > 0);
+    assert(results.front().request_to_durable_acceptance_ms >=
+           results.front().durable_acceptance_ms);
     assert(results.front().durable_acceptance_ms > 0.0);
     assert(results.front().compaction_ms > 0.0);
     assert(results.front().total_worker_ms >= results.front().durable_acceptance_ms);

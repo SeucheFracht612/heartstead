@@ -1537,7 +1537,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
                 pending_saves.erase(pending);
             }
 
-            last_save_durable_acceptance_ms = result.durable_acceptance_ms;
+            last_save_durable_acceptance_ms = result.request_to_durable_acceptance_ms;
             last_save_worker_ms = result.total_worker_ms;
             const auto required = intent != ApplicationSaveIntent::autosave;
             if (result.state != save::SaveResultState::succeeded ||

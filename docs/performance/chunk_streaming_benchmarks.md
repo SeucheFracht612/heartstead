@@ -1,15 +1,18 @@
 # Chunk streaming benchmarks
 
-Status: generated, in-memory saved-delta, and physical file-backed saved-delta
-request-to-resident-publication gates pass on the declared reference CPU. The file-backed coverage
-includes a primed-cache state and a Linux run for which cache-drop advice was accepted. It does not
-claim guaranteed cold-cache behavior, save-under-load, or visibility/display closure.
+Status: generated, in-memory saved-delta, physical file-backed saved-delta, and opt-in
+save-under-streaming request-to-resident-publication coverage is implemented. The file-backed modes
+include a primed-cache state and a Linux run for which cache-drop advice was accepted. The concurrent
+save phase also proves pinned-generation continuity, bounded owner handoff, durable acceptance, full
+generation publication, fail-fast destructive maintenance, and explicit reader rotation. It does
+not claim guaranteed cold-cache behavior, production world-capture cost, or visibility/display
+closure.
 
 The `heartstead_chunk_streaming_benchmark` executable drives the production
 `ChunkLoadScheduler`, optional saved-delta source and decoder, deterministic terrain generator,
-private chunk preparation, and owner-thread publication path. Schema v3 retains per-chunk raw
-samples, physical-fixture metadata, cache-treatment evidence, and process/run provenance rather
-than reporting only a throughput average.
+private chunk preparation, and owner-thread publication path. Schema v4 retains per-chunk raw
+samples, physical-fixture metadata, cache-treatment evidence, the optional save/rotation phase, and
+process/run provenance rather than reporting only a throughput average.
 
 ## Timing contract
 
@@ -46,6 +49,16 @@ preparation, and total worker timings:
   reports the complete production save-generation write, and `encoded_payload_bytes` reports the
   payload bytes written.
 
+With `--save-under-streaming`, a fresh one-worker `SaveScheduler` receives a complete fixture
+snapshot immediately after the initial target-load admissions. `save_submission_ms` times the
+complete owner-side `submit` call, including request validation, memory estimation, and bounded job
+handoff. `save_durable_acceptance_ms` begins at entry to that call and ends when the checksummed
+journal record reaches the platform stable-storage boundary; `save_durable_operation_ms` retains the
+worker's encode-and-stable-write component separately. `save_compaction_ms` measures background full
+generation publication. The fixture snapshot clone happens before interest declaration and is
+reported as `snapshot_clone_ms`, but it is deliberately not gated: copying a benchmark-owned
+snapshot is not evidence for the cost of capturing a live production world.
+
 ## Workloads and invariants
 
 - `near_load` declares a circular, uncached generated-chunk ring and records every successful
@@ -65,6 +78,12 @@ preparation, and total worker timings:
   accepted file counts. The call is advisory: the kernel may retain pages, partial pages are not
   discarded, and acceptance is not evidence of a cold device read. See
   [`posix_fadvise(2)`](https://man7.org/linux/man-pages/man2/posix_fadvise.2.html).
+- The opt-in `save_under_streaming` phase opens and pins the current physical generation, starts one
+  open-loop file-backed load ring and one full background save at the same interest boundary, and
+  requires every load to publish the pinned generation's exact delta. After the save publishes a new
+  immutable generation, pruning must return `save_database.busy` while the old view is retained. The
+  harness then pauses submissions, installs a null source to create an explicit reader gap, prunes
+  the stale generation, opens the new generation, and rotates future submissions to it.
 
 All workloads fail closed on timeout, worker failure, stale output, duplicate publication,
 off-interest publication, incomplete convergence, or a nonzero final working-memory reservation.
@@ -78,6 +97,15 @@ the exact cache-treatment evidence for their mode, and successful removal of the
 fixture root before report validation returns. These correctness, memory, and cleanup checks apply
 even when performance gates are disabled.
 
+The save phase additionally fails closed on an incomplete durable result, compaction error, unchanged
+generation, missing stale generation, maintenance that does not report busy while pinned, failed
+prune during the reader gap, wrong replacement generation, any failed/stale/rejected load, incorrect
+delta contents, nonzero final reservation, or a rotation count other than two. This follows the same
+reader-end-mark principle documented for [SQLite WAL checkpoints](https://www.sqlite.org/wal.html):
+long-lived readers constrain destructive checkpoint progress. Heartstead is not using SQLite here;
+its immutable generation store chooses an explicit process-local lease and retryable busy result
+instead of letting maintenance wait behind live streaming.
+
 The default performance gates are:
 
 | Metric | Default limit |
@@ -89,13 +117,19 @@ The default performance gates are:
 | File-backed payload-read P95 | 25 ms |
 | File-backed generation-index open P95 | 100 ms |
 | Maximum owner publication update | 500 us |
+| Save-under-streaming interest-to-publication P95 | 250 ms |
+| Owner-side save submission | 0.25 ms |
+| Request-to-durable save acceptance | 5,000 ms |
+| Complete background save compaction | 75,000 ms |
 
 `--enforce-gates` evaluates these limits and returns exit code 3 after still writing the full report
-when a limit is exceeded. Scheduler defaults remain independently bounded at two workers, four
+when a limit is exceeded. The save gates are evaluated only when `--save-under-streaming` is present;
+the expensive phase runs once rather than once per workload/repetition. Scheduler defaults remain
+independently bounded at two workers, four
 active/completed requests, 64 MiB measured reservation per request, 256 MiB aggregate reservation,
 two publications per owner update, and 500 us per update.
 
-## Schema v3 physical-file calibration
+## Historical schema v3 physical-file calibration
 
 The retained 2026-08-01 calibration was produced from a clean tracked tree with:
 
@@ -148,8 +182,8 @@ succeeded. The worst owner update across the three processes was 126 us.
 
 Fixture setup took 48.384, 48.179, and 48.324 seconds. That time is deliberately retained rather
 than hidden: the current production generation writer durably emits every per-chunk file and makes
-the large-fixture setup roughly linear in record count. It is the strongest signal in this slice
-and motivates an append-oriented streamed write path plus save-under-load gates.
+the large-fixture setup roughly linear in record count. It was the strongest signal in this slice
+and motivated the later append-oriented streamed write path and schema-v4 save-under-load gates.
 
 ### Record-count sweep
 
@@ -198,10 +232,11 @@ residency, visibility filtering, and production draw-command construction. Resid
 publication and whole-field relight convergence have separate headless/Jolt gates in
 [Voxel response benchmarks](voxel_response_benchmarks.md).
 
-The companion [chunk delta journal benchmark](chunk_delta_journal_benchmarks.md) now verifies that
+The companion [chunk delta journal benchmark](chunk_delta_journal_benchmarks.md) verifies that
 streamed foreground writes append one durable entry instead of rewriting the full table, while also
-showing that complete checkpoint remains proportional to table size. M5 still requires coordinated
-checkpoint under live streaming, save-under-streaming and large-snapshot-capture measurements,
+showing that complete checkpoint remains proportional to table size. Schema v4 now adds a real
+save-under-streaming generation publication, pinned-view maintenance gate, explicit reader gap,
+prune, and source rotation. M5 still requires production-scale live snapshot capture,
 general generated-world runtime-controller adoption, guaranteed-cold and
 multi-filesystem/media validation where environments permit it, and GPU
 execution/presentation/display timing beyond the draw-eligibility endpoint. The live
