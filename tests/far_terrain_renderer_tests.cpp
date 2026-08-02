@@ -32,19 +32,23 @@ int main() {
     config.clipmap.base_cell_size = 2.0;
     config.clipmap.maximum_distance = 2'048.0;
     config.clipmap.inner_exclusion_radius = 16.0;
+    config.lod_updates.mid_level_count = 2;
+    config.lod_updates.maximum_mid_rebuilds_per_frame = 1;
+    config.lod_updates.maximum_far_rebuilds_per_frame = 1;
     config.maximum_patch_builds_per_frame = 3;
     config.maximum_upload_bytes_per_frame = 1U * 1024U * 1024U;
     config.maximum_resident_bytes = 16U * 1024U * 1024U;
 
     renderer::FarTerrainRenderer far_terrain(*device);
     assert(far_terrain.initialize(config, renderer::rhi::RenderResourceHandle{77}));
-    const renderer::FarTerrainSurfaceSampler sampler = [](double x, double z,
-                                                          renderer::FarTerrainDomain) {
-        return renderer::FarTerrainSurfaceSample{
-            24.0 + std::sin(x * 0.025) * 3.0 + std::cos(z * 0.025) * 2.0,
-            1U,
+    double edited_height = 0.0;
+    const renderer::FarTerrainSurfaceSampler sampler =
+        [&edited_height](double x, double z, renderer::FarTerrainDomain) {
+            return renderer::FarTerrainSurfaceSample{
+                24.0 + edited_height + std::sin(x * 0.025) * 3.0 + std::cos(z * 0.025) * 2.0,
+                1U,
+            };
         };
-    };
 
     assert(far_terrain.update({0.0, 40.0, 0.0}, sampler));
     assert(far_terrain.stats().planned_patches > 0);
@@ -72,11 +76,32 @@ int main() {
     assert(draws.size() < far_terrain.stats().visible_patches);
     assert(draws.front().indirect.is_valid());
 
+    // A broad authoritative edit invalidates every active mid/far derivative. Exactly one patch
+    // from each band is replaced this frame, while all other old patches remain resident and
+    // drawable until their current ticket publishes.
     const std::array invalidated_regions{
-        math::Bounds3d{{-1.0, 0.0, -1.0}, {1.0, 0.0, 1.0}},
+        math::Bounds3d{{-2'048.0, 0.0, -2'048.0}, {2'048.0, 1.0, 2'048.0}},
     };
+    edited_height = 12.0;
     assert(far_terrain.update({0.0, 40.0, 0.0}, sampler, 1, invalidated_regions));
-    assert(far_terrain.stats().resident_patches > 3);
+    assert(far_terrain.stats().resident_patches == settled_resident);
+    assert(far_terrain.stats().stale_resident_patches > 0);
+    assert(far_terrain.stats().pending_mid_updates > 0);
+    assert(far_terrain.stats().pending_far_updates > 0);
+    assert(far_terrain.stats().rebuilt_mid_patches == 1);
+    assert(far_terrain.stats().rebuilt_far_patches == 1);
+    assert(far_terrain.stats().replaced_patches == 2);
+    assert(far_terrain.stats().evicted_patches == 0);
+    assert(!far_terrain.build_draws(camera).empty());
+    for (std::size_t frame = 0; frame < 128U && far_terrain.stats().pending_patches > 0U; ++frame) {
+        assert(far_terrain.update({0.0, 40.0, 0.0}, sampler, 1));
+        assert(far_terrain.stats().resident_patches == settled_resident);
+    }
+    assert(far_terrain.stats().pending_patches == 0);
+    assert(far_terrain.stats().stale_resident_patches == 0);
+    assert(far_terrain.stats().total_invalidated_patches == settled_resident);
+    assert(device->live_resource_count() == baseline_resources + 10U);
+
     assert(far_terrain.update({512.0, 40.0, 512.0}, sampler, 1));
     assert(far_terrain.stats().evicted_patches > 0);
     assert(far_terrain.stats().resident_patches <= settled_resident);

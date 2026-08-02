@@ -1,9 +1,11 @@
 #include "engine/renderer/terrain/far_terrain_renderer.hpp"
 
+#include "engine/profiling/profiler.hpp"
 #include "engine/renderer/camera/frustum.hpp"
 
 #include <algorithm>
 #include <bit>
+#include <limits>
 #include <map>
 #include <ranges>
 #include <set>
@@ -32,7 +34,10 @@ FarTerrainRenderer::~FarTerrainRenderer() {
 core::Status FarTerrainRenderer::initialize(FarTerrainRendererConfig config,
                                             rhi::RenderResourceHandle pipeline) {
     if (!pipeline.is_valid() || config.maximum_patch_builds_per_frame == 0 ||
-        config.maximum_upload_bytes_per_frame == 0 || config.maximum_resident_bytes == 0) {
+        config.maximum_upload_bytes_per_frame == 0 || config.maximum_resident_bytes == 0 ||
+        config.maximum_replacement_headroom_bytes == 0 ||
+        config.maximum_replacement_headroom_bytes >
+            std::numeric_limits<std::size_t>::max() - config.maximum_resident_bytes) {
         return core::Status::failure("renderer.invalid_far_terrain_renderer",
                                      "far terrain requires a pipeline and positive budgets");
     }
@@ -40,11 +45,17 @@ core::Status FarTerrainRenderer::initialize(FarTerrainRendererConfig config,
     if (!clipmap) {
         return core::Status::failure(clipmap.error().code, clipmap.error().message);
     }
+    auto lod_updates = FarTerrainLodUpdateGraph::create(
+        config.lod_updates, config.clipmap.level_count, config.maximum_patch_builds_per_frame);
+    if (!lod_updates) {
+        return core::Status::failure(lod_updates.error().code, lod_updates.error().message);
+    }
+    const auto allocation_budget =
+        config.maximum_resident_bytes + config.maximum_replacement_headroom_bytes;
     const auto vertex_budget =
-        std::max<std::size_t>(config.maximum_resident_bytes * 2U / 3U, 1U * 1024U * 1024U);
+        std::max<std::size_t>(allocation_budget - allocation_budget / 3U, 1U * 1024U * 1024U);
     const auto index_budget = std::max<std::size_t>(
-        config.maximum_resident_bytes - std::min(config.maximum_resident_bytes, vertex_budget),
-        1U * 1024U * 1024U);
+        allocation_budget - std::min(allocation_budget, vertex_budget), 1U * 1024U * 1024U);
     auto vertex_arena =
         GpuBufferArena::create(*device_, {rhi::RenderBufferUsage::vertex,
                                           std::min<std::size_t>(16U * 1024U * 1024U, vertex_budget),
@@ -105,6 +116,7 @@ core::Status FarTerrainRenderer::initialize(FarTerrainRendererConfig config,
     }
     config_ = std::move(config);
     clipmap_ = std::move(clipmap.value());
+    lod_updates_ = std::move(lod_updates.value());
     pipeline_ = pipeline;
     vertex_arena_ = std::move(vertex_arena.value());
     index_arena_ = std::move(index_arena.value());
@@ -142,48 +154,34 @@ core::Status FarTerrainRenderer::update(math::Vec3d camera_world,
                                         const FarTerrainSurfaceSampler& sampler,
                                         std::uint64_t surface_revision,
                                         std::span<const math::Bounds3d> invalidated_regions) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("renderer.far_terrain.update");
     if (!clipmap_.has_value() || !sampler) {
         return core::Status::failure("renderer.far_terrain_uninitialized",
                                      "far terrain must be initialized with a surface sampler");
     }
     stats_.built_patches = 0;
+    stats_.replaced_patches = 0;
+    stats_.rebuilt_mid_patches = 0;
+    stats_.rebuilt_far_patches = 0;
+    stats_.upload_deferred_patches = 0;
     stats_.evicted_patches = 0;
     stats_.uploaded_bytes = 0;
-    if (surface_revision_ != surface_revision) {
-        if (invalidated_regions.empty()) {
-            auto status = clear();
-            if (!status) {
-                return status;
-            }
-        } else {
-            const auto intersects_invalidated_region =
-                [&invalidated_regions](const FarTerrainPatch& patch) {
-                    return std::ranges::any_of(invalidated_regions, [&patch](const auto& region) {
-                        return patch.horizontal_bounds.min.x < region.max.x &&
-                               patch.horizontal_bounds.max.x > region.min.x &&
-                               patch.horizontal_bounds.min.z < region.max.z &&
-                               patch.horizontal_bounds.max.z > region.min.z;
-                    });
-                };
-            for (auto iterator = resident_.begin(); iterator != resident_.end();) {
-                if (!intersects_invalidated_region(iterator->second.patch)) {
-                    ++iterator;
-                    continue;
-                }
-                auto removed = iterator++;
-                release_patch(removed);
-            }
-        }
-        surface_revision_ = surface_revision;
-    }
     vertex_arena_->collect(device_->completed_submission_serial());
     index_arena_->collect(device_->completed_submission_serial());
     plan_ = clipmap_->plan(camera_world);
     stats_.planned_patches = plan_.patches.size();
+    auto graph_status = lod_updates_->synchronize(plan_, surface_revision, invalidated_regions);
+    if (!graph_status) {
+        return graph_status;
+    }
 
     std::set<FarTerrainPatchKey> desired;
     for (const auto& patch : plan_.patches) {
         desired.insert(patch.key);
+        const auto resident = resident_.find(patch.key);
+        if (resident != resident_.end()) {
+            resident->second.patch.streaming_priority = patch.streaming_priority;
+        }
     }
     for (auto iterator = resident_.begin(); iterator != resident_.end();) {
         if (desired.contains(iterator->first)) {
@@ -194,47 +192,88 @@ core::Status FarTerrainRenderer::update(math::Vec3d camera_world,
         }
     }
 
-    std::vector<const FarTerrainPatch*> pending;
-    for (const auto& patch : plan_.patches) {
-        if (!resident_.contains(patch.key)) {
-            pending.push_back(&patch);
+    auto updates = lod_updates_->schedule_updates();
+    const auto retry_from = [this, &updates](std::size_t first) {
+        auto status = core::Status::ok();
+        for (auto index = first; index < updates.size(); ++index) {
+            if (!lod_updates_->accepts_result(updates[index].patch.key,
+                                              updates[index].request_revision)) {
+                continue;
+            }
+            auto retry =
+                lod_updates_->retry(updates[index].patch.key, updates[index].request_revision);
+            if (!retry && status) {
+                status = retry;
+            }
         }
-    }
-    std::ranges::sort(pending, [](const auto* left, const auto* right) {
-        if (left->streaming_priority != right->streaming_priority) {
-            return left->streaming_priority > right->streaming_priority;
+        return status;
+    };
+    for (std::size_t index = 0; index < updates.size(); ++index) {
+        auto uploaded = upload_patch(updates[index], sampler);
+        if (!uploaded) {
+            const auto upload_error = uploaded.error();
+            static_cast<void>(retry_from(index));
+            return core::Status::failure(upload_error.code, upload_error.message);
         }
-        return left->key < right->key;
-    });
-    for (const auto* patch : pending) {
-        if (stats_.built_patches >= config_.maximum_patch_builds_per_frame ||
-            stats_.uploaded_bytes >= config_.maximum_upload_bytes_per_frame) {
+        if (!uploaded.value()) {
+            ++stats_.upload_deferred_patches;
+            auto retry = retry_from(index);
+            if (!retry) {
+                return retry;
+            }
             break;
         }
-        auto status = upload_patch(*patch, sampler);
-        if (!status) {
-            return status;
+        auto published =
+            lod_updates_->publish(updates[index].patch.key, updates[index].request_revision);
+        if (!published) {
+            static_cast<void>(retry_from(index + 1U));
+            return published;
+        }
+        if (updates[index].replaces_resident_patch) {
+            ++stats_.replaced_patches;
+            if (updates[index].band == FarTerrainLodBand::mid) {
+                ++stats_.rebuilt_mid_patches;
+            } else {
+                ++stats_.rebuilt_far_patches;
+            }
         }
     }
-    enforce_resident_budget();
+    auto budget_status = enforce_resident_budget();
+    if (!budget_status) {
+        return budget_status;
+    }
     refresh_resident_stats();
-    stats_.pending_patches = stats_.planned_patches - stats_.resident_patches;
+    const auto& lod = lod_updates_->stats();
+    stats_.stale_resident_patches = lod.stale_resident_patches;
+    stats_.pending_mid_updates = lod.pending_mid_updates;
+    stats_.pending_far_updates = lod.pending_far_updates;
+    stats_.in_flight_updates = lod.in_flight_updates;
+    stats_.maximum_pending_frames = lod.maximum_pending_frames;
+    stats_.total_invalidated_patches = lod.total_invalidated_patches;
+    stats_.total_coalesced_invalidations = lod.total_coalesced_invalidations;
+    stats_.total_published_updates = lod.total_published_updates;
+    stats_.total_stale_results = lod.total_stale_results;
+    stats_.total_retried_updates = lod.total_retried_updates;
+    stats_.pending_patches = lod.pending_mid_updates + lod.pending_far_updates;
+    HEARTSTEAD_PROFILE_PLOT("far_terrain.pending_mid", stats_.pending_mid_updates);
+    HEARTSTEAD_PROFILE_PLOT("far_terrain.pending_far", stats_.pending_far_updates);
+    HEARTSTEAD_PROFILE_PLOT("far_terrain.stale_resident", stats_.stale_resident_patches);
+    HEARTSTEAD_PROFILE_PLOT("far_terrain.maximum_pending_frames", stats_.maximum_pending_frames);
     return core::Status::ok();
 }
 
-core::Status FarTerrainRenderer::upload_patch(const FarTerrainPatch& patch,
-                                              const FarTerrainSurfaceSampler& sampler) {
-    auto mesh = clipmap_->build_patch_mesh(patch, sampler);
+core::Result<bool> FarTerrainRenderer::upload_patch(const FarTerrainLodUpdateRequest& request,
+                                                    const FarTerrainSurfaceSampler& sampler) {
+    HEARTSTEAD_PROFILE_ZONE_NAMED("renderer.far_terrain.patch_build_upload");
+    auto mesh = clipmap_->build_patch_mesh(request.patch, sampler);
     if (!mesh) {
-        return core::Status::failure(mesh.error().code, mesh.error().message);
+        return core::Result<bool>::failure(mesh.error().code, mesh.error().message);
     }
     if (mesh.value().indices.empty()) {
-        resident_.insert_or_assign(
-            patch.key,
-            ResidentPatch{
-                patch, mesh.value().world_origin, mesh.value().local_bounds, {}, {}, 0, 0});
+        install_patch(ResidentPatch{
+            request.patch, mesh.value().world_origin, mesh.value().local_bounds, {}, {}, 0, 0});
         ++stats_.built_patches;
-        return core::Status::ok();
+        return core::Result<bool>::success(true);
     }
     std::vector<FarTerrainGpuVertex> vertices;
     vertices.reserve(mesh.value().vertices.size());
@@ -247,16 +286,16 @@ core::Status FarTerrainRenderer::upload_patch(const FarTerrainPatch& patch,
     const auto byte_size = vertex_bytes.size() + index_bytes.size();
     if (stats_.uploaded_bytes > 0 &&
         stats_.uploaded_bytes + byte_size > config_.maximum_upload_bytes_per_frame) {
-        return core::Status::ok();
+        return core::Result<bool>::success(false);
     }
     auto vertex = vertex_arena_->allocate(vertex_bytes.size(), 4U);
     if (!vertex) {
-        return core::Status::failure(vertex.error().code, vertex.error().message);
+        return core::Result<bool>::failure(vertex.error().code, vertex.error().message);
     }
     auto index = index_arena_->allocate(index_bytes.size(), 4U);
     if (!index) {
         static_cast<void>(vertex_arena_->retire(vertex.value(), device_->last_submission_serial()));
-        return core::Status::failure(index.error().code, index.error().message);
+        return core::Result<bool>::failure(index.error().code, index.error().message);
     }
     const std::array writes{
         rhi::RenderBufferWrite{vertex.value().buffer,
@@ -268,33 +307,46 @@ core::Status FarTerrainRenderer::upload_patch(const FarTerrainPatch& patch,
     if (!uploaded) {
         static_cast<void>(vertex_arena_->retire(vertex.value(), device_->last_submission_serial()));
         static_cast<void>(index_arena_->retire(index.value(), device_->last_submission_serial()));
-        return core::Status::failure(uploaded.error().code, uploaded.error().message);
+        return core::Result<bool>::failure(uploaded.error().code, uploaded.error().message);
     }
-    resident_.insert_or_assign(
-        patch.key,
-        ResidentPatch{patch, mesh.value().world_origin, mesh.value().local_bounds, vertex.value(),
-                      index.value(), static_cast<std::uint32_t>(mesh.value().indices.size()),
-                      byte_size});
+    install_patch(ResidentPatch{
+        request.patch, mesh.value().world_origin, mesh.value().local_bounds, vertex.value(),
+        index.value(), static_cast<std::uint32_t>(mesh.value().indices.size()), byte_size});
     stats_.uploaded_bytes += byte_size;
     ++stats_.built_patches;
-    return core::Status::ok();
+    return core::Result<bool>::success(true);
+}
+
+void FarTerrainRenderer::install_patch(ResidentPatch patch) {
+    const auto found = resident_.find(patch.patch.key);
+    if (found == resident_.end()) {
+        resident_.emplace(patch.patch.key, std::move(patch));
+        return;
+    }
+    auto previous = std::move(found->second);
+    found->second = std::move(patch);
+    retire_patch_allocations(previous);
+}
+
+void FarTerrainRenderer::retire_patch_allocations(const ResidentPatch& patch) noexcept {
+    if (patch.vertex_allocation.is_valid()) {
+        static_cast<void>(
+            vertex_arena_->retire(patch.vertex_allocation, device_->last_submission_serial()));
+    }
+    if (patch.index_allocation.is_valid()) {
+        static_cast<void>(
+            index_arena_->retire(patch.index_allocation, device_->last_submission_serial()));
+    }
 }
 
 void FarTerrainRenderer::release_patch(
     std::map<FarTerrainPatchKey, ResidentPatch>::iterator iterator) {
-    if (iterator->second.vertex_allocation.is_valid()) {
-        static_cast<void>(vertex_arena_->retire(iterator->second.vertex_allocation,
-                                                device_->last_submission_serial()));
-    }
-    if (iterator->second.index_allocation.is_valid()) {
-        static_cast<void>(index_arena_->retire(iterator->second.index_allocation,
-                                               device_->last_submission_serial()));
-    }
+    retire_patch_allocations(iterator->second);
     resident_.erase(iterator);
     ++stats_.evicted_patches;
 }
 
-void FarTerrainRenderer::enforce_resident_budget() {
+core::Status FarTerrainRenderer::enforce_resident_budget() {
     refresh_resident_stats();
     while (stats_.resident_bytes > config_.maximum_resident_bytes && !resident_.empty()) {
         const auto candidate = std::ranges::min_element(resident_, [](const auto& left,
@@ -304,9 +356,14 @@ void FarTerrainRenderer::enforce_resident_budget() {
             }
             return left.first < right.first;
         });
+        auto evicted = lod_updates_->evict_resident(candidate->first);
+        if (!evicted) {
+            return evicted;
+        }
         release_patch(candidate);
         refresh_resident_stats();
     }
+    return core::Status::ok();
 }
 
 void FarTerrainRenderer::refresh_resident_stats() noexcept {
@@ -463,8 +520,10 @@ core::Status FarTerrainRenderer::clear() {
     }
     resident_.clear();
     plan_ = {};
+    if (lod_updates_.has_value()) {
+        lod_updates_->clear();
+    }
     stats_ = {};
-    surface_revision_ = 0;
     return first_failure;
 }
 
@@ -503,9 +562,9 @@ core::Status FarTerrainRenderer::shutdown() {
     indirect_buffers_ = {};
     draw_data_buffers_ = {};
     clipmap_.reset();
+    lod_updates_.reset();
     pipeline_ = {};
     stats_ = {};
-    surface_revision_ = 0;
     return first_failure;
 }
 

@@ -76,6 +76,13 @@ struct RendererStats {
     std::uint32_t far_terrain_visible_patches = 0;
     std::uint32_t far_terrain_pending_patches = 0;
     std::uint32_t far_terrain_evicted_patches = 0;
+    std::uint32_t far_terrain_stale_resident_patches = 0;
+    std::uint32_t far_terrain_pending_mid_updates = 0;
+    std::uint32_t far_terrain_pending_far_updates = 0;
+    std::uint32_t far_terrain_replaced_patches = 0;
+    std::uint32_t far_terrain_rebuilt_mid_patches = 0;
+    std::uint32_t far_terrain_rebuilt_far_patches = 0;
+    std::uint32_t far_terrain_upload_deferred_patches = 0;
     std::uint32_t residency_suppressed_chunks = 0;
     std::uint32_t draw_calls = 0;
     std::uint32_t indirect_draw_calls = 0;
@@ -142,6 +149,12 @@ struct RendererStats {
     std::uint64_t resident_mesh_bytes = 0;
     std::uint64_t far_terrain_resident_bytes = 0;
     std::uint64_t far_terrain_uploaded_bytes = 0;
+    std::uint64_t far_terrain_maximum_pending_frames = 0;
+    std::uint64_t far_terrain_total_invalidated_patches = 0;
+    std::uint64_t far_terrain_total_coalesced_invalidations = 0;
+    std::uint64_t far_terrain_total_published_updates = 0;
+    std::uint64_t far_terrain_total_stale_results = 0;
+    std::uint64_t far_terrain_total_retried_updates = 0;
     std::uint64_t resident_static_mesh_bytes = 0;
     std::uint64_t streaming_resident_bytes = 0;
     std::uint64_t streaming_pending_bytes = 0;

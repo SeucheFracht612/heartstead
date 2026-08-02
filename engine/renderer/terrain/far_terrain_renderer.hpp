@@ -4,6 +4,7 @@
 #include "engine/renderer/render_camera.hpp"
 #include "engine/renderer/rhi/render_frame_plan.hpp"
 #include "engine/renderer/terrain/far_terrain_clipmap.hpp"
+#include "engine/renderer/terrain/far_terrain_lod_updates.hpp"
 
 #include <array>
 #include <cstddef>
@@ -44,9 +45,12 @@ inline constexpr std::array<rhi::RenderVertexAttributeDesc, 5> far_terrain_verte
 
 struct FarTerrainRendererConfig {
     FarTerrainClipmapConfig clipmap{};
+    FarTerrainLodUpdateConfig lod_updates{};
     std::uint32_t maximum_patch_builds_per_frame = 4;
     std::size_t maximum_upload_bytes_per_frame = 8U * 1024U * 1024U;
     std::size_t maximum_resident_bytes = 256U * 1024U * 1024U;
+    // New allocations must coexist with the last submitted resident patch until fence retirement.
+    std::size_t maximum_replacement_headroom_bytes = 32U * 1024U * 1024U;
 };
 
 struct FarTerrainRendererStats {
@@ -55,11 +59,25 @@ struct FarTerrainRendererStats {
     std::size_t visible_patches = 0;
     std::size_t pending_patches = 0;
     std::size_t built_patches = 0;
+    std::size_t replaced_patches = 0;
+    std::size_t rebuilt_mid_patches = 0;
+    std::size_t rebuilt_far_patches = 0;
+    std::size_t upload_deferred_patches = 0;
     std::size_t evicted_patches = 0;
     std::size_t draw_count = 0;
     std::size_t visible_triangle_count = 0;
     std::size_t resident_bytes = 0;
     std::size_t uploaded_bytes = 0;
+    std::size_t stale_resident_patches = 0;
+    std::size_t pending_mid_updates = 0;
+    std::size_t pending_far_updates = 0;
+    std::size_t in_flight_updates = 0;
+    std::uint64_t maximum_pending_frames = 0;
+    std::uint64_t total_invalidated_patches = 0;
+    std::uint64_t total_coalesced_invalidations = 0;
+    std::uint64_t total_published_updates = 0;
+    std::uint64_t total_stale_results = 0;
+    std::uint64_t total_retried_updates = 0;
 };
 
 class FarTerrainRenderer {
@@ -91,15 +109,18 @@ class FarTerrainRenderer {
         std::size_t resident_bytes = 0;
     };
 
-    [[nodiscard]] core::Status upload_patch(const FarTerrainPatch& patch,
-                                            const FarTerrainSurfaceSampler& sampler);
+    [[nodiscard]] core::Result<bool> upload_patch(const FarTerrainLodUpdateRequest& request,
+                                                  const FarTerrainSurfaceSampler& sampler);
+    void install_patch(ResidentPatch patch);
+    void retire_patch_allocations(const ResidentPatch& patch) noexcept;
     void release_patch(std::map<FarTerrainPatchKey, ResidentPatch>::iterator iterator);
-    void enforce_resident_budget();
+    [[nodiscard]] core::Status enforce_resident_budget();
     void refresh_resident_stats() noexcept;
 
     rhi::IRenderDevice* device_ = nullptr;
     FarTerrainRendererConfig config_{};
     std::optional<FarTerrainClipmap> clipmap_;
+    std::optional<FarTerrainLodUpdateGraph> lod_updates_;
     rhi::RenderResourceHandle pipeline_;
     std::unique_ptr<GpuBufferArena> vertex_arena_;
     std::unique_ptr<GpuBufferArena> index_arena_;
@@ -110,7 +131,6 @@ class FarTerrainRenderer {
     std::map<FarTerrainPatchKey, ResidentPatch> resident_;
     FarTerrainPlan plan_;
     FarTerrainRendererStats stats_{};
-    std::uint64_t surface_revision_ = 0;
 };
 
 } // namespace heartstead::renderer

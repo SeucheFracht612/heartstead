@@ -52,7 +52,20 @@ std::string format_renderer_stats(const RendererStats& stats) {
            << stats.far_terrain_pending_patches << " far_bytes="
            << stats.far_terrain_resident_bytes << " far_upload="
            << stats.far_terrain_uploaded_bytes << " far_evicted="
-           << stats.far_terrain_evicted_patches
+           << stats.far_terrain_evicted_patches << " far_lod="
+           << stats.far_terrain_stale_resident_patches << '/'
+           << stats.far_terrain_pending_mid_updates << '/'
+           << stats.far_terrain_pending_far_updates << " far_rebuilt="
+           << stats.far_terrain_rebuilt_mid_patches << '/'
+           << stats.far_terrain_rebuilt_far_patches << " far_replaced="
+           << stats.far_terrain_replaced_patches << " far_upload_deferred="
+           << stats.far_terrain_upload_deferred_patches << " far_lod_age="
+           << stats.far_terrain_maximum_pending_frames << " far_lod_totals="
+           << stats.far_terrain_total_invalidated_patches << '/'
+           << stats.far_terrain_total_coalesced_invalidations << '/'
+           << stats.far_terrain_total_published_updates << '/'
+           << stats.far_terrain_total_stale_results << '/'
+           << stats.far_terrain_total_retried_updates
            << " chunk_queue=" << stats.mesh_pending_chunks << '/' << stats.upload_pending_chunks
            << " edit_visible=" << stats.edit_to_visible_latest_ms << '/'
            << stats.edit_to_visible_recent_p95_ms << '/' << stats.edit_to_visible_session_max_ms

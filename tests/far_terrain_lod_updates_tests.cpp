@@ -38,6 +38,8 @@ void publish_all(renderer::FarTerrainLodUpdateGraph& graph,
 } // namespace
 
 int main() {
+    assert(renderer::FarTerrainLodUpdateGraph::create({}, 1, 4));
+
     renderer::FarTerrainLodUpdateConfig config;
     config.mid_level_count = 2;
     config.maximum_mid_rebuilds_per_frame = 2;
@@ -164,6 +166,20 @@ int main() {
     assert(split.synchronize(plan({split_plan.patches[0]}), 22));
     assert(!split.contains(removed_key));
     assert(split.stats().desired_patches == 1);
+
+    // A GPU-budget eviction reopens a still-desired patch without inventing a content revision.
+    publish_all(split, split.schedule_updates());
+    const auto retained_key = split_plan.patches[0].key;
+    const auto retained_revision = split.requested_revision(retained_key);
+    assert(retained_revision.has_value());
+    assert(split.evict_resident(retained_key));
+    assert(!split.is_current(retained_key));
+    const auto reloaded = split.schedule_updates();
+    assert(reloaded.size() == 1);
+    assert(reloaded.front().request_revision == *retained_revision);
+    publish_all(split, reloaded);
+    split.clear();
+    assert(split.stats().desired_patches == 0);
 
     return 0;
 }

@@ -268,6 +268,26 @@ core::Status FarTerrainLodUpdateGraph::retry(const FarTerrainPatchKey& key,
     return core::Status::ok();
 }
 
+core::Status FarTerrainLodUpdateGraph::evict_resident(const FarTerrainPatchKey& key) {
+    const auto found = nodes_.find(key);
+    if (found == nodes_.end() || !found->second.resident_request_revision.has_value()) {
+        return core::Status::failure("renderer.invalid_far_terrain_lod_eviction",
+                                     "far-terrain LOD eviction must name a desired resident patch");
+    }
+    found->second.resident_request_revision.reset();
+    found->second.pending_frames = 0;
+    found->second.request_sequence = next_sequence();
+    refresh_stats();
+    return core::Status::ok();
+}
+
+void FarTerrainLodUpdateGraph::clear() noexcept {
+    surface_revision_.reset();
+    next_request_sequence_ = 1;
+    nodes_.clear();
+    stats_ = {};
+}
+
 bool FarTerrainLodUpdateGraph::contains(const FarTerrainPatchKey& key) const noexcept {
     return nodes_.contains(key);
 }

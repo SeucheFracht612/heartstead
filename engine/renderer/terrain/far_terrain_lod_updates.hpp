@@ -20,7 +20,7 @@ enum class FarTerrainLodBand : std::uint8_t {
 struct FarTerrainLodUpdateConfig {
     // Clipmap levels below this boundary form the mid field. Remaining levels are deliberately
     // lower-priority far-field derivatives of the authoritative block world.
-    std::uint32_t mid_level_count = 2;
+    std::uint32_t mid_level_count = 1;
     std::uint32_t maximum_mid_rebuilds_per_frame = 2;
     std::uint32_t maximum_far_rebuilds_per_frame = 1;
 
@@ -79,6 +79,8 @@ class FarTerrainLodUpdateGraph {
     [[nodiscard]] core::Status reject_stale(const FarTerrainPatchKey& key,
                                             std::uint64_t request_revision);
     [[nodiscard]] core::Status retry(const FarTerrainPatchKey& key, std::uint64_t request_revision);
+    [[nodiscard]] core::Status evict_resident(const FarTerrainPatchKey& key);
+    void clear() noexcept;
 
     [[nodiscard]] bool contains(const FarTerrainPatchKey& key) const noexcept;
     [[nodiscard]] bool is_current(const FarTerrainPatchKey& key) const noexcept;
