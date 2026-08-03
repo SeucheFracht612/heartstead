@@ -493,6 +493,8 @@ heartstead_add_foundation_test(heartstead_render_device_state_tests render_devic
 heartstead_add_foundation_test(heartstead_simulation_runtime_tests simulation_runtime_tests.cpp)
 heartstead_add_foundation_test(heartstead_process_temporal_aggregation_tests
                                process_temporal_aggregation_tests.cpp)
+heartstead_add_foundation_test(heartstead_process_temporal_aggregation_benchmark_tests
+                               process_temporal_aggregation_benchmark_tests.cpp)
 heartstead_add_foundation_test(heartstead_entity_world_tests entity_world_tests.cpp)
 heartstead_add_foundation_test(heartstead_entity_motion_snapshot_tests
                                entity_motion_snapshot_tests.cpp)

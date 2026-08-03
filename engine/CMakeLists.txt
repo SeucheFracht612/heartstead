@@ -104,6 +104,7 @@ target_sources(
     processes/process_environment.cpp
     processes/process_prototype.cpp
     processes/process_temporal_aggregation.cpp
+    processes/process_temporal_aggregation_benchmark.cpp
     replay/command_replay.cpp
     renderer/benchmark/benchmark_scene.cpp
     renderer/benchmark/benchmark_coverage.cpp
@@ -365,6 +366,7 @@ target_sources(
       processes/process_environment.hpp
       processes/process_prototype.hpp
       processes/process_temporal_aggregation.hpp
+      processes/process_temporal_aggregation_benchmark.hpp
       replay/command_replay.hpp
       renderer/benchmark/benchmark_scene.hpp
       renderer/benchmark/benchmark_coverage.hpp

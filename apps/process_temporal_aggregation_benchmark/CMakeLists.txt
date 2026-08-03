@@ -1,0 +1,3 @@
+add_executable(heartstead_process_temporal_aggregation_benchmark main.cpp)
+target_link_libraries(heartstead_process_temporal_aggregation_benchmark PRIVATE Heartstead::Engine)
+heartstead_configure_target(heartstead_process_temporal_aggregation_benchmark)
