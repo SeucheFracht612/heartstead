@@ -432,6 +432,21 @@ void test_runtime_diagnostics_are_explicit() {
     assert(unavailable_performance.find("GPU FRAME N/A") != std::string::npos);
     assert(unavailable_performance.find("GPU LOAD N/A") != std::string::npos);
     assert(unavailable_performance.find("WORLD RAM N/A") != std::string::npos);
+
+    const auto base_overlay = game::performance_overlay_layout(1.0F);
+    const auto scaled_overlay = game::performance_overlay_layout(1.5F);
+    assert(base_overlay.panel_width == 330.0F);
+    assert(base_overlay.panel_height == 260.0F);
+    assert(base_overlay.title_size == 20.0F);
+    assert(base_overlay.body_size == 18.0F);
+    assert(scaled_overlay.panel_width == base_overlay.panel_width * 1.5F);
+    assert(scaled_overlay.panel_height == base_overlay.panel_height * 1.5F);
+    assert(scaled_overlay.margin == base_overlay.margin * 1.5F);
+    assert(scaled_overlay.horizontal_padding == base_overlay.horizontal_padding * 1.5F);
+    assert(scaled_overlay.title_offset_y == base_overlay.title_offset_y * 1.5F);
+    assert(scaled_overlay.body_offset_y == base_overlay.body_offset_y * 1.5F);
+    assert(scaled_overlay.title_size == base_overlay.title_size * 1.5F);
+    assert(scaled_overlay.body_size == base_overlay.body_size * 1.5F);
     frame_rate.reset();
     assert(frame_rate.sample().frames_per_second == 0.0);
     assert(!frame_rate.sample().process_cpu_usage_percent.has_value());

@@ -104,6 +104,17 @@ struct PerformanceOverlaySnapshot {
     std::uint32_t occluded_chunks = 0;
 };
 
+struct PerformanceOverlayLayout {
+    float panel_width = 0.0F;
+    float panel_height = 0.0F;
+    float margin = 0.0F;
+    float horizontal_padding = 0.0F;
+    float title_offset_y = 0.0F;
+    float body_offset_y = 0.0F;
+    float title_size = 0.0F;
+    float body_size = 0.0F;
+};
+
 class FrameRateCounter {
   public:
     void record_frame(std::uint64_t delta_microseconds) noexcept;
@@ -124,5 +135,6 @@ class FrameRateCounter {
 [[nodiscard]] std::string format_frame_rate(FrameRateSample sample);
 [[nodiscard]] std::string
 format_performance_overlay(const PerformanceOverlaySnapshot& snapshot);
+[[nodiscard]] PerformanceOverlayLayout performance_overlay_layout(float ui_scale) noexcept;
 
 } // namespace heartstead::game

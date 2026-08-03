@@ -143,6 +143,7 @@ GPU load, approximate process RSS under the compact `WORLD RAM` label, resident 
 mesh bytes, and resident/visible/conservatively culled chunk counts. CPU/RSS refresh at 4 Hz. GPU
 fields report `N/A` until timestamp data is valid. The compact `OCCLUDED` label currently represents
 the renderer's combined distance/frustum-culled chunk count; it is not a distinct chunk-HZB query.
+Panel dimensions, padding, and text follow the effective application UI scale.
 
 ## Extension rules
 

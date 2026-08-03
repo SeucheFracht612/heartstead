@@ -312,4 +312,18 @@ std::string format_performance_overlay(const PerformanceOverlaySnapshot& snapsho
     return output.str();
 }
 
+PerformanceOverlayLayout performance_overlay_layout(float ui_scale) noexcept {
+    const auto scale = std::isfinite(ui_scale) && ui_scale > 0.0F ? ui_scale : 1.0F;
+    return {
+        330.0F * scale,
+        260.0F * scale,
+        14.0F * scale,
+        16.0F * scale,
+        13.0F * scale,
+        50.0F * scale,
+        20.0F * scale,
+        18.0F * scale,
+    };
+}
+
 } // namespace heartstead::game

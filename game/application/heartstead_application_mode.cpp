@@ -2900,26 +2900,31 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         }
         if (status && frame_rate_visible) {
             refresh_performance_resources(current_frame.now_milliseconds);
-            constexpr float panel_width = 236.0F;
-            constexpr float panel_height = 196.0F;
-            const auto right = static_cast<float>(current_frame.extent.width) - 12.0F;
+            const auto overlay = performance_overlay_layout(ui_scale);
+            const auto right = static_cast<float>(current_frame.extent.width) - overlay.margin;
+            const auto top = overlay.margin;
             renderer::UiQuadDesc panel;
-            panel.minimum_pixels = {std::max(12.0F, right - panel_width), 12.0F};
-            panel.maximum_pixels = {right, 12.0F + panel_height};
+            panel.minimum_pixels = {std::max(overlay.margin, right - overlay.panel_width), top};
+            panel.maximum_pixels = {
+                right,
+                std::min(top + overlay.panel_height,
+                         static_cast<float>(current_frame.extent.height) - overlay.margin)};
             panel.color = {0.015F, 0.025F, 0.04F, 0.90F};
             status = ui_renderer->submit_quad(panel);
             if (status) {
                 status = ui_renderer->submit_text(
-                    {{panel.minimum_pixels.x + 10.0F, panel.minimum_pixels.y + 8.0F},
+                    {{panel.minimum_pixels.x + overlay.horizontal_padding,
+                      panel.minimum_pixels.y + overlay.title_offset_y},
                      "HEARTSTEAD DEBUG [F7]",
-                     13.0F,
+                     overlay.title_size,
                      {0.35F, 1.0F, 0.48F, 1.0F}});
             }
             if (status) {
                 status = ui_renderer->submit_text(
-                    {{panel.minimum_pixels.x + 10.0F, panel.minimum_pixels.y + 31.0F},
+                    {{panel.minimum_pixels.x + overlay.horizontal_padding,
+                      panel.minimum_pixels.y + overlay.body_offset_y},
                      format_performance_overlay(performance_overlay_snapshot()),
-                     12.0F,
+                     overlay.body_size,
                      {0.90F, 0.96F, 1.0F, 1.0F}});
             }
         }
