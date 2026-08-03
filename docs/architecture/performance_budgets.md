@@ -134,9 +134,9 @@ reported and bounded to that one operation. Rotating clients, sources, and snaps
 persistent low-identity preference. Reliable correctness traffic and tombstones are outside this
 controller; the host's separate 256 KiB/client encoded-wire window still applies. These defaults are
 implementation safety rails. Clean eight-client spread/P99, conditioned queue/private-memory soak,
-and the maintained eight-client impaired prediction/convergence profile are calibrated;
-game-specific temporal aggregation remains before M6 acceptance. Socket-backed shared-link and
-multi-hour impairment remain separate validation work. See
+the maintained eight-client impaired prediction/convergence profile, and timestamp-based process
+temporal aggregation are calibrated. Socket-backed shared-link and multi-hour impairment remain
+separate validation work. See
 [Networking architecture](networking.md#transient-tick-admission).
 
 Reliable correctness traffic uses a separate encoded-wire backlog and drain envelope:
@@ -202,6 +202,28 @@ acceptance, zero hard corrections, 0.07501 m maximum soft correction, 1,347,076.
 aggregate server-to-client bytes/s, and 169,652.5/181,795 maximum per-client average/rolling-second
 bytes. See
 [Multiplayer network-impairment benchmarks](../performance/multiplayer_network_impairment_benchmarks.md).
+
+Timestamp-based process progression has an independent deterministic entity-city scale slice:
+
+| Metric | Default limit |
+| --- | ---: |
+| Dense-reference semantic/checksum mismatch | 0 |
+| Unexpected/stale/retired outcome | 0 |
+| Hard admission/event/catch-up violation | 0 |
+| Due-event backlog and processed lateness | at most 2 ticks each |
+| Temporal tick P99 | 5.0 ms |
+| Dense/temporal median speedup | at least 5.0x |
+| Modifier-resolver call reduction | at least 95% |
+
+The default workload pairs 65,536 processes over 600 ticks, including a 2,048-process completion
+burst and 256 zero-rate processes. It retains one warmup, five repetition summaries, and every
+logical tick. Three clean Release processes at commit `25466f2` measured a median 0.140991 ms
+temporal P99, 17.725861x median speedup, and 99.6484% fewer resolver calls, with zero semantic,
+checksum, outcome, or budget failures and exact two-tick maximum backlog/lateness. The 5 ms limit is
+an outer fail-safe ceiling taken from the initial complete minimum-client game/simulation CPU
+envelope, not a reservation of that whole envelope for processes or a complete server-tick/hardware
+guarantee. See
+[Process temporal-aggregation benchmarks](../performance/process_temporal_aggregation_benchmarks.md).
 
 High defaults include 16 visible terrain chunks horizontally with mesh/resident/load hysteresis,
 8 MiB near and 8 MiB far-terrain uploads per frame, 512 MiB generic residency, 1,024 local lights,

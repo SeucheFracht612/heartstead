@@ -58,8 +58,8 @@ benchmark composes the broader environment stack into a stable integration workl
 
 The deterministic benchmark family retains raw samples and percentile summaries. Renderer schema
 v4, chunk-streaming schema v4, chunk-delta-journal schema v1, voxel-response schema v1,
-chunk-render-readiness schema v1, multiplayer chunk-subscription schema v3, and multiplayer
-network-impairment schema v2 record
+chunk-render-readiness schema v1, multiplayer chunk-subscription schema v3, multiplayer
+network-impairment schema v2, and process temporal-aggregation schema v1 record
 source/build/machine/device provenance and enforce workload-specific absolute gates. Clean
 reference runs cover renderer/edit workloads, generated
 plus in-memory and physical indexed saved-delta publication, warm and Linux cache-drop-advice
@@ -73,11 +73,21 @@ exact event/delta apply and foreign-region exclusion. A conditioned 64-cycle con
 compact tick timing, exact endpoint ownership/queues, and precise Linux private resident-memory
 slope/growth. An optimized `profiling-release` preset
 links on-demand Tracy instrumentation across the main runtime, renderer, worker, chunk, lighting,
-collision, and streaming boundaries; normal builds compile those call sites to no-ops. Guaranteed
+collision, streaming, and process-simulation boundaries; normal builds compile those call sites to
+no-ops. Guaranteed
 cold/multi-filesystem I/O, coordinated checkpoint under live streaming, large snapshot capture,
 general-controller loader adoption, actual GPU execution/presentation timing, socket-backed
-shared-link impairment, and game-specific temporal aggregation remain staged in the
+shared-link impairment, broader crop/population/economy aggregate models, and workload-specific
+multi-hour endurance remain staged in the
 [voxel optimization roadmap](performance/voxel_optimization_roadmap.md).
+
+Timestamp-based production processes now execute through a bounded future-event controller in
+`ServerRuntime`, with automatic reliable event and typed-delta replication under one authoritative
+sequence. The default 65,536-process paired benchmark retains 3,000 logical ticks and compares the
+controller with a dense scan. Three clean Release processes measured 0.140991 ms median P99,
+17.725861x median speedup, 99.6484% fewer modifier resolutions, exact two-tick maximum
+backlog/lateness, and zero semantic, checksum, outcome, or hard-budget failures. See
+[Process temporal-aggregation benchmarks](performance/process_temporal_aggregation_benchmarks.md).
 
 The retained UI path uses a packaged Noto Sans font rendered from a deterministic SDF atlas,
 strict UTF-8 decoding, DPI-scaled widgets, hierarchical clipping/scissors, nine-slice panels,
@@ -145,8 +155,9 @@ reliable-backlog, and transport-integrity gates with median 0.190 ms server P99.
 4,781-4,782 of 4,800 measured inputs, reached sequence 600 with empty prediction buffers for every
 client, made zero hard corrections, and stayed below 0.07501 m soft correction. Aggregate offered
 load averaged 1,347,076.5-1,357,186.6 bytes/s and the largest per-client average was 169,652.5
-bytes/s. This accepts deterministic in-process multi-client impairment. Game-specific temporal
-aggregation remains; socket-backed shared-link and multi-hour impairment remain separate work. See
+bytes/s. This accepts deterministic in-process multi-client impairment. Timestamp-based process
+temporal aggregation is calibrated separately; socket-backed shared-link and multi-hour impairment
+remain separate work. See
 [Multiplayer network-impairment benchmarks](performance/multiplayer_network_impairment_benchmarks.md).
 
 ### Persistence

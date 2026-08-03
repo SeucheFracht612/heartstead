@@ -137,6 +137,8 @@ data flow, failure behavior, and extension points rather than repeat every class
 - [Multiplayer chunk-subscription benchmarks](performance/multiplayer_chunk_subscription_benchmarks.md)
   — multi-client relevance, edit, backlog, and conditioned queue/private-memory soak gates.
 - [Multiplayer network-impairment benchmarks](performance/multiplayer_network_impairment_benchmarks.md)
+- [Process temporal-aggregation benchmarks](performance/process_temporal_aggregation_benchmarks.md)
+  — dense-reference parity, bounded future-event work, and entity-city process scaling.
 - [Chunk delta journal benchmarks](performance/chunk_delta_journal_benchmarks.md)
 - [Chunk render-readiness benchmarks](performance/chunk_render_readiness_benchmarks.md)
 - [Voxel response benchmarks](performance/voxel_response_benchmarks.md)

@@ -59,6 +59,8 @@ Implemented foundation:
   - chunk-delta publication advances, avoided full snapshots, and revision gaps
   - applied and snapshot-superseded client voxel deltas
   - voxel-fluid topology reconciliation, dirty collection, active frontier, and processed work
+  - process temporal admission, active/unadmitted events, evaluated/completed work, catch-up,
+    lateness, stale/retired events, budget exhaustion, and counter saturation
 
 `WorldState` inspection reports save metadata, the next stable save id, the next runtime
 handle, the next entity net id, the next process id, dirty-region count, and
@@ -163,7 +165,11 @@ subscription, current/stale/partial publication, deferred transition/snapshot, a
 state counts; per-frame additions/removals; atomic snapshot chunks/slices/payload bytes; shared codec
 operations/time/overshoot; serialization-budget deferrals; and reliable admission deferrals. It also
 reports the configured global chunk-snapshot serialization boundary. Tracy builds plot subscription
-population, snapshot slices, and deferred snapshots.
+population, snapshot slices, and deferred snapshots. The same runtime report aggregates process
+temporal records, admissions, active/unadmitted events, evaluation/completion, catch-up, maximum
+lateness, and exhausted-budget ticks; backlog and saturation become structured issues, while Tracy
+plots the live record/event/evaluation counts.
+
 Simulation LOD inspection reports policy radii and tick intervals, raw subject identity,
 process ids, coordinates, persistence, sleeping/forced state, per-subject LOD decisions, offline
 timestamp deltas, due-tick state, frame-plan counts, and counter mismatches in manually

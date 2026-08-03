@@ -165,5 +165,6 @@ that behavior.
 
 It closes the maintained multi-client 100 ms RTT / 2% unreliable-loss prediction, convergence,
 bandwidth, backlog, and server-P99 evidence slice. Socket-backed netem validation,
-hostile/shared-link behavior, workload-specific multi-hour impairment endurance, and game-specific temporal
-aggregation remain separate work.
+hostile/shared-link behavior, and workload-specific multi-hour impairment endurance remain separate
+work. Timestamp-based process scaling is calibrated independently in the
+[process temporal-aggregation benchmark](process_temporal_aggregation_benchmarks.md).

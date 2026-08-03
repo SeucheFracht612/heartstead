@@ -50,6 +50,31 @@ Implemented foundation:
   - keeps `ProcessRuntime` generic while data-defined process requirements and game/runtime rules
     feed it settlement context from rooms and networks
 
+- `ProcessTemporalAggregationController`
+  - admits newly inserted process records under a hard per-tick count and total tracking cap
+  - predicts one deterministic next event for every admitted non-complete process and orders equal
+    due times by stable process id
+  - resolves room, power, and prototype modifiers at admission and at the next event instead of
+    scanning every process on every world tick
+  - reevaluates interrupted or zero-rate processes at a bounded interval
+  - caps dispatched events, per-event late catch-up, and aggregate catch-up on every owner-thread
+    update
+  - stages and validates a complete event batch before committing it, then returns exact process
+    transitions plus admission, queue, lateness, catch-up, stale-event, and saturation telemetry
+  - resets conservatively when a successful command may change rooms, spatial networks,
+    assemblies, or explicitly advances every process, so changed environmental modifiers are
+    resolved before another prediction is trusted
+
+- `ServerRuntime` process execution
+  - runs temporal process aggregation immediately after authoritative world-clock advancement and
+    before entity finalization
+  - shares the same authoritative room/power/prototype modifier resolver with process commands
+  - emits automatic completion transitions as one authoritative report, one reliable event batch,
+    and one typed world delta under the same host replication sequence
+  - applies ordinary relevance and reliable-overload disconnect policy without manufacturing a
+    command response for an automatic transition
+  - publishes process temporal counters through tick reports, inspection, and Tracy plots
+
 - `process.start`
   - server-authoritative command that validates a process prototype
   - rejects owners that do not reference an existing saved world object
@@ -76,3 +101,9 @@ domain used by `WorldState`.
 This model is intentionally generic. Drying, firing, smoking, smelting, crop growth,
 animal recovery, ward charging, and machine work should specialize it through game
 runtime rules and mod prototypes rather than each inventing a private timer.
+
+The deterministic
+[process temporal-aggregation benchmark](../performance/process_temporal_aggregation_benchmarks.md)
+compares this future-event path with a dense per-process scan, retains every logical tick, and gates
+semantic parity, deterministic checksums, hard budgets, two-tick burst recovery/lateness, P99,
+speedup, and modifier-resolution reduction.

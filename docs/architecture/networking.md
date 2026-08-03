@@ -317,8 +317,9 @@ load averaged 1,347,076.5-1,357,186.6 bytes/s; the maximum per-client average/ro
 were 169,652.5/181,795 bytes. The asynchronous chunk-publication branch peaked at 682 aggregate and
 88 per-client impaired messages, within 1,024/128 caps. The reliable application FIFO ended empty
 and no transport error or disconnect occurred. This closes the deterministic in-process
-multi-client impaired prediction/P99/convergence profile. Game-specific temporal aggregation remains M6
-work; socket-backed shared-link and multi-hour impairment remain separate validation. See
+multi-client impaired prediction/P99/convergence profile. Timestamp-based production-process
+aggregation and its entity-city scale gate are calibrated separately; socket-backed shared-link and
+multi-hour impairment remain separate validation. See
 [Multiplayer network-impairment benchmarks](../performance/multiplayer_network_impairment_benchmarks.md).
 
 ## Prediction and interpolation

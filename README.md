@@ -136,6 +136,8 @@ Start at the [documentation index](docs/README.md).
   — eight-client relevance, hot-edit, backlog, and conditioned queue/private-memory soak evidence.
 - [Multiplayer network-impairment benchmarks](docs/performance/multiplayer_network_impairment_benchmarks.md)
   — deterministic RTT/loss prediction, correction, bandwidth, backlog, and server-P99 evidence.
+- [Process temporal-aggregation benchmarks](docs/performance/process_temporal_aggregation_benchmarks.md)
+  — 65,536-process dense parity, bounded burst recovery, work reduction, and P99 evidence.
 - [Asset pipeline](docs/asset_pipeline.md) — contributor formats, importing, cooking, and limits.
 - [Asset Lab](docs/asset_lab.md) — production asset and presentation inspection.
 - [Environment rendering](docs/architecture/environment_rendering.md) — atmosphere, water,

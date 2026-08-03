@@ -103,6 +103,11 @@ input scheduler is reset to that clock at session activation and after a multipl
 then emits exactly one prediction input per fixed step. A mismatch between the input and runtime
 clock is a terminal session diagnostic rather than silently changing prediction speed.
 
+Inside the authoritative fixed tick, world-clock advancement precedes bounded process temporal
+aggregation, which precedes entity finalization. Automatic process transitions use the same host
+replication-sequence allocator as command output and publish a matching reliable event batch and
+typed delta without a synthetic command result. See [Processes](processes.md).
+
 ## Remote frame path
 
 Remote play replaces only the transport and process boundary:

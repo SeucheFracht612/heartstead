@@ -308,5 +308,7 @@ The benchmark closes the reproducible spread/convergence/traversal, isolated hot
 spatial relevance, clean-host P99, revision-safe client ordering, and deterministic queue/private-
 memory soak slices. The separate
 [multiplayer network-impairment benchmark](multiplayer_network_impairment_benchmarks.md) closes the
-maintained deterministic single-client 100 ms RTT / 2% unreliable-loss profile. Multi-client
-impairment and game-specific temporal aggregation remain M6 work.
+maintained deterministic eight-client 100 ms RTT / 2% unreliable-loss profile. The separate
+[process temporal-aggregation benchmark](process_temporal_aggregation_benchmarks.md) closes the
+timestamp-based process-scale slice. Socket-backed shared-link and multi-hour validation remain M6
+work.

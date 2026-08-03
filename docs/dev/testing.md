@@ -101,6 +101,22 @@ before returning status 2 on a failed evaluated gate:
 Headless runs cannot evaluate the GPU portion. Performance sign-off also requires repeated native
 runs on the declared reference hardware; see [Renderer benchmarks](../performance/renderer_benchmarks.md).
 
+Run the process entity-city scale slice only from an optimized build. It pairs the production
+future-event controller with a dense scan, writes every logical tick and five repetition summaries,
+then returns status 3 after writing the artifact if a correctness, backlog/lateness, work-reduction,
+P99, or speedup gate fails:
+
+```bash
+cmake --build build/default-release \
+  --target heartstead_process_temporal_aggregation_benchmark -j2
+build/default-release/apps/process_temporal_aggregation_benchmark/\
+heartstead_process_temporal_aggregation_benchmark \
+  --output build/default-release/benchmarks/process-temporal-aggregation.json
+```
+
+See [Process temporal-aggregation benchmarks](../performance/process_temporal_aggregation_benchmarks.md)
+for timing semantics, artifact-only drains, default gates, and clean calibration.
+
 ## Runtime smoke checks
 
 Exercise the complete local runtime without presentation:

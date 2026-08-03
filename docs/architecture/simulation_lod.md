@@ -76,6 +76,18 @@ Implemented foundation:
   - preserves the raw classification plan alongside the ordered admitted-update list
   - remains side-effect free so a failed game-specific update cannot advance its timestamp
 
+- production process temporal aggregation
+  - turns generic timestamp-based process instances into one predicted future event per admitted
+    non-complete process
+  - touches a process only on admission, predicted completion, bounded stalled reevaluation, or
+    conservative dependency reset rather than once per fixed tick
+  - orders simultaneous transitions by stable process id and caps admission, dispatch, tracking,
+    per-event catch-up, and total tick catch-up
+  - runs on the authoritative owner thread after world-clock advancement and publishes exact
+    transition telemetry and replication
+  - retains bounded late-processing timestamps explicitly while requiring dense-reference semantic
+    state parity in the scale benchmark
+
 - `derive_replication_relevance_policy`
   - reuses derived simulation subjects and viewer positions to build per-client replication
     interest rules
@@ -99,9 +111,10 @@ Implemented foundation:
   - exposes world-derived replication interest reports before host sessions consume the
     resulting network relevance policy
 
-The planner is intentionally generic. Game runtime systems should decide what a full,
-simplified, or reload-time update means for animals, crops, machines, wards, storage,
-outposts, and cargo. The engine owns the shared classification and timing contract.
+The planner is intentionally generic. Timestamp-based production processes now have one concrete
+event-driven runtime consumer. Game runtime systems still decide what a full, simplified, or
+reload-time update means for animals, crops, populations, economies, wards, storage, outposts, and
+cargo. The engine owns the shared classification and timing contract.
 
 ## Catch-up commit contract
 
@@ -136,3 +149,7 @@ but this cooperative game scheduler does not claim hard-real-time guarantees. Fi
 steps and bounded catch-up follow the overload concern described in
 [Fix Your Timestep](https://gafferongames.com/post/fix_your_timestep/): admitting unbounded recovery
 work can make an already-late simulation fall farther behind.
+
+See [Process architecture](processes.md) for runtime ownership and replication, and
+[Process temporal-aggregation benchmarks](../performance/process_temporal_aggregation_benchmarks.md)
+for dense-reference parity, bounded burst recovery, and clean Release calibration.
