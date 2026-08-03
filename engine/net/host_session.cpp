@@ -175,6 +175,25 @@ const ReplicationRelevancePolicy& HostSession::replication_relevance_policy() co
     return config_.replication_relevance;
 }
 
+core::Result<std::uint64_t> HostSession::reserve_replication_stream_sequence() {
+    auto running = require_running();
+    if (!running) {
+        return core::Result<std::uint64_t>::failure(running.error().code, running.error().message);
+    }
+    if (next_replication_sequence_ == 0) {
+        return core::Result<std::uint64_t>::failure(
+            "host_session.replication_sequence_exhausted",
+            "server replication stream exhausted its 64-bit sequence space");
+    }
+
+    const auto reserved = next_replication_sequence_;
+    next_replication_sequence_ =
+        next_replication_sequence_ == std::numeric_limits<std::uint64_t>::max()
+            ? 0
+            : next_replication_sequence_ + 1;
+    return core::Result<std::uint64_t>::success(reserved);
+}
+
 core::Status HostSession::start() {
     if (is_running()) {
         return core::Status::failure("host_session.already_running",
@@ -357,6 +376,42 @@ core::Status HostSession::send_replication_message(core::NetId client_id,
         return core::Status::ok();
     }
     return transport_->send_server_to_client(client_id, std::move(message));
+}
+
+core::Result<HostSessionReplicationPublishResult>
+HostSession::publish_replication_batch(const ReplicationBatch& batch, std::int64_t server_time_ms) {
+    auto running = require_running();
+    if (!running) {
+        return core::Result<HostSessionReplicationPublishResult>::failure(running.error().code,
+                                                                          running.error().message);
+    }
+
+    HostSessionReplicationPublishResult result;
+    result.relevance = ReplicationRelevance::evaluate(config_.replication_relevance, batch,
+                                                      transport_->connected_client_ids());
+    for (const auto& decision : result.relevance.decisions) {
+        if (!decision.relevant) {
+            continue;
+        }
+        auto filtered = ReplicationRelevance::filter_for_client(config_.replication_relevance,
+                                                                batch, decision.client_id);
+        if (filtered.events.empty()) {
+            continue;
+        }
+        auto queued = queue_reliable_message(
+            decision.client_id, make_replication_transport_message(filtered, server_time_ms));
+        if (!queued) {
+            auto disconnected = disconnect_for_reliable_overload(decision.client_id);
+            if (!disconnected) {
+                return core::Result<HostSessionReplicationPublishResult>::failure(
+                    disconnected.error().code, disconnected.error().message);
+            }
+            result.overload_disconnected_clients.push_back(decision.client_id);
+            continue;
+        }
+        ++result.queued_message_count;
+    }
+    return core::Result<HostSessionReplicationPublishResult>::success(std::move(result));
 }
 
 core::Status HostSession::send_reliable_replication_batch(core::NetId client_id,
@@ -733,17 +788,12 @@ core::Status HostSession::assign_replication_sequence(HostSessionCommandReport& 
     if (!report.success || !report.committed_world_mutation || report.events.empty()) {
         return core::Status::ok();
     }
-    if (next_replication_sequence_ == 0) {
-        return core::Status::failure(
-            "host_session.replication_sequence_exhausted",
-            "server replication stream exhausted its 64-bit sequence space");
-    }
 
-    report.replication_sequence = next_replication_sequence_;
-    next_replication_sequence_ =
-        next_replication_sequence_ == std::numeric_limits<std::uint64_t>::max()
-            ? 0
-            : next_replication_sequence_ + 1;
+    auto sequence = reserve_replication_stream_sequence();
+    if (!sequence) {
+        return core::Status::failure(sequence.error().code, sequence.error().message);
+    }
+    report.replication_sequence = sequence.value();
     return core::Status::ok();
 }
 
@@ -776,28 +826,14 @@ HostSession::queue_replication(const HostSessionCommandReport& report, std::int6
         report.sequence,     report.command_type,         report.events,
         report.reserved_ids, report.replication_sequence, report.client_id,
     };
-    relevance_report = ReplicationRelevance::evaluate(config_.replication_relevance, batch,
-                                                      transport_->connected_client_ids());
-    for (const auto& decision : relevance_report.decisions) {
-        if (!decision.relevant) {
-            continue;
-        }
-        auto filtered = ReplicationRelevance::filter_for_client(config_.replication_relevance,
-                                                                batch, decision.client_id);
-        if (filtered.events.empty()) {
-            continue;
-        }
-        ++queued_message_count;
-        auto queued = queue_reliable_message(
-            decision.client_id, make_replication_transport_message(filtered, server_time_ms));
-        if (!queued) {
-            auto disconnected = disconnect_for_reliable_overload(decision.client_id);
-            if (!disconnected) {
-                return core::Result<ReplicationRelevanceReport>::failure(
-                    disconnected.error().code, disconnected.error().message);
-            }
-        }
+    auto published = publish_replication_batch(batch, server_time_ms);
+    if (!published) {
+        return core::Result<ReplicationRelevanceReport>::failure(published.error().code,
+                                                                 published.error().message);
     }
+    auto publish_result = std::move(published).value();
+    queued_message_count = publish_result.queued_message_count;
+    relevance_report = std::move(publish_result.relevance);
     return core::Result<ReplicationRelevanceReport>::success(std::move(relevance_report));
 }
 

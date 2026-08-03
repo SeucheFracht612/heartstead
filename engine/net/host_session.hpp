@@ -120,6 +120,12 @@ struct HostSessionTickResult {
     std::vector<ReplicationRelevanceReport> replication_relevance_reports;
 };
 
+struct HostSessionReplicationPublishResult {
+    ReplicationRelevanceReport relevance;
+    std::uint32_t queued_message_count = 0;
+    std::vector<core::NetId> overload_disconnected_clients;
+};
+
 using HostSessionTransportFactory =
     std::function<core::Result<std::unique_ptr<ITransportHost>>(TransportHostDesc)>;
 
@@ -138,6 +144,7 @@ class HostSession {
     [[nodiscard]] std::uint64_t pending_outbound_bytes() const noexcept;
     [[nodiscard]] std::uint64_t pending_outbound_bytes(core::NetId client_id) const noexcept;
     [[nodiscard]] const ReplicationRelevancePolicy& replication_relevance_policy() const noexcept;
+    [[nodiscard]] core::Result<std::uint64_t> reserve_replication_stream_sequence();
 
     [[nodiscard]] core::Status start();
     [[nodiscard]] core::Status stop();
@@ -149,6 +156,8 @@ class HostSession {
     [[nodiscard]] core::Status send_client_control(core::NetId client_id, TransportMessage message);
     [[nodiscard]] core::Status send_replication_message(core::NetId client_id,
                                                         TransportMessage message);
+    [[nodiscard]] core::Result<HostSessionReplicationPublishResult>
+    publish_replication_batch(const ReplicationBatch& batch, std::int64_t server_time_ms);
     [[nodiscard]] core::Status
     send_reliable_replication_batch(core::NetId client_id, std::vector<TransportMessage> messages);
     [[nodiscard]] core::Result<std::vector<TransportEnvelope>>

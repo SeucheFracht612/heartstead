@@ -322,6 +322,7 @@ core::Result<ProcessTemporalAggregationTickStats> ProcessTemporalAggregationCont
         commit_targets.push_back(process);
     }
 
+    stats.transitions.reserve(staged.size());
     for (std::size_t index = 0; index < staged.size(); ++index) {
         auto& evaluation = staged[index];
         auto* process = commit_targets[index];
@@ -332,6 +333,16 @@ core::Result<ProcessTemporalAggregationTickStats> ProcessTemporalAggregationCont
             evaluation.process.last_eval != evaluation.previous_last_eval ||
             evaluation.process.accrued_work_ticks != evaluation.previous_work) {
             ++stats.changed_process_count;
+            stats.transitions.push_back(ProcessTemporalAggregationTransition{
+                evaluation.process.process_id,
+                evaluation.process.owner_id,
+                evaluation.previous_state,
+                evaluation.process.state,
+                evaluation.previous_last_eval,
+                evaluation.process.last_eval,
+                evaluation.previous_work,
+                evaluation.process.accrued_work_ticks,
+            });
         }
         if (evaluation.previous_state != ProcessState::complete &&
             evaluation.process.state == ProcessState::complete) {

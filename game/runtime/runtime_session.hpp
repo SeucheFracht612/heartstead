@@ -37,6 +37,7 @@ struct RuntimeConfiguration {
     bool headless = true;
     simulation::FixedStepConfig fixed_step{};
     simulation::WorldTimeConfig world_time{};
+    processes::ProcessTemporalAggregationConfig process_temporal_aggregation{};
     physics::PhysicsBackend physics_backend = physics::PhysicsBackend::headless;
     world::ChunkFluidSystemConfig chunk_fluids{};
     world::ChunkLightSystemConfig chunk_lighting{};

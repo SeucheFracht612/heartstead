@@ -1,6 +1,8 @@
 #include "engine/content/content_validation.hpp"
 #include "engine/entities/physical_resource.hpp"
 #include "engine/net/command_payload.hpp"
+#include "engine/processes/process.hpp"
+#include "engine/rooms/room_graph.hpp"
 #include "engine/world/chunks/chunk_edit_delta_codec.hpp"
 #include "engine/world/fluids/fluid_state.hpp"
 #include "game/foundation/foundation_world.hpp"
@@ -286,6 +288,15 @@ std::string set_voxel_payload() {
     return net::CommandPayloadTextCodec::encode(payload);
 }
 
+std::string place_build_piece_payload() {
+    net::CommandPayload payload;
+    assert(payload.set("prototype", "base:build_pieces/wall_frame"));
+    assert(payload.set("position", "1.5|2|3"));
+    assert(payload.set("rotation", "0|90|0"));
+    assert(payload.set("scale", "1|1|1"));
+    return net::CommandPayloadTextCodec::encode(payload);
+}
+
 void test_local_runtime_advances_authority_through_loopback() {
     const auto report = content::ContentValidation::validate(source_root());
     assert(!report.has_errors());
@@ -331,6 +342,91 @@ void test_local_runtime_advances_authority_through_loopback() {
     assert(no_tick.value().server_ticks.empty());
     assert(runtime.shutdown());
     assert(runtime.session() == nullptr);
+}
+
+void test_runtime_temporal_processes_complete_and_replicate_without_scan_commands() {
+    const auto report = content::ContentValidation::validate(source_root());
+    assert(!report.has_errors());
+    auto runtime = make_runtime(report);
+
+    game::RuntimeConfiguration config;
+    config.fixed_step = {60, 4, 250'000};
+    config.process_temporal_aggregation.maximum_admissions_per_tick = 1;
+    config.process_temporal_aggregation.maximum_events_per_tick = 1;
+    assert(runtime.start_session(config, make_session_request(report)));
+
+    auto* session = runtime.session();
+    assert(session != nullptr && session->server() != nullptr && session->client() != nullptr);
+    auto* server = session->server();
+    const auto* player = server->player_for_client(session->client()->client_id());
+    assert(player != nullptr);
+
+    rooms::RoomRecord room;
+    room.id = rooms::RoomId::from_value(9'001);
+    room.label = "Temporal process test room";
+    room.volume_cells = 1;
+    room.source_build_piece_ids.push_back(player->save_id);
+    assert(server->world().rooms().add_or_replace(std::move(room)));
+
+    auto process_id = server->world().process_ids().reserve();
+    assert(process_id);
+    auto process = processes::ProcessRuntime::create(
+        process_id.value(), player->save_id, *core::PrototypeId::parse("base:processes/drying"),
+        server->world().world_time(), 2);
+    assert(process);
+    assert(server->world().processes().insert(std::move(process).value()));
+
+    bool observed_completion = false;
+    for (std::uint32_t frame_index = 0; frame_index < 9 && !observed_completion; ++frame_index) {
+        const auto now_ms = static_cast<std::int64_t>((frame_index + 1) * 17);
+        if (frame_index == 5) {
+            assert(
+                runtime.submit_command("build.place_piece", place_build_piece_payload(), now_ms));
+        }
+        auto frame = runtime.run_frame({16'667, now_ms});
+        assert(frame && frame.value().server_ticks.size() == 1);
+        const auto& tick = frame.value().server_ticks.front();
+        assert(tick.process_temporal_aggregation.admission_count <= 1);
+        assert(tick.process_temporal_aggregation.dispatched_event_count <= 1);
+        if (frame_index == 0) {
+            assert(tick.process_temporal_aggregation.admission_count == 1);
+            assert(tick.process_temporal_aggregation.active_event_count == 1);
+        } else if (frame_index < 5) {
+            assert(tick.process_temporal_aggregation.admission_count == 0);
+            assert(tick.process_temporal_aggregation.evaluated_process_count == 0);
+        }
+        if (tick.process_temporal_aggregation.completed_process_count == 0) {
+            continue;
+        }
+
+        observed_completion = true;
+        assert(tick.process_temporal_aggregation.admission_count == 1);
+        assert(tick.process_temporal_aggregation.completed_process_count == 1);
+        assert(tick.process_temporal_aggregation.transitions.size() == 1);
+        assert(tick.process_temporal_aggregation.transitions.front().process_id ==
+               process_id.value());
+        assert(tick.commands.command_reports.size() == 2);
+        assert(tick.commands.command_reports[0].command_type == "build.place_piece");
+        assert(tick.commands.command_reports[1].command_type ==
+               "runtime.process_temporal_aggregation");
+        assert(tick.commands.command_reports[0].replication_sequence != 0);
+        assert(tick.commands.command_reports[1].replication_sequence ==
+               tick.commands.command_reports[0].replication_sequence + 1);
+        assert(tick.replication.sent_message_count == 2);
+        assert(frame.value().client.command_result_count == 1);
+        const auto inspection = game::GameInspector::inspect(frame.value());
+        assert(inspection.find_field("process_temporal_completed_count")->value == "1");
+        assert(inspection.find_field("process_temporal_active_event_count")->value == "0");
+    }
+    assert(observed_completion);
+
+    const auto* authoritative = server->world().processes().find(process_id.value());
+    const auto* replicated = session->client()->world().processes().find(process_id.value());
+    assert(authoritative != nullptr && authoritative->is_complete());
+    assert(replicated != nullptr && replicated->is_complete());
+    assert(replicated->last_eval == authoritative->last_eval);
+    assert(replicated->accrued_work_ticks == authoritative->accrued_work_ticks);
+    assert(runtime.shutdown());
 }
 
 void test_client_command_result_history_is_bounded() {
@@ -455,6 +551,11 @@ void test_dedicated_headless_runtime_uses_same_scheduler() {
     assert(names[2] == "runtime.chunk_fluids");
     assert(names[3] == "runtime.character_movement");
     assert(names.back() == "runtime.replication");
+    const auto world_clock = std::ranges::find(names, "runtime.world_clock");
+    const auto temporal = std::ranges::find(names, "runtime.process_temporal_aggregation");
+    const auto entity_finalize = std::ranges::find(names, "runtime.entity_finalize");
+    assert(world_clock != names.end() && temporal != names.end() && entity_finalize != names.end());
+    assert(world_clock < temporal && temporal < entity_finalize);
     assert(runtime.shutdown());
 }
 
@@ -2124,6 +2225,10 @@ void test_runtime_configuration_rejects_invalid_compositions() {
     invalid_world_time.world_time.ticks_per_second = 0;
     assert(!invalid_world_time.validate());
 
+    game::RuntimeConfiguration invalid_process_temporal_budget;
+    invalid_process_temporal_budget.process_temporal_aggregation.maximum_events_per_tick = 0;
+    assert(!invalid_process_temporal_budget.validate());
+
     game::RuntimeConfiguration invalid_client_replication_time;
     invalid_client_replication_time
         .max_transient_snapshot_serialization_time_us_per_client_per_tick = 0;
@@ -2139,6 +2244,7 @@ void test_runtime_configuration_rejects_invalid_compositions() {
 
 int main() {
     test_local_runtime_advances_authority_through_loopback();
+    test_runtime_temporal_processes_complete_and_replicate_without_scan_commands();
     test_client_command_result_history_is_bounded();
     test_selected_scenario_drives_authoritative_bootstrap();
     test_session_rejects_unknown_or_wrong_kind_scenarios();

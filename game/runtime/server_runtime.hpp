@@ -11,6 +11,7 @@
 #include "engine/physics/chunk_collision_system.hpp"
 #include "engine/physics/physical_resource_physics_system.hpp"
 #include "engine/physics/physics_world.hpp"
+#include "engine/processes/process_temporal_aggregation.hpp"
 #include "engine/save/save_snapshot.hpp"
 #include "engine/scenarios/scenario.hpp"
 #include "engine/scenarios/scenario_fixture.hpp"
@@ -64,6 +65,7 @@ struct ServerRuntimeDesc {
     net::ReplicationTickBudgetConfig transient_replication_budget;
     bool direct_local_chunk_replication = false;
     simulation::WorldTimeConfig world_time;
+    processes::ProcessTemporalAggregationConfig process_temporal_aggregation;
     const modding::PrototypeRegistry* prototypes = nullptr;
     const world::VoxelPalette* voxel_palette = nullptr;
     scenarios::ScenarioDefinition scenario;
@@ -148,6 +150,7 @@ struct ServerRuntimeTickStats {
     world::ChunkLightSystemStats chunk_lighting;
     world::ChunkLoadSchedulerStats chunk_loading;
     ServerChunkStreamingTickStats chunk_streaming;
+    processes::ProcessTemporalAggregationTickStats process_temporal_aggregation;
     std::uint32_t moved_player_count = 0;
     std::uint32_t repeated_input_count = 0;
     std::uint32_t movement_event_count = 0;
@@ -272,6 +275,8 @@ class ServerRuntime final {
     [[nodiscard]] core::Status stream_chunks();
     [[nodiscard]] core::Status replicate_players();
     [[nodiscard]] core::Status replicate_entity_motion(std::uint64_t simulation_tick);
+    [[nodiscard]] core::Status advance_process_temporal_aggregation();
+    [[nodiscard]] core::Status publish_process_temporal_replication();
     [[nodiscard]] core::Status synchronize_chunk_subscriptions();
     [[nodiscard]] core::Status advance_chunk_publications_from_voxel_deltas();
     [[nodiscard]] core::Status synchronize_client_chunk_subscription(
@@ -287,6 +292,7 @@ class ServerRuntime final {
     ServerRuntimeDesc desc_;
     net::ReplicationTickBudget transient_replication_budget_;
     world::WorldState world_;
+    processes::ProcessTemporalAggregationController process_temporal_aggregation_;
     entities::EntityWorld entities_;
     std::unique_ptr<physics::IPhysicsWorld> physics_;
     std::unique_ptr<physics::ChunkCollisionSystem> chunk_collision_;
@@ -327,6 +333,7 @@ class ServerRuntime final {
     std::uint32_t current_player_tombstone_count_ = 0;
     ServerChunkSubscriptionTickStats current_chunk_subscriptions_;
     ServerChunkStreamingTickStats current_chunk_streaming_;
+    processes::ProcessTemporalAggregationTickStats current_process_temporal_aggregation_;
     std::map<std::uint64_t, world::ChunkCoord> previous_chunk_streaming_viewers_;
     std::int64_t current_time_ms_ = 0;
     std::uint64_t pending_world_time_numerator_ = 0;
@@ -339,6 +346,7 @@ class ServerRuntime final {
     std::uint64_t transient_replication_class_cursor_ = 0;
     std::uint64_t chunk_subscription_client_cursor_ = 0;
     bool renderer_proof_streaming_enabled_ = false;
+    bool process_temporal_reset_pending_ = false;
 };
 
 } // namespace heartstead::game

@@ -8,6 +8,7 @@
 #include "engine/simulation/fire_prototype.hpp"
 #include "engine/world/chunks/chunk_edit_delta_codec.hpp"
 #include "engine/world/chunks/chunk_replication.hpp"
+#include "engine/world/process_modifiers.hpp"
 #include "engine/world/voxel_change.hpp"
 #include "engine/world/world_commands.hpp"
 #include "engine/world/world_snapshot.hpp"
@@ -21,6 +22,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -39,6 +41,19 @@ elapsed_runtime_microseconds(RuntimeClock::time_point started) noexcept {
     }
     const auto nanoseconds = static_cast<std::uint64_t>(elapsed);
     return 1 + (nanoseconds - 1) / 1'000;
+}
+
+[[nodiscard]] bool
+invalidates_process_temporal_predictions(const net::HostSessionCommandReport& report) noexcept {
+    if (!report.success || !report.committed_world_mutation) {
+        return false;
+    }
+    if (report.command_type == "process.advance_all") {
+        return true;
+    }
+    return std::ranges::any_of(report.operation_trace.derived_updates, [](std::string_view update) {
+        return update == "RoomGraph" || update == "SpatialNetworks" || update == "Assemblies";
+    });
 }
 
 template <typename Snapshot, typename Encoder, typename Sender>
@@ -257,7 +272,8 @@ collect_fire_light_sources(const world::WorldState& state,
 
 ServerRuntime::ServerRuntime(ServerRuntimeDesc desc)
     : desc_(std::move(desc)), transient_replication_budget_(desc_.transient_replication_budget),
-      world_(desc_.world), host_(desc_.host) {}
+      world_(desc_.world), process_temporal_aggregation_(desc_.process_temporal_aggregation),
+      host_(desc_.host) {}
 
 core::Result<std::unique_ptr<ServerRuntime>> ServerRuntime::create(ServerRuntimeDesc desc) {
     if (desc.prototypes == nullptr || desc.voxel_palette == nullptr) {
@@ -299,6 +315,11 @@ core::Result<std::unique_ptr<ServerRuntime>> ServerRuntime::create(ServerRuntime
     if (!world_time_status) {
         return core::Result<std::unique_ptr<ServerRuntime>>::failure(
             world_time_status.error().code, world_time_status.error().message);
+    }
+    auto process_temporal_status = desc.process_temporal_aggregation.validate();
+    if (!process_temporal_status) {
+        return core::Result<std::unique_ptr<ServerRuntime>>::failure(
+            process_temporal_status.error().code, process_temporal_status.error().message);
     }
     auto runtime = std::unique_ptr<ServerRuntime>(new ServerRuntime(std::move(desc)));
     auto status = runtime->initialize();
@@ -467,11 +488,16 @@ core::Status ServerRuntime::initialize() {
             command_context.prototypes = desc_.prototypes;
             command_context.world_state = &world_;
             command_context.voxel_palette = desc_.voxel_palette;
+            command_context.world_time_config = &desc_.world_time;
             auto result = host_.tick(commands_, command_context);
             if (!result) {
                 return core::Status::failure(result.error().code, result.error().message);
             }
             current_commands_ = std::move(result).value();
+            process_temporal_reset_pending_ =
+                process_temporal_reset_pending_ ||
+                std::ranges::any_of(current_commands_.command_reports,
+                                    invalidates_process_temporal_predictions);
             [[maybe_unused]] std::uint64_t spatial_event_count = 0;
             [[maybe_unused]] std::uint64_t relevant_spatial_delivery_count = 0;
             [[maybe_unused]] std::uint64_t filtered_spatial_delivery_count = 0;
@@ -671,9 +697,18 @@ core::Status ServerRuntime::initialize() {
         return status;
     }
     status = scheduler_.register_system({
+        "runtime.process_temporal_aggregation",
+        simulation::SimulationPhase::environment,
+        {"runtime.world_clock"},
+        [this](simulation::SimulationContext&) { return advance_process_temporal_aggregation(); },
+    });
+    if (!status) {
+        return status;
+    }
+    status = scheduler_.register_system({
         "runtime.entity_finalize",
         simulation::SimulationPhase::finalize,
-        {"runtime.world_clock"},
+        {"runtime.process_temporal_aggregation"},
         [this](simulation::SimulationContext& context) {
             auto result = entities_.finalize_destruction(context.tick, context.events);
             return result ? core::Status::ok()
@@ -770,6 +805,100 @@ core::Status ServerRuntime::initialize() {
     return scheduler_.finalize();
 }
 
+core::Status ServerRuntime::advance_process_temporal_aggregation() {
+    if (process_temporal_reset_pending_) {
+        process_temporal_aggregation_.reset();
+    }
+
+    auto updated = process_temporal_aggregation_.update(
+        world_.processes(), world_.world_time(), [this](const processes::ProcessInstance& process) {
+            return world::resolve_authoritative_process_modifiers(world_, *desc_.prototypes,
+                                                                  process);
+        });
+    if (!updated) {
+        return core::Status::failure(updated.error().code, updated.error().message);
+    }
+    current_process_temporal_aggregation_ = std::move(updated).value();
+    process_temporal_reset_pending_ = false;
+    HEARTSTEAD_PROFILE_PLOT("simulation.process_temporal.records",
+                            current_process_temporal_aggregation_.process_record_count);
+    HEARTSTEAD_PROFILE_PLOT("simulation.process_temporal.active_events",
+                            current_process_temporal_aggregation_.active_event_count);
+    HEARTSTEAD_PROFILE_PLOT("simulation.process_temporal.unadmitted",
+                            current_process_temporal_aggregation_.unadmitted_process_count);
+    HEARTSTEAD_PROFILE_PLOT("simulation.process_temporal.evaluated",
+                            current_process_temporal_aggregation_.evaluated_process_count);
+    HEARTSTEAD_PROFILE_PLOT("simulation.process_temporal.oldest_deferred_lateness",
+                            current_process_temporal_aggregation_.oldest_deferred_lateness_ticks);
+    return publish_process_temporal_replication();
+}
+
+core::Status ServerRuntime::publish_process_temporal_replication() {
+    std::vector<const processes::ProcessTemporalAggregationTransition*> material_transitions;
+    material_transitions.reserve(current_process_temporal_aggregation_.transitions.size());
+    for (const auto& transition : current_process_temporal_aggregation_.transitions) {
+        if (transition.previous_state != transition.current_state ||
+            transition.previous_work_ticks != transition.current_work_ticks) {
+            material_transitions.push_back(&transition);
+        }
+    }
+    if (material_transitions.empty()) {
+        return core::Status::ok();
+    }
+
+    auto sequence = host_.reserve_replication_stream_sequence();
+    if (!sequence) {
+        return core::Status::failure(sequence.error().code, sequence.error().message);
+    }
+
+    net::HostSessionCommandReport report;
+    report.sequence = sequence.value();
+    report.command_type = "runtime.process_temporal_aggregation";
+    report.success = true;
+    report.committed_world_mutation = true;
+    report.replication_sequence = sequence.value();
+    report.events.reserve(material_transitions.size());
+    for (const auto* transition : material_transitions) {
+        report.events.emplace_back("process.temporal_advanced", transition->owner_id,
+                                   transition->process_id.to_string());
+    }
+    report.operation_trace.stages = {
+        world::OperationStage::begun,          world::OperationStage::validated,
+        world::OperationStage::mutated,        world::OperationStage::derived_updated,
+        world::OperationStage::events_emitted, world::OperationStage::replication_marked,
+        world::OperationStage::save_marked,    world::OperationStage::committed,
+    };
+    report.operation_trace.mutations.push_back("advance temporal processes " +
+                                               std::to_string(material_transitions.size()));
+    report.operation_trace.derived_updates.push_back("Processes");
+    report.operation_trace.replication_dirty = true;
+    report.operation_trace.save_dirty = true;
+
+    const net::ReplicationBatch batch{
+        report.sequence,     report.command_type,         report.events,
+        report.reserved_ids, report.replication_sequence, report.client_id,
+    };
+    auto published = host_.publish_replication_batch(batch, current_time_ms_);
+    if (!published) {
+        return core::Status::failure(published.error().code, published.error().message);
+    }
+    auto publish_result = std::move(published).value();
+    current_commands_.replication_message_count += publish_result.queued_message_count;
+    for (const auto client_id : publish_result.overload_disconnected_clients) {
+        if (std::ranges::find(current_commands_.disconnected_clients, client_id) ==
+            current_commands_.disconnected_clients.end()) {
+            current_commands_.disconnected_clients.push_back(client_id);
+        }
+        auto status = remove_player_connection(client_id);
+        if (!status) {
+            return status;
+        }
+    }
+    current_commands_.replication_relevance_reports.push_back(std::move(publish_result.relevance));
+    current_commands_.command_reports.push_back(std::move(report));
+    return core::Status::ok();
+}
+
 core::Status ServerRuntime::start() {
     return host_.start();
 }
@@ -807,6 +936,7 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
     current_player_tombstone_count_ = 0;
     current_chunk_subscriptions_ = {};
     current_chunk_streaming_ = {};
+    current_process_temporal_aggregation_ = {};
     current_chunk_streaming_.enabled = chunk_loader_ != nullptr;
     // Route spatial operation events against the exact chunk versions published before command
     // execution. A command may advance the authoritative revision later in this tick, but its
@@ -842,6 +972,7 @@ ServerRuntime::run_tick(std::uint64_t tick, double fixed_delta_seconds, std::int
         stats.chunk_loading = chunk_loader_->stats();
     }
     stats.chunk_streaming = current_chunk_streaming_;
+    stats.process_temporal_aggregation = current_process_temporal_aggregation_;
     stats.moved_player_count = current_moved_player_count_;
     stats.repeated_input_count = current_repeated_input_count_;
     stats.movement_event_count = current_movement_event_count_;

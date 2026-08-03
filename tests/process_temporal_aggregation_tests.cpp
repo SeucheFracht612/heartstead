@@ -65,6 +65,13 @@ void test_due_events_use_stable_id_order_and_hard_event_budget() {
     assert(first.value().admission_count == 4);
     assert(first.value().dispatched_event_count == 2);
     assert(first.value().completed_process_count == 2);
+    assert(first.value().transitions.size() == 2);
+    assert(first.value().transitions[0].process_id == core::ProcessId::from_value(1));
+    assert(first.value().transitions[1].process_id == core::ProcessId::from_value(2));
+    assert(first.value().transitions[0].owner_id == core::SaveId::from_value(1'001));
+    assert(first.value().transitions[0].previous_work_ticks == 0);
+    assert(first.value().transitions[0].current_work_ticks == 100);
+    assert(first.value().transitions[0].current_state == processes::ProcessState::complete);
     assert(first.value().event_budget_exhausted);
     assert(database.find(core::ProcessId::from_value(1))->is_complete());
     assert(database.find(core::ProcessId::from_value(2))->is_complete());
@@ -75,6 +82,9 @@ void test_due_events_use_stable_id_order_and_hard_event_budget() {
     assert(second);
     assert(second.value().dispatched_event_count == 2);
     assert(second.value().completed_process_count == 2);
+    assert(second.value().transitions.size() == 2);
+    assert(second.value().transitions[0].process_id == core::ProcessId::from_value(3));
+    assert(second.value().transitions[1].process_id == core::ProcessId::from_value(4));
     assert(!second.value().event_budget_exhausted);
     assert(second.value().active_event_count == 0);
     assert(database.find(core::ProcessId::from_value(3))->is_complete());
@@ -145,6 +155,10 @@ void test_stalled_processes_poll_at_a_bounded_interval() {
     assert(before_due && before_due.value().dispatched_event_count == 0);
     auto stalled = controller.update(database, 20, constant_rate(0));
     assert(stalled && stalled.value().evaluated_process_count == 1);
+    assert(stalled.value().transitions.size() == 1);
+    assert(stalled.value().transitions.front().previous_work_ticks == 0);
+    assert(stalled.value().transitions.front().current_work_ticks == 0);
+    assert(stalled.value().transitions.front().current_last_eval == 20);
     assert(database.find(core::ProcessId::from_value(1))->last_eval == 20);
     assert(database.find(core::ProcessId::from_value(1))->accrued_work_ticks == 0);
 
@@ -242,14 +256,17 @@ void test_aggregate_outcomes_match_direct_timestamp_evaluation() {
     assert(seeded.value().active_event_count == process_count);
 
     std::uint64_t total_evaluations = 0;
+    std::uint64_t total_transitions = 0;
     for (std::uint32_t tick = 0; tick < 32 && controller.active_event_count() > 0; ++tick) {
         auto result = controller.update(database, final_time, resolver);
         assert(result);
         assert(result.value().dispatched_event_count <= config.maximum_events_per_tick);
         total_evaluations += result.value().evaluated_process_count;
+        total_transitions += result.value().transitions.size();
     }
     assert(controller.active_event_count() == 0);
     assert(total_evaluations == process_count);
+    assert(total_transitions == process_count);
     for (const auto& expected : reference) {
         const auto* actual = database.find(expected.process_id);
         assert(actual != nullptr);

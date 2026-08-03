@@ -114,6 +114,10 @@ core::Status RuntimeConfiguration::validate() const {
     if (!status) {
         return status;
     }
+    status = process_temporal_aggregation.validate();
+    if (!status) {
+        return status;
+    }
     status = chunk_lighting.validate();
     if (!status) {
         return status;
@@ -456,6 +460,7 @@ core::Status RuntimeSession::initialize(const SessionStartupProgressCallback& pr
         server_desc.transient_replication_budget.max_serialization_time_us_per_client_per_tick =
             config_.max_transient_snapshot_serialization_time_us_per_client_per_tick;
         server_desc.world_time = config_.world_time;
+        server_desc.process_temporal_aggregation = config_.process_temporal_aggregation;
         server_desc.prototypes = prototypes_;
         server_desc.voxel_palette = voxel_palette_;
         server_desc.scenario = std::move(scenario).value();

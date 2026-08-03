@@ -276,6 +276,24 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     std::uint64_t streaming_teleport_updates = 0;
     double streaming_prediction_accuracy = 0.0;
     double streaming_timely_coverage = 0.0;
+    std::size_t process_temporal_record_count = 0;
+    std::size_t process_temporal_admitted_count = 0;
+    std::size_t process_temporal_active_event_count = 0;
+    std::size_t process_temporal_maximum_unadmitted_count = 0;
+    std::uint64_t process_temporal_admission_count = 0;
+    std::uint64_t process_temporal_evaluated_count = 0;
+    std::uint64_t process_temporal_changed_count = 0;
+    std::uint64_t process_temporal_completed_count = 0;
+    std::uint64_t process_temporal_stale_event_count = 0;
+    std::uint64_t process_temporal_retired_event_count = 0;
+    simulation::WorldTick process_temporal_evaluated_delta_ticks = 0;
+    simulation::WorldTick process_temporal_catch_up_delta_ticks = 0;
+    simulation::WorldTick process_temporal_maximum_lateness_ticks = 0;
+    simulation::WorldTick process_temporal_oldest_deferred_lateness_ticks = 0;
+    std::uint32_t process_temporal_admission_budget_exhausted_tick_count = 0;
+    std::uint32_t process_temporal_event_budget_exhausted_tick_count = 0;
+    std::uint32_t process_temporal_catch_up_budget_exhausted_tick_count = 0;
+    bool process_temporal_counters_saturated = false;
     for (const auto& tick : stats.server_ticks) {
         simulation_ms += tick.simulation.total_ms;
         command_count += static_cast<std::uint32_t>(tick.commands.command_reports.size());
@@ -400,6 +418,32 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
         streaming_teleport_updates = tick.chunk_streaming.lifetime.teleport_updates;
         streaming_prediction_accuracy = tick.chunk_streaming.lifetime.prediction_accuracy;
         streaming_timely_coverage = tick.chunk_streaming.lifetime.timely_coverage;
+        const auto& temporal = tick.process_temporal_aggregation;
+        process_temporal_record_count = temporal.process_record_count;
+        process_temporal_admitted_count = temporal.admitted_process_count;
+        process_temporal_active_event_count = temporal.active_event_count;
+        process_temporal_maximum_unadmitted_count =
+            std::max(process_temporal_maximum_unadmitted_count, temporal.unadmitted_process_count);
+        process_temporal_admission_count += temporal.admission_count;
+        process_temporal_evaluated_count += temporal.evaluated_process_count;
+        process_temporal_changed_count += temporal.changed_process_count;
+        process_temporal_completed_count += temporal.completed_process_count;
+        process_temporal_stale_event_count += temporal.stale_event_count;
+        process_temporal_retired_event_count += temporal.retired_event_count;
+        process_temporal_evaluated_delta_ticks += temporal.evaluated_delta_ticks;
+        process_temporal_catch_up_delta_ticks += temporal.catch_up_delta_ticks;
+        process_temporal_maximum_lateness_ticks =
+            std::max(process_temporal_maximum_lateness_ticks, temporal.maximum_lateness_ticks);
+        process_temporal_oldest_deferred_lateness_ticks =
+            std::max(process_temporal_oldest_deferred_lateness_ticks,
+                     temporal.oldest_deferred_lateness_ticks);
+        process_temporal_admission_budget_exhausted_tick_count +=
+            temporal.admission_budget_exhausted ? 1U : 0U;
+        process_temporal_event_budget_exhausted_tick_count +=
+            temporal.event_budget_exhausted ? 1U : 0U;
+        process_temporal_catch_up_budget_exhausted_tick_count +=
+            temporal.catch_up_budget_exhausted ? 1U : 0U;
+        process_temporal_counters_saturated |= temporal.counters_saturated;
     }
     add_field(data, "server_tick_count", std::to_string(stats.server_ticks.size()));
     add_field(data, "simulation_ms", std::to_string(simulation_ms));
@@ -538,6 +582,41 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
     add_field(data, "streaming_teleport_updates", std::to_string(streaming_teleport_updates));
     add_field(data, "streaming_prediction_accuracy", std::to_string(streaming_prediction_accuracy));
     add_field(data, "streaming_timely_coverage", std::to_string(streaming_timely_coverage));
+    add_field(data, "process_temporal_record_count", std::to_string(process_temporal_record_count));
+    add_field(data, "process_temporal_admitted_count",
+              std::to_string(process_temporal_admitted_count));
+    add_field(data, "process_temporal_active_event_count",
+              std::to_string(process_temporal_active_event_count));
+    add_field(data, "process_temporal_maximum_unadmitted_count",
+              std::to_string(process_temporal_maximum_unadmitted_count));
+    add_field(data, "process_temporal_admission_count",
+              std::to_string(process_temporal_admission_count));
+    add_field(data, "process_temporal_evaluated_count",
+              std::to_string(process_temporal_evaluated_count));
+    add_field(data, "process_temporal_changed_count",
+              std::to_string(process_temporal_changed_count));
+    add_field(data, "process_temporal_completed_count",
+              std::to_string(process_temporal_completed_count));
+    add_field(data, "process_temporal_stale_event_count",
+              std::to_string(process_temporal_stale_event_count));
+    add_field(data, "process_temporal_retired_event_count",
+              std::to_string(process_temporal_retired_event_count));
+    add_field(data, "process_temporal_evaluated_delta_ticks",
+              std::to_string(process_temporal_evaluated_delta_ticks));
+    add_field(data, "process_temporal_catch_up_delta_ticks",
+              std::to_string(process_temporal_catch_up_delta_ticks));
+    add_field(data, "process_temporal_maximum_lateness_ticks",
+              std::to_string(process_temporal_maximum_lateness_ticks));
+    add_field(data, "process_temporal_oldest_deferred_lateness_ticks",
+              std::to_string(process_temporal_oldest_deferred_lateness_ticks));
+    add_field(data, "process_temporal_admission_budget_exhausted_tick_count",
+              std::to_string(process_temporal_admission_budget_exhausted_tick_count));
+    add_field(data, "process_temporal_event_budget_exhausted_tick_count",
+              std::to_string(process_temporal_event_budget_exhausted_tick_count));
+    add_field(data, "process_temporal_catch_up_budget_exhausted_tick_count",
+              std::to_string(process_temporal_catch_up_budget_exhausted_tick_count));
+    add_field(data, "process_temporal_counters_saturated",
+              process_temporal_counters_saturated ? "true" : "false");
     add_field(data, "client_received_message_count",
               std::to_string(stats.client.received_message_count));
     add_field(data, "presentation_adapter_count", std::to_string(stats.presentation.adapter_count));
@@ -572,6 +651,18 @@ debug::InspectionData GameInspector::inspect(const RuntimeFrameStats& stats) {
                   "required or dirty chunks prevent the streaming residency target from being "
                   "reached");
     }
+    if (process_temporal_admission_budget_exhausted_tick_count != 0 ||
+        process_temporal_event_budget_exhausted_tick_count != 0 ||
+        process_temporal_catch_up_budget_exhausted_tick_count != 0) {
+        add_issue(data, debug::InspectionSeverity::warning,
+                  "runtime_frame.process_temporal_backlog",
+                  "temporal process work exceeded a configured per-tick budget");
+    }
+    if (process_temporal_counters_saturated) {
+        add_issue(data, debug::InspectionSeverity::warning,
+                  "runtime_frame.process_temporal_counter_saturation",
+                  "temporal process tick counters saturated their 64-bit range");
+    }
     return data;
 }
 
@@ -592,6 +683,19 @@ debug::InspectionData GameInspector::inspect(const RuntimeSession& session) {
     add_field(data, "fixed_step_ticks_per_second",
               std::to_string(config.fixed_step.ticks_per_second));
     add_field(data, "world_ticks_per_second", std::to_string(config.world_time.ticks_per_second));
+    add_field(data, "process_temporal_maximum_admissions_per_tick",
+              std::to_string(config.process_temporal_aggregation.maximum_admissions_per_tick));
+    add_field(data, "process_temporal_maximum_events_per_tick",
+              std::to_string(config.process_temporal_aggregation.maximum_events_per_tick));
+    add_field(data, "process_temporal_maximum_tracked_processes",
+              std::to_string(config.process_temporal_aggregation.maximum_tracked_processes));
+    add_field(
+        data, "process_temporal_stalled_reevaluation_interval_ticks",
+        std::to_string(config.process_temporal_aggregation.stalled_reevaluation_interval_ticks));
+    add_field(data, "process_temporal_maximum_catch_up_ticks_per_event",
+              std::to_string(config.process_temporal_aggregation.maximum_catch_up_ticks_per_event));
+    add_field(data, "process_temporal_maximum_catch_up_ticks_per_tick",
+              std::to_string(config.process_temporal_aggregation.maximum_catch_up_ticks_per_tick));
     add_field(data, "persistence_mode", "explicit_snapshot");
     add_field(data, "pending_save_count", "0");
     add_field(data, "faulted", fault.has_value() ? "true" : "false");

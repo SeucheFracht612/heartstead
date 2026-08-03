@@ -31,6 +31,17 @@ struct ProcessTemporalAggregationConfig {
     [[nodiscard]] core::Status validate() const;
 };
 
+struct ProcessTemporalAggregationTransition {
+    core::ProcessId process_id;
+    core::SaveId owner_id;
+    ProcessState previous_state = ProcessState::running;
+    ProcessState current_state = ProcessState::running;
+    simulation::WorldTick previous_last_eval = 0;
+    simulation::WorldTick current_last_eval = 0;
+    simulation::WorldTick previous_work_ticks = 0;
+    simulation::WorldTick current_work_ticks = 0;
+};
+
 struct ProcessTemporalAggregationTickStats {
     simulation::WorldTick world_time = 0;
     std::size_t process_record_count = 0;
@@ -52,6 +63,7 @@ struct ProcessTemporalAggregationTickStats {
     bool event_budget_exhausted = false;
     bool catch_up_budget_exhausted = false;
     bool counters_saturated = false;
+    std::vector<ProcessTemporalAggregationTransition> transitions;
 };
 
 // Event-driven proxy for timestamp-based production processes. Each admitted non-complete process

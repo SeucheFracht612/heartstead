@@ -231,6 +231,7 @@ target_sources(
     world/meshing/voxel_meshing_benchmark.cpp
     world/missing_prototype.cpp
     world/operations/world_operation.cpp
+    world/process_modifiers.cpp
     world/replication_delta.cpp
     world/replication_interest.cpp
     world/regions/region_graph.cpp
@@ -483,6 +484,7 @@ target_sources(
       world/meshing/voxel_meshing_benchmark.hpp
       world/missing_prototype.hpp
       world/operations/world_operation.hpp
+      world/process_modifiers.hpp
       world/replication_delta.hpp
       world/replication_interest.hpp
       world/regions/region_graph.hpp
