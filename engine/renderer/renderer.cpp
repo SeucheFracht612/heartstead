@@ -497,6 +497,8 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         desc.streaming_residency_config.resident_budget_bytes =
             quality_settings_.texture_budget_bytes;
         desc.directional_shadow_config.resolution = quality_settings_.shadow_resolution;
+        desc.directional_shadow_config.cascade_count =
+            quality_settings_.directional_shadow_cascades;
         desc.directional_shadow_config.distance = quality_settings_.shadow_distance;
         desc.clustered_lighting_config.local_shadow_budget = quality_settings_.local_shadow_budget;
     }
@@ -524,6 +526,7 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
     if (!config_status) {
         return config_status;
     }
+    active_directional_shadow_cascades_ = desc.directional_shadow_config.cascade_count;
     config_status = desc.debug_renderer_config.validate();
     if (!config_status) {
         return config_status;
@@ -915,6 +918,20 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         (void)shutdown();
         return core::Status::failure(error.code, error.message);
     }
+    auto shadow_cascade_status = frame_builder_->set_directional_shadow_cascade_count(
+        desc.directional_shadow_config.cascade_count);
+    if (!shadow_cascade_status) {
+        const auto error = shadow_cascade_status.error();
+        (void)shutdown();
+        return core::Status::failure(error.code, error.message);
+    }
+    auto local_shadow_resolution_status =
+        frame_builder_->set_local_shadow_resolution(quality_settings_.local_shadow_resolution);
+    if (!local_shadow_resolution_status) {
+        const auto error = local_shadow_resolution_status.error();
+        (void)shutdown();
+        return core::Status::failure(error.code, error.message);
+    }
     auto exposure_status = frame_builder_->set_exposure(desc.exposure);
     if (!exposure_status) {
         const auto error = exposure_status.error();
@@ -1247,6 +1264,7 @@ core::Status Renderer::process_world_render_updates(std::span<const ChunkRenderU
 core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
                                                      float simulation_alpha, float delta_seconds) {
     HEARTSTEAD_PROFILE_ZONE_NAMED("renderer.render");
+    const auto render_started_at = std::chrono::steady_clock::now();
     if (device_ == nullptr || chunk_system_ == nullptr || scene_render_system_ == nullptr ||
         clustered_lighting_ == nullptr || cascaded_shadows_ == nullptr ||
         sky_renderer_ == nullptr || debug_renderer_ == nullptr || ui_renderer_ == nullptr ||
@@ -1280,6 +1298,7 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
     command_lists.sky_draws.push_back(sky_command);
     debug_frame_scratch_.draws = std::move(draw_command_scratch_.debug_draws);
     ui_frame_scratch_.draws = std::move(draw_command_scratch_.ui_draws);
+    const auto lighting_started_at = std::chrono::steady_clock::now();
     auto scene_lights = scene_.extract_lights(camera);
     auto lighting_status = clustered_lighting_->update(scene_lights, camera);
     if (!lighting_status) {
@@ -1315,6 +1334,10 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
             light.intensity * attenuation * 0.002F;
     }
     frame_builder_->update_exposure_adaptation(scene_luminance, delta_seconds);
+    stats_.lighting_preparation_ms = std::chrono::duration<double, std::milli>(
+                                         std::chrono::steady_clock::now() - lighting_started_at)
+                                         .count();
+    const auto shadow_preparation_started_at = std::chrono::steady_clock::now();
     std::array<RenderLightInstance, local_shadow_map_count> selected_local_shadows;
     std::size_t selected_local_shadow_count = 0;
     for (const auto& candidate : clustered_lighting_->selected_shadow_lights()) {
@@ -1338,17 +1361,22 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
     const auto& shadow_data = cascaded_shadows_->gpu_data();
     std::array<math::Mat4f, directional_shadow_cascade_count + local_shadow_map_count>
         shadow_view_projections;
-    for (std::size_t cascade = 0; cascade < directional_shadow_cascade_count; ++cascade) {
+    for (std::size_t cascade = 0; cascade < active_directional_shadow_cascades_; ++cascade) {
         shadow_view_projections[cascade] = shadow_data.light_view_projection[cascade];
     }
     for (std::size_t slot = 0; slot < selected_local_shadow_count; ++slot) {
-        shadow_view_projections[directional_shadow_cascade_count + slot] =
+        shadow_view_projections[active_directional_shadow_cascades_ + slot] =
             shadow_data.local_light_view_projection[slot];
     }
     const auto active_shadow_views =
         std::span{shadow_view_projections.data(),
-                  directional_shadow_cascade_count + selected_local_shadow_count};
+                  active_directional_shadow_cascades_ + selected_local_shadow_count};
+    stats_.shadow_preparation_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                  shadow_preparation_started_at)
+            .count();
 
+    const auto chunk_draw_preparation_started_at = std::chrono::steady_clock::now();
     ChunkDrawList draws;
     {
         HEARTSTEAD_PROFILE_ZONE_NAMED("renderer.render_extraction");
@@ -1382,7 +1410,12 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
                                                   far_terrain_draw_scratch_.begin(),
                                                   far_terrain_draw_scratch_.end());
     }
+    stats_.chunk_draw_preparation_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                  chunk_draw_preparation_started_at)
+            .count();
 
+    const auto scene_preparation_started_at = std::chrono::steady_clock::now();
     auto scene_draws = scene_render_system_->build_draw_commands(
         scene_, camera, simulation_alpha, std::move(scene_draw_scratch_), active_shadow_views);
     if (!scene_draws) {
@@ -1417,7 +1450,12 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
             draw.camera_relative_origin = scene_effect_parameters;
         }
     }
+    stats_.scene_preparation_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                  scene_preparation_started_at)
+            .count();
 
+    const auto shadow_command_build_started_at = std::chrono::steady_clock::now();
     const auto append_shadow_draws = [&](auto& target, const auto& terrain_sources,
                                          const auto& scene_sources,
                                          const math::Mat4f& view_projection) {
@@ -1444,18 +1482,23 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
             target.push_back(shadow_draw);
         }
     };
-    for (std::size_t cascade = 0; cascade < directional_shadow_cascade_count; ++cascade) {
+    for (std::size_t cascade = 0; cascade < active_directional_shadow_cascades_; ++cascade) {
         append_shadow_draws(command_lists.directional_shadow_draws[cascade],
                             draws.shadow_draws[cascade],
                             scene_draws.value().shadow_casters[cascade],
                             shadow_data.light_view_projection[cascade]);
     }
     for (std::size_t slot = 0; slot < selected_local_shadow_count; ++slot) {
-        const auto shadow_view = directional_shadow_cascade_count + slot;
+        const auto shadow_view = active_directional_shadow_cascades_ + slot;
         append_shadow_draws(command_lists.local_shadow_draws[slot], draws.shadow_draws[shadow_view],
                             scene_draws.value().shadow_casters[shadow_view],
                             shadow_data.local_light_view_projection[slot]);
     }
+    stats_.shadow_command_build_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                  shadow_command_build_started_at)
+            .count();
+    const auto debug_ui_preparation_started_at = std::chrono::steady_clock::now();
     auto debug_frame =
         debug_renderer_->build_frame(camera, delta_seconds, std::move(debug_frame_scratch_));
     if (!debug_frame) {
@@ -1472,6 +1515,10 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
                                                             ui_frame.error().message);
     }
     command_lists.ui_draws = std::move(ui_frame.value().draws);
+    stats_.debug_ui_preparation_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                  debug_ui_preparation_started_at)
+            .count();
     auto frame = [&]() {
         HEARTSTEAD_PROFILE_ZONE_NAMED("renderer.command_build");
         profiling::ScopedCpuTimingZone command_zone(cpu_timings_,
@@ -1493,10 +1540,17 @@ core::Result<rhi::RenderFrameStats> Renderer::render(const RenderCamera& camera,
             return resource.lifetime == rhi::RenderResourceLifetime::external;
         }));
     stats_.render_graph_history_resources = 0;
+    stats_.frontend_preparation_ms = std::chrono::duration<double, std::milli>(
+                                         std::chrono::steady_clock::now() - render_started_at)
+                                         .count();
+    const auto backend_started_at = std::chrono::steady_clock::now();
     auto executed = [&]() {
         HEARTSTEAD_PROFILE_ZONE_NAMED("renderer.command_recording_and_submission");
         return device_->execute_frame(frame.value());
     }();
+    stats_.backend_execute_ms = std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() - backend_started_at)
+                                    .count();
     draw_command_scratch_ = {};
     for (auto& pass : frame.value().pass_commands) {
         switch (pass.pass_index) {
@@ -2668,7 +2722,12 @@ void Renderer::update_backend_stats(const rhi::RenderFrameStats& frame) noexcept
         streaming_residency_->set_reported_heap_budget(frame.device_local_memory_budget_bytes);
     }
     stats_.command_recording_ms = frame.cpu_command_recording_ms;
+    stats_.backend_frame_setup_ms = frame.cpu_frame_setup_ms;
+    stats_.queue_submit_ms = frame.cpu_queue_submit_ms;
     stats_.gpu_wait_ms += frame.cpu_gpu_wait_ms;
+    stats_.frame_context_wait_ms = frame.cpu_frame_context_wait_ms;
+    stats_.swapchain_acquire_ms = frame.cpu_swapchain_acquire_ms;
+    stats_.queue_present_ms = frame.cpu_queue_present_ms;
     stats_.presentation_timing_valid = frame.presentation_timing_valid;
     stats_.presentation_id = frame.presentation_id;
     stats_.presentation_wait_ms = frame.presentation_wait_ms;
@@ -2678,9 +2737,13 @@ void Renderer::update_backend_stats(const rhi::RenderFrameStats& frame) noexcept
     stats_.gpu_upload_timing_valid = frame.gpu_upload_timing_valid;
     stats_.gpu_upload_submission_serial = frame.gpu_upload_submission_serial;
     stats_.gpu_frame_ms = frame.gpu_frame_ms;
+    stats_.gpu_shadow_ms = frame.gpu_shadow_ms;
+    stats_.gpu_sky_ms = frame.gpu_sky_ms;
     stats_.gpu_opaque_terrain_ms = frame.gpu_opaque_terrain_ms;
     stats_.gpu_alpha_tested_terrain_ms = frame.gpu_alpha_tested_terrain_ms;
     stats_.gpu_transparent_terrain_ms = frame.gpu_transparent_terrain_ms;
+    stats_.gpu_tone_map_ms = frame.gpu_tone_map_ms;
+    stats_.gpu_ui_ms = frame.gpu_ui_ms;
     stats_.gpu_upload_ms = frame.gpu_upload_ms;
     stats_.gpu_transfer_ms = frame.gpu_transfer_ms;
     stats_.gpu_final_copy_ms = frame.gpu_final_copy_ms;

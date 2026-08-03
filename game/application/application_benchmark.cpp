@@ -105,10 +105,27 @@ summarize_application_benchmark(const GameApplicationBenchmarkReport& report) {
     double draw_list_total = 0.0;
     double command_build_total = 0.0;
     double command_recording_total = 0.0;
+    double frontend_preparation_total = 0.0;
+    double lighting_preparation_total = 0.0;
+    double shadow_preparation_total = 0.0;
+    double chunk_draw_preparation_total = 0.0;
+    double scene_preparation_total = 0.0;
+    double shadow_command_build_total = 0.0;
+    double debug_ui_preparation_total = 0.0;
+    double backend_execute_total = 0.0;
+    double backend_frame_setup_total = 0.0;
+    double queue_submit_total = 0.0;
     double gpu_wait_total = 0.0;
+    double frame_context_wait_total = 0.0;
+    double swapchain_acquire_total = 0.0;
+    double queue_present_total = 0.0;
+    double gpu_shadow_total = 0.0;
+    double gpu_sky_total = 0.0;
     double gpu_opaque_total = 0.0;
     double gpu_alpha_tested_total = 0.0;
     double gpu_transparent_total = 0.0;
+    double gpu_tone_map_total = 0.0;
+    double gpu_ui_total = 0.0;
     double gpu_transfer_total = 0.0;
     double gpu_final_copy_total = 0.0;
     double slowest = -1.0;
@@ -139,12 +156,29 @@ summarize_application_benchmark(const GameApplicationBenchmarkReport& report) {
         draw_list_total += renderer.draw_list_ms;
         command_build_total += renderer.command_build_ms;
         command_recording_total += renderer.command_recording_ms;
+        frontend_preparation_total += renderer.frontend_preparation_ms;
+        lighting_preparation_total += renderer.lighting_preparation_ms;
+        shadow_preparation_total += renderer.shadow_preparation_ms;
+        chunk_draw_preparation_total += renderer.chunk_draw_preparation_ms;
+        scene_preparation_total += renderer.scene_preparation_ms;
+        shadow_command_build_total += renderer.shadow_command_build_ms;
+        debug_ui_preparation_total += renderer.debug_ui_preparation_ms;
+        backend_execute_total += renderer.backend_execute_ms;
+        backend_frame_setup_total += renderer.backend_frame_setup_ms;
+        queue_submit_total += renderer.queue_submit_ms;
         gpu_wait_total += renderer.gpu_wait_ms;
+        frame_context_wait_total += renderer.frame_context_wait_ms;
+        swapchain_acquire_total += renderer.swapchain_acquire_ms;
+        queue_present_total += renderer.queue_present_ms;
         if (renderer.gpu_timing_valid) {
             gpu_total += renderer.gpu_frame_ms;
+            gpu_shadow_total += renderer.gpu_shadow_ms;
+            gpu_sky_total += renderer.gpu_sky_ms;
             gpu_opaque_total += renderer.gpu_opaque_terrain_ms;
             gpu_alpha_tested_total += renderer.gpu_alpha_tested_terrain_ms;
             gpu_transparent_total += renderer.gpu_transparent_terrain_ms;
+            gpu_tone_map_total += renderer.gpu_tone_map_ms;
+            gpu_ui_total += renderer.gpu_ui_ms;
             gpu_transfer_total += renderer.gpu_transfer_ms;
             gpu_final_copy_total += renderer.gpu_final_copy_ms;
             ++summary.gpu_sample_count;
@@ -178,16 +212,35 @@ summarize_application_benchmark(const GameApplicationBenchmarkReport& report) {
         summary.mean_draw_list_ms = draw_list_total / count;
         summary.mean_command_build_ms = command_build_total / count;
         summary.mean_command_recording_ms = command_recording_total / count;
+        summary.mean_frontend_preparation_ms = frontend_preparation_total / count;
+        summary.mean_lighting_preparation_ms = lighting_preparation_total / count;
+        summary.mean_shadow_preparation_ms = shadow_preparation_total / count;
+        summary.mean_chunk_draw_preparation_ms = chunk_draw_preparation_total / count;
+        summary.mean_scene_preparation_ms = scene_preparation_total / count;
+        summary.mean_shadow_command_build_ms = shadow_command_build_total / count;
+        summary.mean_debug_ui_preparation_ms = debug_ui_preparation_total / count;
+        summary.mean_backend_execute_ms = backend_execute_total / count;
+        summary.mean_backend_frame_setup_ms = backend_frame_setup_total / count;
+        summary.mean_queue_submit_ms = queue_submit_total / count;
         summary.mean_gpu_wait_ms = gpu_wait_total / count;
+        summary.mean_frame_context_wait_ms = frame_context_wait_total / count;
+        summary.mean_swapchain_acquire_ms = swapchain_acquire_total / count;
+        summary.mean_queue_present_ms = queue_present_total / count;
     }
     if (summary.gpu_sample_count != 0) {
         summary.mean_gpu_ms = gpu_total / static_cast<double>(summary.gpu_sample_count);
+        summary.mean_gpu_shadow_ms =
+            gpu_shadow_total / static_cast<double>(summary.gpu_sample_count);
+        summary.mean_gpu_sky_ms = gpu_sky_total / static_cast<double>(summary.gpu_sample_count);
         summary.mean_gpu_opaque_terrain_ms =
             gpu_opaque_total / static_cast<double>(summary.gpu_sample_count);
         summary.mean_gpu_alpha_tested_terrain_ms =
             gpu_alpha_tested_total / static_cast<double>(summary.gpu_sample_count);
         summary.mean_gpu_transparent_terrain_ms =
             gpu_transparent_total / static_cast<double>(summary.gpu_sample_count);
+        summary.mean_gpu_tone_map_ms =
+            gpu_tone_map_total / static_cast<double>(summary.gpu_sample_count);
+        summary.mean_gpu_ui_ms = gpu_ui_total / static_cast<double>(summary.gpu_sample_count);
         summary.mean_gpu_transfer_ms =
             gpu_transfer_total / static_cast<double>(summary.gpu_sample_count);
         summary.mean_gpu_final_copy_ms =
@@ -205,7 +258,10 @@ std::string format_application_benchmark_summary(
            << summary.one_percent_low_fps << "fps max=" << summary.maximum_frame_ms
            << "ms update=" << summary.mean_mode_update_ms << "ms render="
            << summary.mean_render_ms << "ms renderer_cpu=" << summary.mean_renderer_cpu_ms
-           << "ms gpu=" << summary.mean_gpu_ms << "ms";
+           << "ms frontend=" << summary.mean_frontend_preparation_ms
+           << "ms backend=" << summary.mean_backend_execute_ms << "ms gpu="
+           << summary.mean_gpu_ms << "ms present_queue="
+           << summary.mean_queue_present_ms << "ms";
     return output.str();
 }
 
@@ -265,6 +321,21 @@ std::string application_benchmark_json(const GameApplicationBenchmarkMetadata& m
            << ", \"p95_render_ms\": " << summary.p95_render_ms
            << ", \"mean_renderer_cpu_ms\": " << summary.mean_renderer_cpu_ms
            << ", \"mean_gpu_ms\": " << summary.mean_gpu_ms
+           << ", \"mean_frontend_preparation_ms\": "
+           << summary.mean_frontend_preparation_ms
+           << ", \"mean_lighting_preparation_ms\": "
+           << summary.mean_lighting_preparation_ms
+           << ", \"mean_shadow_preparation_ms\": " << summary.mean_shadow_preparation_ms
+           << ", \"mean_chunk_draw_preparation_ms\": "
+           << summary.mean_chunk_draw_preparation_ms
+           << ", \"mean_scene_preparation_ms\": " << summary.mean_scene_preparation_ms
+           << ", \"mean_shadow_command_build_ms\": "
+           << summary.mean_shadow_command_build_ms
+           << ", \"mean_debug_ui_preparation_ms\": "
+           << summary.mean_debug_ui_preparation_ms
+           << ", \"mean_backend_execute_ms\": " << summary.mean_backend_execute_ms
+           << ", \"mean_backend_frame_setup_ms\": "
+           << summary.mean_backend_frame_setup_ms
            << ", \"mean_chunk_synchronization_ms\": "
            << summary.mean_chunk_synchronization_ms
            << ", \"mean_render_extraction_ms\": " << summary.mean_render_extraction_ms
@@ -272,13 +343,23 @@ std::string application_benchmark_json(const GameApplicationBenchmarkMetadata& m
            << ", \"mean_draw_list_ms\": " << summary.mean_draw_list_ms
            << ", \"mean_command_build_ms\": " << summary.mean_command_build_ms
            << ", \"mean_command_recording_ms\": " << summary.mean_command_recording_ms
+           << ", \"mean_queue_submit_ms\": " << summary.mean_queue_submit_ms
            << ", \"mean_gpu_wait_ms\": " << summary.mean_gpu_wait_ms
+           << ", \"mean_frame_context_wait_ms\": "
+           << summary.mean_frame_context_wait_ms
+           << ", \"mean_swapchain_acquire_ms\": "
+           << summary.mean_swapchain_acquire_ms
+           << ", \"mean_queue_present_ms\": " << summary.mean_queue_present_ms
+           << ", \"mean_gpu_shadow_ms\": " << summary.mean_gpu_shadow_ms
+           << ", \"mean_gpu_sky_ms\": " << summary.mean_gpu_sky_ms
            << ", \"mean_gpu_opaque_terrain_ms\": "
            << summary.mean_gpu_opaque_terrain_ms
            << ", \"mean_gpu_alpha_tested_terrain_ms\": "
            << summary.mean_gpu_alpha_tested_terrain_ms
            << ", \"mean_gpu_transparent_terrain_ms\": "
            << summary.mean_gpu_transparent_terrain_ms
+           << ", \"mean_gpu_tone_map_ms\": " << summary.mean_gpu_tone_map_ms
+           << ", \"mean_gpu_ui_ms\": " << summary.mean_gpu_ui_ms
            << ", \"mean_gpu_transfer_ms\": " << summary.mean_gpu_transfer_ms
            << ", \"mean_gpu_final_copy_ms\": " << summary.mean_gpu_final_copy_ms
            << ", \"slowest_frame\": " << summary.slowest_frame_index << "},\n"
@@ -306,14 +387,39 @@ std::string application_benchmark_json(const GameApplicationBenchmarkMetadata& m
                    << ", \"culling_ms\": " << renderer.culling_ms
                    << ", \"draw_list_ms\": " << renderer.draw_list_ms
                    << ", \"command_build_ms\": " << renderer.command_build_ms
+                   << ", \"frontend_preparation_ms\": "
+                   << renderer.frontend_preparation_ms
+                   << ", \"lighting_preparation_ms\": "
+                   << renderer.lighting_preparation_ms
+                   << ", \"shadow_preparation_ms\": " << renderer.shadow_preparation_ms
+                   << ", \"chunk_draw_preparation_ms\": "
+                   << renderer.chunk_draw_preparation_ms
+                   << ", \"scene_preparation_ms\": " << renderer.scene_preparation_ms
+                   << ", \"shadow_command_build_ms\": "
+                   << renderer.shadow_command_build_ms
+                   << ", \"debug_ui_preparation_ms\": "
+                   << renderer.debug_ui_preparation_ms
+                   << ", \"backend_execute_ms\": " << renderer.backend_execute_ms
+                   << ", \"backend_frame_setup_ms\": "
+                   << renderer.backend_frame_setup_ms
                    << ", \"command_recording_ms\": " << renderer.command_recording_ms
+                   << ", \"queue_submit_ms\": " << renderer.queue_submit_ms
                    << ", \"gpu_wait_ms\": " << renderer.gpu_wait_ms
+                   << ", \"frame_context_wait_ms\": "
+                   << renderer.frame_context_wait_ms
+                   << ", \"swapchain_acquire_ms\": "
+                   << renderer.swapchain_acquire_ms
+                   << ", \"queue_present_ms\": " << renderer.queue_present_ms
+                   << ", \"gpu_shadow_ms\": " << renderer.gpu_shadow_ms
+                   << ", \"gpu_sky_ms\": " << renderer.gpu_sky_ms
                    << ", \"gpu_opaque_terrain_ms\": "
                    << renderer.gpu_opaque_terrain_ms
                    << ", \"gpu_alpha_tested_terrain_ms\": "
                    << renderer.gpu_alpha_tested_terrain_ms
                    << ", \"gpu_transparent_terrain_ms\": "
                    << renderer.gpu_transparent_terrain_ms
+                   << ", \"gpu_tone_map_ms\": " << renderer.gpu_tone_map_ms
+                   << ", \"gpu_ui_ms\": " << renderer.gpu_ui_ms
                    << ", \"gpu_transfer_ms\": " << renderer.gpu_transfer_ms
                    << ", \"gpu_final_copy_ms\": " << renderer.gpu_final_copy_ms
                    << ", \"loaded_chunks\": " << renderer.loaded_chunks

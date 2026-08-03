@@ -87,6 +87,7 @@ class ClusteredLightingSystem {
     std::vector<LocalShadowCandidate> shadow_candidates_;
     std::map<RenderLightId, std::pair<std::uint64_t, std::uint64_t>> observed_shadow_revisions_;
     ClusteredLightingStats stats_{};
+    bool empty_grid_resident_ = false;
 };
 
 } // namespace heartstead::renderer

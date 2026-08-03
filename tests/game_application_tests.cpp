@@ -240,6 +240,28 @@ void test_benchmark_waits_for_warmup_and_stops_after_samples() {
     const auto json = game::application_benchmark_json(metadata, benchmark);
     assert(json.find("\"schema_version\": 1") != std::string::npos);
     assert(json.find("\"workload\": \"automated:test\"") != std::string::npos);
+
+    auto instrumented = benchmark;
+    renderer::RendererStats renderer_stats;
+    renderer_stats.frontend_preparation_ms = 1.25;
+    renderer_stats.backend_execute_ms = 2.5;
+    renderer_stats.frame_context_wait_ms = 0.75;
+    renderer_stats.gpu_timing_valid = true;
+    renderer_stats.gpu_frame_ms = 3.0;
+    renderer_stats.gpu_shadow_ms = 0.5;
+    renderer_stats.gpu_tone_map_ms = 0.25;
+    instrumented.samples.front().renderer = renderer_stats;
+    const auto instrumented_summary = game::summarize_application_benchmark(instrumented);
+    assert(instrumented_summary.mean_frontend_preparation_ms == 1.25);
+    assert(instrumented_summary.mean_backend_execute_ms == 2.5);
+    assert(instrumented_summary.mean_frame_context_wait_ms == 0.75);
+    assert(instrumented_summary.gpu_sample_count == 1U);
+    assert(instrumented_summary.mean_gpu_shadow_ms == 0.5);
+    assert(instrumented_summary.mean_gpu_tone_map_ms == 0.25);
+    const auto instrumented_json = game::application_benchmark_json(metadata, instrumented);
+    assert(instrumented_json.find("\"mean_frontend_preparation_ms\": 1.250000") !=
+           std::string::npos);
+    assert(instrumented_json.find("\"gpu_shadow_ms\": 0.500000") != std::string::npos);
 }
 
 void test_invalid_benchmark_configuration_is_rejected() {

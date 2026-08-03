@@ -19,17 +19,30 @@ struct RendererStats {
 
     double cpu_frame_ms = 0.0;
     double gpu_frame_ms = 0.0;
+    double frontend_preparation_ms = 0.0;
+    double lighting_preparation_ms = 0.0;
+    double shadow_preparation_ms = 0.0;
+    double chunk_draw_preparation_ms = 0.0;
+    double scene_preparation_ms = 0.0;
+    double shadow_command_build_ms = 0.0;
+    double debug_ui_preparation_ms = 0.0;
+    double backend_execute_ms = 0.0;
+    double backend_frame_setup_ms = 0.0;
     double render_extraction_ms = 0.0;
     double chunk_synchronization_ms = 0.0;
     double culling_ms = 0.0;
     double draw_list_ms = 0.0;
     double command_build_ms = 0.0;
     double command_recording_ms = 0.0;
+    double queue_submit_ms = 0.0;
     double chunk_snapshot_ms = 0.0;
     double meshing_ms = 0.0;
     double upload_preparation_ms = 0.0;
     double upload_ms = 0.0;
     double gpu_wait_ms = 0.0;
+    double frame_context_wait_ms = 0.0;
+    double swapchain_acquire_ms = 0.0;
+    double queue_present_ms = 0.0;
     double presentation_wait_ms = 0.0;
     double edit_to_visible_latest_ms = 0.0;
     double edit_to_visible_frame_max_ms = 0.0;
@@ -49,9 +62,13 @@ struct RendererStats {
     double ui_layout_ms = 0.0;
     double ui_paint_ms = 0.0;
 
+    double gpu_shadow_ms = 0.0;
+    double gpu_sky_ms = 0.0;
     double gpu_opaque_terrain_ms = 0.0;
     double gpu_alpha_tested_terrain_ms = 0.0;
     double gpu_transparent_terrain_ms = 0.0;
+    double gpu_tone_map_ms = 0.0;
+    double gpu_ui_ms = 0.0;
     double gpu_upload_ms = 0.0;
     double gpu_transfer_ms = 0.0;
     double gpu_final_copy_ms = 0.0;

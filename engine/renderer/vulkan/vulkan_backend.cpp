@@ -463,6 +463,21 @@ choose_present_mode(const std::vector<VkPresentModeKHR>& present_modes,
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
+[[nodiscard]] std::string_view vulkan_present_mode_name(VkPresentModeKHR mode) noexcept {
+    switch (mode) {
+    case VK_PRESENT_MODE_IMMEDIATE_KHR:
+        return "immediate";
+    case VK_PRESENT_MODE_MAILBOX_KHR:
+        return "mailbox";
+    case VK_PRESENT_MODE_FIFO_KHR:
+        return "fifo";
+    case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
+        return "fifo_relaxed";
+    default:
+        return "unknown";
+    }
+}
+
 [[nodiscard]] VkExtent2D choose_swapchain_extent(const VkSurfaceCapabilitiesKHR& capabilities,
                                                  rhi::RenderExtent requested) noexcept {
     if (capabilities.currentExtent.width != std::numeric_limits<std::uint32_t>::max()) {
@@ -1338,30 +1353,43 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
     };
 
     static constexpr std::uint32_t timestamp_slot_count = 3;
-    static constexpr std::uint32_t timestamps_per_slot = 12;
+    static constexpr std::uint32_t timestamps_per_slot = 20;
+    static constexpr std::uint32_t upload_contexts_per_frame = 8;
 
     enum TimestampIndex : std::uint32_t {
         frame_start_timestamp = 0,
-        opaque_start_timestamp = 1,
-        opaque_end_timestamp = 2,
-        alpha_tested_start_timestamp = 3,
-        alpha_tested_end_timestamp = 4,
-        transparent_start_timestamp = 5,
-        transparent_end_timestamp = 6,
-        transfer_start_timestamp = 7,
-        final_copy_start_timestamp = 8,
-        final_copy_end_timestamp = 9,
-        transfer_end_timestamp = 10,
-        frame_end_timestamp = 11,
+        shadow_start_timestamp = 1,
+        shadow_end_timestamp = 2,
+        sky_start_timestamp = 3,
+        sky_end_timestamp = 4,
+        opaque_start_timestamp = 5,
+        opaque_end_timestamp = 6,
+        alpha_tested_start_timestamp = 7,
+        alpha_tested_end_timestamp = 8,
+        transparent_start_timestamp = 9,
+        transparent_end_timestamp = 10,
+        tone_map_start_timestamp = 11,
+        tone_map_end_timestamp = 12,
+        ui_start_timestamp = 13,
+        ui_end_timestamp = 14,
+        transfer_start_timestamp = 15,
+        final_copy_start_timestamp = 16,
+        final_copy_end_timestamp = 17,
+        transfer_end_timestamp = 18,
+        frame_end_timestamp = 19,
     };
 
     struct VulkanGpuTimingSample {
         bool valid = false;
         std::uint64_t frame_index = 0;
         double frame_ms = 0.0;
+        double shadow_ms = 0.0;
+        double sky_ms = 0.0;
         double opaque_ms = 0.0;
         double alpha_tested_ms = 0.0;
         double transparent_ms = 0.0;
+        double tone_map_ms = 0.0;
+        double ui_ms = 0.0;
         double transfer_ms = 0.0;
         double final_copy_ms = 0.0;
     };
@@ -1371,6 +1399,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         VkResult completion_result = VK_SUCCESS;
         bool timing_valid = false;
         std::uint64_t present_id = 0;
+        double queue_ms = 0.0;
         double wait_ms = 0.0;
     };
 
@@ -1521,14 +1550,23 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 "VK_KHR_present_wait was enabled but vkWaitForPresentKHR is unavailable");
         }
         frame_contexts_.reserve(desc_.frames_in_flight);
-        upload_contexts_.reserve(desc_.frames_in_flight);
+        // A rendered frame can independently upload clustered-light data, shadow constants,
+        // scene instances, far-terrain indirect commands, debug geometry, and UI geometry before
+        // its graphics submission.  Keeping only one upload context per frame-in-flight forced
+        // the fourth producer to wait on a fence from the previous frame and accidentally
+        // serialized the frontend against the GPU.  Queue order already provides the required
+        // upload-before-draw dependency, so retain enough reusable contexts for the bounded set of
+        // per-frame producers and let the frame-context fence provide the actual back-pressure.
+        const auto upload_context_count = desc_.frames_in_flight * upload_contexts_per_frame;
+        upload_contexts_.reserve(upload_context_count);
         for (std::uint32_t index = 0; index < desc_.frames_in_flight; ++index) {
             auto frame = create_frame_context();
             if (!frame) {
                 return core::Status::failure(frame.error().code, frame.error().message);
             }
             frame_contexts_.push_back(std::move(frame).value());
-
+        }
+        for (std::uint32_t index = 0; index < upload_context_count; ++index) {
             auto upload = create_upload_context();
             if (!upload) {
                 return core::Status::failure(upload.error().code, upload.error().message);
@@ -3893,12 +3931,20 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             sample.frame_index = timestamp_frame_indices_[slot];
             sample.frame_ms =
                 timestamp_milliseconds(values[frame_start_timestamp], values[frame_end_timestamp]);
+            sample.shadow_ms = timestamp_milliseconds(values[shadow_start_timestamp],
+                                                      values[shadow_end_timestamp]);
+            sample.sky_ms =
+                timestamp_milliseconds(values[sky_start_timestamp], values[sky_end_timestamp]);
             sample.opaque_ms = timestamp_milliseconds(values[opaque_start_timestamp],
                                                       values[opaque_end_timestamp]);
             sample.alpha_tested_ms = timestamp_milliseconds(values[alpha_tested_start_timestamp],
                                                             values[alpha_tested_end_timestamp]);
             sample.transparent_ms = timestamp_milliseconds(values[transparent_start_timestamp],
                                                            values[transparent_end_timestamp]);
+            sample.tone_map_ms = timestamp_milliseconds(values[tone_map_start_timestamp],
+                                                        values[tone_map_end_timestamp]);
+            sample.ui_ms =
+                timestamp_milliseconds(values[ui_start_timestamp], values[ui_end_timestamp]);
             sample.transfer_ms = timestamp_milliseconds(values[transfer_start_timestamp],
                                                         values[transfer_end_timestamp]);
             sample.final_copy_ms = timestamp_milliseconds(values[final_copy_start_timestamp],
@@ -3923,9 +3969,13 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         stats.gpu_timing_latency_frames = static_cast<std::uint32_t>(std::min(
             latency, static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())));
         stats.gpu_frame_ms = timing.frame_ms;
+        stats.gpu_shadow_ms = timing.shadow_ms;
+        stats.gpu_sky_ms = timing.sky_ms;
         stats.gpu_opaque_terrain_ms = timing.opaque_ms;
         stats.gpu_alpha_tested_terrain_ms = timing.alpha_tested_ms;
         stats.gpu_transparent_terrain_ms = timing.transparent_ms;
+        stats.gpu_tone_map_ms = timing.tone_map_ms;
+        stats.gpu_ui_ms = timing.ui_ms;
         stats.gpu_transfer_ms = timing.transfer_ms;
         stats.gpu_final_copy_ms = timing.final_copy_ms;
     }
@@ -4769,6 +4819,11 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         swapchain_extent_ = rhi::RenderExtent{extent.width, extent.height};
         swapchain_format_ = surface_format.format;
         desc_.initial_extent = swapchain_extent_;
+        core::log(core::LogLevel::info,
+                  "Vulkan swapchain present mode: requested=" +
+                      std::string(rhi::present_mode_name(desc_.present_mode)) +
+                      ", selected=" + std::string(vulkan_present_mode_name(present_mode)) +
+                      ", images=" + std::to_string(swapchain_images_.size()));
         return core::Status::ok();
     }
 
@@ -4904,28 +4959,27 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             present_info.pNext = &present_id_info;
         }
 
+        const auto started = Clock::now();
+        submission.queue_result = vkQueuePresentKHR(queue_, &present_info);
+        submission.queue_ms =
+            std::chrono::duration<double, std::milli>(Clock::now() - started).count();
         if (!presentation_completion_timing_enabled_) {
-            submission.queue_result = vkQueuePresentKHR(queue_, &present_info);
             return core::Result<VulkanPresentSubmission>::success(submission);
         }
 
-        const auto started = Clock::now();
-        submission.queue_result = vkQueuePresentKHR(queue_, &present_info);
         present_info.pNext = original_next;
-        if (submission.queue_result != VK_SUCCESS &&
-            submission.queue_result != VK_SUBOPTIMAL_KHR) {
+        if (submission.queue_result != VK_SUCCESS && submission.queue_result != VK_SUBOPTIMAL_KHR) {
             return core::Result<VulkanPresentSubmission>::success(submission);
         }
 
         constexpr std::uint64_t diagnostic_timeout_nanoseconds = 1'000'000'000ULL;
-        submission.completion_result = wait_for_present_(
-            device_, swapchain_, submission.present_id, diagnostic_timeout_nanoseconds);
+        submission.completion_result = wait_for_present_(device_, swapchain_, submission.present_id,
+                                                         diagnostic_timeout_nanoseconds);
         submission.wait_ms =
             std::chrono::duration<double, std::milli>(Clock::now() - started).count();
         submission.timing_valid = submission.completion_result == VK_SUCCESS ||
                                   submission.completion_result == VK_SUBOPTIMAL_KHR;
-        if (!submission.timing_valid &&
-            submission.completion_result != VK_ERROR_OUT_OF_DATE_KHR) {
+        if (!submission.timing_valid && submission.completion_result != VK_ERROR_OUT_OF_DATE_KHR) {
             return core::Result<VulkanPresentSubmission>::failure(
                 "renderer.vulkan_present_wait_failed",
                 "failed to observe Vulkan presentation completion: " +
@@ -4936,6 +4990,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
 
     [[nodiscard]] core::Result<rhi::RenderFrameStats>
     render_present_frame(rhi::RenderFrameDesc desc) {
+        using Clock = std::chrono::steady_clock;
         auto status = ensure_swapchain();
         if (!status) {
             return core::Result<rhi::RenderFrameStats>::failure(status.error().code,
@@ -4943,9 +4998,13 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         }
 
         std::uint32_t image_index = 0;
+        double swapchain_acquire_ms = 0.0;
+        auto acquire_started = Clock::now();
         auto acquire_result =
             vkAcquireNextImageKHR(device_, swapchain_, std::numeric_limits<std::uint64_t>::max(),
                                   image_available_semaphore_, VK_NULL_HANDLE, &image_index);
+        swapchain_acquire_ms +=
+            std::chrono::duration<double, std::milli>(Clock::now() - acquire_started).count();
         if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
             destroy_swapchain();
             status = ensure_swapchain();
@@ -4953,9 +5012,12 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 return core::Result<rhi::RenderFrameStats>::failure(status.error().code,
                                                                     status.error().message);
             }
+            acquire_started = Clock::now();
             acquire_result = vkAcquireNextImageKHR(
                 device_, swapchain_, std::numeric_limits<std::uint64_t>::max(),
                 image_available_semaphore_, VK_NULL_HANDLE, &image_index);
+            swapchain_acquire_ms +=
+                std::chrono::duration<double, std::milli>(Clock::now() - acquire_started).count();
         }
         if (acquire_result != VK_SUCCESS && acquire_result != VK_SUBOPTIMAL_KHR) {
             return core::Result<rhi::RenderFrameStats>::failure(
@@ -4985,8 +5047,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
 
         auto presentation = queue_present(present_info);
         if (!presentation) {
-            return core::Result<rhi::RenderFrameStats>::failure(
-                presentation.error().code, presentation.error().message);
+            return core::Result<rhi::RenderFrameStats>::failure(presentation.error().code,
+                                                                presentation.error().message);
         }
         const auto present_result = presentation.value().queue_result;
         const auto wait_result = vkWaitForFences(device_, 1, &fence_, VK_TRUE,
@@ -5022,6 +5084,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         stats.presentation_timing_valid = presentation.value().timing_valid;
         stats.presentation_id = presentation.value().present_id;
         stats.presentation_wait_ms = presentation.value().wait_ms;
+        stats.cpu_swapchain_acquire_ms = swapchain_acquire_ms;
+        stats.cpu_queue_present_ms = presentation.value().queue_ms;
         stats.render_pass_count = 2;
         stats.present_pass_count = 1;
         stats.synchronization_barrier_count = 0;
@@ -5569,7 +5633,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
     [[nodiscard]] core::Result<rhi::RenderFrameStats>
     execute_submitted_frame(const rhi::RenderFrameSubmission& frame) {
         using Clock = std::chrono::steady_clock;
+        const auto frame_setup_started = Clock::now();
         double gpu_wait_ms = 0.0;
+        double frame_context_wait_ms = 0.0;
+        double swapchain_acquire_ms = 0.0;
         const auto accumulate_wait = [&gpu_wait_ms](Clock::time_point started) noexcept {
             gpu_wait_ms +=
                 std::chrono::duration<double, std::milli>(Clock::now() - started).count();
@@ -5644,7 +5711,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         }
         const auto frame_context_index = next_frame_context_;
         auto& frame_context = frame_contexts_[frame_context_index];
+        const auto wait_before_frame_context = gpu_wait_ms;
         auto context_status = wait_for_frame_context(frame_context, gpu_wait_ms);
+        frame_context_wait_ms = gpu_wait_ms - wait_before_frame_context;
         if (!context_status) {
             return core::Result<rhi::RenderFrameStats>::failure(context_status.error().code,
                                                                 context_status.error().message);
@@ -5674,7 +5743,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             auto acquire_result =
                 vkAcquireNextImageKHR(device_, swapchain_, acquire_timeout_nanoseconds,
                                       frame_context.image_available, VK_NULL_HANDLE, &image_index);
-            accumulate_wait(wait_started);
+            auto acquire_elapsed =
+                std::chrono::duration<double, std::milli>(Clock::now() - wait_started).count();
+            swapchain_acquire_ms += acquire_elapsed;
+            gpu_wait_ms += acquire_elapsed;
             if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
                 wait_started = Clock::now();
                 const auto idle_result = vkDeviceWaitIdle(device_);
@@ -5699,7 +5771,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 acquire_result = vkAcquireNextImageKHR(
                     device_, swapchain_, acquire_timeout_nanoseconds, frame_context.image_available,
                     VK_NULL_HANDLE, &image_index);
-                accumulate_wait(wait_started);
+                acquire_elapsed =
+                    std::chrono::duration<double, std::milli>(Clock::now() - wait_started).count();
+                swapchain_acquire_ms += acquire_elapsed;
+                gpu_wait_ms += acquire_elapsed;
             }
             if (acquire_result == VK_TIMEOUT || acquire_result == VK_NOT_READY) {
                 rhi::RenderFrameStats stats;
@@ -5716,6 +5791,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 stats.dependency_count = execution_plan.value().dependencies.size();
                 stats.transition_count = execution_plan.value().transitions.size();
                 stats.cpu_gpu_wait_ms = gpu_wait_ms;
+                stats.cpu_frame_context_wait_ms = frame_context_wait_ms;
+                stats.cpu_swapchain_acquire_ms = swapchain_acquire_ms;
                 attach_gpu_timing(stats, gpu_timing, frame_index);
                 attach_latest_gpu_upload_timing(stats);
                 return core::Result<rhi::RenderFrameStats>::success(stats);
@@ -5802,6 +5879,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         auto result = VK_SUCCESS;
 
         const auto command_recording_started = Clock::now();
+        const auto frame_setup_ms = std::chrono::duration<double, std::milli>(
+                                        command_recording_started - frame_setup_started)
+                                        .count();
         VkCommandBufferBeginInfo begin_info{};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -6080,7 +6160,8 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
             };
             const auto presentation_for = [&](std::string_view name) -> PassPresentation {
                 if (name == "sky") {
-                    return {"Sky gradient pass", 0.20F, 0.42F, 0.86F, false, {}, {}};
+                    return {"Sky gradient pass", 0.20F, 0.42F, 0.86F, true, sky_start_timestamp,
+                            sky_end_timestamp};
                 }
                 if (name == "opaque_terrain") {
                     return {
@@ -6112,19 +6193,26 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                     return {"Debug pass", 0.86F, 0.28F, 0.76F, false, {}, {}};
                 }
                 if (name == "ui") {
-                    return {"UI pass", 0.80F, 0.80F, 0.80F, false, {}, {}};
+                    return {"UI pass",          0.80F,           0.80F, 0.80F, true,
+                            ui_start_timestamp, ui_end_timestamp};
                 }
                 if (name == "tone_map") {
-                    return {"Tone mapping pass", 0.94F, 0.62F, 0.24F, false, {}, {}};
+                    return {
+                        "Tone mapping pass",   0.94F, 0.62F, 0.24F, true, tone_map_start_timestamp,
+                        tone_map_end_timestamp};
                 }
                 return {"Graph pass", 0.60F, 0.60F, 0.60F, false, {}, {}};
             };
 
             std::unordered_set<std::string> cleared_colour;
             std::unordered_set<std::string> cleared_depth;
+            bool ui_fused_with_tone_map = false;
             for (std::size_t pass_index = 0; pass_index < frame.plan.passes.size(); ++pass_index) {
                 const auto& pass = frame.plan.passes[pass_index];
                 if (pass.kind == rhi::RenderPassKind::present) {
+                    continue;
+                }
+                if (pass.name == "ui" && ui_fused_with_tone_map) {
                     continue;
                 }
                 if (pass.kind == rhi::RenderPassKind::compute) {
@@ -6134,6 +6222,47 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                     if (!compute_status) {
                         return core::Result<rhi::RenderFrameStats>::failure(
                             compute_status.error().code, compute_status.error().message);
+                    }
+                    continue;
+                }
+                const auto* submitted_commands = find_commands(pass.name);
+                const auto records_draws =
+                    submitted_commands != nullptr && !submitted_commands->draws.empty();
+                const auto explicitly_clears = pass.kind == rhi::RenderPassKind::clear;
+                const auto reuses_initialized_dummy_shadow =
+                    !records_draws && !pass.writes.empty() &&
+                    std::ranges::all_of(pass.writes, [&](const std::string& written) {
+                        const auto* resource = frame.plan.find_resource(written);
+                        const auto* image = frame_context.resources.find(written);
+                        return resource != nullptr && image != nullptr &&
+                               rhi::is_depth_format(resource->format) &&
+                               resource->extent.width == 1U && resource->extent.height == 1U &&
+                               image->layout != VK_IMAGE_LAYOUT_UNDEFINED;
+                    });
+                const auto initializes_attachment =
+                    !reuses_initialized_dummy_shadow &&
+                    std::ranges::any_of(pass.writes, [&](const std::string& written) {
+                        const auto* resource = frame.plan.find_resource(written);
+                        return resource != nullptr && (rhi::is_depth_format(resource->format)
+                                                           ? !cleared_depth.contains(written)
+                                                           : !cleared_colour.contains(written));
+                    });
+                // Logical ordering passes remain in the fixed graph even when a quality feature
+                // or draw list is empty. Once their attachments already contain this frame's
+                // data, opening another load/store rendering block cannot change the result and
+                // only burns tile-memory bandwidth. Explicit clear passes remain observable even
+                // when an earlier pass touched the same attachment.
+                if (!records_draws && !initializes_attachment && !explicitly_clears) {
+                    const auto skipped_presentation = presentation_for(pass.name);
+                    if (skipped_presentation.timed) {
+                        write_timestamp(frame_commands, frame_index, skipped_presentation.start,
+                                        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+                        write_timestamp(frame_commands, frame_index, skipped_presentation.end,
+                                        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+                    }
+                    if (pass.name == "local_shadow_1") {
+                        write_timestamp(frame_commands, frame_index, shadow_end_timestamp,
+                                        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
                     }
                     continue;
                 }
@@ -6224,9 +6353,9 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                     attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
                     attachment.imageView = colour->view;
                     attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                    attachment.loadOp = cleared_colour.contains(*colour_name)
-                                            ? VK_ATTACHMENT_LOAD_OP_LOAD
-                                            : VK_ATTACHMENT_LOAD_OP_CLEAR;
+                    attachment.loadOp = explicitly_clears || !cleared_colour.contains(*colour_name)
+                                            ? VK_ATTACHMENT_LOAD_OP_CLEAR
+                                            : VK_ATTACHMENT_LOAD_OP_LOAD;
                     attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
                     attachment.clearValue.color = VkClearColorValue{
                         {clear_color.red, clear_color.green, clear_color.blue, clear_color.alpha}};
@@ -6294,9 +6423,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                 depth_attachment.imageView = depth == nullptr ? VK_NULL_HANDLE : depth->view;
                 depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
                 depth_attachment.loadOp =
-                    depth_name != nullptr && cleared_depth.contains(*depth_name)
-                        ? VK_ATTACHMENT_LOAD_OP_LOAD
-                        : VK_ATTACHMENT_LOAD_OP_CLEAR;
+                    explicitly_clears ||
+                            (depth_name != nullptr && !cleared_depth.contains(*depth_name))
+                        ? VK_ATTACHMENT_LOAD_OP_CLEAR
+                        : VK_ATTACHMENT_LOAD_OP_LOAD;
                 depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
                 depth_attachment.clearValue.depthStencil = VkClearDepthStencilValue{1.0F, 0};
 
@@ -6325,18 +6455,51 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                     colour_attachments.empty() ? nullptr : colour_attachments.data();
                 rendering_info.pDepthAttachment = bind_depth ? &depth_attachment : nullptr;
 
+                const auto* following_pass = pass_index + 1U < frame.plan.passes.size()
+                                                 ? &frame.plan.passes[pass_index + 1U]
+                                                 : nullptr;
+                // Tone mapping and UI target the same display-space attachment consecutively.
+                // Keep them in one dynamic-rendering scope only while that frame-graph contract
+                // is exact; a future UI dependency or depth attachment automatically restores
+                // separate passes.
+                const auto fuse_ui = pass.name == "tone_map" && following_pass != nullptr &&
+                                     following_pass->name == "ui" &&
+                                     following_pass->kind == rhi::RenderPassKind::ui &&
+                                     following_pass->writes == pass.writes &&
+                                     following_pass->sampled_resources.empty() &&
+                                     following_pass->storage_resources.empty() &&
+                                     depth_write_of(pass) == nullptr &&
+                                     depth_write_of(*following_pass) == nullptr;
                 const auto presentation = presentation_for(pass.name);
                 begin_debug_label(frame_commands, presentation.label, presentation.red,
                                   presentation.green, presentation.blue);
+                if (pass.name == "shadow_cascade_0") {
+                    write_timestamp(frame_commands, frame_index, shadow_start_timestamp,
+                                    VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+                }
                 if (presentation.timed) {
                     write_timestamp(frame_commands, frame_index, presentation.start,
-                                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+                                    VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
                 }
                 vkCmdBeginRendering(frame_commands, &rendering_info);
                 record_draws(pass);
+                if (fuse_ui) {
+                    write_timestamp(frame_commands, frame_index, tone_map_end_timestamp,
+                                    VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+                    write_timestamp(frame_commands, frame_index, ui_start_timestamp,
+                                    VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+                    record_draws(*following_pass);
+                    write_timestamp(frame_commands, frame_index, ui_end_timestamp,
+                                    VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+                    ui_fused_with_tone_map = true;
+                }
                 vkCmdEndRendering(frame_commands);
-                if (presentation.timed) {
+                if (presentation.timed && !fuse_ui) {
                     write_timestamp(frame_commands, frame_index, presentation.end,
+                                    VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+                }
+                if (pass.name == "local_shadow_1") {
+                    write_timestamp(frame_commands, frame_index, shadow_end_timestamp,
                                     VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
                 }
                 end_debug_label(frame_commands);
@@ -6391,6 +6554,14 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
             write_timestamp(frame_commands, frame_index, opaque_end_timestamp,
                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+            write_timestamp(frame_commands, frame_index, shadow_start_timestamp,
+                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+            write_timestamp(frame_commands, frame_index, shadow_end_timestamp,
+                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+            write_timestamp(frame_commands, frame_index, sky_start_timestamp,
+                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+            write_timestamp(frame_commands, frame_index, sky_end_timestamp,
+                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
             write_timestamp(frame_commands, frame_index, alpha_tested_start_timestamp,
                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
             write_timestamp(frame_commands, frame_index, alpha_tested_end_timestamp,
@@ -6399,11 +6570,19 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
             write_timestamp(frame_commands, frame_index, transparent_end_timestamp,
                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+            write_timestamp(frame_commands, frame_index, tone_map_start_timestamp,
+                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+            write_timestamp(frame_commands, frame_index, tone_map_end_timestamp,
+                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+            write_timestamp(frame_commands, frame_index, ui_start_timestamp,
+                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+            write_timestamp(frame_commands, frame_index, ui_end_timestamp,
+                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
         }
 
         begin_debug_label(frame_commands, "Frame transfer", 0.30F, 0.48F, 0.92F);
         write_timestamp(frame_commands, frame_index, transfer_start_timestamp,
-                        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+                        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         VkImageMemoryBarrier color_to_transfer_source{};
         color_to_transfer_source.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -6426,7 +6605,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
 
         begin_debug_label(frame_commands, "Final copy", 0.72F, 0.34F, 0.90F);
         write_timestamp(frame_commands, frame_index, final_copy_start_timestamp,
-                        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+                        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         if (present) {
             VkImageMemoryBarrier swapchain_to_transfer{};
             swapchain_to_transfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -6506,7 +6685,10 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         submit_info.commandBufferCount = 1;
         submit_info.pCommandBuffers = &frame_commands;
         const auto submission_serial = last_submission_serial_ + 1;
+        const auto queue_submit_started = Clock::now();
         result = vkQueueSubmit(queue_, 1, &submit_info, frame_fence);
+        const auto queue_submit_ms =
+            std::chrono::duration<double, std::milli>(Clock::now() - queue_submit_started).count();
         if (result != VK_SUCCESS) {
             return core::Result<rhi::RenderFrameStats>::failure(
                 "renderer.vulkan_queue_submit_failed",
@@ -6603,6 +6785,7 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         stats.presentation_timing_valid = presentation.timing_valid;
         stats.presentation_id = presentation.present_id;
         stats.presentation_wait_ms = presentation.wait_ms;
+        stats.cpu_queue_present_ms = presentation.queue_ms;
         const auto memory = capabilities();
         stats.memory_budget_valid = memory.supports_memory_budget;
         stats.device_local_memory_budget_bytes = memory.device_local_memory_budget_bytes;
@@ -6615,8 +6798,12 @@ class VulkanSmokeDevice final : public rhi::IRenderDevice {
         stats.synchronization_barrier_count = execution_plan.value().transitions.size();
         stats.submitted_synchronization_barrier_count = submitted_barrier_count;
         stats.pipeline_bind_count = frame_pipeline_bind_count;
+        stats.cpu_frame_setup_ms = frame_setup_ms;
         stats.cpu_command_recording_ms = command_recording_ms;
+        stats.cpu_queue_submit_ms = queue_submit_ms;
         stats.cpu_gpu_wait_ms = gpu_wait_ms;
+        stats.cpu_frame_context_wait_ms = frame_context_wait_ms;
+        stats.cpu_swapchain_acquire_ms = swapchain_acquire_ms;
         attach_gpu_timing(stats, gpu_timing, frame_index);
         attach_latest_gpu_upload_timing(stats);
         for (const auto& commands : frame.pass_commands) {

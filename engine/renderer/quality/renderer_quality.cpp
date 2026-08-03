@@ -6,8 +6,13 @@ namespace heartstead::renderer {
 
 core::Status RendererQualitySettings::validate() const noexcept {
     if (!std::isfinite(render_scale) || render_scale < 0.5F || render_scale > 1.0F ||
-        shadow_resolution < 512U || shadow_resolution > 8192U ||
+        shadow_resolution < 256U || shadow_resolution > 8192U ||
         (shadow_resolution & (shadow_resolution - 1U)) != 0U ||
+        directional_shadow_cascades == 0U || directional_shadow_cascades > 4U ||
+        (local_shadow_resolution != 1U &&
+         (local_shadow_resolution < 256U || local_shadow_resolution > 4096U ||
+          (local_shadow_resolution & (local_shadow_resolution - 1U)) != 0U)) ||
+        (local_shadow_resolution == 1U && local_shadow_budget != 0U) ||
         !std::isfinite(shadow_distance) || shadow_distance < 32.0F ||
         shadow_distance > 2'048.0F || local_shadow_budget > 2U ||
         ambient_occlusion_quality > 3U || indirect_lighting_quality > 3U ||
@@ -31,10 +36,12 @@ RendererQualitySettings renderer_quality_settings(RendererQualityPreset preset) 
     switch (preset) {
     case RendererQualityPreset::low:
         settings.terrain_shading = RendererTerrainShading::simplified;
-        settings.render_scale = 0.67F;
+        settings.render_scale = 0.5F;
         settings.anti_aliasing = RendererAntiAliasing::off;
-        settings.shadow_resolution = 1024;
-        settings.shadow_distance = 160.0F;
+        settings.shadow_resolution = 256;
+        settings.directional_shadow_cascades = 1;
+        settings.local_shadow_resolution = 1;
+        settings.shadow_distance = 48.0F;
         settings.local_shadow_budget = 0;
         settings.ambient_occlusion_quality = 0;
         settings.indirect_lighting_quality = 1;

@@ -17,6 +17,7 @@ inline constexpr std::uint32_t directional_shadow_cascade_count = 4;
 
 struct DirectionalShadowConfig {
     std::uint32_t resolution = 2048;
+    std::uint32_t cascade_count = directional_shadow_cascade_count;
     float distance = 320.0F;
     float split_lambda = 0.72F;
     float constant_bias = 0.0007F;

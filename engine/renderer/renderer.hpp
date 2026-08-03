@@ -372,6 +372,7 @@ class Renderer {
     rhi::ClearColor default_clear_color_{};
     RendererStats stats_{};
     RendererQualitySettings quality_settings_{};
+    std::uint32_t active_directional_shadow_cascades_ = directional_shadow_cascade_count;
     std::chrono::steady_clock::time_point frame_started_at_{};
     bool frame_timing_active_ = false;
     std::thread::id owner_thread_{};

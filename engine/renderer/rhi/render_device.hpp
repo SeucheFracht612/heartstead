@@ -242,8 +242,13 @@ struct RenderFrameStats {
     std::size_t transparent_terrain_draw_count = 0;
     std::size_t pipeline_bind_count = 0;
     std::size_t total_indices = 0;
+    double cpu_frame_setup_ms = 0.0;
     double cpu_command_recording_ms = 0.0;
+    double cpu_queue_submit_ms = 0.0;
     double cpu_gpu_wait_ms = 0.0;
+    double cpu_frame_context_wait_ms = 0.0;
+    double cpu_swapchain_acquire_ms = 0.0;
+    double cpu_queue_present_ms = 0.0;
     bool presentation_timing_valid = false;
     std::uint64_t presentation_id = 0;
     double presentation_wait_ms = 0.0;
@@ -253,9 +258,13 @@ struct RenderFrameStats {
     bool gpu_upload_timing_valid = false;
     std::uint64_t gpu_upload_submission_serial = 0;
     double gpu_frame_ms = 0.0;
+    double gpu_shadow_ms = 0.0;
+    double gpu_sky_ms = 0.0;
     double gpu_opaque_terrain_ms = 0.0;
     double gpu_alpha_tested_terrain_ms = 0.0;
     double gpu_transparent_terrain_ms = 0.0;
+    double gpu_tone_map_ms = 0.0;
+    double gpu_ui_ms = 0.0;
     double gpu_upload_ms = 0.0;
     double gpu_transfer_ms = 0.0;
     double gpu_final_copy_ms = 0.0;

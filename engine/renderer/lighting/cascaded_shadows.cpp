@@ -49,6 +49,7 @@ namespace {
 
 core::Status DirectionalShadowConfig::validate() const {
     if (resolution < 256U || resolution > 8192U || (resolution & (resolution - 1U)) != 0U ||
+        cascade_count == 0U || cascade_count > directional_shadow_cascade_count ||
         !std::isfinite(distance) || distance <= 1.0F || !std::isfinite(split_lambda) ||
         split_lambda < 0.0F || split_lambda > 1.0F || !std::isfinite(constant_bias) ||
         constant_bias < 0.0F || !std::isfinite(normal_bias) || normal_bias < 0.0F ||
@@ -97,9 +98,9 @@ CascadedShadowSystem::update(const RenderCamera& camera,
     const auto near_plane = camera.near_plane;
     const auto far_plane = std::min(camera.far_plane, config_.distance);
     float previous_split = near_plane;
-    for (std::uint32_t cascade = 0; cascade < directional_shadow_cascade_count; ++cascade) {
+    for (std::uint32_t cascade = 0; cascade < config_.cascade_count; ++cascade) {
         const auto fraction =
-            static_cast<float>(cascade + 1U) / static_cast<float>(directional_shadow_cascade_count);
+            static_cast<float>(cascade + 1U) / static_cast<float>(config_.cascade_count);
         const auto logarithmic = near_plane * std::pow(far_plane / near_plane, fraction);
         const auto uniform = near_plane + (far_plane - near_plane) * fraction;
         const auto split =
@@ -130,6 +131,12 @@ CascadedShadowSystem::update(const RenderCamera& camera,
         gpu_data_.light_view_projection[cascade] =
             orthographic(radius, -radius * 2.0F, radius * 2.0F) * view;
         previous_split = split;
+    }
+    for (std::uint32_t cascade = config_.cascade_count; cascade < directional_shadow_cascade_count;
+         ++cascade) {
+        gpu_data_.split_distances[cascade] = far_plane;
+        gpu_data_.light_view_projection[cascade] =
+            gpu_data_.light_view_projection[config_.cascade_count - 1U];
     }
     gpu_data_.parameters[0] = config_.constant_bias;
     gpu_data_.parameters[1] = config_.normal_bias;

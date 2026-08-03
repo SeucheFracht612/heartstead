@@ -96,6 +96,26 @@ core::Status FrameBuilder::set_shadow_resolution(std::uint32_t resolution) {
     return core::Status::ok();
 }
 
+core::Status FrameBuilder::set_directional_shadow_cascade_count(std::uint32_t count) {
+    if (count == 0U || count > 4U) {
+        return core::Status::failure("frame_builder.invalid_shadow_cascade_count",
+                                     "directional shadow cascade count must be in 1..4");
+    }
+    directional_shadow_cascade_count_ = count;
+    return core::Status::ok();
+}
+
+core::Status FrameBuilder::set_local_shadow_resolution(std::uint32_t resolution) {
+    if (resolution != 1U &&
+        (resolution < 256U || resolution > 4096U || (resolution & (resolution - 1U)) != 0U)) {
+        return core::Status::failure(
+            "frame_builder.invalid_local_shadow_resolution",
+            "local shadow resolution must be one or a power of two in 256..4096");
+    }
+    local_shadow_resolution_ = resolution;
+    return core::Status::ok();
+}
+
 core::Result<rhi::RenderFramePlan> FrameBuilder::build_plan() const {
     using namespace rhi;
     auto extent_status = validate_render_extent(extent_);
@@ -131,8 +151,11 @@ core::Result<rhi::RenderFramePlan> FrameBuilder::build_plan() const {
         return fail(status);
     }
     for (std::uint32_t cascade = 0; cascade < 4U; ++cascade) {
+        const auto cascade_extent = cascade < directional_shadow_cascade_count_
+                                        ? RenderExtent{shadow_resolution_, shadow_resolution_}
+                                        : RenderExtent{1, 1};
         status = builder.add_resource({"shadow_cascade_" + std::to_string(cascade),
-                                       {shadow_resolution_, shadow_resolution_},
+                                       cascade_extent,
                                        RenderResourceLifetime::transient,
                                        RenderImageFormat::d32_sfloat});
         if (!status) {
@@ -171,12 +194,22 @@ core::Result<rhi::RenderFramePlan> FrameBuilder::build_plan() const {
     if (!status) {
         return fail(status);
     }
-    for (const auto* name : {"scene_grounded", "scene_aa", "bloom_hdr"}) {
+    for (const auto* name : {"scene_grounded", "scene_aa"}) {
         status = builder.add_resource(
             {name, scene_extent, RenderResourceLifetime::transient, RenderImageFormat::rgba16_sfloat});
         if (!status) {
             return fail(status);
         }
+    }
+    // The tone-map layout always carries a bloom binding.  When bloom is disabled, a one-texel
+    // black image preserves that descriptor contract without clearing and sampling another
+    // full-resolution HDR target every frame.
+    const RenderExtent bloom_extent = image_quality_.bloom ? scene_extent : RenderExtent{1, 1};
+    status = builder.add_resource({"bloom_hdr", bloom_extent,
+                                   RenderResourceLifetime::transient,
+                                   RenderImageFormat::rgba16_sfloat});
+    if (!status) {
+        return fail(status);
     }
 
     const std::string scene{scene_color_resource_name};

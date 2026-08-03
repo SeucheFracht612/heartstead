@@ -63,6 +63,8 @@ class FrameBuilder {
     [[nodiscard]] FrameImageQualitySettings image_quality_settings() const noexcept;
     void update_exposure_adaptation(float scene_luminance, float delta_seconds) noexcept;
     [[nodiscard]] core::Status set_shadow_resolution(std::uint32_t resolution);
+    [[nodiscard]] core::Status set_directional_shadow_cascade_count(std::uint32_t count);
+    [[nodiscard]] core::Status set_local_shadow_resolution(std::uint32_t resolution);
     [[nodiscard]] rhi::RenderResourceHandle tone_map_pipeline() const noexcept;
 
     [[nodiscard]] core::Result<rhi::RenderFramePlan> build_plan() const;
@@ -82,6 +84,7 @@ class FrameBuilder {
     rhi::RenderResourceHandle anti_alias_pipeline_{};
     rhi::RenderResourceHandle bloom_pipeline_{};
     std::uint32_t shadow_resolution_ = 2048;
+    std::uint32_t directional_shadow_cascade_count_ = 4;
     std::uint32_t local_shadow_resolution_ = 1024;
     float adapted_exposure_stops_ = 0.0F;
     FrameImageQualitySettings image_quality_{};

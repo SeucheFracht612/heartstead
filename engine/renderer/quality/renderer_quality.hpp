@@ -18,6 +18,8 @@ struct RendererQualitySettings {
     float render_scale = 1.0F;
     RendererAntiAliasing anti_aliasing = RendererAntiAliasing::fxaa;
     std::uint32_t shadow_resolution = 2048;
+    std::uint32_t directional_shadow_cascades = 4;
+    std::uint32_t local_shadow_resolution = 1024;
     float shadow_distance = 320.0F;
     std::uint32_t local_shadow_budget = 2;
     std::uint32_t ambient_occlusion_quality = 2;

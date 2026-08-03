@@ -65,6 +65,13 @@ int main() {
     assert(clustered.resize({640, 360}));
     assert(clustered.update(lights, camera));
 
+    assert(clustered.update({}, camera));
+    assert(clustered.stats().submitted_lights == 0U);
+    assert(clustered.stats().populated_tiles == 0U);
+    assert(clustered.stats().uploaded_bytes > 0U);
+    assert(clustered.update({}, camera));
+    assert(clustered.stats().uploaded_bytes == 0U);
+
     auto near_plane_light = lights.front();
     near_plane_light.camera_relative_position = camera.local_position - camera.forward() * 0.5F;
     near_plane_light.radius = 2.0F;
@@ -101,6 +108,22 @@ int main() {
     assert(std::abs(second.camera_position[0] - camera.local_position.x) < 1.0e-6F);
     assert(second.local_light_view_projection[0].is_finite());
     assert(second.local_parameters[0][3] == 1.0F);
+
+    DirectionalShadowConfig single_cascade_config;
+    single_cascade_config.cascade_count = 1U;
+    single_cascade_config.resolution = 256U;
+    single_cascade_config.distance = 48.0F;
+    CascadedShadowSystem single_cascade_shadows(*device);
+    assert(single_cascade_shadows.initialize(single_cascade_config));
+    assert(single_cascade_shadows.update(camera, environment));
+    const auto& single_cascade = single_cascade_shadows.gpu_data();
+    assert(single_cascade.light_view_projection[0].is_finite());
+    for (std::size_t index = 1; index < directional_shadow_cascade_count; ++index) {
+        assert(std::abs(single_cascade.split_distances[index] - single_cascade.split_distances[0]) <
+               1.0e-6F);
+        assert(single_cascade.light_view_projection[index].is_finite());
+    }
+    assert(single_cascade_shadows.shutdown());
 
     assert(shadows.shutdown());
     assert(clustered.shutdown());

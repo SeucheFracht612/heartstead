@@ -100,6 +100,7 @@ core::Status ClusteredLightingSystem::create_grid_buffer(rhi::RenderExtent exten
     grid_buffer_ = grid.value().handle;
     extent_ = extent;
     grid_.assign(static_cast<std::size_t>(words), 0U);
+    empty_grid_resident_ = false;
     return core::Status::ok();
 }
 
@@ -126,12 +127,33 @@ core::Status ClusteredLightingSystem::update(std::span<const RenderLightInstance
     const auto tiles_x = ceil_div(extent_.width, config_.tile_size);
     const auto tiles_y = ceil_div(extent_.height, config_.tile_size);
     const auto stride = 1U + config_.maximum_lights_per_tile;
+    stats_.tile_count = tiles_x * tiles_y;
+    const auto has_local_lights = std::ranges::any_of(
+        lights, [](const auto& light) { return light.kind != RenderLightKind::directional; });
+    if (!has_local_lights) {
+        observed_shadow_revisions_.clear();
+        if (empty_grid_resident_) {
+            return core::Status::ok();
+        }
+        std::ranges::fill(grid_, 0U);
+        grid_[0] = tiles_x;
+        grid_[1] = tiles_y;
+        grid_[2] = config_.tile_size;
+        grid_[3] = config_.maximum_lights_per_tile;
+        const rhi::RenderBufferWrite write{grid_buffer_, 0, std::as_bytes(std::span{grid_})};
+        auto upload = device_->upload_buffer_batch(std::span{&write, 1});
+        if (!upload) {
+            return core::Status::failure(upload.error().code, upload.error().message);
+        }
+        stats_.uploaded_bytes = upload.value().byte_size;
+        empty_grid_resident_ = true;
+        return core::Status::ok();
+    }
     std::ranges::fill(grid_, 0U);
     grid_[0] = tiles_x;
     grid_[1] = tiles_y;
     grid_[2] = config_.tile_size;
     grid_[3] = config_.maximum_lights_per_tile;
-    stats_.tile_count = tiles_x * tiles_y;
     std::map<RenderLightId, std::pair<std::uint64_t, std::uint64_t>> current_revisions;
 
     for (const auto& light : lights) {
@@ -258,6 +280,7 @@ core::Status ClusteredLightingSystem::update(std::span<const RenderLightInstance
     stats_.submitted_lights = static_cast<std::uint32_t>(gpu_lights_.size());
     stats_.selected_shadow_lights = static_cast<std::uint32_t>(shadow_candidates_.size());
     stats_.uploaded_bytes = upload.value().byte_size;
+    empty_grid_resident_ = false;
     return core::Status::ok();
 }
 
@@ -295,6 +318,7 @@ core::Status ClusteredLightingSystem::shutdown() {
     observed_shadow_revisions_.clear();
     stats_ = {};
     extent_ = {};
+    empty_grid_resident_ = false;
     return status;
 }
 

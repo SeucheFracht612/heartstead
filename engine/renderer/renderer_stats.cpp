@@ -13,9 +13,11 @@ std::string format_renderer_stats(const RendererStats& stats) {
     if (stats.gpu_timing_valid) {
         stream << " gpu=" << stats.gpu_frame_ms << "ms"
                << " gpu_frame=" << stats.gpu_timing_frame_index
-               << " phases=" << stats.gpu_opaque_terrain_ms << '/'
-               << stats.gpu_alpha_tested_terrain_ms << '/' << stats.gpu_transparent_terrain_ms
-               << "ms";
+               << " gpu_phases=" << stats.gpu_shadow_ms << '/' << stats.gpu_sky_ms << '/'
+               << stats.gpu_opaque_terrain_ms << '/' << stats.gpu_alpha_tested_terrain_ms << '/'
+               << stats.gpu_transparent_terrain_ms << '/' << stats.gpu_tone_map_ms << '/'
+               << stats.gpu_ui_ms << '/' << stats.gpu_transfer_ms << '/'
+               << stats.gpu_final_copy_ms << "ms";
     } else {
         stream << " gpu=pending";
     }
@@ -29,8 +31,15 @@ std::string format_renderer_stats(const RendererStats& stats) {
     }
     stream << " sync=" << stats.chunk_synchronization_ms << "ms" << " mesh=" << stats.meshing_ms
            << "ms" << " upload=" << stats.upload_ms << "ms" << " cull=" << stats.culling_ms << "ms"
-           << " record=" << stats.command_recording_ms << "ms" << " wait=" << stats.gpu_wait_ms
-           << "ms" << " relight=" << stats.voxel_relight_solve_ms << '/'
+           << " frontend=" << stats.frontend_preparation_ms << "ms"
+           << " backend=" << stats.backend_execute_ms << "ms"
+           << " setup=" << stats.backend_frame_setup_ms << "ms"
+           << " record=" << stats.command_recording_ms << "ms"
+           << " submit_queue=" << stats.queue_submit_ms << "ms" << " wait=" << stats.gpu_wait_ms
+           << "ms" << " frame_wait=" << stats.frame_context_wait_ms << "ms"
+           << " acquire=" << stats.swapchain_acquire_ms << "ms"
+           << " present_queue=" << stats.queue_present_ms << "ms"
+           << " relight=" << stats.voxel_relight_solve_ms << '/'
            << stats.voxel_relight_apply_ms << "ms"
            << " relight_cells=" << stats.voxel_relight_visited_cells << '/'
            << stats.voxel_relight_backlog_cells
