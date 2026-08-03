@@ -327,6 +327,33 @@ void test_command_line_launch_contract() {
     assert(parsed && parsed.value().show_help);
     assert(game::heartstead_command_line_usage("heartstead").find("--scenario") !=
            std::string::npos);
+
+    const std::string_view benchmark[]{"--scenario"sv,
+                                       "base:scenarios/renderer_proof"sv,
+                                       "--benchmark-output"sv,
+                                       "result.json"sv,
+                                       "--benchmark-warmup"sv,
+                                       "0"sv,
+                                       "--benchmark-frames"sv,
+                                       "400"sv,
+                                       "--render-validation"sv};
+    parsed = game::parse_heartstead_launch_options(benchmark);
+    assert(parsed && parsed.value().benchmark_output == std::filesystem::path("result.json"));
+    assert(parsed.value().benchmark_warmup_frames == 0);
+    assert(parsed.value().benchmark_measured_frames == 400);
+    assert(parsed.value().render_validation);
+
+    const std::string_view missing_output[]{"--benchmark-frames"sv, "60"sv};
+    parsed = game::parse_heartstead_launch_options(missing_output);
+    assert(!parsed && parsed.error().code == "heartstead.missing_benchmark_output");
+
+    const std::string_view headless_benchmark[]{"--scenario"sv,
+                                                "base:scenarios/renderer_proof"sv,
+                                                "--headless"sv,
+                                                "--benchmark-output"sv,
+                                                "result.json"sv};
+    parsed = game::parse_heartstead_launch_options(headless_benchmark);
+    assert(!parsed && parsed.error().code == "heartstead.native_benchmark_required");
 }
 
 void test_runtime_diagnostics_are_explicit() {

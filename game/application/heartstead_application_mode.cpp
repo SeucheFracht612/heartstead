@@ -605,6 +605,41 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         return snapshot;
     }
 
+    [[nodiscard]] bool performance_benchmark_ready() const noexcept {
+        if (states.state() != ApplicationState::in_game || services == nullptr ||
+            services->renderer() == nullptr || !session_runtime.has_value() ||
+            session_runtime->session() == nullptr || !runtime_stats.has_value() ||
+            runtime_stats->server_ticks.empty()) {
+            return false;
+        }
+        const auto* session = session_runtime->session();
+        const auto* server = session->server();
+        const auto* client = session->client();
+        if (server == nullptr || client == nullptr || !client->is_connected() ||
+            client->world().chunks().chunk_count() == 0) {
+            return false;
+        }
+        const auto& streaming = runtime_stats->server_ticks.back().chunk_streaming;
+        if (streaming.enabled &&
+            (streaming.desired_chunk_count == 0 ||
+             server->world().chunks().chunk_count() < streaming.desired_chunk_count ||
+             streaming.pending_load_count != 0 ||
+             streaming.deferred_required_load_count != 0)) {
+            return false;
+        }
+        if (const auto* loading_stats = server->chunk_loading_stats();
+            loading_stats != nullptr &&
+            (loading_stats->in_flight_requests != 0 ||
+             loading_stats->completed_mailbox_count != 0 ||
+             loading_stats->ready_for_publication_count != 0 ||
+             loading_stats->reserved_working_bytes != 0)) {
+            return false;
+        }
+        const auto& chunks = services->renderer()->chunk_stats();
+        return chunks.cache.resident_chunk_count != 0 && chunks.pending_mesh_count == 0 &&
+               chunks.in_flight_mesh_count == 0 && chunks.pending_upload_count == 0;
+    }
+
     [[nodiscard]] bool save_is_compatible(const save::SaveSlotSummary& entry) const {
         if (entry.validation_error.has_value() || !entry.snapshot_metadata.has_value()) {
             return false;
@@ -1850,7 +1885,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         }
         std::optional<movement::FixedStepPlayerInputFrame> scheduled_input;
         auto* client = session_runtime->session()->client();
-        if (states.state() == ApplicationState::in_game && frame->input != nullptr &&
+        if (!config.benchmark_mode && states.state() == ApplicationState::in_game &&
+            frame->input != nullptr &&
             client != nullptr) {
             const auto* player = client->local_player_snapshot();
             if (player != nullptr && !input_orientation_initialized) {
@@ -1906,6 +1942,7 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
         display_error = transition.error;
         if (services != nullptr && !config.headless) {
             const auto captured =
+                !config.benchmark_mode &&
                 application_state_policy(state).cursor_owner == ApplicationCursorOwner::captured;
             auto status = services->set_cursor_capture(captured);
             if (!status) {
@@ -3041,6 +3078,7 @@ HeartsteadApplicationMode::update(GameApplicationServices& services,
             pointer = nullptr;
         }
     } frame_pointer_reset{state.frame};
+    GameApplicationModeTimings benchmark_timings;
     state.last_runtime_time_ms = frame.now_milliseconds;
     state.last_wall_clock_ms = frame.wall_clock_milliseconds;
     state.poll_save_results();
@@ -3071,67 +3109,84 @@ HeartsteadApplicationMode::update(GameApplicationServices& services,
             state.settings_persist_after_ms = frame.now_milliseconds + 5'000;
         }
     }
-    auto status = state.process_input(frame);
-    if (status) {
-        status = state.states.update(frame.delta_microseconds);
-    }
-    if (status && state.states.state() == ApplicationState::in_game) {
-        status = state.autosave_if_due();
-        if (!status) {
-            state.display_error = status.error();
-            state.menu_message = "Autosave failed: " + status.error().message;
-            status = core::Status::ok();
+    auto status = core::Status::ok();
+    {
+        profiling::ScopedCpuTimer state_update_timer(benchmark_timings.state_update_ms);
+        status = state.config.benchmark_mode ? core::Status::ok() : state.process_input(frame);
+        if (status) {
+            status = state.states.update(frame.delta_microseconds);
+        }
+        if (status && state.states.state() == ApplicationState::in_game) {
+            status = state.autosave_if_due();
+            if (!status) {
+                state.display_error = status.error();
+                state.menu_message = "Autosave failed: " + status.error().message;
+                status = core::Status::ok();
+            }
         }
     }
     if (!status) {
         return core::Result<GameApplicationFrameOutput>::failure(status.error().code,
                                                                  status.error().message);
     }
-    auto camera = state.prepare_camera_and_world(frame);
-    if (!camera) {
-        core::log(core::LogLevel::warning,
-                  "Session presentation degraded: " + camera.error().message);
-        state.menu_message = "Visual presentation degraded: " + camera.error().message;
-        renderer::RenderCamera fallback;
-        status = fallback.set_aspect_ratio(static_cast<float>(std::max(1U, frame.extent.width)) /
-                                           static_cast<float>(std::max(1U, frame.extent.height)));
-        if (!status) {
-            return core::Result<GameApplicationFrameOutput>::failure(status.error().code,
-                                                                     status.error().message);
+    auto camera = [&]() {
+        profiling::ScopedCpuTimer camera_timer(benchmark_timings.camera_world_ms);
+        auto prepared = state.prepare_camera_and_world(frame);
+        if (!prepared) {
+            core::log(core::LogLevel::warning,
+                      "Session presentation degraded: " + prepared.error().message);
+            state.menu_message = "Visual presentation degraded: " + prepared.error().message;
+            renderer::RenderCamera fallback;
+            status = fallback.set_aspect_ratio(
+                static_cast<float>(std::max(1U, frame.extent.width)) /
+                static_cast<float>(std::max(1U, frame.extent.height)));
+            if (status) {
+                prepared = core::Result<renderer::RenderCamera>::success(std::move(fallback));
+            }
         }
-        camera = core::Result<renderer::RenderCamera>::success(std::move(fallback));
+        return prepared;
+    }();
+    if (!status || !camera) {
+        const auto& error = !status ? status.error() : camera.error();
+        return core::Result<GameApplicationFrameOutput>::failure(error.code, error.message);
     }
-    status = state.update_audio(frame);
-    if (!status && state.session_runtime.has_value()) {
-        const auto error = status.error();
-        core::log(core::LogLevel::warning,
-                  "Session audio presentation disabled: " + error.message);
-        state.menu_message = "Audio presentation disabled: " + error.message;
-        if (state.audio_presentation_initialized && services.audio() != nullptr) {
-            (void)state.audio_presentation.shutdown(*services.audio());
-            state.audio_presentation_initialized = false;
+    {
+        profiling::ScopedCpuTimer audio_timer(benchmark_timings.audio_ms);
+        status = state.update_audio(frame);
+        if (!status && state.session_runtime.has_value()) {
+            const auto error = status.error();
+            core::log(core::LogLevel::warning,
+                      "Session audio presentation disabled: " + error.message);
+            state.menu_message = "Audio presentation disabled: " + error.message;
+            if (state.audio_presentation_initialized && services.audio() != nullptr) {
+                (void)state.audio_presentation.shutdown(*services.audio());
+                state.audio_presentation_initialized = false;
+            }
+            status = services.audio() == nullptr
+                         ? core::Status::ok()
+                         : services.audio()->update(frame.delta_seconds());
         }
-        status = services.audio() == nullptr
-                     ? core::Status::ok()
-                     : services.audio()->update(frame.delta_seconds());
     }
     if (status) {
+        profiling::ScopedCpuTimer ui_timer(benchmark_timings.ui_ms);
         status = state.paint_ui(frame);
     }
     if (!status) {
         return core::Result<GameApplicationFrameOutput>::failure(status.error().code,
                                                                  status.error().message);
     }
-    if (state.config.headless) {
-        return core::Result<GameApplicationFrameOutput>::success({});
-    }
     GameApplicationFrameOutput output;
+    output.benchmark_timings = benchmark_timings;
+    if (state.config.headless) {
+        return core::Result<GameApplicationFrameOutput>::success(std::move(output));
+    }
     const auto interpolation =
         state.runtime_stats.has_value()
             ? static_cast<float>(state.runtime_stats->fixed_step.interpolation_alpha)
             : 1.0F;
     output.render =
         renderer::RenderFrameInput{camera.value(), interpolation, frame.delta_seconds()};
+    output.benchmark_ready = state.performance_benchmark_ready();
     return core::Result<GameApplicationFrameOutput>::success(std::move(output));
 }
 

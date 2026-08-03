@@ -45,6 +45,7 @@ namespace {
 core::Result<HeartsteadLaunchOptions>
 parse_heartstead_launch_options(std::span<const std::string_view> arguments) {
     HeartsteadLaunchOptions options;
+    bool benchmark_option_seen = false;
     for (std::size_t index = 0; index < arguments.size(); ++index) {
         const auto argument = arguments[index];
         const auto require_value = [&]() -> core::Result<std::string_view> {
@@ -62,6 +63,40 @@ parse_heartstead_launch_options(std::span<const std::string_view> arguments) {
             options.headless = true;
         } else if (argument == "--safe-mode") {
             options.safe_mode = true;
+        } else if (argument == "--render-validation") {
+            options.render_validation = true;
+        } else if (argument == "--benchmark-output") {
+            auto value = require_value();
+            if (!value) {
+                return core::Result<HeartsteadLaunchOptions>::failure(value.error().code,
+                                                                       value.error().message);
+            }
+            if (value.value().empty()) {
+                return core::Result<HeartsteadLaunchOptions>::failure(
+                    "heartstead.empty_benchmark_output",
+                    "--benchmark-output requires a non-empty path");
+            }
+            options.benchmark_output = std::filesystem::path(value.value());
+            benchmark_option_seen = true;
+        } else if (argument == "--benchmark-warmup" ||
+                   argument == "--benchmark-frames") {
+            auto value = require_value();
+            if (!value) {
+                return core::Result<HeartsteadLaunchOptions>::failure(value.error().code,
+                                                                       value.error().message);
+            }
+            const auto allow_zero = argument == "--benchmark-warmup";
+            auto frames = parse_unsigned(value.value(), argument.substr(2), allow_zero);
+            if (!frames) {
+                return core::Result<HeartsteadLaunchOptions>::failure(frames.error().code,
+                                                                       frames.error().message);
+            }
+            if (argument == "--benchmark-warmup") {
+                options.benchmark_warmup_frames = frames.value();
+            } else {
+                options.benchmark_measured_frames = frames.value();
+            }
+            benchmark_option_seen = true;
         } else if (argument == "--frames" || argument == "--native-frames") {
             auto value = require_value();
             if (!value) {
@@ -147,6 +182,28 @@ parse_heartstead_launch_options(std::span<const std::string_view> arguments) {
                 "--seed is supported only with --new-world or --scenario");
         }
     }
+    if (benchmark_option_seen && !options.benchmark_output.has_value()) {
+        return core::Result<HeartsteadLaunchOptions>::failure(
+            "heartstead.missing_benchmark_output",
+            "benchmark frame options require --benchmark-output PATH");
+    }
+    if (options.benchmark_output.has_value()) {
+        if (options.headless) {
+            return core::Result<HeartsteadLaunchOptions>::failure(
+                "heartstead.native_benchmark_required",
+                "the application benchmark requires a native renderer");
+        }
+        if (!options.initial_launch.has_value()) {
+            return core::Result<HeartsteadLaunchOptions>::failure(
+                "heartstead.benchmark_launch_required",
+                "the application benchmark requires --scenario, --world, --new-world, --connect, or --host");
+        }
+        if (options.maximum_frames.has_value()) {
+            return core::Result<HeartsteadLaunchOptions>::failure(
+                "heartstead.conflicting_benchmark_frame_limit",
+                "--benchmark-output cannot be combined with --frames or --native-frames");
+        }
+    }
     return core::Result<HeartsteadLaunchOptions>::success(std::move(options));
 }
 
@@ -165,6 +222,10 @@ std::string heartstead_command_line_usage(std::string_view executable) {
            << "  --headless          Run without a native window or renderer\n"
            << "  --frames N          Headless bounded smoke run\n"
            << "  --native-frames N   Native bounded smoke run\n"
+           << "  --render-validation Enable Vulkan validation diagnostics\n"
+           << "  --benchmark-output PATH  Record a settled native-runtime benchmark as JSON\n"
+           << "  --benchmark-warmup N     Settled warm-up frames (default 120)\n"
+           << "  --benchmark-frames N     Measured frames (default 600)\n"
            << "  -h, --help          Show this help\n"
            << "  --version           Show the Heartstead version\n";
     return output.str();

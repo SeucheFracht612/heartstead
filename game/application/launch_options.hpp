@@ -3,6 +3,7 @@
 #include "engine/core/result.hpp"
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <span>
 #include <string>
@@ -29,7 +30,11 @@ struct HeartsteadLaunchOptions {
     bool safe_mode = false;
     bool show_help = false;
     bool show_version = false;
+    bool render_validation = false;
     std::optional<std::uint64_t> maximum_frames;
+    std::optional<std::filesystem::path> benchmark_output;
+    std::uint64_t benchmark_warmup_frames = 120;
+    std::uint64_t benchmark_measured_frames = 600;
     std::optional<InitialLaunchDirective> initial_launch;
 };
 

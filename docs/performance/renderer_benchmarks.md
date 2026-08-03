@@ -4,6 +4,34 @@ This page defines the maintained renderer measurement workflow and preserves exp
 historical baselines. It replaces milestone-specific reports whose useful conclusions now belong in
 one reproducible guide.
 
+## Full player-runtime benchmark
+
+Use the player benchmark when the question concerns observed game FPS. Unlike the deterministic
+renderer fixture below, it includes platform event pumping, authoritative server and predictive
+client ticks, presentation synchronization, camera/world extraction, audio, UI, renderer work, and
+presentation submission:
+
+```bash
+cmake --preset default-release
+cmake --build --preset default-release --target heartstead
+./build/default-release/apps/heartstead/heartstead \
+  --scenario base:scenarios/renderer_proof \
+  --benchmark-output build/default-release/benchmarks/renderer-proof.json \
+  --benchmark-warmup 120 --benchmark-frames 600
+```
+
+This path forces immediate presentation and excludes user input, but otherwise runs the production
+application and infinite-streaming scenario. Its readiness gate requires authoritative required-set
+residency and drained loader, mesher, and uploader work before warm-up starts. The run fails closed
+if readiness or the requested sample count is not reached. JSON schema v1 records raw full-frame
+timings and mode subphases alongside the renderer's CPU/GPU zones and workload counters.
+
+Use this runner for end-to-end FPS claims and the fixture runner below to isolate renderer changes.
+Hold resolution, quality, scenario, source state, validation state, driver, power/thermal state,
+warm-up, and sample count constant. Close other GPU-heavy applications and repeat independent
+processes. The normal player no longer requests Vulkan validation; `--render-validation` is an
+explicit diagnostic whose results must remain separate.
+
 ## Benchmark application
 
 Build an optimized runner:

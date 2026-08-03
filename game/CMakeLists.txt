@@ -4,6 +4,7 @@ add_library(Heartstead::GameRuntime ALIAS heartstead_game)
 target_sources(
   heartstead_game
   PRIVATE
+    application/application_benchmark.cpp
     application/application_state.cpp
     application/application_settings.cpp
     application/game_application.cpp
@@ -42,6 +43,7 @@ target_sources(
     FILE_SET HEADERS
     BASE_DIRS ${PROJECT_SOURCE_DIR}
     FILES
+      application/application_benchmark.hpp
       application/application_state.hpp
       application/application_settings.hpp
       application/game_application.hpp

@@ -126,6 +126,31 @@ runtime option. It does not bypass content validation, server authority, save co
 the session state machine. `--help` and `--version` are supported. Conflicting selectors and seeds
 attached to load/connect/host requests fail before application mutation.
 
+### Full-application benchmark
+
+The player executable can measure the complete native runtime rather than a renderer-only fixture:
+
+```bash
+./build/default-release/apps/heartstead/heartstead \
+  --scenario base:scenarios/renderer_proof \
+  --benchmark-output build/default-release/benchmarks/renderer-proof.json \
+  --benchmark-warmup 120 --benchmark-frames 600
+```
+
+Benchmark mode requires an automatic session selector and a native renderer, requests uncapped
+immediate presentation, suppresses gameplay input and cursor capture, and exits after the requested
+samples. Measurement begins only after the session is in-game, the authoritative required chunk
+set is resident, chunk loading has no reserved or publishable work, and the renderer's mesh and
+upload queues are empty. If that state is not reached within the bounded startup window, the run
+fails instead of recording loading frames as steady state.
+
+The schema-v1 JSON retains raw whole-application frames, mode-update subphases, renderer CPU zones,
+asynchronous GPU timestamps, chunk/draw/triangle counts, source provenance, resolution, quality,
+present mode, validation state, and device/driver metadata. Vulkan validation is disabled for the
+normal player and benchmark paths because it materially changes command-recording cost; use
+`--render-validation` only for a diagnostic run and never compare it with validation-off results.
+See [Renderer benchmarks](../performance/renderer_benchmarks.md) for the comparison contract.
+
 ## Runtime diagnostics
 
 `F3` toggles the application diagnostics panel. It reports application/session/connection state,

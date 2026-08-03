@@ -5,6 +5,7 @@
 #include "engine/jobs/job_system.hpp"
 #include "engine/platform/platform.hpp"
 #include "engine/renderer/renderer.hpp"
+#include "game/application/application_benchmark.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -21,6 +22,7 @@ namespace heartstead::game {
 struct GameApplicationConfig {
     bool headless = false;
     std::optional<std::uint64_t> maximum_frames;
+    std::optional<GameApplicationBenchmarkConfig> benchmark;
     platform::WindowDesc window{"Heartstead", 1280, 720, true};
     std::filesystem::path shader_root;
     const world::VoxelPalette* voxel_palette = nullptr;
@@ -50,6 +52,10 @@ struct GameApplicationFrame {
 
 struct GameApplicationFrameOutput {
     std::optional<renderer::RenderFrameInput> render;
+    GameApplicationModeTimings benchmark_timings;
+    // A benchmark waits for the mode to reach a stable, representative workload before warm-up.
+    // Once measurement begins, later transient work remains in the sample stream.
+    bool benchmark_ready = false;
 };
 
 struct ApplicationWindowResizeDecision {
@@ -68,6 +74,7 @@ struct GameApplicationRunReport {
     std::uint64_t frame_count = 0;
     bool headless = false;
     std::string mode_summary;
+    std::optional<GameApplicationBenchmarkReport> benchmark;
 };
 
 class GameApplication;

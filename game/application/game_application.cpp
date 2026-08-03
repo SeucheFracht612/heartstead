@@ -174,6 +174,12 @@ core::Status GameApplicationConfig::validate() const {
             "game_application.invalid_frame_delta_limit",
             "maximum frame delta must be between one microsecond and ten seconds");
     }
+    if (benchmark.has_value()) {
+        auto benchmark_status = benchmark->validate();
+        if (!benchmark_status) {
+            return benchmark_status;
+        }
+    }
     if (headless) {
         if (application_worker_count == 0) {
             return core::Status::failure("game_application.invalid_worker_count",
@@ -326,23 +332,55 @@ core::Result<GameApplicationRunReport> GameApplication::run(IGameApplicationMode
 
     GameApplicationRunReport report;
     report.headless = config_.headless;
+    if (config_.benchmark.has_value()) {
+        report.benchmark.emplace();
+        report.benchmark->samples.reserve(config_.benchmark->measured_frames);
+        report.benchmark->warmup_frames = config_.benchmark->warmup_frames;
+        report.benchmark->validation_requested = config_.enable_render_validation;
+        report.benchmark->present_mode = renderer::rhi::present_mode_name(config_.present_mode);
+        report.benchmark->quality_preset =
+            renderer::renderer_quality_preset_name(config_.renderer_quality);
+        report.benchmark->width = extent_.width;
+        report.benchmark->height = extent_.height;
+        if (renderer_.is_initialized() && renderer_.device() != nullptr) {
+            const auto device = renderer_.device()->info();
+            report.benchmark->device.backend = renderer_.device()->backend_name();
+            report.benchmark->device.device_name = device.device_name;
+            report.benchmark->device.driver_name = device.driver_name;
+            report.benchmark->device.driver_info = device.driver_info;
+            report.benchmark->device.vendor_id = device.vendor_id;
+            report.benchmark->device.device_id = device.device_id;
+            report.benchmark->device.api_version = device.api_version;
+            report.benchmark->device.driver_version = device.driver_version;
+        }
+    }
     std::uint64_t simulated_microseconds = 0;
     auto previous_time = std::chrono::steady_clock::now();
+    std::uint64_t benchmark_warmup_frames = 0;
+    bool benchmark_started = false;
+    bool benchmark_complete = false;
 
     while (!first_error.has_value() && platform_ != nullptr && !platform_->should_quit() &&
-           (!config_.maximum_frames.has_value() || report.frame_count < *config_.maximum_frames)) {
+           (!config_.maximum_frames.has_value() || report.frame_count < *config_.maximum_frames) &&
+           !benchmark_complete) {
+        const auto application_frame_started = std::chrono::steady_clock::now();
         if (signal_handlers.shutdown_requested()) {
             platform_->request_quit();
             break;
         }
         std::optional<platform::WindowInputSnapshot> input;
+        double event_pump_ms = 0.0;
         std::uint64_t delta_microseconds = 16'667;
         std::int64_t now_milliseconds = 0;
         if (config_.headless) {
             simulated_microseconds += delta_microseconds;
             now_milliseconds = static_cast<std::int64_t>(simulated_microseconds / 1'000U);
         } else {
+            const auto event_pump_started = std::chrono::steady_clock::now();
             status = pump_platform_events();
+            event_pump_ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - event_pump_started)
+                                .count();
             if (!status) {
                 first_error = status.error();
                 break;
@@ -373,11 +411,17 @@ core::Result<GameApplicationRunReport> GameApplication::run(IGameApplicationMode
                                          extent_,
                                          input.has_value() ? &*input : nullptr,
                                          config_.headless};
+        const auto mode_update_started = std::chrono::steady_clock::now();
         auto output = mode.update(services, frame);
+        const auto mode_update_ms = std::chrono::duration<double, std::milli>(
+                                        std::chrono::steady_clock::now() - mode_update_started)
+                                        .count();
         if (!output) {
             first_error = output.error();
             break;
         }
+        double render_ms = 0.0;
+        std::optional<renderer::RendererStats> renderer_sample;
         if (output.value().render.has_value() && !minimized_) {
             if (config_.headless || !renderer_.is_initialized()) {
                 first_error =
@@ -385,15 +429,57 @@ core::Result<GameApplicationRunReport> GameApplication::run(IGameApplicationMode
                                 "application mode requested rendering without a native renderer"};
                 break;
             }
+            const auto render_started = std::chrono::steady_clock::now();
             auto rendered = renderer_.render_frame(*output.value().render);
+            render_ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - render_started)
+                            .count();
             if (!rendered) {
                 first_error = rendered.error();
                 break;
             }
+            renderer_sample = rendered.value().renderer;
         } else if (!config_.headless) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
+        const auto total_frame_ms = std::chrono::duration<double, std::milli>(
+                                        std::chrono::steady_clock::now() -
+                                        application_frame_started)
+                                        .count();
+        if (config_.benchmark.has_value() && report.benchmark.has_value()) {
+            if (!benchmark_started && output.value().benchmark_ready) {
+                if (benchmark_warmup_frames == 0) {
+                    report.benchmark->ready_frame_index = report.frame_count;
+                }
+                if (benchmark_warmup_frames >= config_.benchmark->warmup_frames) {
+                    benchmark_started = true;
+                } else {
+                    ++benchmark_warmup_frames;
+                }
+            }
+            if (benchmark_started) {
+                report.benchmark->samples.push_back(
+                    {report.frame_count, delta_microseconds, event_pump_ms, mode_update_ms,
+                     render_ms, total_frame_ms, output.value().benchmark_timings,
+                     std::move(renderer_sample)});
+                benchmark_complete =
+                    report.benchmark->samples.size() >= config_.benchmark->measured_frames;
+                report.benchmark->completed = benchmark_complete;
+            } else if (report.frame_count + 1U >=
+                       config_.benchmark->maximum_startup_frames) {
+                first_error = core::Error{
+                    "game_application.benchmark_startup_timeout",
+                    "application benchmark workload did not become ready within " +
+                        std::to_string(config_.benchmark->maximum_startup_frames) + " frames"};
+            }
+        }
         ++report.frame_count;
+    }
+
+    if (config_.benchmark.has_value() && !benchmark_complete && !first_error.has_value()) {
+        first_error = core::Error{
+            "game_application.benchmark_incomplete",
+            "application stopped before the requested benchmark samples were recorded"};
     }
 
     report.mode_summary = mode.summary();

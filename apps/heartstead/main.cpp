@@ -125,9 +125,17 @@ int main(int argc, char** argv) {
         application_config.renderer_quality = options.safe_mode
                                                   ? heartstead::renderer::RendererQualityPreset::low
                                                   : application_settings.rendering_quality;
-        application_config.present_mode = application_settings.vsync
-                                              ? heartstead::renderer::rhi::PresentMode::fifo
-                                              : heartstead::renderer::rhi::PresentMode::immediate;
+        application_config.enable_render_validation = options.render_validation;
+        application_config.present_mode =
+            options.benchmark_output.has_value()
+                ? heartstead::renderer::rhi::PresentMode::immediate
+                : application_settings.vsync
+                      ? heartstead::renderer::rhi::PresentMode::fifo
+                      : heartstead::renderer::rhi::PresentMode::immediate;
+        if (options.benchmark_output.has_value()) {
+            application_config.benchmark = heartstead::game::GameApplicationBenchmarkConfig{
+                options.benchmark_warmup_frames, options.benchmark_measured_frames, 5'000};
+        }
 
         heartstead::game::GameApplication application(std::move(application_config));
         heartstead::core::Result<heartstead::game::GameApplicationRunReport> report = [&]() {
@@ -145,11 +153,32 @@ int main(int argc, char** argv) {
             mode_config.initial_launch = options.initial_launch;
             mode_config.headless = options.headless;
             mode_config.safe_mode = options.safe_mode;
+            mode_config.benchmark_mode = options.benchmark_output.has_value();
             heartstead::game::HeartsteadApplicationMode mode(std::move(mode_config));
             return application.run(mode);
         }();
         if (!report) {
             return fail(report.error());
+        }
+        if (options.benchmark_output.has_value()) {
+            if (!report.value().benchmark.has_value()) {
+                return fail({"heartstead.missing_benchmark_report",
+                             "application completed without a benchmark report"});
+            }
+            heartstead::game::GameApplicationBenchmarkMetadata metadata;
+            const auto& launch = *options.initial_launch;
+            metadata.workload = std::string(heartstead::game::initial_launch_kind_name(launch.kind)) +
+                                ":" + launch.target;
+            metadata.runtime = heartstead::profiling::query_runtime_metadata();
+            auto written = heartstead::game::write_application_benchmark_json(
+                *options.benchmark_output, metadata, *report.value().benchmark);
+            if (!written) {
+                return fail(written.error());
+            }
+            std::cout << heartstead::game::format_application_benchmark_summary(
+                             heartstead::game::summarize_application_benchmark(
+                                 *report.value().benchmark))
+                      << '\n';
         }
         if (options.headless) {
             std::cout << report.value().mode_summary << '\n';

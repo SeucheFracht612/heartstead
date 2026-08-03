@@ -32,6 +32,7 @@ struct HeartsteadApplicationModeConfig {
     save::SaveCheckpointRetryPolicy save_checkpoint_retry;
     bool headless = false;
     bool safe_mode = false;
+    bool benchmark_mode = false;
 };
 
 class HeartsteadApplicationMode final : public IGameApplicationMode {

@@ -104,6 +104,31 @@ class SignalStoppingMode final : public game::IGameApplicationMode {
     bool shutdown_called = false;
 };
 
+class BenchmarkReadyMode final : public game::IGameApplicationMode {
+  public:
+    core::Status initialize(game::GameApplicationServices&) override {
+        return core::Status::ok();
+    }
+
+    core::Result<game::GameApplicationFrameOutput>
+    update(game::GameApplicationServices&, const game::GameApplicationFrame&) override {
+        ++updates;
+        game::GameApplicationFrameOutput output;
+        output.benchmark_ready = true;
+        return core::Result<game::GameApplicationFrameOutput>::success(std::move(output));
+    }
+
+    core::Status shutdown(game::GameApplicationServices&) override {
+        return core::Status::ok();
+    }
+
+    std::string summary() const override {
+        return "benchmark ready";
+    }
+
+    std::uint64_t updates = 0;
+};
+
 void test_headless_loop_and_lifecycle() {
     game::GameApplicationConfig config;
     config.headless = true;
@@ -190,6 +215,46 @@ void test_zero_frame_delta_limit_is_rejected() {
     assert(!mode.initialized);
 }
 
+void test_benchmark_waits_for_warmup_and_stops_after_samples() {
+    game::GameApplicationConfig config;
+    config.headless = true;
+    config.benchmark = game::GameApplicationBenchmarkConfig{2, 3, 20};
+    game::GameApplication application(config);
+    BenchmarkReadyMode mode;
+
+    auto report = application.run(mode);
+    assert(report);
+    assert(report.value().frame_count == 5);
+    assert(mode.updates == 5);
+    assert(report.value().benchmark.has_value());
+    const auto& benchmark = *report.value().benchmark;
+    assert(benchmark.completed);
+    assert(benchmark.ready_frame_index == 0);
+    assert(benchmark.warmup_frames == 2);
+    assert(benchmark.samples.size() == 3);
+    assert(!benchmark.samples.front().renderer.has_value());
+    const auto summary = game::summarize_application_benchmark(benchmark);
+    assert(summary.sample_count == 3);
+    assert(summary.median_frame_ms >= 0.0);
+    const game::GameApplicationBenchmarkMetadata metadata{"automated:test", {}};
+    const auto json = game::application_benchmark_json(metadata, benchmark);
+    assert(json.find("\"schema_version\": 1") != std::string::npos);
+    assert(json.find("\"workload\": \"automated:test\"") != std::string::npos);
+}
+
+void test_invalid_benchmark_configuration_is_rejected() {
+    game::GameApplicationConfig config;
+    config.headless = true;
+    config.benchmark = game::GameApplicationBenchmarkConfig{0, 0, 20};
+    game::GameApplication application(config);
+    RecordingMode mode;
+
+    auto report = application.run(mode);
+    assert(!report);
+    assert(report.error().code == "game_application.invalid_benchmark_frame_count");
+    assert(!mode.initialized);
+}
+
 void test_headless_startup_recovery_needs_no_game_runtime() {
     game::GameApplicationConfig config;
     config.headless = true;
@@ -236,6 +301,8 @@ int main() {
     test_zero_frame_limit_is_rejected();
     test_zero_application_workers_are_rejected();
     test_zero_frame_delta_limit_is_rejected();
+    test_benchmark_waits_for_warmup_and_stops_after_samples();
+    test_invalid_benchmark_configuration_is_rejected();
     test_headless_startup_recovery_needs_no_game_runtime();
     test_native_minimize_preserves_committed_extent();
     return 0;
