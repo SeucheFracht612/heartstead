@@ -8,11 +8,13 @@ subsystem never branches on the marketing name.
 | Control | Low | Medium | High | Ultra |
 | --- | ---: | ---: | ---: | ---: |
 | Terrain shading | Simplified | Full | Full | Full |
-| Internal scale | 67% | 85% | 100% | 100% |
+| Internal scale | 50% | 85% | 100% | 100% |
 | Anti-aliasing | Off | FXAA | FXAA | FXAA |
-| Directional shadow | 1024 | 1024 | 2048 | 4096 |
-| Shadow distance | 160 m | 240 m | 320 m | 480 m |
-| Local shadows | 0 | 1 | 2 | 2 |
+| Directional cascades | 1 | 4 | 4 | 4 |
+| Directional shadow resolution | 256 | 1024 | 2048 | 4096 |
+| Shadow distance | 48 m | 240 m | 320 m | 480 m |
+| Local shadow maps | 0 | 1 | 2 | 2 |
+| Local shadow resolution | Disabled | 1024 | 1024 | 1024 |
 | AO | Off | Low | High | Ultra |
 | Bloom | Off | On | On | On |
 | Vegetation density | 55% | 75% | 100% | 125% |
@@ -33,9 +35,16 @@ debug views. It omits normal and surface maps, procedural surface layers, PBR/en
 clustered local lights, multi-tap shadow filtering, and weather material modulation. Medium through
 Ultra keep the full authored material model.
 
+Low renders one 256-pixel directional cascade out to 48 metres and disables local shadow maps. The
+fixed descriptor and pass-index contract remains intact: inactive directional/local shadow images
+are one-pixel depth placeholders, while inactive passes stop reopening those images once they are
+initialized. Medium through Ultra retain four cascades and their previous local-shadow resolution.
+
 The development game selects High through `GameApplicationConfig`. There is no command-line or
 in-game selector yet, so compare all four resolved profiles with
 `heartstead_renderer_quality_tests` rather than assuming a UI control exists.
 
-Tone mapping and UI stay at output resolution. Disabled bloom clears its input black; disabled AO and
-FXAA are graph bypasses, not identity shader draws, preserving the stable 19-pass index contract.
+Tone mapping and UI stay at output resolution and share one dynamic-rendering scope only while they
+remain consecutive users of the same attachment. Disabled bloom uses a one-pixel black input;
+disabled AO and FXAA are graph bypasses, not identity shader draws. These optimizations preserve the
+stable 19-pass index and descriptor contracts.

@@ -24,7 +24,8 @@ This path forces immediate presentation and excludes user input, but otherwise r
 application and infinite-streaming scenario. Its readiness gate requires authoritative required-set
 residency and drained loader, mesher, and uploader work before warm-up starts. The run fails closed
 if readiness or the requested sample count is not reached. JSON schema v1 records raw full-frame
-timings and mode subphases alongside the renderer's CPU/GPU zones and workload counters.
+timings and mode subphases alongside renderer frontend/backend, submission/wait, GPU-pass, and
+workload counters.
 
 Use this runner for end-to-end FPS claims and the fixture runner below to isolate renderer changes.
 Hold resolution, quality, scenario, source state, validation state, driver, power/thermal state,
@@ -137,6 +138,9 @@ snapshot capture, meshing, upload preparation/copy, backend recording, and block
 Vulkan timestamps are asynchronous. Every GPU result carries the source frame and result latency;
 do not align a delayed GPU sample with the CPU frame that happened to receive it. The headless
 backend reports GPU timing unavailable while preserving the same CPU/counter schema.
+Shadow, sky, terrain, tone-map, UI, transfer, and final-copy boundaries use bottom-of-pipe query
+points so reported phase intervals do not overlap. Untimed graph work and gaps mean their sum is not
+required to equal the complete GPU-frame interval.
 
 `--presentation-timing` is a Vulkan-only, opt-in diagnostic. The device must expose and enable both
 `VK_KHR_present_id` and `VK_KHR_present_wait`. The renderer assigns a non-zero, strictly increasing
@@ -195,6 +199,63 @@ Extend this same hierarchy when adding pipeline stages rather than creating one-
 10. Preserve output files; do not transcribe only a headline FPS number.
 11. Add a new dated baseline below only when it remains useful for future decisions.
 
+## Low settled-frame synchronization and graph checkpoint — 2026-08-03
+
+Phase instrumentation localized the Low player runtime's dominant settled-frame CPU cost to the
+renderer frontend. The first detailed run spent 5.929 ms there: 3.611 ms preparing lighting, 1.532
+ms preparing chunk/far-terrain draws, and 0.531 ms preparing debug/UI, while backend execution was
+only 0.500 ms. The apparent CPU work was mostly synchronization: several independent dynamic-upload
+producers rotated through only three Vulkan upload contexts, so the fourth producer reused and
+waited for a context still owned by an earlier GPU frame. A static scene also rebuilt and uploaded
+an empty clustered-light grid every frame.
+
+The retained implementation:
+
+- keeps eight upload contexts per frame in flight, covering the bounded pre-frame producers without
+  making an upload fence the accidental frame throttle;
+- uploads an empty clustered-light grid once per buffer lifetime and invalidates that state on
+  resize or when local lights return;
+- gives Low a 50% scene scale, one 256-pixel directional cascade out to 48 metres, no local shadow
+  maps, one-pixel inactive shadow resources, and a one-pixel black disabled-bloom input;
+- skips drawless graph passes only when they neither initialize nor explicitly clear an attachment,
+  and reuses initialized one-pixel shadow placeholders;
+- records consecutive tone-map and UI draws in one dynamic-rendering scope only while their
+  attachment/dependency contract matches exactly;
+- exposes frontend subphases, backend setup/submit/waits, and GPU shadow/sky/tone/UI phases in the
+  player benchmark JSON.
+
+Medium through Ultra retain four directional cascades and their previous local-shadow resolution;
+the resolution, distance, and material changes above are explicit Low-quality policy.
+
+- **Build:** dirty implementation worktree based on `1edceec130c4e6ea55666213a0c648aa746bf817`,
+  GCC 13.3.0, Release
+- **Machine:** Intel Core Ultra 7 258V, 8 logical CPUs, Intel Graphics (LNL), Mesa 25.2.8,
+  Linux 6.17.0-1030-oem
+- **Configuration:** 2880x1800 output, Low (50% scene scale), Vulkan validation disabled,
+  immediate/uncapped, 120 warm-up frames, 600 measured frames
+- **Workload:** `base:scenarios/renderer_proof`, settled at 317 resident and 71 visible chunks,
+  roughly 211k submitted triangles and 329 draws after inactive shadow work was removed
+- **Raw output:** `build/default-release/benchmarks/frontend-breakdown-run1.json`,
+  `low-cleanup-run{1,2}.json`, and `low-cleanup-validation.json`
+
+| Run | Median ms (FPS) | P95 ms | P99 ms | Frontend ms | Backend ms | Mean GPU ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Cleaned checkpoint 1 | 3.401 (294.1) | 6.702 | 6.889 | 0.453 | 1.858 | 3.433 |
+| Cleaned checkpoint 2 | 3.497 (286.0) | 6.663 | 6.867 | 0.505 | 1.696 | 3.511 |
+
+Against the paired 8.240-8.442 ms simplified-shader baselines below, these runs reduce median frame
+time by 58.6-58.7% and raise median throughput by 2.41-2.42x. The swapchain selected immediate mode
+with four images; mean acquire time was 0.015-0.018 ms and `vkQueuePresentKHR` took 0.024-0.027 ms,
+so presentation was not the observed throughput limit. The remaining 1.083-1.300 ms mean frame-
+context wait is ordinary GPU back-pressure and is now reported separately from acquire and upload
+waits.
+
+A validation-enabled 120-frame smoke completed without a Vulkan validation message, and a native
+capture confirmed intact terrain/textures, fog, directional shadowing, HDR resolve, and UI. A
+native-BGRA intermediate plus `vkCmdCopyImage` control reached 3.735 ms median and 0.828 ms final-copy
+GPU time and was removed because it did not improve the retained RGBA/blit path. The 400 FPS target
+remains open; this is a cleaned checkpoint for choosing the next direction, not a completion claim.
+
 ## Low terrain compile-time path — 2026-08-03
 
 The full player benchmark identified the shared PBR terrain fragment shader as inappropriate for
@@ -224,13 +285,16 @@ Run 1 improves median end-to-end frame time by 16.6%, mean GPU time by 27.1%, an
 GPU time by 61.5%. A validation-enabled 120-frame smoke completed without a Vulkan validation
 message, and a native screenshot confirmed intact terrain/textures, fog, shadows, HDR resolve, and
 UI composition. This is a Low-quality tradeoff, not a silent downgrade of Medium through Ultra.
-The 400 FPS target remains open: the faster path is still 8.24-8.44 ms end to end.
+At this checkpoint the 400 FPS target remained open at 8.24-8.44 ms end to end; the later checkpoint
+above supersedes that end-to-end number.
 
-Two adjacent rejected controls constrain the next work. Rendering only one of four directional
-shadow cascades was neutral (9.816 ms median, 5.069 ms GPU) and increased tail variance. Rendering
-the graph output directly into the BGRA swapchain image regressed paired medians from 9.848 ms to
-10.507-10.519 ms on this driver, despite removing the final blit, so that capability path was
-removed. Neither experiment is present in production code.
+Two adjacent controls constrained the next work. Rendering only one of four directional shadow
+cascades under the then-serialized 67%/1024-shadow configuration was neutral (9.816 ms median,
+5.069 ms GPU) and increased tail variance, so it was not accepted at this checkpoint. It was later
+re-evaluated as part of the explicit Low policy above after the synchronization bottleneck was
+removed and the complete shadow budget changed. Rendering the graph output directly into the BGRA
+swapchain image regressed paired medians from 9.848 ms to 10.507-10.519 ms on this driver, despite
+removing the final blit, so that capability path remains absent from production code.
 
 The compile-time decision is consistent with the
 [Khronos specialization-constant performance guidance](https://docs.vulkan.org/samples/latest/samples/performance/specialization_constants/README.html),
