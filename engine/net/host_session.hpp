@@ -194,7 +194,7 @@ class HostSession {
     [[nodiscard]] core::Status queue_command_response(const HostSessionCommandReport& report);
     [[nodiscard]] core::Result<ReplicationRelevanceReport>
     queue_replication(const HostSessionCommandReport& report, std::int64_t server_time_ms,
-                      std::uint32_t& queued_message_count);
+                      std::uint32_t& replication_message_count);
     void flush_pending_outbound(HostSessionOutboundDeliveryReport& report);
     [[nodiscard]] core::Status queue_reliable_message(core::NetId client_id,
                                                       TransportMessage message,

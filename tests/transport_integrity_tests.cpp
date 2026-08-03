@@ -865,6 +865,9 @@ void test_reliable_backlog_fails_closed_at_admission_and_after_commit() {
     assert(tick && dispatch_count == 1);
     assert(tick.value().command_reports.size() == 1);
     assert(tick.value().command_reports.front().committed_world_mutation);
+    assert(tick.value().replication_message_count == 1);
+    assert(tick.value().replication_relevance_reports.size() == 1);
+    assert(tick.value().replication_relevance_reports.front().relevant_client_count == 1);
     assert(tick.value().outbound_delivery.overload_disconnected_client_count == 1);
     assert(tick.value().outbound_delivery.overload_disconnected_clients ==
            std::vector{committed_client.value()});

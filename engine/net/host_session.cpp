@@ -634,14 +634,14 @@ core::Result<HostSessionTickResult> HostSession::tick(const ServerCommandDispatc
         }
         ++tick_result.response_message_count;
 
-        std::uint32_t queued_replication_count = 0;
+        std::uint32_t replication_message_count = 0;
         auto relevance_report =
-            queue_replication(report, context.server_time_ms, queued_replication_count);
+            queue_replication(report, context.server_time_ms, replication_message_count);
         if (!relevance_report) {
             return core::Result<HostSessionTickResult>::failure(relevance_report.error().code,
                                                                 relevance_report.error().message);
         }
-        tick_result.replication_message_count += queued_replication_count;
+        tick_result.replication_message_count += replication_message_count;
         if (relevance_report.value().event_count > 0) {
             tick_result.replication_relevance_reports.push_back(
                 std::move(relevance_report).value());
@@ -816,7 +816,7 @@ core::Status HostSession::queue_command_response(const HostSessionCommandReport&
 
 core::Result<ReplicationRelevanceReport>
 HostSession::queue_replication(const HostSessionCommandReport& report, std::int64_t server_time_ms,
-                               std::uint32_t& queued_message_count) {
+                               std::uint32_t& replication_message_count) {
     ReplicationRelevanceReport relevance_report;
     if (!report.success || !report.committed_world_mutation || report.events.empty()) {
         return core::Result<ReplicationRelevanceReport>::success(std::move(relevance_report));
@@ -832,7 +832,12 @@ HostSession::queue_replication(const HostSessionCommandReport& report, std::int6
                                                                  published.error().message);
     }
     auto publish_result = std::move(published).value();
-    queued_message_count = publish_result.queued_message_count;
+    // HostSessionTickResult::replication_message_count is the number of relevant delivery
+    // attempts represented by the relevance report. Preserve that contract when a relevant
+    // recipient cannot enter the bounded reliable FIFO and is disconnected fail-closed. The
+    // reusable publisher keeps its narrower queued_message_count metric for callers that need
+    // successful queue admissions only.
+    replication_message_count = publish_result.relevance.relevant_client_count;
     relevance_report = std::move(publish_result.relevance);
     return core::Result<ReplicationRelevanceReport>::success(std::move(relevance_report));
 }
