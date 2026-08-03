@@ -467,6 +467,8 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
     bool diagnostics_visible = false;
     bool frame_rate_visible = false;
     FrameRateCounter frame_rate;
+    ProcessResourceSample performance_resources;
+    std::optional<std::int64_t> performance_resources_sampled_at_ms;
     bool settings_persist_pending = false;
     std::optional<core::Error> display_error;
 
@@ -568,6 +570,38 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             snapshot.asset_references += audio.cached_assets;
         }
         snapshot.process = sample_process_resources();
+        return snapshot;
+    }
+
+    void refresh_performance_resources(std::int64_t now_milliseconds) noexcept {
+        constexpr std::int64_t refresh_interval_ms = 250;
+        if (performance_resources_sampled_at_ms.has_value() &&
+            now_milliseconds >= *performance_resources_sampled_at_ms &&
+            now_milliseconds - *performance_resources_sampled_at_ms < refresh_interval_ms) {
+            return;
+        }
+        performance_resources = sample_process_resources();
+        performance_resources_sampled_at_ms = now_milliseconds;
+    }
+
+    [[nodiscard]] PerformanceOverlaySnapshot performance_overlay_snapshot() const noexcept {
+        PerformanceOverlaySnapshot snapshot;
+        snapshot.frame_rate = frame_rate.sample();
+        snapshot.process_resident_memory_bytes = performance_resources.resident_memory_bytes;
+        if (services == nullptr || services->renderer() == nullptr) {
+            return snapshot;
+        }
+
+        const auto& render = services->renderer()->stats();
+        snapshot.cpu_frame_milliseconds = render.cpu_frame_ms;
+        snapshot.gpu_timing_valid = render.gpu_timing_valid;
+        snapshot.gpu_frame_milliseconds = render.gpu_frame_ms;
+        snapshot.gpu_mesh_memory_bytes = render.resident_mesh_bytes +
+                                         render.resident_static_mesh_bytes +
+                                         render.far_terrain_resident_bytes;
+        snapshot.resident_chunks = render.resident_chunks;
+        snapshot.visible_chunks = render.visible_chunks;
+        snapshot.occluded_chunks = render.culled_chunks;
         return snapshot;
     }
 
@@ -2865,19 +2899,27 @@ struct HeartsteadApplicationMode::Impl final : IApplicationStateLifecycle {
             }
         }
         if (status && frame_rate_visible) {
-            constexpr float panel_width = 104.0F;
-            constexpr float panel_height = 34.0F;
+            refresh_performance_resources(current_frame.now_milliseconds);
+            constexpr float panel_width = 236.0F;
+            constexpr float panel_height = 196.0F;
             const auto right = static_cast<float>(current_frame.extent.width) - 12.0F;
             renderer::UiQuadDesc panel;
             panel.minimum_pixels = {std::max(12.0F, right - panel_width), 12.0F};
             panel.maximum_pixels = {right, 12.0F + panel_height};
-            panel.color = {0.015F, 0.025F, 0.04F, 0.82F};
+            panel.color = {0.015F, 0.025F, 0.04F, 0.90F};
             status = ui_renderer->submit_quad(panel);
             if (status) {
                 status = ui_renderer->submit_text(
-                    {{panel.minimum_pixels.x + 10.0F, panel.minimum_pixels.y + 9.0F},
-                     format_frame_rate(frame_rate.sample()),
-                     14.0F,
+                    {{panel.minimum_pixels.x + 10.0F, panel.minimum_pixels.y + 8.0F},
+                     "HEARTSTEAD DEBUG [F7]",
+                     13.0F,
+                     {0.35F, 1.0F, 0.48F, 1.0F}});
+            }
+            if (status) {
+                status = ui_renderer->submit_text(
+                    {{panel.minimum_pixels.x + 10.0F, panel.minimum_pixels.y + 31.0F},
+                     format_performance_overlay(performance_overlay_snapshot()),
+                     12.0F,
                      {0.90F, 0.96F, 1.0F, 1.0F}});
             }
         }

@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <optional>
 #include <string>
 
@@ -84,6 +85,23 @@ struct RuntimeDiagnosticsSnapshot {
 struct FrameRateSample {
     double frames_per_second = 0.0;
     double frame_time_milliseconds = 0.0;
+    // Whole-process CPU time normalized against all logical processors. A value is unavailable
+    // until two refresh boundaries have been observed.
+    std::optional<double> process_cpu_usage_percent;
+};
+
+struct PerformanceOverlaySnapshot {
+    FrameRateSample frame_rate;
+    double cpu_frame_milliseconds = 0.0;
+    bool gpu_timing_valid = false;
+    double gpu_frame_milliseconds = 0.0;
+    std::optional<std::uint64_t> process_resident_memory_bytes;
+    std::uint64_t gpu_mesh_memory_bytes = 0;
+    std::uint32_t resident_chunks = 0;
+    std::uint32_t visible_chunks = 0;
+    // Heartstead currently exposes conservative distance/frustum-culling totals rather than a
+    // distinct chunk-HZB result. The compact player-facing label remains "OCCLUDED".
+    std::uint32_t occluded_chunks = 0;
 };
 
 class FrameRateCounter {
@@ -97,11 +115,14 @@ class FrameRateCounter {
     std::uint64_t accumulated_microseconds_ = 0;
     std::uint64_t accumulated_frames_ = 0;
     FrameRateSample sample_{};
+    std::optional<std::clock_t> last_process_cpu_clock_;
 };
 
 [[nodiscard]] ProcessResourceSample sample_process_resources(
     ProcessMemoryDetail memory_detail = ProcessMemoryDetail::approximate) noexcept;
 [[nodiscard]] std::string format_runtime_diagnostics(const RuntimeDiagnosticsSnapshot& snapshot);
 [[nodiscard]] std::string format_frame_rate(FrameRateSample sample);
+[[nodiscard]] std::string
+format_performance_overlay(const PerformanceOverlaySnapshot& snapshot);
 
 } // namespace heartstead::game

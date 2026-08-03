@@ -109,6 +109,7 @@ Primary game controls:
 | Dash / roll | `Q` / `Left Alt` |
 | Remove / place voxel | Left / right mouse button |
 | Runtime diagnostics | `F3` |
+| Compact performance overlay | `F7` |
 | Close menu / pause | `Escape` |
 
 The standalone presentation diagnostic retains additional inventory, map, camera, environment,

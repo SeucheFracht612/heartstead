@@ -192,5 +192,11 @@ it also reports thread and open-file counts. Sparse acceptance workloads can exp
 and private values only when that precise sample is present. Private resident memory is
 `Private_Clean + Private_Dirty`, not virtual/committed memory or allocator ownership.
 
+The separate F7 overlay is intentionally compact and sampled. It combines FPS with renderer CPU/GPU
+frame timings, logical-core-normalized process CPU use, approximate process RSS, GPU mesh residency,
+and chunk visibility. Its `WORLD RAM` label is a process-RSS proxy rather than allocator ownership,
+and its `OCCLUDED` line is the existing conservative distance/frustum-culling total until the chunk
+path exposes a distinct HZB-occlusion counter.
+
 Inspection output is not the final tool UI. It is the common data shape future debug
 overlays, inspectors, replay reports, and save tools can render.

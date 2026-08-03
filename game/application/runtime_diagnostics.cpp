@@ -1,5 +1,8 @@
 #include "game/application/runtime_diagnostics.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -8,6 +11,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 
 #if defined(__linux__)
 #include <unistd.h>
@@ -90,6 +94,7 @@ void sample_precise_linux_memory(ProcessResourceSample& sample) noexcept {
 } // namespace
 
 void FrameRateCounter::record_frame(std::uint64_t delta_microseconds) noexcept {
+    const auto process_cpu_clock = std::clock();
     accumulated_microseconds_ += delta_microseconds;
     ++accumulated_frames_;
     if (accumulated_microseconds_ < refresh_interval_microseconds &&
@@ -102,6 +107,21 @@ void FrameRateCounter::record_frame(std::uint64_t delta_microseconds) noexcept {
         sample_.frames_per_second = frames * 1'000'000.0 / elapsed;
         sample_.frame_time_milliseconds = elapsed / frames / 1'000.0;
     }
+    if (elapsed > 0.0 && last_process_cpu_clock_.has_value() &&
+        process_cpu_clock != static_cast<std::clock_t>(-1) &&
+        process_cpu_clock >= *last_process_cpu_clock_) {
+        const auto logical_processor_count = std::max(1U, std::thread::hardware_concurrency());
+        const auto process_seconds =
+            static_cast<double>(process_cpu_clock - *last_process_cpu_clock_) /
+            static_cast<double>(CLOCKS_PER_SEC);
+        const auto wall_seconds = elapsed / 1'000'000.0;
+        sample_.process_cpu_usage_percent = std::clamp(
+            process_seconds / wall_seconds / static_cast<double>(logical_processor_count) * 100.0,
+            0.0, 100.0);
+    }
+    if (process_cpu_clock != static_cast<std::clock_t>(-1)) {
+        last_process_cpu_clock_ = process_cpu_clock;
+    }
     accumulated_microseconds_ = 0;
     accumulated_frames_ = 0;
 }
@@ -110,6 +130,7 @@ void FrameRateCounter::reset() noexcept {
     accumulated_microseconds_ = 0;
     accumulated_frames_ = 0;
     sample_ = {};
+    last_process_cpu_clock_.reset();
 }
 
 FrameRateSample FrameRateCounter::sample() const noexcept {
@@ -241,6 +262,53 @@ std::string format_runtime_diagnostics(const RuntimeDiagnosticsSnapshot& snapsho
 std::string format_frame_rate(FrameRateSample sample) {
     std::ostringstream output;
     output << std::fixed << std::setprecision(1) << "FPS " << sample.frames_per_second;
+    return output.str();
+}
+
+std::string format_performance_overlay(const PerformanceOverlaySnapshot& snapshot) {
+    const auto frame_interval_ms = snapshot.frame_rate.frame_time_milliseconds;
+    const auto gpu_load_percent =
+        snapshot.gpu_timing_valid && std::isfinite(snapshot.gpu_frame_milliseconds) &&
+                snapshot.gpu_frame_milliseconds >= 0.0 && std::isfinite(frame_interval_ms) &&
+                frame_interval_ms > 0.0
+            ? std::optional<double>{std::clamp(
+                  snapshot.gpu_frame_milliseconds / frame_interval_ms * 100.0, 0.0, 100.0)}
+            : std::nullopt;
+
+    std::ostringstream output;
+    output << std::fixed << std::setprecision(1) << "FPS "
+           << std::max(0.0, snapshot.frame_rate.frames_per_second) << '\n'
+           << std::setprecision(2) << "CPU FRAME "
+           << std::max(0.0, snapshot.cpu_frame_milliseconds) << " MS\nCPU USE ";
+    if (snapshot.frame_rate.process_cpu_usage_percent.has_value() &&
+        std::isfinite(*snapshot.frame_rate.process_cpu_usage_percent)) {
+        output << std::setprecision(1)
+               << std::clamp(*snapshot.frame_rate.process_cpu_usage_percent, 0.0, 100.0) << " %";
+    } else {
+        output << "N/A";
+    }
+    output << "\nGPU FRAME ";
+    if (snapshot.gpu_timing_valid && std::isfinite(snapshot.gpu_frame_milliseconds) &&
+        snapshot.gpu_frame_milliseconds >= 0.0) {
+        output << std::setprecision(2) << snapshot.gpu_frame_milliseconds << " MS";
+    } else {
+        output << "N/A";
+    }
+    output << "\nGPU LOAD ";
+    if (gpu_load_percent.has_value()) {
+        output << std::setprecision(1) << *gpu_load_percent << " %";
+    } else {
+        output << "N/A";
+    }
+    output << "\nWORLD RAM ";
+    if (snapshot.process_resident_memory_bytes.has_value()) {
+        output << bytes_text(*snapshot.process_resident_memory_bytes);
+    } else {
+        output << "N/A";
+    }
+    output << "\nGPU MESH " << bytes_text(snapshot.gpu_mesh_memory_bytes) << "\nCHUNKS "
+           << snapshot.resident_chunks << "\nVISIBLE " << snapshot.visible_chunks
+           << "\nOCCLUDED " << snapshot.occluded_chunks;
     return output.str();
 }
 

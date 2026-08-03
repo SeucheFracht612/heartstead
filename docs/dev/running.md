@@ -40,7 +40,8 @@ for the exact syntax. All automatic launches enter the main-menu state and use t
 request; none is a hidden runtime construction path. Press `F3` for lifecycle/resource diagnostics.
 
 Primary game controls currently include movement (`W/A/S/D`), traversal (`Space`, Shift, Ctrl,
-`Q`, Alt), authoritative remove/place (left/right mouse), F3 diagnostics, and Escape for pause/back.
+`Q`, Alt), authoritative remove/place (left/right mouse), F3 diagnostics, the compact F7
+performance overlay, and Escape for pause/back.
 Inventory, map, camera-mode, and extended VFX debug controls below belong to the standalone
 diagnostic until their gameplay UI is promoted into the shell.
 

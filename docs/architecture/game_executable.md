@@ -137,6 +137,13 @@ and is labeled as such; precise `/proc/self/smaps_rollup` PSS/private-resident v
 when an explicit precise sample is available. Vulkan device usage/budget is shown only when
 `VK_EXT_memory_budget` telemetry is valid; otherwise the UI says it is unavailable.
 
+`F7` toggles the compact performance overlay. It reports sampled FPS, renderer CPU-frame time,
+whole-process CPU use normalized across logical processors, timestamped GPU-frame time and derived
+GPU load, approximate process RSS under the compact `WORLD RAM` label, resident terrain/static/far
+mesh bytes, and resident/visible/conservatively culled chunk counts. CPU/RSS refresh at 4 Hz. GPU
+fields report `N/A` until timestamp data is valid. The compact `OCCLUDED` label currently represents
+the renderer's combined distance/frustum-culled chunk count; it is not a distinct chunk-HZB query.
+
 ## Extension rules
 
 Add a menu screen to `MainMenuScreen` and `MainMenuNavigation`, then build it through the retained

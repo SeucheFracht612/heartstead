@@ -394,13 +394,47 @@ void test_runtime_diagnostics_are_explicit() {
 #endif
 
     game::FrameRateCounter frame_rate;
-    for (std::size_t frame = 0; frame < 15; ++frame) {
+    for (std::size_t frame = 0; frame < 16; ++frame) {
         frame_rate.record_frame(16'667);
     }
     assert(std::abs(frame_rate.sample().frames_per_second - 60.0) < 0.01);
+    assert(frame_rate.sample().process_cpu_usage_percent.has_value());
+    assert(*frame_rate.sample().process_cpu_usage_percent >= 0.0);
+    assert(*frame_rate.sample().process_cpu_usage_percent <= 100.0);
     assert(game::format_frame_rate(frame_rate.sample()) == "FPS 60.0");
+
+    game::PerformanceOverlaySnapshot performance;
+    performance.frame_rate.frames_per_second = 120.0;
+    performance.frame_rate.frame_time_milliseconds = 1'000.0 / 120.0;
+    performance.frame_rate.process_cpu_usage_percent = 2.1;
+    performance.cpu_frame_milliseconds = 0.37;
+    performance.gpu_timing_valid = true;
+    performance.gpu_frame_milliseconds = 5.52;
+    performance.process_resident_memory_bytes = 141U * 1024U * 1024U;
+    performance.gpu_mesh_memory_bytes = 358U * 1024U * 1024U + 209'715U;
+    performance.resident_chunks = 13'037;
+    performance.visible_chunks = 4'145;
+    performance.occluded_chunks = 2;
+    assert(game::format_performance_overlay(performance) ==
+           "FPS 120.0\n"
+           "CPU FRAME 0.37 MS\n"
+           "CPU USE 2.1 %\n"
+           "GPU FRAME 5.52 MS\n"
+           "GPU LOAD 66.2 %\n"
+           "WORLD RAM 141.0 MiB\n"
+           "GPU MESH 358.2 MiB\n"
+           "CHUNKS 13037\n"
+           "VISIBLE 4145\n"
+           "OCCLUDED 2");
+
+    const auto unavailable_performance = game::format_performance_overlay({});
+    assert(unavailable_performance.find("CPU USE N/A") != std::string::npos);
+    assert(unavailable_performance.find("GPU FRAME N/A") != std::string::npos);
+    assert(unavailable_performance.find("GPU LOAD N/A") != std::string::npos);
+    assert(unavailable_performance.find("WORLD RAM N/A") != std::string::npos);
     frame_rate.reset();
     assert(frame_rate.sample().frames_per_second == 0.0);
+    assert(!frame_rate.sample().process_cpu_usage_percent.has_value());
 }
 
 } // namespace
