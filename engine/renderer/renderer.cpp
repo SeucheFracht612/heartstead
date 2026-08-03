@@ -589,9 +589,25 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
         (void)shutdown();
         return core::Status::failure(error.code, error.message);
     }
-    pipeline_status =
-        create_terrain_pipeline(desc.terrain_vertex_spirv, desc.terrain_fragment_spirv,
-                                desc.voxel_palette, desc.terrain_material_assets);
+    const bool low_terrain_shader_selected =
+        quality_settings_.terrain_shading == RendererTerrainShading::simplified &&
+        !desc.low_terrain_fragment_spirv.empty();
+    if (quality_settings_.terrain_shading == RendererTerrainShading::simplified &&
+        desc.low_terrain_fragment_spirv.empty()) {
+        core::log(core::LogLevel::warning,
+                  "Low terrain shader unavailable; using the full material shader");
+    }
+    if (low_terrain_shader_selected) {
+        core::log(core::LogLevel::info,
+                  "Renderer terrain shading: simplified compile-time Low path");
+    }
+    const auto terrain_fragment_spirv =
+        low_terrain_shader_selected
+            ? std::span<const std::uint32_t>{desc.low_terrain_fragment_spirv}
+            : std::span<const std::uint32_t>{desc.terrain_fragment_spirv};
+    pipeline_status = create_terrain_pipeline(desc.terrain_vertex_spirv, terrain_fragment_spirv,
+                                              desc.voxel_palette,
+                                              desc.terrain_material_assets);
     if (!pipeline_status) {
         const auto error = pipeline_status.error();
         (void)shutdown();
@@ -599,7 +615,7 @@ core::Status Renderer::initialize(RendererInitDesc desc) {
     }
     if (!desc.far_terrain_vertex_spirv.empty()) {
         pipeline_status =
-            create_far_terrain_pipeline(desc.far_terrain_vertex_spirv, desc.terrain_fragment_spirv);
+            create_far_terrain_pipeline(desc.far_terrain_vertex_spirv, terrain_fragment_spirv);
         if (!pipeline_status) {
             core::log(core::LogLevel::warning,
                       "far terrain disabled: " + pipeline_status.error().code + ": " +

@@ -30,6 +30,7 @@ RendererQualitySettings renderer_quality_settings(RendererQualityPreset preset) 
     settings.preset = preset;
     switch (preset) {
     case RendererQualityPreset::low:
+        settings.terrain_shading = RendererTerrainShading::simplified;
         settings.render_scale = 0.67F;
         settings.anti_aliasing = RendererAntiAliasing::off;
         settings.shadow_resolution = 1024;

@@ -7,6 +7,7 @@ subsystem never branches on the marketing name.
 
 | Control | Low | Medium | High | Ultra |
 | --- | ---: | ---: | ---: | ---: |
+| Terrain shading | Simplified | Full | Full | Full |
 | Internal scale | 67% | 85% | 100% | 100% |
 | Anti-aliasing | Off | FXAA | FXAA | FXAA |
 | Directional shadow | 1024 | 1024 | 2048 | 4096 |
@@ -24,6 +25,13 @@ and asset-LOD controls. Renderer initialization directly applies frame scale/pos
 terrain/far-terrain distance and memory, and generic residency. The remaining fields are validated
 policy values for game-owned presentation orchestration; the development game does not yet wire
 them into live vegetation, water, particle, reflection, or asset-LOD reconfiguration.
+
+Simplified terrain shading is a separately compiled fragment path, not a uniform branch through the
+full shader. It retains stable infinite-world texture mapping and variants, alpha testing, voxel
+light/AO, one-tap cascaded directional shadows, simple fluid animation, fog, HDR output, and core
+debug views. It omits normal and surface maps, procedural surface layers, PBR/environment probes,
+clustered local lights, multi-tap shadow filtering, and weather material modulation. Medium through
+Ultra keep the full authored material model.
 
 The development game selects High through `GameApplicationConfig`. There is no command-line or
 in-game selector yet, so compare all four resolved profiles with

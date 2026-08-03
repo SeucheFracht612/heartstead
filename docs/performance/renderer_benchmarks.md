@@ -195,6 +195,47 @@ Extend this same hierarchy when adding pipeline stages rather than creating one-
 10. Preserve output files; do not transcribe only a headline FPS number.
 11. Add a new dated baseline below only when it remains useful for future decisions.
 
+## Low terrain compile-time path — 2026-08-03
+
+The full player benchmark identified the shared PBR terrain fragment shader as inappropriate for
+Low. A separate compile-time Low shader retains the gameplay-visible texture, alpha, voxel-light,
+directional-shadow, fluid, fog, and infinite-coordinate contracts while removing high-tier material
+work. This follows the Vulkan guidance to make feature-level control compile-time so unused blocks
+can be eliminated, rather than hiding them behind uniform control flow.
+
+- **Build:** dirty implementation worktree based on `d86396a00ce079e7e6ae2be418d6cd317034e26a`,
+  GCC 13.3.0, Release
+- **Machine:** Intel Core Ultra 7 258V, 8 logical CPUs, Intel Graphics (LNL), Mesa 25.2.8,
+  Linux 6.17.0-1030-oem
+- **Configuration:** 2880x1800 output, Low (67% scene scale), Vulkan validation disabled,
+  immediate/uncapped, 120 warm-up frames, 600 measured frames
+- **Workload:** `base:scenarios/renderer_proof`, settled at 317 resident and 72 visible chunks,
+  roughly 537k triangles and 830 draws
+- **Raw output:** `build/default-release/benchmarks/runtime-renderer-proof-profiled.json` and
+  `build/default-release/benchmarks/low-terrain-shader-run{1,2}.json`
+
+| Path/run | Median ms | P95 ms | P99 ms | Mean GPU ms | Opaque terrain GPU ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Full material baseline | 9.883 | 10.913 | 11.365 | 5.170 | 2.212 |
+| Simplified Low 1 | 8.240 | 10.222 | 10.791 | 3.767 | 0.851 |
+| Simplified Low 2 | 8.442 | 10.132 | 11.605 | 3.817 | 0.865 |
+
+Run 1 improves median end-to-end frame time by 16.6%, mean GPU time by 27.1%, and opaque-terrain
+GPU time by 61.5%. A validation-enabled 120-frame smoke completed without a Vulkan validation
+message, and a native screenshot confirmed intact terrain/textures, fog, shadows, HDR resolve, and
+UI composition. This is a Low-quality tradeoff, not a silent downgrade of Medium through Ultra.
+The 400 FPS target remains open: the faster path is still 8.24-8.44 ms end to end.
+
+Two adjacent rejected controls constrain the next work. Rendering only one of four directional
+shadow cascades was neutral (9.816 ms median, 5.069 ms GPU) and increased tail variance. Rendering
+the graph output directly into the BGRA swapchain image regressed paired medians from 9.848 ms to
+10.507-10.519 ms on this driver, despite removing the final blit, so that capability path was
+removed. Neither experiment is present in production code.
+
+The compile-time decision is consistent with the
+[Khronos specialization-constant performance guidance](https://docs.vulkan.org/samples/latest/samples/performance/specialization_constants/README.html),
+which recommends compile-time feature control so the driver can remove unused shader blocks.
+
 ## Vulkan presentation-completion calibration — 2026-08-02
 
 This calibration verifies the new completion endpoint and establishes its run-to-run behavior. It

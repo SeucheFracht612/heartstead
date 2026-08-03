@@ -20,6 +20,14 @@ int main() {
         previous_budget = settings.texture_budget_bytes;
         previous_distance = settings.shadow_distance;
     }
+    assert(renderer_quality_settings(RendererQualityPreset::low).terrain_shading ==
+           RendererTerrainShading::simplified);
+    assert(renderer_quality_settings(RendererQualityPreset::medium).terrain_shading ==
+           RendererTerrainShading::full);
+    assert(renderer_quality_settings(RendererQualityPreset::high).terrain_shading ==
+           RendererTerrainShading::full);
+    assert(renderer_quality_settings(RendererQualityPreset::ultra).terrain_shading ==
+           RendererTerrainShading::full);
     auto invalid = renderer_quality_settings(RendererQualityPreset::high);
     invalid.render_scale = 0.1F;
     assert(!invalid.validate());

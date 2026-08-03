@@ -76,6 +76,7 @@ struct RendererInitDesc {
     std::vector<std::uint32_t> terrain_vertex_spirv;
     std::vector<std::uint32_t> far_terrain_vertex_spirv;
     std::vector<std::uint32_t> terrain_fragment_spirv;
+    std::vector<std::uint32_t> low_terrain_fragment_spirv;
     std::vector<std::uint32_t> static_mesh_vertex_spirv;
     std::vector<std::uint32_t> static_mesh_fragment_spirv;
     std::vector<std::uint32_t> shadow_terrain_fragment_spirv;

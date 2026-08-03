@@ -58,6 +58,7 @@ struct ApplicationShaderSet {
     std::vector<std::uint32_t> terrain_vertex;
     std::vector<std::uint32_t> far_terrain_vertex;
     std::vector<std::uint32_t> terrain_fragment;
+    std::vector<std::uint32_t> low_terrain_fragment;
     std::vector<std::uint32_t> static_vertex;
     std::vector<std::uint32_t> static_fragment;
     std::vector<std::uint32_t> shadow_terrain_fragment;
@@ -96,8 +97,9 @@ load_application_shaders(const std::filesystem::path& root) {
         root / "ao_composite.frag.spv",
         root / "fxaa.frag.spv",
         root / "bloom.frag.spv",
+        root / "terrain_low.frag.spv",
     };
-    std::array<core::Result<std::vector<std::uint32_t>>, 19> loaded{
+    std::array<core::Result<std::vector<std::uint32_t>>, 20> loaded{
         renderer::shaders::load_spirv_file(paths[0]),
         renderer::shaders::load_spirv_file(paths[1]),
         renderer::shaders::load_spirv_file(paths[2]),
@@ -117,10 +119,11 @@ load_application_shaders(const std::filesystem::path& root) {
         renderer::shaders::load_spirv_file(paths[16]),
         renderer::shaders::load_spirv_file(paths[17]),
         renderer::shaders::load_spirv_file(paths[18]),
+        renderer::shaders::load_spirv_file(paths[19]),
     };
     constexpr std::array required{
         true,  true,  true,  false, true,  true,  true,  false, false, true,
-        true,  true,  true,  true,  true,  false, false, false, false,
+        true,  true,  true,  true,  true,  false, false, false, false, false,
     };
     for (std::size_t index = 0; index < loaded.size(); ++index) {
         if (!loaded[index] && required[index]) {
@@ -159,6 +162,7 @@ load_application_shaders(const std::filesystem::path& root) {
     result.ao_composite_fragment = take(16);
     result.fxaa_fragment = take(17);
     result.bloom_fragment = take(18);
+    result.low_terrain_fragment = take(19);
     return core::Result<ApplicationShaderSet>::success(std::move(result));
 }
 
@@ -564,6 +568,8 @@ core::Status GameApplication::initialize_shell() {
     renderer_desc.terrain_vertex_spirv = std::move(shaders.value().terrain_vertex);
     renderer_desc.far_terrain_vertex_spirv = std::move(shaders.value().far_terrain_vertex);
     renderer_desc.terrain_fragment_spirv = std::move(shaders.value().terrain_fragment);
+    renderer_desc.low_terrain_fragment_spirv =
+        std::move(shaders.value().low_terrain_fragment);
     renderer_desc.static_mesh_vertex_spirv = std::move(shaders.value().static_vertex);
     renderer_desc.static_mesh_fragment_spirv = std::move(shaders.value().static_fragment);
     renderer_desc.shadow_terrain_fragment_spirv =

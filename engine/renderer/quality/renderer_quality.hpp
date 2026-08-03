@@ -10,9 +10,11 @@ namespace heartstead::renderer {
 
 enum class RendererQualityPreset : std::uint8_t { low, medium, high, ultra };
 enum class RendererAntiAliasing : std::uint8_t { off, fxaa };
+enum class RendererTerrainShading : std::uint8_t { simplified, full };
 
 struct RendererQualitySettings {
     RendererQualityPreset preset = RendererQualityPreset::high;
+    RendererTerrainShading terrain_shading = RendererTerrainShading::full;
     float render_scale = 1.0F;
     RendererAntiAliasing anti_aliasing = RendererAntiAliasing::fxaa;
     std::uint32_t shadow_resolution = 2048;
